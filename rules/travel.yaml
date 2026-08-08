@@ -1,0 +1,297 @@
+# 출장비 검토 규칙
+# 이 유형만의 특징: 청구액이 서류에 적힌 값이 아니라 '영수증에서 역산'된다.
+#   → R-TRV-009 는 반드시 '출장기간 날짜 필터'를 먼저 적용한 뒤 합산해야 오탐이 없다.
+
+version: 1
+scope: 출장비
+
+required_documents:
+  - { key: trip_request,   label: "국내 출장신청서 (전자결재본)" }
+  - { key: trip_evidence,  label: "출장증빙 (교통비·이동경로·체류)" }
+  - { key: transport_receipts, label: "교통비 영수증 (하이패스/주유/대중교통)" }
+  - { key: stay_receipts,  label: "체류 영수증" }
+  - { key: purpose_evidence, label: "출장목적 근거자료 (프로그램·강연정보 등)", optional: true }
+
+settings:
+  daily_allowance: null          # TODO: 강원대 여비 규정 — 일비
+  meal_allowance: null           # TODO: 식비
+  lodging_cap: null              # TODO: 숙박비 한도
+  km_rate: null                  # TODO: 자가용 km당 단가
+  route_asymmetry_tolerance: 0.30 # 편도/복도 거리 차 30% 초과 시 경고
+  non_reimbursable_keywords: ["주류", "소주", "맥주", "담배", "위스키", "와인"]
+
+rules:
+  # ---- L0 : 서식 블록 완비성 ----
+  - id: R-TRV-001
+    layer: L0
+    title: 출장신청서 결재 미완료
+    severity: ERROR
+    requires: [trip_request.doc_no, trip_request.issued_at, trip_request.approvers]
+    check: approval_complete
+    message: "출장신청서의 결재가 확인되지 않습니다 (문서번호/시행일자/결재선)."
+    fix: "결재 완료된 전자결재 출력본을 제출하세요."
+
+  - id: R-TRV-002
+    layer: L0
+    title: 교통비 증빙 블록 누락
+    severity: ERROR
+    requires: [trip_evidence.transport_block]
+    check: block_present
+    # 샘플: 황승재·방석훈·이세영 — 체류 증빙만 있고 교통비 블록이 없음
+    message: "출장증빙 서식에 '교통비 증빙' 블록이 없습니다."
+    fix: "출장증빙 서식의 '교통비 증빙' 블록에 금액과 영수증 이미지를 채워 제출하세요."
+
+  - id: R-TRV-003
+    layer: L0
+    title: 이동경로 블록 누락
+    severity: ERROR
+    requires: [trip_evidence.route_block]
+    check: block_present
+    message: "출장증빙 서식에 '이동경로' 블록(지도 캡처 포함)이 없습니다."
+    fix: "출발지→도착지, 도착지→출발지, 총 이동경로 거리와 경로 캡처를 첨부하세요."
+
+  - id: R-TRV-004
+    layer: L0
+    title: 체류 증빙 일자 누락
+    severity: ERROR
+    requires: [trip_evidence.stay_dates, trip_request.period]
+    expr: "set(dates_in(trip_request.period)) <= set(trip_evidence.stay_dates)"
+    # 샘플: 이동재 — 출장기간 7/2~7/3 인데 체류 증빙은 7/2 만 존재
+    message: "체류 증빙이 없는 출장일자가 있습니다: {missing}"
+    fix: "{missing} 자의 체류 증빙(현지 영수증 등)을 추가하세요."
+
+  - id: R-TRV-005
+    layer: L0
+    title: 교통비 원본 영수증 미첨부
+    severity: ERROR
+    requires: [transport_receipts]
+    expr: "len(transport_receipts) >= 1"
+    message: "교통비 원본 영수증이 첨부되지 않았습니다."
+    fix: "하이패스/주유/대중교통 영수증을 첨부하세요."
+
+  # ---- L1 : 거리·금액 계산 ----
+  - id: R-TRV-006
+    layer: L1
+    title: 총 이동경로 합계 오류·공란
+    severity: ERROR
+    requires: [trip_evidence.dist_out, trip_evidence.dist_back, trip_evidence.dist_total]
+    expr: "trip_evidence.dist_total == trip_evidence.dist_out + trip_evidence.dist_back"
+    # 샘플: 이성재(206/206, 총계 공란), 이동재(82/82, 총계 공란)
+    message: "총 이동경로({trip_evidence.dist_total})가 편도 합계({trip_evidence.dist_out}+{trip_evidence.dist_back})와 다르거나 비어 있습니다."
+    fix: "총 이동경로 칸에 {computed}km 를 기재하세요."
+
+  - id: R-TRV-007
+    layer: L1
+    title: 지도 캡처 거리와 불일치
+    severity: WARN
+    requires: [trip_evidence.dist_total, trip_evidence.map_distance]
+    expr: "abs(trip_evidence.dist_total - trip_evidence.map_distance) <= 5"
+    message: "기재 거리({trip_evidence.dist_total}km)와 지도 캡처의 거리({trip_evidence.map_distance}km)가 다릅니다."
+    fix: "지도 캡처 기준으로 거리를 정정하세요."
+
+  - id: R-TRV-008
+    layer: L1
+    title: 왕복 거리 비대칭
+    severity: WARN
+    requires: [trip_evidence.dist_out, trip_evidence.dist_back]
+    expr: "abs(dist_out - dist_back) / max(dist_out, dist_back) <= settings.route_asymmetry_tolerance"
+    # 샘플: 211km / 154km — 경유지가 다른 정상 케이스이므로 ERROR 가 아니라 WARN
+    message: "가는 길 {trip_evidence.dist_out}km, 오는 길 {trip_evidence.dist_back}km 로 차이가 큽니다."
+    fix: "경유지가 달랐다면 이동경로 블록에 사유를 한 줄 적어 두세요."
+
+  - id: R-TRV-009
+    layer: L1
+    title: 교통비 금액이 영수증 합계와 불일치
+    severity: ERROR
+    requires: [trip_evidence.transport_amount, transport_receipts, trip_request.period]
+    expr: "trip_evidence.transport_amount == sum(r.amount for r in transport_receipts if r.datetime in trip_request.period)"
+    # 샘플: 이성재 — 제출 8건 33,900원 중 기간 내 3건 8,500원 → 기재액과 일치(정상)
+    #        기간 필터를 빼면 오탐 발생
+    message: "기재된 교통비 {trip_evidence.transport_amount}원 vs 출장기간 내 영수증 합계 {computed}원."
+    fix: "교통비 금액을 {computed}원 으로 정정하거나, 누락된 영수증을 첨부하세요."
+
+  - id: R-TRV-010
+    layer: L1
+    title: 영수증 내부 합계 불일치
+    severity: WARN
+    requires: ["transport_receipts[].items", "transport_receipts[].stated_total"]
+    expr: "sum(receipt.items[].amount) == receipt.stated_total"
+    message: "영수증의 개별 건 합계({computed}원)와 표기된 총액({receipt.stated_total}원)이 다릅니다."
+    fix: "영수증 원본을 다시 확인하세요."
+
+  # ---- L2 : 기간·장소 정합성 ----
+  - id: R-TRV-011
+    layer: L2
+    title: 영수증 일시가 출장기간 밖
+    severity: ERROR
+    scope: each_receipt
+    requires: [receipt.datetime, trip_request.period]
+    expr: "trip_request.period.start <= receipt.datetime <= trip_request.period.end"
+    # 샘플: 이동재 — 출장기간 7/2 18:00~7/3 12:00, 하이패스 영수증 7/3 13:20
+    message: "{receipt.label} 의 일시({receipt.datetime})가 출장기간({trip_request.period}) 밖입니다."
+    fix: "출장기간 종료시각을 실제 귀로 시각 이후로 정정하거나, 해당 영수증을 정산에서 제외하세요."
+
+  - id: R-TRV-012
+    layer: L2
+    title: 체류 증빙 날짜가 출장기간 밖
+    severity: ERROR
+    scope: each_stay_page
+    expr: "trip_request.period.start.date <= stay.date <= trip_request.period.end.date"
+    message: "체류 증빙 {stay.date} 는 출장기간 밖입니다."
+    fix: "해당 페이지를 제외하거나 출장기간을 정정하세요."
+
+  - id: R-TRV-013
+    layer: L2
+    title: 영수증 소재지가 출장지와 불일치
+    severity: WARN
+    scope: each_receipt
+    requires: [receipt.merchant_address, trip_request.destination]
+    expr: "region_of(receipt.merchant_address) in regions_of(trip_request.destination)"
+    # 샘플: GS25횡계점(강원 평창군 대관령면) vs 출장지 '강원 평창, 강릉' → 일치
+    message: "{receipt.label} 의 가맹점 소재지({receipt.merchant_address})가 출장지({trip_request.destination})와 다릅니다."
+    fix: "이동 중 지출이라면 이동경로 블록에 사유를 적어 두세요."
+
+  - id: R-TRV-014
+    layer: L2
+    title: 하이패스 경로 불연속
+    severity: WARN
+    check: tollgate_route_continuity
+    params: { field: transport_receipts }
+    # 입구영업소 → 출구영업소 체인이 이어지는지 확인 (춘천→횡성→대관령→북강릉…)
+    message: "하이패스 통행 구간이 이동경로와 이어지지 않습니다: {breaks}"
+    fix: "누락된 구간의 영수증을 추가하거나 경유 사유를 기재하세요."
+
+  - id: R-TRV-015
+    layer: L2
+    title: 인적사항 불일치
+    severity: ERROR
+    check: cross_field_equal
+    params: { fields: [person.name, person.affiliation, person.rank], sources: [trip_request, trip_evidence] }
+    message: "출장신청서와 증빙의 인적사항이 다릅니다: {values}"
+    fix: "출장신청서 기준으로 통일하세요."
+
+  - id: R-TRV-016
+    layer: L2
+    title: 여비지급대상 아님
+    severity: ERROR
+    requires: [trip_request.allowance_eligible]
+    expr: "trip_request.allowance_eligible == true"
+    message: "출장신청서의 '여비지급대상여부'가 '예'가 아닙니다."
+    fix: "여비지급대상으로 신청서를 정정하거나 정산을 취소하세요."
+
+  - id: R-TRV-017
+    layer: L2
+    title: 신청서에 복수 출장 포함
+    severity: WARN
+    requires: [trip_request.trips]
+    expr: "len(trip_request.trips) == 1"
+    # 샘플: 김동현 — 6/29~7/1 건과 7/3 건이 한 신청서에 함께 있음
+    message: "출장신청서에 출장이 {computed}건 포함되어 있습니다. 어느 건의 정산인지 특정되지 않습니다."
+    fix: "정산 대상 출장을 명시하거나, 건별로 증빙을 분리하여 제출하세요."
+
+  - id: R-TRV-018
+    layer: L2
+    title: 출장목적 근거자료 없음
+    severity: WARN
+    requires: [trip_request.purpose, purpose_evidence]
+    check: purpose_supported
+    # 샘플: 이동재 — 목적 '코위크 아카데미 강연' + COSS 강연정보 캡처 첨부(정상)
+    message: "출장목적('{trip_request.purpose}')을 뒷받침하는 근거자료가 없습니다."
+    fix: "행사 프로그램, 초청장, 강연정보 등 근거자료를 첨부하세요."
+
+  # ---- L2/L3 : 중복·부정 방지 ----
+  - id: R-TRV-019
+    layer: L2
+    title: 영수증 중복 제출
+    severity: ERROR
+    check: duplicate_receipts
+    params: { keys: [approval_no, datetime, amount] }
+    message: "동일한 영수증이 중복 제출되었습니다: {duplicates}"
+    fix: "중복된 영수증을 제거하세요."
+
+  - id: R-TRV-020
+    layer: L2
+    title: 동승자 중복 청구 의심
+    severity: ERROR
+    scope: batch                    # 여러 사람을 한 번에 넣고 검토하는 '묶음 모드'에서만 동작
+    check: shared_trip_duplicate_claim
+    params: { match_on: [trip_request.doc_no, receipt.datetime, receipt.tollgate] }
+    # 샘플: '국내 출장신청서(6/29~7/1, 전상철 외 3인)' 이 4명 폴더에 각각 존재.
+    #        하이패스 카드번호는 서로 달라 각자 차량으로 보이나 최종 판단은 사람이 한다.
+    message: "같은 출장({trip_request.doc_no})에서 {others} 도 동일 구간 통행료를 청구했습니다."
+    fix: "동승이었다면 통행료는 실제 결제자 1인만 청구하세요."
+
+  - id: R-TRV-021
+    layer: L2
+    title: 공용차량 이용 중 개인 교통비 청구
+    severity: ERROR
+    requires: [trip_request.uses_official_vehicle, trip_evidence.transport_amount]
+    expr: "not (trip_request.uses_official_vehicle and trip_evidence.transport_amount > 0)"
+    message: "공용차량 이용으로 신청되었는데 개인 교통비 {trip_evidence.transport_amount}원 이 청구되었습니다."
+    fix: "공용차량 이용 여부를 정정하거나 개인 교통비 청구를 취소하세요."
+
+  - id: R-TRV-022
+    layer: L2
+    title: 타인 명의 카드 결제 의심
+    severity: WARN
+    scope: each_receipt
+    requires: [receipt.card_no]
+    check: card_consistency         # 같은 사람의 영수증들이 동일 카드번호를 쓰는지
+    message: "{receipt.label} 의 카드번호({receipt.card_no})가 다른 영수증과 다릅니다."
+    fix: "본인 명의 카드 결제분인지 확인하세요."
+
+  - id: R-TRV-023
+    layer: L2
+    title: 정산 불가 품목 포함
+    severity: WARN
+    scope: each_receipt
+    check: contains_keyword
+    params: { field: "receipt.items[].name", keywords: settings.non_reimbursable_keywords }
+    message: "{receipt.label} 에 정산 불가 품목이 포함되어 있습니다: {found}"
+    fix: "해당 금액을 청구액에서 제외하세요."
+
+  - id: R-TRV-024
+    layer: L2
+    title: 동시간대 상이한 장소
+    severity: WARN
+    check: spatiotemporal_conflict
+    params: { window_minutes: 60 }
+    message: "{time} 무렵 서로 멀리 떨어진 장소의 영수증이 함께 있습니다: {receipts}"
+    fix: "일시 또는 영수증을 확인하세요."
+
+  # ---- L3 : 한도 (규정값 확보 후 활성화) ----
+  - id: R-TRV-025
+    layer: L3
+    title: 일비·식비 한도 초과
+    severity: ERROR
+    enabled_if: "settings.daily_allowance != null and settings.meal_allowance != null"
+    expr: "claim.daily <= settings.daily_allowance and claim.meal <= settings.meal_allowance"
+    message: "일비/식비가 규정 한도를 초과했습니다."
+    fix: "한도 이내로 조정하세요."
+
+  - id: R-TRV-026
+    layer: L3
+    title: 숙박비 한도 초과
+    severity: ERROR
+    enabled_if: "settings.lodging_cap != null"
+    expr: "claim.lodging <= settings.lodging_cap * claim.nights"
+    message: "숙박비가 한도({settings.lodging_cap}원 × {claim.nights}박)를 초과했습니다."
+    fix: "한도 이내로 조정하거나 초과 사유를 첨부하세요."
+
+  - id: R-TRV-027
+    layer: L3
+    title: 자가용 여비 산정 오류
+    severity: ERROR
+    enabled_if: "settings.km_rate != null"
+    expr: "claim.mileage_amount == trip_evidence.dist_total * settings.km_rate"
+    message: "{trip_evidence.dist_total}km × {settings.km_rate}원 = {computed}원 인데 {claim.mileage_amount}원으로 청구되었습니다."
+    fix: "여비를 {computed}원 으로 정정하세요."
+
+  - id: R-TRV-028
+    layer: L3
+    title: 숙박 일수 불일치
+    severity: WARN
+    requires: [claim.nights, trip_request.period]
+    expr: "claim.nights == days_in(trip_request.period) - 1"
+    message: "출장 {computed_days}일 기준 숙박은 {computed}박인데 {claim.nights}박으로 청구되었습니다."
+    fix: "숙박 일수를 확인하세요."

@@ -1,0 +1,177 @@
+# 공통 검토 규칙 — 3개 지출종류 전부 적용
+# severity: ERROR(수정 필요) | WARN(확인 요망) | INFO
+# requires 의 필드가 하나라도 추출 실패/저신뢰면 결과와 무관하게 REVIEW 로 강등된다.
+
+version: 1
+scope: common
+
+rules:
+  - id: R-CMN-001
+    layer: L0
+    title: 필수 서류 누락
+    severity: ERROR
+    check: document_set_complete      # 지출종류별 required_documents 와 대조
+    message: "필수 서류가 누락되었습니다: {missing}"
+    fix: "{missing} 을(를) 추가로 제출하세요."
+
+  - id: R-CMN-002
+    layer: L0
+    title: 중복·구버전 파일 혼입
+    severity: WARN
+    check: duplicate_documents
+    params:
+      suspicious_name_patterns: ["-복사", "복사본", "(1)", "_old", "_구버전", " - 사본"]
+    message: "같은 성격의 서류가 여러 벌 제출되었습니다: {duplicates}"
+    fix: "최종본 1부만 남기고 나머지는 제외하세요."
+
+  - id: R-CMN-003
+    layer: L2
+    title: 성명 불일치
+    severity: ERROR
+    check: cross_field_equal
+    params: { field: person.name, normalize: strip_spaces }
+    message: "서류마다 성명이 다릅니다: {values}"
+    fix: "모든 서류의 성명을 '{expected}' 로 통일하세요."
+
+  - id: R-CMN-004
+    layer: L2
+    title: 학번 불일치
+    severity: ERROR
+    check: cross_field_equal
+    params: { field: person.student_id }
+    message: "서류마다 학번이 다릅니다: {values}"
+    fix: "모든 서류의 학번을 '{expected}' 로 통일하세요."
+
+  - id: R-CMN-005
+    layer: L2
+    title: 계좌 불일치
+    severity: ERROR
+    check: cross_field_equal
+    params: { field: person.account_no, normalize: digits_only }
+    # 하이픈 표기 차이는 정규화 후 비교하므로 오탐이 나지 않는다.
+    # (예: 59220101565992 vs 592201-01-565992 → 동일 처리)
+    message: "서류마다 계좌번호가 다릅니다: {values}"
+    fix: "통장 사본의 계좌번호를 기준으로 모든 서류를 통일하세요."
+
+  - id: R-CMN-006
+    layer: L2
+    title: 은행명 불일치
+    severity: ERROR
+    check: cross_field_equal
+    params: { field: person.bank, normalize: bank_alias }
+    # bank_alias: '국민' == '국민은행', '카카오' == '카카오뱅크' 등 별칭 사전 적용
+    message: "서류마다 은행명이 다릅니다: {values}"
+    fix: "은행명을 통장 사본 기준으로 통일하세요."
+
+  - id: R-CMN-007
+    layer: L2
+    title: 주민등록번호 불일치
+    severity: ERROR
+    check: cross_field_equal
+    params: { field: person.rrn, normalize: digits_only }
+    message: "서류마다 주민등록번호가 다릅니다."
+    fix: "신분증 사본을 기준으로 정정하세요."
+
+  - id: R-CMN-008
+    layer: L1
+    title: 주민등록번호 형식 오류
+    severity: ERROR
+    requires: [person.rrn]
+    check: rrn_valid                  # 13자리 + 생년월일 유효성 + 성별코드 범위
+    message: "주민등록번호 형식이 올바르지 않습니다: {person.rrn}"
+    fix: "13자리 주민등록번호를 정확히 기재하세요."
+
+  - id: R-CMN-009
+    layer: L2
+    title: 소속학과 표기 불일치
+    severity: WARN
+    check: cross_field_equal
+    params: { field: person.department, normalize: strip_spaces }
+    message: "서류마다 학과 표기가 다릅니다: {values}"
+    fix: "재학증명서의 학과명으로 통일하세요."
+
+  - id: R-CMN-010
+    layer: L1
+    title: 서명·날인 누락
+    severity: ERROR
+    check: signature_present          # 서명란 영역 픽셀 밀도 + Vision 판정
+    message: "{document} 의 서명/날인란이 비어 있습니다: {slots}"
+    fix: "{slots} 에 서명 또는 날인 후 다시 스캔하세요."
+
+  - id: R-CMN-011
+    layer: L1
+    title: 개인정보 동의 항목 미체크
+    severity: ERROR
+    check: consent_all_agreed         # 기본정보 / 고유식별정보 / 제3자 제공 3항목
+    message: "개인정보 동의서에 '동의함' 표기가 없는 항목이 있습니다: {items}"
+    fix: "{items} 항목에 '동의함' 으로 표기하세요. 한 항목이라도 미동의 시 지급이 불가합니다."
+
+  - id: R-CMN-012
+    layer: L1
+    title: 필수 입력칸 공란
+    severity: ERROR
+    check: required_fields_filled
+    message: "{document} 에 비어 있는 필수 항목이 있습니다: {blanks}"
+    fix: "{blanks} 을(를) 기재하세요."
+
+  - id: R-CMN-013
+    layer: L3
+    title: 재학증명서 발급일 경과
+    severity: ERROR
+    requires: [enrollment_cert.issued_at, submission.date]
+    expr: "(submission.date - enrollment_cert.issued_at).days <= 30"
+    message: "재학증명서 발급일({enrollment_cert.issued_at})이 1개월을 넘었습니다."
+    fix: "최근 1개월 이내 발급한 재학증명서를 다시 제출하세요."
+
+  - id: R-CMN-014
+    layer: L1
+    title: 신분증 주민번호 마스킹
+    severity: ERROR
+    check: id_card_rrn_full_visible
+    # 서식이 "주민번호 전체정보 필요"를 명시하므로, 가려진 사본은 반려 대상이다.
+    message: "신분증 사본의 주민등록번호가 가려져 있습니다."
+    fix: "주민등록번호 13자리가 모두 보이는 신분증(주민등록증 또는 운전면허증) 사본을 제출하세요."
+
+  - id: R-CMN-015
+    layer: L1
+    title: 통장 예금주 불일치
+    severity: ERROR
+    requires: [bankbook.holder, person.name]
+    expr: "normalize(bankbook.holder) == normalize(person.name)"
+    message: "통장 예금주({bankbook.holder})가 신청인({person.name})과 다릅니다."
+    fix: "본인 명의 통장 사본을 제출하세요."
+
+  - id: R-CMN-016
+    layer: L1
+    title: 통장 계좌번호 불일치
+    severity: ERROR
+    requires: [bankbook.account_no, person.account_no]
+    expr: "digits(bankbook.account_no) == digits(person.account_no)"
+    message: "통장 사본의 계좌번호와 신청서 기재 계좌가 다릅니다."
+    fix: "통장 사본 기준으로 신청서 계좌번호를 정정하세요."
+
+  - id: R-CMN-017
+    layer: L2
+    title: 작성일이 활동 종료일보다 이름
+    severity: WARN
+    requires: [submission.date, period.end]
+    expr: "submission.date >= period.end"
+    message: "서류 작성일({submission.date})이 활동 종료일({period.end})보다 앞섭니다."
+    fix: "활동 종료 이후 날짜로 작성일을 정정하세요."
+
+  - id: R-CMN-018
+    layer: L1
+    title: 스캔 판독 불가
+    severity: REVIEW
+    check: scan_quality               # 해상도 / 잘림 / 기울기 / 명암
+    params: { min_dpi: 200, max_skew_deg: 5 }
+    message: "{document} 의 스캔 상태가 불량합니다({reason}). 자동 검토가 어렵습니다."
+    fix: "200dpi 이상, 문서 전체가 잘리지 않게 다시 스캔하세요."
+
+  - id: R-CMN-019
+    layer: L2
+    title: 지급내역 대상자 부재
+    severity: ERROR
+    check: present_in_payment_roster
+    message: "지급내역에 '{person.name}'({person.student_id}) 이(가) 없습니다."
+    fix: "지급내역에 대상자를 추가하거나, 제출 서류의 인적사항을 확인하세요."

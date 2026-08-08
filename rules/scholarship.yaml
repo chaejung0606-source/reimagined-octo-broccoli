@@ -1,0 +1,225 @@
+# 근로장학금 검토 규칙
+# 하위 유형(subtype): TA (나형) | SUPPORTERS (가형)
+
+version: 1
+scope: 근로장학금
+
+subtypes:
+  TA:
+    label: TA형 ((나)형 · 수업 조교)
+    required_documents:
+      - { key: form1_recommendation, label: "[양식1] TA 추천 및 서약서" }
+      - { key: form2_privacy_consent, label: "[양식2] 개인정보 수집·이용 동의서" }
+      - { key: form3_id_bankbook,     label: "[양식3] 신분증 및 통장 사본" }
+      - { key: form4_enrollment,      label: "[양식4] 재학증명서" }
+      - { key: form5_worklog,         label: "[양식5] 근로장학생 근무상황부" }
+      - { key: payment_roster,        label: "지급내역", provided_by: staff }
+  SUPPORTERS:
+    label: 서포터즈형 ((가)형 · 데이터라이브러리 운영)
+    required_documents:
+      - { key: claim_form,        label: "장학금 지급 청구서" }
+      - { key: monthly_report,    label: "월간 활동 결과 보고서" }
+      - { key: worklog_handwrite, label: "[붙임2] 운영활동 보고서(근무일지)" }
+      - { key: privacy_consent,   label: "[붙임1] 개인정보 수집·이용 동의서" }
+      - { key: id_bankbook_enrollment, label: "[붙임2] 신분증·통장 사본, 재학증명서" }
+      - { key: payment_roster,    label: "지급내역", provided_by: staff }
+
+# 지침 확정 전까지 참고값. settings 에서 덮어쓴다.
+settings:
+  unit_price_table:
+    SUPPORTERS: [12000]
+    TA:         [15000, 20000]
+  max_hours_per_day: 8            # TODO: 근로장학금 지침으로 확정
+  max_hours_per_month: null       # TODO: 미확정 → 관련 규칙 자동 비활성
+  allow_weekend_work: null        # TODO: 미확정
+
+rules:
+  # ---- L1 : 근무상황부 내부 계산 ----
+  - id: R-SCH-001
+    layer: L1
+    title: 근로시간 계산 오류
+    severity: ERROR
+    scope: each_row
+    requires: ["worklog.rows[].start", "worklog.rows[].end", "worklog.rows[].hours"]
+    expr: "hours_between(row.start, row.end) == row.hours"
+    message: "{row.date} 행: {row.start}~{row.end} 는 {computed}시간인데 {row.hours}시간으로 기재되어 있습니다."
+    fix: "해당 행의 시간을 {computed} 으로 정정하세요."
+
+  - id: R-SCH-002
+    layer: L1
+    title: 총 근로시간 합계 오류
+    severity: ERROR
+    requires: [worklog.rows, worklog.total_hours]
+    expr: "sum(worklog.rows[].hours) == worklog.total_hours"
+    message: "행별 합계는 {computed}시간인데 총 근로시간은 {worklog.total_hours}시간으로 기재되어 있습니다."
+    fix: "총 근로시간을 {computed} 으로 정정하세요."
+
+  - id: R-SCH-003
+    layer: L1
+    title: 근로일자가 근로기간 밖
+    severity: ERROR
+    scope: each_row
+    requires: ["worklog.rows[].date", "worklog.period.start", "worklog.period.end"]
+    expr: "worklog.period.start <= row.date <= worklog.period.end"
+    message: "{row.date} 는 근로기간({worklog.period.start}~{worklog.period.end}) 밖입니다."
+    fix: "근로기간을 정정하거나 해당 근로일을 제외하세요."
+
+  - id: R-SCH-004
+    layer: L1
+    title: 근로일자 중복·시간대 겹침
+    severity: WARN
+    check: overlapping_time_ranges
+    params: { field: worklog.rows }
+    message: "{dates} 에 시간대가 겹치는 근로 기록이 있습니다."
+    fix: "중복 기재를 정리하거나, 같은 날 분리 근무라면 시간대가 겹치지 않게 조정하세요."
+
+  - id: R-SCH-005
+    layer: L1
+    title: 근로상세내역 부실 기재
+    severity: WARN
+    check: detail_text_quality
+    params:
+      field: "worklog.rows[].detail"
+      min_length: 5
+      flag_if_all_identical: true
+    message: "근로상세내역이 비어 있거나 모든 행이 같은 문구입니다."
+    fix: "일자별로 실제 수행 업무를 구체적으로 기재하세요."
+
+  - id: R-SCH-006
+    layer: L1
+    title: 근무일지 합계칸 공란
+    severity: ERROR
+    requires: [worklog_handwrite.total_days, worklog_handwrite.total_hours]
+    check: not_blank
+    message: "근무일지의 '계 총 일' 합계칸이 비어 있습니다."
+    fix: "총 근무일수와 총 시간을 합계칸에 기재하세요."
+
+  - id: R-SCH-007
+    layer: L1
+    title: 근무일지 결재란 서명 누락
+    severity: ERROR
+    requires: ["worklog_handwrite.rows[].sign_self", "worklog_handwrite.rows[].sign_staff", "worklog_handwrite.rows[].sign_lead"]
+    check: signature_present
+    message: "근무일지 {rows} 행의 결재란(본인/담당자/사업팀장) 서명이 비어 있습니다."
+    fix: "해당 행에 본인·담당자·사업팀장 서명을 받으세요."
+
+  # ---- L2 : 서류 간 대사 ----
+  - id: R-SCH-008
+    layer: L2
+    title: 근로시간이 지급내역과 불일치
+    severity: ERROR
+    requires: [worklog.total_hours, roster.hours]
+    expr: "worklog.total_hours == roster.hours"
+    message: "근무상황부 총 {worklog.total_hours}시간 vs 지급내역 {roster.hours}시간."
+    fix: "근무상황부와 지급내역의 시간을 일치시키세요."
+
+  - id: R-SCH-009
+    layer: L2
+    title: 지급액 계산 오류
+    severity: ERROR
+    requires: [roster.unit_price, roster.hours, roster.amount]
+    expr: "roster.unit_price * roster.hours == roster.amount"
+    message: "단가 {roster.unit_price}원 × {roster.hours}시간 = {computed}원 인데 {roster.amount}원으로 기재되어 있습니다."
+    fix: "지급액을 {computed}원 으로 정정하세요."
+
+  - id: R-SCH-010
+    layer: L2
+    title: 청구금액이 지급내역과 불일치
+    severity: ERROR
+    requires: [claim_form.amount, roster.amount]
+    expr: "claim_form.amount == roster.amount"
+    message: "청구서 {claim_form.amount}원 vs 지급내역 {roster.amount}원."
+    fix: "청구금액을 {roster.amount}원 으로 정정하세요."
+
+  - id: R-SCH-011
+    layer: L2
+    title: 활동기간 불일치
+    severity: ERROR
+    requires: [claim_form.period, worklog.period]
+    expr: "claim_form.period == worklog.period"
+    message: "청구서 활동기간({claim_form.period})과 근무상황부 근로기간({worklog.period})이 다릅니다."
+    fix: "두 서류의 기간을 일치시키세요."
+
+  - id: R-SCH-012
+    layer: L2
+    title: 활동보고서 활동시간 불일치
+    severity: ERROR
+    requires: [monthly_report.hours, worklog.total_hours]
+    expr: "monthly_report.hours == worklog.total_hours"
+    message: "활동 결과 보고서 {monthly_report.hours}시간 vs 근무일지 {worklog.total_hours}시간."
+    fix: "보고서의 활동시간을 근무일지 합계와 맞추세요."
+
+  - id: R-SCH-013
+    layer: L2
+    title: 확인자가 담당교수와 불일치
+    severity: ERROR
+    requires: [worklog.approver, form1_recommendation.professor]
+    expr: "normalize(worklog.approver) == normalize(form1_recommendation.professor)"
+    message: "근무상황부 확인자({worklog.approver})가 담당교수({form1_recommendation.professor})와 다릅니다."
+    fix: "담당교수 확인을 받거나, 확인자 변경 사유를 첨부하세요."
+
+  - id: R-SCH-014
+    layer: L2
+    title: 강좌명·역할 불일치
+    severity: WARN
+    requires: [worklog.program, roster.course_name]
+    expr: "normalize(worklog.program) contains normalize(roster.course_name)"
+    message: "근무상황부 '{worklog.program}' 과 지급내역 강좌명 '{roster.course_name}' 이 다릅니다."
+    fix: "강좌명을 지급내역 기준으로 통일하세요."
+
+  - id: R-SCH-015
+    layer: L2
+    title: 근로기간이 강의 운영일 밖
+    severity: WARN
+    requires: [worklog.period, form1_recommendation.operating_period]
+    expr: "worklog.period within form1_recommendation.operating_period"
+    message: "근로기간이 강의 운영일({form1_recommendation.operating_period}) 범위를 벗어납니다."
+    fix: "운영일 범위 내로 근로일을 조정하세요."
+
+  - id: R-SCH-016
+    layer: L1
+    title: 활동사진 미첨부
+    severity: WARN
+    requires: [monthly_report.photos]
+    expr: "len(monthly_report.photos) >= 1"
+    message: "활동 결과 보고서에 활동사진이 없습니다."
+    fix: "활동 사진을 최소 1장 이상 첨부하세요."
+
+  # ---- L3 : 한도 ----
+  - id: R-SCH-017
+    layer: L3
+    title: 기준단가와 불일치
+    severity: WARN
+    requires: [roster.unit_price, subtype]
+    expr: "roster.unit_price in settings.unit_price_table[subtype]"
+    message: "단가 {roster.unit_price}원 은 {subtype} 기준단가({allowed})와 다릅니다."
+    fix: "기준단가를 확인하고 정정하거나, 예외 승인 문서를 첨부하세요."
+
+  - id: R-SCH-018
+    layer: L3
+    title: 1일 근로시간 한도 초과
+    severity: WARN
+    scope: each_row
+    enabled_if: "settings.max_hours_per_day != null"
+    expr: "row.hours <= settings.max_hours_per_day"
+    message: "{row.date} 근로 {row.hours}시간 — 1일 한도 {settings.max_hours_per_day}시간 초과."
+    fix: "근로시간을 한도 이내로 조정하거나 사유를 첨부하세요."
+
+  - id: R-SCH-019
+    layer: L3
+    title: 월 근로시간 한도 초과
+    severity: WARN
+    enabled_if: "settings.max_hours_per_month != null"
+    expr: "worklog.total_hours <= settings.max_hours_per_month"
+    message: "월 근로 {worklog.total_hours}시간 — 한도 {settings.max_hours_per_month}시간 초과."
+    fix: "근로시간을 한도 이내로 조정하세요."
+
+  - id: R-SCH-020
+    layer: L3
+    title: 주말·공휴일 근로 포함
+    severity: WARN
+    enabled_if: "settings.allow_weekend_work == false"
+    scope: each_row
+    expr: "not is_holiday(row.date)"
+    message: "{row.date}({weekday}) 는 주말/공휴일입니다."
+    fix: "평일로 조정하거나 휴일근로 승인 문서를 첨부하세요."

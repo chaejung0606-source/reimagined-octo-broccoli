@@ -1,0 +1,20 @@
+# 검토 대상 서류에는 주민등록번호·계좌번호·신분증 사본이 들어 있다.
+# 샘플이라도 저장소에 올리지 않는다.
+samples/
+서류/
+*.pdf
+*.hwp
+*.hwpx
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+*.spec
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
