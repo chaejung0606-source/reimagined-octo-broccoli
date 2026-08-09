@@ -1,0 +1,6 @@
+# 1~3단계(문서 분류 → L0 → L1 → L2)에 필요한 것 전부.
+# OCR·Vision(4단계)과 GUI(PySide6)는 아직 쓰지 않으므로 넣지 않았다.
+
+PyYAML>=6.0          # 규칙 정의
+pdfplumber>=0.11     # 텍스트 레이어 + 단어 좌표(표 재조립)
+pypdf>=4.0           # 손상 PDF 폴백 (strict=False)

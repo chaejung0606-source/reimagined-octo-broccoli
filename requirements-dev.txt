@@ -1,0 +1,4 @@
+-r requirements.txt
+
+pytest>=8.0
+reportlab>=4.0       # 테스트용 PDF 생성 (없으면 해당 테스트만 건너뛴다)

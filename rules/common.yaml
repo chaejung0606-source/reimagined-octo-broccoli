@@ -74,6 +74,7 @@ rules:
 
   - id: R-CMN-008
     layer: L1
+    applies_to: [근로장학금, 혁신인재지원금]
     title: 주민등록번호 형식 오류
     severity: ERROR
     requires: [person.rrn]
@@ -100,6 +101,7 @@ rules:
 
   - id: R-CMN-011
     layer: L1
+    applies_to: [근로장학금, 혁신인재지원금]
     title: 개인정보 동의 항목 미체크
     severity: ERROR
     check: consent_all_agreed         # 기본정보 / 고유식별정보 / 제3자 제공 3항목
@@ -116,6 +118,7 @@ rules:
 
   - id: R-CMN-013
     layer: L3
+    applies_to: [근로장학금, 혁신인재지원금]
     title: 재학증명서 발급일 경과
     severity: ERROR
     requires: [enrollment_cert.issued_at, submission.date]
@@ -125,6 +128,7 @@ rules:
 
   - id: R-CMN-014
     layer: L1
+    applies_to: [근로장학금, 혁신인재지원금]
     title: 신분증 주민번호 마스킹
     severity: ERROR
     check: id_card_rrn_full_visible
@@ -134,6 +138,7 @@ rules:
 
   - id: R-CMN-015
     layer: L1
+    applies_to: [근로장학금, 혁신인재지원금]
     title: 통장 예금주 불일치
     severity: ERROR
     requires: [bankbook.holder, person.name]
@@ -143,6 +148,7 @@ rules:
 
   - id: R-CMN-016
     layer: L1
+    applies_to: [근로장학금, 혁신인재지원금]
     title: 통장 계좌번호 불일치
     severity: ERROR
     requires: [bankbook.account_no, person.account_no]
@@ -152,10 +158,12 @@ rules:
 
   - id: R-CMN-017
     layer: L2
+    applies_to: [근로장학금, 혁신인재지원금]
     title: 작성일이 활동 종료일보다 이름
     severity: WARN
     requires: [submission.date, period.end]
     expr: "submission.date >= period.end"
+    # 출장신청서는 출장 전에 작성하는 문서라 출장비에는 적용하지 않는다.
     message: "서류 작성일({submission.date})이 활동 종료일({period.end})보다 앞섭니다."
     fix: "활동 종료 이후 날짜로 작성일을 정정하세요."
 
@@ -170,6 +178,7 @@ rules:
 
   - id: R-CMN-019
     layer: L2
+    applies_to: [근로장학금, 혁신인재지원금]
     title: 지급내역 대상자 부재
     severity: ERROR
     check: present_in_payment_roster

@@ -87,6 +87,7 @@ rules:
 
   - id: R-SCH-006
     layer: L1
+    only_subtypes: [SUPPORTERS]
     title: 근무일지 합계칸 공란
     severity: ERROR
     requires: [worklog_handwrite.total_days, worklog_handwrite.total_hours]
@@ -96,6 +97,7 @@ rules:
 
   - id: R-SCH-007
     layer: L1
+    only_subtypes: [SUPPORTERS]
     title: 근무일지 결재란 서명 누락
     severity: ERROR
     requires: ["worklog_handwrite.rows[].sign_self", "worklog_handwrite.rows[].sign_staff", "worklog_handwrite.rows[].sign_lead"]
@@ -124,6 +126,7 @@ rules:
 
   - id: R-SCH-010
     layer: L2
+    only_subtypes: [SUPPORTERS]
     title: 청구금액이 지급내역과 불일치
     severity: ERROR
     requires: [claim_form.amount, roster.amount]
@@ -133,6 +136,7 @@ rules:
 
   - id: R-SCH-011
     layer: L2
+    only_subtypes: [SUPPORTERS]
     title: 활동기간 불일치
     severity: ERROR
     requires: [claim_form.period, worklog.period]
@@ -142,6 +146,7 @@ rules:
 
   - id: R-SCH-012
     layer: L2
+    only_subtypes: [SUPPORTERS]
     title: 활동보고서 활동시간 불일치
     severity: ERROR
     requires: [monthly_report.hours, worklog.total_hours]
@@ -151,6 +156,7 @@ rules:
 
   - id: R-SCH-013
     layer: L2
+    only_subtypes: [TA]
     title: 확인자가 담당교수와 불일치
     severity: ERROR
     requires: [worklog.approver, form1_recommendation.professor]
@@ -160,6 +166,7 @@ rules:
 
   - id: R-SCH-014
     layer: L2
+    only_subtypes: [TA]
     title: 강좌명·역할 불일치
     severity: WARN
     requires: [worklog.program, roster.course_name]
@@ -169,6 +176,7 @@ rules:
 
   - id: R-SCH-015
     layer: L2
+    only_subtypes: [TA]
     title: 근로기간이 강의 운영일 밖
     severity: WARN
     requires: [worklog.period, form1_recommendation.operating_period]
@@ -178,6 +186,7 @@ rules:
 
   - id: R-SCH-016
     layer: L1
+    only_subtypes: [SUPPORTERS]
     title: 활동사진 미첨부
     severity: WARN
     requires: [monthly_report.photos]
@@ -192,7 +201,7 @@ rules:
     severity: WARN
     requires: [roster.unit_price, subtype]
     expr: "roster.unit_price in settings.unit_price_table[subtype]"
-    message: "단가 {roster.unit_price}원 은 {subtype} 기준단가({allowed})와 다릅니다."
+    message: "단가 {roster.unit_price}원 은 {subtype} 기준단가({settings.unit_price_table[subtype]})와 다릅니다."
     fix: "기준단가를 확인하고 정정하거나, 예외 승인 문서를 첨부하세요."
 
   - id: R-SCH-018
@@ -221,5 +230,5 @@ rules:
     enabled_if: "settings.allow_weekend_work == false"
     scope: each_row
     expr: "not is_holiday(row.date)"
-    message: "{row.date}({weekday}) 는 주말/공휴일입니다."
+    message: "{row.date}({row.weekday}) 는 주말/공휴일입니다."
     fix: "평일로 조정하거나 휴일근로 승인 문서를 첨부하세요."

@@ -114,9 +114,10 @@ rules:
     layer: L1
     title: 영수증 내부 합계 불일치
     severity: WARN
-    requires: ["transport_receipts[].items", "transport_receipts[].stated_total"]
-    expr: "sum(receipt.items[].amount) == receipt.stated_total"
-    message: "영수증의 개별 건 합계({computed}원)와 표기된 총액({receipt.stated_total}원)이 다릅니다."
+    check: receipt_totals_match
+    # 하이패스처럼 한 장에 여러 건이 나열된 문서는 `총 N건 / 합계` 가 **문서 전체**의
+    # 합계다. 이걸 영수증마다 비교하면 건마다 오탐이 난다 → 문서 단위로 대조한다.
+    message: "{receipt} 의 개별 건 합계({computed}원)가 표기된 총액과 다릅니다."
     fix: "영수증 원본을 다시 확인하세요."
 
   # ---- L2 : 기간·장소 정합성 ----
@@ -124,11 +125,15 @@ rules:
     layer: L2
     title: 영수증 일시가 출장기간 밖
     severity: ERROR
-    scope: each_receipt
-    requires: [receipt.datetime, trip_request.period]
-    expr: "trip_request.period.start <= receipt.datetime <= trip_request.period.end"
+    check: receipts_within_period
+    params: { near_boundary_hours: 24 }
     # 샘플: 이동재 — 출장기간 7/2 18:00~7/3 12:00, 하이패스 영수증 7/3 13:20
-    message: "{receipt.label} 의 일시({receipt.datetime})가 출장기간({trip_request.period}) 밖입니다."
+    #
+    # '기간 밖 영수증' 은 두 가지가 섞여 있어 단순 비교로는 못 가린다.
+    #   (a) 출장 경계 근처(기본 24시간 이내) → 출장기간 기재가 틀린 것 → ERROR
+    #   (b) 며칠 떨어진 날짜        → 다른 건의 영수증이 섞인 것   → WARN
+    # 이성재는 8건 중 5건이 (b)여서, 기간 필터 뒤 3건 8,500원이 기재액과 맞는다.
+    message: "{receipts} 의 일시가 출장기간({trip_request.period}) 밖입니다."
     fix: "출장기간 종료시각을 실제 귀로 시각 이후로 정정하거나, 해당 영수증을 정산에서 제외하세요."
 
   - id: R-TRV-012
@@ -293,5 +298,5 @@ rules:
     severity: WARN
     requires: [claim.nights, trip_request.period]
     expr: "claim.nights == days_in(trip_request.period) - 1"
-    message: "출장 {computed_days}일 기준 숙박은 {computed}박인데 {claim.nights}박으로 청구되었습니다."
+    message: "출장 {days_in(trip_request.period)}일 기준 숙박은 {computed}박인데 {claim.nights}박으로 청구되었습니다."
     fix: "숙박 일수를 확인하세요."
