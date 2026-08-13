@@ -284,6 +284,7 @@ QPushButton {{
     padding: 8px 15px;
     font-size: 12px;
     font-weight: 700;
+    min-height: 17px;
 }}
 QPushButton:hover    {{ border-color: {c['indigo']}; color: {c['indigo']}; }}
 QPushButton:disabled {{ color: {c['text_faint']}; border-color: {c['border']}; }}

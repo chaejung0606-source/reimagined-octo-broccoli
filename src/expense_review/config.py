@@ -32,6 +32,20 @@ def config_dir() -> Path:
     return base
 
 
+def mascot_dir() -> Path:
+    """사용자 마스코트 이미지 폴더. 여기 넣은 그림이 기본 마스코트를 대신한다."""
+    directory = config_dir() / "mascot"
+    directory.mkdir(exist_ok=True)
+    return directory
+
+
+def stickers_dir() -> Path:
+    """사용자 스티커 이미지 폴더. 비어 있으면 기본 스티커를 그린다."""
+    directory = config_dir() / "stickers"
+    directory.mkdir(exist_ok=True)
+    return directory
+
+
 def _overrides_path() -> Path:
     return config_dir() / "rule-overrides.yaml"
 

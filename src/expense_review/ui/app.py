@@ -91,6 +91,7 @@ class MainWindow(QMainWindow):
         # 시작 직후 창이 그려지고 나서 확인한다. 네트워크가 느려도 창은 바로 뜬다.
         QTimer.singleShot(1200, self.updates_page.check_quietly)
         self.updates_page.theme_changed.connect(self.apply_theme)
+        self.updates_page.mascot_changed.connect(self._refresh_mascots)
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
@@ -156,6 +157,15 @@ class MainWindow(QMainWindow):
             self.mascot.set_mood("worried")
         else:
             self.mascot.set_mood("happy")
+
+    def _refresh_mascots(self) -> None:
+        """사용자 이미지를 바꾸면 화면에 있는 마스코트·스티커를 다시 그린다."""
+        from .mascot import MascotWidget, StickerStrip
+
+        for widget in self.findChildren(MascotWidget):
+            widget.update()
+        for widget in self.findChildren(StickerStrip):
+            widget.update()
 
     def apply_theme(self, name: str) -> None:
         """테마를 바꾸고 화면 전체를 다시 칠한다."""

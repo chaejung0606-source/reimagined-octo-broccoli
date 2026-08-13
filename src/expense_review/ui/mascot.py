@@ -10,13 +10,69 @@ from __future__ import annotations
 
 import math
 
+from pathlib import Path
+
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
-    QBrush, QColor, QPainter, QPainterPath, QPainterPathStroker, QPen,
+    QBrush, QColor, QPainter, QPainterPath, QPainterPathStroker, QPen, QPixmap,
 )
 from PySide6.QtWidgets import QWidget
 
+from .. import config
 from .theme import COLORS
+
+# ── 사용자 이미지 ─────────────────────────────────────────────────────────
+# ~/.expense-review/mascot/ 에 happy.png / worried.png / sleepy.png (또는
+# mascot.png 하나)를 넣으면 기본 그림 대신 그 이미지를 쓴다. 배경이 투명한
+# PNG(누끼 딴 이미지)를 권한다. 앱은 파일을 그대로 표시만 한다.
+
+IMAGE_SUFFIXES = (".png", ".webp", ".jpg", ".jpeg", ".gif")
+
+_pixmap_cache: dict[tuple[str, float], QPixmap] = {}
+
+
+def custom_mascot_path(mood: str) -> Path | None:
+    """표정별 이미지 → 기본(happy) → 공용(mascot) 순으로 찾는다."""
+    base = config.mascot_dir()
+    for name in (mood, "happy", "mascot"):
+        for suffix in IMAGE_SUFFIXES:
+            path = base / f"{name}{suffix}"
+            if path.exists():
+                return path
+    return None
+
+
+def load_user_image(path: Path) -> QPixmap | None:
+    """mtime 을 캐시 키에 넣어, 파일을 바꿔치기하면 자동으로 다시 읽는다."""
+    try:
+        key = (str(path), path.stat().st_mtime)
+    except OSError:
+        return None
+    pixmap = _pixmap_cache.get(key)
+    if pixmap is None:
+        pixmap = QPixmap(str(path))
+        if pixmap.isNull():
+            return None
+        if len(_pixmap_cache) > 32:
+            _pixmap_cache.clear()
+        _pixmap_cache[key] = pixmap
+    return pixmap
+
+
+def sticker_images() -> list[Path]:
+    return sorted(
+        path for path in config.stickers_dir().iterdir()
+        if path.suffix.lower() in IMAGE_SUFFIXES
+    )
+
+
+def _draw_fitted(painter: QPainter, pixmap: QPixmap, rect: QRectF) -> None:
+    """비율을 지키며 rect 안에 맞춰 그린다."""
+    scaled = pixmap.scaled(int(rect.width()), int(rect.height()),
+                           Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    x = rect.x() + (rect.width() - scaled.width()) / 2
+    y = rect.y() + (rect.height() - scaled.height()) / 2
+    painter.drawPixmap(int(x), int(y), scaled)
 
 
 # ── 마스코트 ──────────────────────────────────────────────────────────────
@@ -167,6 +223,11 @@ class MascotWidget(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        path = custom_mascot_path(self._mood)
+        if path is not None and (pixmap := load_user_image(path)) is not None:
+            _draw_fitted(painter, pixmap, QRectF(self.rect()))
+            return
         paint_mascot(painter, QRectF(self.rect()), self._mood)
 
 
@@ -256,17 +317,25 @@ class StickerStrip(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        palette = [COLORS["accent"], COLORS["mint"], COLORS["butter"],
-                   COLORS["berry"], COLORS["sky"], COLORS["blush"]]
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
         count = len(self._kinds)
         if count == 0 or self.width() <= 0:
             return
         step = self.width() / count
         side = min(self.height() * 0.82, step * 0.6)
+
+        images = sticker_images()
+        palette = [COLORS["accent"], COLORS["mint"], COLORS["butter"],
+                   COLORS["berry"], COLORS["sky"], COLORS["blush"]]
         for index, kind in enumerate(self._kinds):
             # 살짝 위아래로 어긋나게 둬야 '붙인 스티커'처럼 보인다
             offset = (self.height() - side) / 2 + (3 if index % 2 else -3)
             rect = QRectF(step * index + (step - side) / 2, offset, side, side)
+            if images:
+                pixmap = load_user_image(images[index % len(images)])
+                if pixmap is not None:
+                    _draw_fitted(painter, pixmap, rect)
+                    continue
             paint_sticker(painter, rect, kind, QColor(palette[index % len(palette)]))
 
 
