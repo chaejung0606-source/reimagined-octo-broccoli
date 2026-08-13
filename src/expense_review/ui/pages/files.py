@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QScrollArea,
     QSplitter,
+    QStackedWidget,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
@@ -23,7 +24,7 @@ from ...models import DocumentSummary, ReviewResult, Severity
 from ...report import mask
 from ..state import AppState
 from ..theme import COLORS, SEVERITY_STYLE
-from ..widgets import Card, Pill, muted_label
+from ..widgets import Card, EmptyState, Pill, muted_label
 
 CARD_COLUMNS = 3
 
@@ -76,9 +77,13 @@ class FilesPage(QWidget):
         splitter.addWidget(cards_card)
 
         self.detail_card = Card("보완사항", "파일을 선택하세요")
+        self.detail_stack = QStackedWidget()
+        self.detail_empty = EmptyState("파일 카드를 누르면\n그 파일에서 나온 지적만 모아 볼 수 있어요.")
         self.detail = QTextBrowser()
         self.detail.setFrameShape(QFrame.NoFrame)
-        self.detail_card.add(self.detail, 1)
+        self.detail_stack.addWidget(self.detail_empty)
+        self.detail_stack.addWidget(self.detail)
+        self.detail_card.add(self.detail_stack, 1)
         splitter.addWidget(self.detail_card)
         splitter.setSizes([660, 440])
 
@@ -112,7 +117,7 @@ class FilesPage(QWidget):
         )
         self._rebuild_grid()
         self.detail.clear()
-        self.detail_card.setProperty("selected", None)
+        self.detail_stack.setCurrentWidget(self.detail_empty)
 
     def _clear_grid(self) -> None:
         while self.grid.count():
@@ -133,6 +138,7 @@ class FilesPage(QWidget):
 
     # ── 상세 ─────────────────────────────────────────────────────────────
     def _show_summary(self, summary: DocumentSummary) -> None:
+        self.detail_stack.setCurrentWidget(self.detail)
         counts = summary.counts
         parts = [
             f"<div style='font-size:13px;font-weight:700;'>{summary.name}</div>",

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QTextBrowser,
     QTreeWidget,
     QTreeWidgetItem,
@@ -30,7 +31,8 @@ from ...report import mask, to_markdown
 from ...review import EXPENSE_TYPES, review, review_batch
 from ..state import AppState
 from ..theme import COLORS, SEVERITY_STYLE
-from ..widgets import Card, DonutChart, StatTile, muted_label
+from ..mascot import StickerStrip
+from ..widgets import Card, DonutChart, EmptyState, StatTile, muted_label
 
 SUBTYPES = {
     "근로장학금": [("전체", None), ("TA형 ((나)형)", "TA"), ("서포터즈형 ((가)형)", "SUPPORTERS")],
@@ -162,12 +164,9 @@ class ReviewPage(QWidget):
         row = QHBoxLayout()
         row.setSpacing(14)
         self.tile_total = StatTile("검토 대상", "0", "제출자 · 파일", variant="cardAccent")
-        self.tile_error = StatTile("수정 필요", "0", "반드시 고쳐야 하는 항목",
-                                   value_color=SEVERITY_STYLE["ERROR"]["color"])
-        self.tile_warn = StatTile("확인 요망", "0", "담당자 판단이 필요",
-                                  value_color=SEVERITY_STYLE["WARN"]["color"])
-        self.tile_review = StatTile("판독 불가", "0", "원본을 직접 확인",
-                                    value_color=SEVERITY_STYLE["REVIEW"]["color"])
+        self.tile_error = StatTile("수정 필요", "0", "반드시 고쳐야 하는 항목", tone="Error")
+        self.tile_warn = StatTile("확인 요망", "0", "담당자 판단이 필요", tone="Warn")
+        self.tile_review = StatTile("판독 불가", "0", "원본을 직접 확인", tone="Review")
         for tile in (self.tile_total, self.tile_error, self.tile_warn, self.tile_review):
             row.addWidget(tile, 1)
         return row
@@ -199,13 +198,18 @@ class ReviewPage(QWidget):
         legend_holder.setLayout(self.legend)
         donut_row.addWidget(legend_holder)
         donut_card.add_layout(donut_row)
+        donut_card.add(StickerStrip(height=26))
         right_layout.addWidget(donut_card)
 
         detail_card = Card("상세", "선택한 항목")
+        self.detail_stack = QStackedWidget()
+        self.detail_empty = EmptyState("왼쪽에서 항목을 고르면\n무엇을 어떻게 고칠지 알려 드릴게요.")
         self.detail = QTextBrowser()
         self.detail.setFrameShape(QFrame.NoFrame)
         self.detail.setOpenExternalLinks(False)
-        detail_card.add(self.detail, 1)
+        self.detail_stack.addWidget(self.detail_empty)
+        self.detail_stack.addWidget(self.detail)
+        detail_card.add(self.detail_stack, 1)
         right_layout.addWidget(detail_card, 1)
 
         splitter.addWidget(right)
@@ -352,7 +356,9 @@ class ReviewPage(QWidget):
         finding = current.data(0, Qt.UserRole) if current else None
         if finding is None:
             self.detail.clear()
+            self.detail_stack.setCurrentWidget(self.detail_empty)
             return
+        self.detail_stack.setCurrentWidget(self.detail)
         color = SEVERITY_STYLE[finding.severity.name]["color"]
         self.detail.setHtml(
             f"<div style='font-size:13px;font-weight:700;color:{color};'>"

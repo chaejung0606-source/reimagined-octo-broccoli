@@ -15,7 +15,8 @@ from __future__ import annotations
 import logging
 import sys
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -28,17 +29,30 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import updater
+from .. import config, updater
+from .mascot import MascotWidget, paint_gingham
 from .pages import FilesPage, ReviewPage, RulesPage, UpdatesPage
 from .state import AppState
-from .theme import stylesheet
+from .theme import COLORS, is_cozy, set_theme, stylesheet
 
 NAV_ITEMS = [
     ("검토", "서류를 읽고 기준에 맞춰 확인합니다"),
     ("파일별 보완사항", "파일마다 고칠 부분을 모아 봅니다"),
     ("검토 기준", "기준을 확인하고 고칩니다"),
-    ("업데이트", "기능 갱신을 받아 옵니다"),
+    ("설정", "화면 모양과 기능 갱신"),
 ]
+
+
+class RootWidget(QWidget):
+    """창 전체 배경. 포근한 테마에서는 깅엄 체크를 깐다."""
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        if is_cozy():
+            paint_gingham(painter, QRectF(self.rect()),
+                          QColor(COLORS["bg"]), QColor(COLORS["gingham"]))
+        else:
+            painter.fillRect(self.rect(), QColor(COLORS["bg"]))
 
 
 class MainWindow(QMainWindow):
@@ -50,8 +64,8 @@ class MainWindow(QMainWindow):
 
         self.state = AppState()
 
-        central = QWidget()
-        central.setObjectName("page")
+        central = RootWidget()
+        central.setObjectName("root")
         layout = QHBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -76,6 +90,7 @@ class MainWindow(QMainWindow):
 
         # 시작 직후 창이 그려지고 나서 확인한다. 네트워크가 느려도 창은 바로 뜬다.
         QTimer.singleShot(1200, self.updates_page.check_quietly)
+        self.updates_page.theme_changed.connect(self.apply_theme)
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
@@ -86,12 +101,22 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        self.mascot = MascotWidget(88)
+        mascot_row = QHBoxLayout()
+        mascot_row.setContentsMargins(0, 18, 0, 2)
+        mascot_row.addStretch(1)
+        mascot_row.addWidget(self.mascot)
+        mascot_row.addStretch(1)
+        layout.addLayout(mascot_row)
+
         brand = QLabel("지출 서류 검토")
         brand.setObjectName("brand")
+        brand.setAlignment(Qt.AlignCenter)
         layout.addWidget(brand)
         subtitle = QLabel("근로장학금 · 혁신인재지원금 · 출장비")
         subtitle.setObjectName("brandSub")
         subtitle.setWordWrap(True)
+        subtitle.setAlignment(Qt.AlignCenter)
         layout.addWidget(subtitle)
 
         self.nav_group = QButtonGroup(self)
@@ -124,12 +149,27 @@ class MainWindow(QMainWindow):
         button = self.nav_group.button(1)
         button.setText(f"파일별 보완사항 ({self.state.document_count()})")
 
+        # 마스코트 표정으로 전체 상태를 한 번 더 알려 준다.
+        from ..models import Severity
+        totals = self.state.totals()
+        if totals[Severity.ERROR]:
+            self.mascot.set_mood("worried")
+        else:
+            self.mascot.set_mood("happy")
+
+    def apply_theme(self, name: str) -> None:
+        """테마를 바꾸고 화면 전체를 다시 칠한다."""
+        QApplication.instance().setStyleSheet(set_theme(name))
+        for widget in self.findChildren(QWidget):
+            widget.update()
+        self.update()
+
 
 def main() -> int:
     logging.getLogger("pypdf").setLevel(logging.CRITICAL)
     app = QApplication(sys.argv)
     app.setApplicationName("지출 서류 검토")
-    app.setStyleSheet(stylesheet())
+    app.setStyleSheet(set_theme(config.load_settings().get("theme", "cozy")))
     window = MainWindow()
     window.show()
     return app.exec()

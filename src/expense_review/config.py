@@ -98,6 +98,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "auto_update_check": True,     # 시작할 때 새 버전이 있는지 확인
     "auto_update_apply": False,    # 확인만 하고, 적용은 사용자가 누른다
     "last_folder": "",
+    "theme": "cozy",               # cozy | studio
 }
 
 

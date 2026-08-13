@@ -1,7 +1,7 @@
-"""업데이트 페이지.
+"""설정 페이지 — 화면 모양과 업데이트.
 
-Claude 가 저장소에 기능을 올리면 여기서 받아 온다. 확인과 적용을 나눠 두었다 —
-사용자가 무엇이 바뀌는지 보고 나서 누르게 하려는 것이다.
+업데이트는 확인과 적용을 나눠 두었다. 사용자가 무엇이 바뀌는지 보고 나서
+누르게 하려는 것이다.
 """
 from __future__ import annotations
 
@@ -21,7 +21,8 @@ from PySide6.QtWidgets import (
 )
 
 from ... import config, updater
-from ..theme import COLORS
+from ..mascot import MascotWidget, StickerStrip
+from ..theme import COLORS, PALETTES, current_theme
 from ..widgets import Card, muted_label
 
 
@@ -47,6 +48,7 @@ class UpdateWorker(QObject):
 
 class UpdatesPage(QWidget):
     version_changed = Signal(str)
+    theme_changed = Signal(str)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -60,14 +62,16 @@ class UpdatesPage(QWidget):
 
         header = QVBoxLayout()
         header.setSpacing(2)
-        title = QLabel("업데이트")
+        title = QLabel("설정")
         title.setObjectName("pageTitle")
         header.addWidget(title)
         header.addWidget(muted_label(
-            "기능이 갱신되면 여기서 받아 옵니다. 앱에서 고친 검토 기준은 "
+            "화면 모양과 기능 갱신을 다룹니다. 앱에서 고친 검토 기준은 "
             "별도 폴더에 저장되어 업데이트해도 유지됩니다."
         ))
         layout.addLayout(header)
+
+        layout.addWidget(self._build_theme_card())
 
         status_card = Card("설치 상태")
         self.version_label = QLabel(updater.current_version())
@@ -112,6 +116,46 @@ class UpdatesPage(QWidget):
         self.log.setFrameShape(QFrame.NoFrame)
         log_card.add(self.log, 1)
         layout.addWidget(log_card, 1)
+
+    # ── 화면 모양 ────────────────────────────────────────────────────────
+    def _build_theme_card(self) -> QWidget:
+        card = Card("화면 모양")
+        row = QHBoxLayout()
+        row.setSpacing(16)
+
+        preview = MascotWidget(76)
+        row.addWidget(preview)
+
+        picker = QVBoxLayout()
+        picker.setSpacing(6)
+        self.theme_buttons: dict[str, QPushButton] = {}
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        active = current_theme()
+        for name, palette in PALETTES.items():
+            button = QPushButton(palette["label"])
+            button.setCheckable(True)
+            button.setChecked(name == active)
+            button.setCursor(Qt.PointingHandCursor)
+            button.clicked.connect(lambda _c, key=name: self._choose_theme(key))
+            self.theme_buttons[name] = button
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        picker.addLayout(buttons)
+        picker.addWidget(muted_label(
+            "'포근한 체크' 는 크림색 깅엄 바탕에 마스코트가 함께 나옵니다. "
+            "'차분한 대시보드' 는 색을 줄인 업무용 화면입니다."
+        ))
+        row.addLayout(picker, 1)
+        card.add_layout(row)
+        card.add(StickerStrip(height=28))
+        return card
+
+    def _choose_theme(self, name: str) -> None:
+        for key, button in self.theme_buttons.items():
+            button.setChecked(key == name)
+        config.update_setting("theme", name)
+        self.theme_changed.emit(name)
 
     # ── 실행 ─────────────────────────────────────────────────────────────
     def check_quietly(self) -> None:

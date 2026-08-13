@@ -68,7 +68,7 @@ class StatTile(QFrame):
     """
 
     def __init__(self, label: str, value: str = "—", caption: str = "",
-                 variant: str = "card", value_color: str | None = None,
+                 variant: str = "card", tone: str | None = None,
                  parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName(variant)
@@ -84,10 +84,15 @@ class StatTile(QFrame):
         self.label = QLabel(label)
         self.label.setObjectName("statLabelDark" if dark else "statLabel")
         self.value = QLabel(value)
-        self.value.setObjectName("statValueDark" if dark else "statValue")
-        if value_color and not dark:
-            # 숫자 자체에 심각도 색을 준다 — 시안처럼 수치가 먼저 읽히게.
-            self.value.setStyleSheet(f"color: {value_color};")
+        # 숫자 자체에 심각도 색을 준다 — 수치가 먼저 읽히게.
+        # 인라인 스타일 대신 objectName 을 쓴다. 테마를 바꿀 때 스타일시트만
+        # 다시 적용하면 색이 따라오기 때문이다.
+        if dark:
+            self.value.setObjectName("statValueDark")
+        elif tone:
+            self.value.setObjectName(f"statValue{tone}")
+        else:
+            self.value.setObjectName("statValue")
         self.caption = QLabel(caption)
         self.caption.setObjectName("statLabelDark" if dark else "statCaption")
         self.caption.setWordWrap(True)
@@ -263,6 +268,39 @@ class FileCard(QFrame):
     def mousePressEvent(self, event) -> None:  # noqa: N802
         self.clicked.emit(self.summary)
         super().mousePressEvent(event)
+
+
+class EmptyState(QWidget):
+    """아직 보여 줄 게 없을 때. 빈 네모 대신 마스코트가 말을 건다."""
+
+    def __init__(self, message: str, mood: str = "sleepy", parent: QWidget | None = None):
+        super().__init__(parent)
+        from .mascot import MascotWidget
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 12, 0, 12)
+        layout.setSpacing(6)
+        layout.addStretch(1)
+
+        self.mascot = MascotWidget(96)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(self.mascot)
+        row.addStretch(1)
+        layout.addLayout(row)
+
+        self.label = QLabel(message)
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setWordWrap(True)
+        self.label.setObjectName("cardHint")
+        layout.addWidget(self.label)
+        layout.addStretch(1)
+
+        self.mascot.set_mood(mood)
+
+    def set_message(self, message: str, mood: str = "sleepy") -> None:
+        self.label.setText(message)
+        self.mascot.set_mood(mood)
 
 
 def _tint(hex_color: str, alpha: float) -> str:
