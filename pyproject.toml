@@ -1,0 +1,31 @@
+[project]
+name = "expense-review"
+version = "0.1.0"
+description = "지출 서류 자동 검토 데스크톱 앱"
+requires-python = ">=3.11"
+dependencies = [
+    "pypdf>=5.0",
+    "pdfplumber>=0.11",
+    "pypdfium2>=4.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.6"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+expense-review = "expense_review.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+expense_review = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

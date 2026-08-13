@@ -4,7 +4,41 @@
 
 대상 지출종류: **근로장학금** · **혁신인재지원금** · **출장비**
 
-현재 저장소에는 **검토 기준 설계와 규칙 정의**가 들어 있습니다. (구현 전 단계)
+---
+
+## 실행
+
+```bash
+pip install -e ".[gui,dev]"
+
+# 데스크톱 앱
+python -m expense_review.ui.app
+
+# 명령줄
+expense-review <폴더> --type 출장비 --batch
+expense-review <폴더> --type 근로장학금 --subtype TA --roster 지급내역.pdf
+expense-review <폴더> --type 혁신인재지원금 --markdown 수정요청서.md
+```
+
+`--batch` 는 하위 폴더 하나를 제출자 한 명으로 보고 한 번에 검토합니다.
+`--markdown` 은 제출자에게 그대로 보낼 수 있는 수정 요청서를 저장합니다.
+
+## 구현 상태
+
+OCR 없이 **텍스트 레이어에서 읽을 수 있는 범위**까지 동작합니다(1~3단계).
+전체 규칙 87건 중 **64건이 자동 판정**되며, 나머지는 결과에 '미구현'으로 표시됩니다 —
+조용히 통과 처리하지 않습니다.
+
+| 단계 | 범위 | 상태 |
+|---|---|---|
+| 1 | 파일 분류 · L0 서류 완비성 | ✅ |
+| 2 | 텍스트·표 추출 · L1 내부 계산 | ✅ |
+| 3 | L2 교차 대사 | ✅ |
+| 4 | OCR/Vision — 손글씨 근무일지, 스캔 영수증, 통장·신분증 | ⬜ |
+| 5 | L3 한도(규정값 입력 후) · 묶음 모드 동승 중복 검출 | ⬜ |
+| 6 | 규칙 편집 UI | ⬜ |
+
+4단계가 필요한 항목은 판정하지 않고 **🔵 판독 불가**로 올려 사람이 확인하게 합니다.
 
 ---
 
@@ -19,12 +53,31 @@
 
 ## 규칙 정의
 
-| 파일 | 규칙 수 |
-|---|---|
-| [`rules/common.yaml`](rules/common.yaml) | 19 (전 지출종류 공통) |
-| [`rules/scholarship.yaml`](rules/scholarship.yaml) | 20 (근로장학금) |
-| [`rules/innovation.yaml`](rules/innovation.yaml) | 20 (혁신인재지원금) |
-| [`rules/travel.yaml`](rules/travel.yaml) | 28 (출장비) |
+규칙의 **등급·문구·한도는 YAML** 에, **판정 로직은 Python** 에 있습니다.
+지침이 바뀌면 담당자가 YAML만 고쳐도 등급·조치 문구·한도를 바꿀 수 있습니다.
+
+| 파일 | 규칙 수 | 자동 판정 |
+|---|---|---|
+| [`rules/common.yaml`](rules/common.yaml) | 19 (전 지출종류 공통) | 11 |
+| [`rules/scholarship.yaml`](rules/scholarship.yaml) | 20 (근로장학금) | 17 |
+| [`rules/innovation.yaml`](rules/innovation.yaml) | 20 (혁신인재지원금) | 18 |
+| [`rules/travel.yaml`](rules/travel.yaml) | 28 (출장비) | 18 |
+
+## 코드 구조
+
+```
+src/expense_review/
+  normalize.py     표기 정규화 (계좌·날짜·금액·은행·지역)
+  pdfio.py         PDF 텍스트 추출 + 손상 헤더 복구 폴백
+  tables.py        표 좌표 재조립 (지급내역·팀원 명단·출장자 성명)
+  classify.py      서류 종류 판정 (지문 → 파일명)
+  extractors/      서류별 필드 추출
+  engine.py        규칙 로딩·평가·신뢰도 강등
+  checks/          규칙 ID별 판정 로직
+  report.py        결과 출력 + 개인정보 마스킹
+  review.py        폴더 → 결과 파이프라인
+  cli.py / ui/     명령줄 · 데스크톱 UI
+```
 
 ---
 

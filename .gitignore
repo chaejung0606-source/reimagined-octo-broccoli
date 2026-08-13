@@ -18,3 +18,8 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+
+# 검토용 임시 산출물
+*.egg-info/
+.pytest_cache/
+수정요청서*.md

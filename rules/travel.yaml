@@ -8,8 +8,8 @@ scope: 출장비
 required_documents:
   - { key: trip_request,   label: "국내 출장신청서 (전자결재본)" }
   - { key: trip_evidence,  label: "출장증빙 (교통비·이동경로·체류)" }
-  - { key: transport_receipts, label: "교통비 영수증 (하이패스/주유/대중교통)" }
-  - { key: stay_receipts,  label: "체류 영수증" }
+  - { key: receipt_tollgate, label: "교통비 영수증 (하이패스/주유/대중교통)" }
+  - { key: receipt_card,  label: "체류 영수증" }
   - { key: purpose_evidence, label: "출장목적 근거자료 (프로그램·강연정보 등)", optional: true }
 
 settings:
@@ -64,8 +64,8 @@ rules:
     layer: L0
     title: 교통비 원본 영수증 미첨부
     severity: ERROR
-    requires: [transport_receipts]
-    expr: "len(transport_receipts) >= 1"
+    requires: [receipt_tollgate]
+    expr: "len(receipt_tollgate) >= 1"
     message: "교통비 원본 영수증이 첨부되지 않았습니다."
     fix: "하이패스/주유/대중교통 영수증을 첨부하세요."
 
@@ -103,8 +103,8 @@ rules:
     layer: L1
     title: 교통비 금액이 영수증 합계와 불일치
     severity: ERROR
-    requires: [trip_evidence.transport_amount, transport_receipts, trip_request.period]
-    expr: "trip_evidence.transport_amount == sum(r.amount for r in transport_receipts if r.datetime in trip_request.period)"
+    requires: [trip_evidence.transport_amount, receipt_tollgate, trip_request.period]
+    expr: "trip_evidence.transport_amount == sum(r.amount for r in receipt_tollgate if r.datetime in trip_request.period)"
     # 샘플: 이성재 — 제출 8건 33,900원 중 기간 내 3건 8,500원 → 기재액과 일치(정상)
     #        기간 필터를 빼면 오탐 발생
     message: "기재된 교통비 {trip_evidence.transport_amount}원 vs 출장기간 내 영수증 합계 {computed}원."
@@ -114,7 +114,7 @@ rules:
     layer: L1
     title: 영수증 내부 합계 불일치
     severity: WARN
-    requires: ["transport_receipts[].items", "transport_receipts[].stated_total"]
+    requires: ["receipt_tollgate[].items", "receipt_tollgate[].stated_total"]
     expr: "sum(receipt.items[].amount) == receipt.stated_total"
     message: "영수증의 개별 건 합계({computed}원)와 표기된 총액({receipt.stated_total}원)이 다릅니다."
     fix: "영수증 원본을 다시 확인하세요."
@@ -156,7 +156,7 @@ rules:
     title: 하이패스 경로 불연속
     severity: WARN
     check: tollgate_route_continuity
-    params: { field: transport_receipts }
+    params: { field: receipt_tollgate }
     # 입구영업소 → 출구영업소 체인이 이어지는지 확인 (춘천→횡성→대관령→북강릉…)
     message: "하이패스 통행 구간이 이동경로와 이어지지 않습니다: {breaks}"
     fix: "누락된 구간의 영수증을 추가하거나 경유 사유를 기재하세요."

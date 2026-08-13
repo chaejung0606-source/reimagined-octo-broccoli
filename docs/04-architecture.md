@@ -74,24 +74,50 @@ PDF ──┬─ 텍스트 레이어 있음? ─── yes ─→ pdfplumber (�
 
 ## 4. 규칙 엔진 (⑤)
 
+구현에서는 **규칙을 반쪽만 데이터로 두었습니다.** YAML 의 `expr` 은 `sum(rows[].hours)`
+처럼 파이썬이 아닌 의사코드라 그대로 실행할 수 없고, 억지로 실행 가능한 언어로 만들면
+담당자가 읽을 수 없게 됩니다. 그래서 이렇게 나눴습니다.
+
+| YAML (`rules/*.yaml`) | Python (`checks/*.py`) |
+|---|---|
+| 규칙 ID·층위·**등급** | 판정 로직 |
+| **검출 문구·조치 문구** | |
+| **설정값·한도** (`settings`) | |
+| 켜기/끄기 (`enabled_if`) | |
+| 필수 서류 목록 | |
+| `expr` — 의도를 적어 둔 명세 | |
+
+담당자가 실무에서 바꾸고 싶은 것(등급·문구·한도·필수서류)은 전부 YAML 쪽에 있습니다.
+규칙 ID에 대응하는 판정 함수가 없으면 결과에 **'미구현'으로 표시**되고, 조용히 통과하지 않습니다.
+
+판정 함수는 `ctx.require()` 로 값을 꺼냅니다. 값이 없거나 신뢰도가 낮으면 `NeedsReview` 가
+올라오고, 엔진이 판정 대신 🔵 판독 불가를 남깁니다. **신뢰도 강등이 한 곳에 모여 있어**
+검사 함수마다 따로 챙길 필요가 없습니다.
+
 ```python
-for rule in rules(expense_type):
-    if not rule.enabled: continue
-    vals = resolve(rule.requires, doc_set)
-    if any(v.confidence < 0.85 for v in vals):
-        yield Finding(rule, REVIEW, "판독 불가")   # 신뢰도 강등
-        continue
-    ok, computed = evaluate(rule, vals)            # 샌드박스 평가
-    if not ok:
-        yield Finding(rule, rule.severity,
-                      message=rule.message.format(**vals, computed=computed),
-                      fix=rule.fix.format(**vals, computed=computed),
-                      anchors=[v.source for v in vals])  # 원본 페이지·좌표
+@check("R-TRV-006")
+def route_total(ctx):
+    if not ctx.get("trip_evidence.route_block"):
+        return None                      # 블록 자체가 없으면 R-TRV-003 이 보고한다
+    out_km, back_km = ctx.require("trip_evidence.dist_out", "trip_evidence.dist_back")
+    if ctx.get("trip_evidence.dist_total") != out_km + back_km:
+        return Fail({"computed": out_km + back_km})   # → "412km 를 기재하세요"
+    return None
 ```
 
-- `expr` 은 **제한된 표현식만** 평가합니다 (`eval` 금지 — `simpleeval` 등 사용).
-- `computed` 를 항상 계산해 두어야 `fix` 에서 "**412km 를 기재하세요**" 처럼 정답을 제시할 수 있습니다.
-- `anchors` 는 결과 클릭 시 원본 PDF의 해당 페이지·영역으로 이동시키는 데 씁니다.
+- `Fail(params)` 의 값이 YAML 의 `{computed}` 자리에 채워집니다.
+- `computed` 를 항상 계산해 두어야 조치 문구가 **정답까지 제시**할 수 있습니다.
+- 검사 함수가 돌려주는 `sources` 는 결과 클릭 시 원본 파일·페이지로 이동하는 데 씁니다.
+- 한 규칙의 예외가 전체 검토를 멈추지 않습니다 — 그 규칙만 🔵 로 떨어집니다.
+
+세 가지 결과 경로가 있습니다.
+
+| 반환 | 뜻 |
+|---|---|
+| `None` | 통과 |
+| `Fail(...)` / `[Fail(...), ...]` | 규칙의 등급대로 지적 (행 단위 규칙은 여러 건) |
+| `raise NeedsReview(사유)` | 🔵 판독 불가 — 값을 믿을 수 없음 |
+| `raise NotApplicable` | 이 지출종류·하위유형에 해당 없음 (결과에 남기지 않음) |
 
 ---
 
@@ -133,12 +159,15 @@ UI 완성도는 높지만 2개 언어·2개 프로세스를 관리해야 합니�
 
 | 단계 | 범위 | 확보되는 가치 |
 |---|---|---|
-| **1** | 지출종류 선택 → 파일 분류 → **L0 서류 완비성**만 검사 | 누락 서류 즉시 통보. 이것만으로도 반려 사유의 상당수가 걸러짐 |
-| **2** | 텍스트 추출 + **L1 내부 계산** (시간 합계, 거리 합계, 금액 계산) | 샘플에서 확인된 오류 대부분(총 이동경로 공란 등)이 여기서 잡힘 |
-| **3** | **L2 교차 대사** (성명·계좌·시간·금액·기간) | 서류 간 불일치 |
-| **4** | OCR/Vision — 손글씨 근무일지, 체류 영수증, 통장·신분증 | 나머지 |
-| **5** | **L3 한도** (지침 수치 입력 후) + 묶음 모드(동승 중복 검출) | 규정 준수 |
-| **6** | 수정 요청서 내보내기, 규칙 편집 UI | 운영 편의 |
+| **1** ✅ | 지출종류 선택 → 파일 분류 → **L0 서류 완비성**만 검사 | 누락 서류 즉시 통보. 이것만으로도 반려 사유의 상당수가 걸러짐 |
+| **2** ✅ | 텍스트 추출 + **L1 내부 계산** (시간 합계, 거리 합계, 금액 계산) | 샘플에서 확인된 오류 대부분(총 이동경로 공란 등)이 여기서 잡힘 |
+| **3** ✅ | **L2 교차 대사** (성명·계좌·시간·금액·기간) | 서류 간 불일치 |
+| **4** ⬜ | OCR/Vision — 손글씨 근무일지, 체류 영수증, 통장·신분증 | 나머지 |
+| **5** ⬜ | **L3 한도** (지침 수치 입력 후) + 묶음 모드(동승 중복 검출) | 규정 준수 |
+| **6** ⬜ | 규칙 편집 UI | 운영 편의 |
+
+수정 요청서 내보내기(마크다운)는 1~3단계와 함께 구현했습니다 — 이 앱의 실질적 산출물이라
+뒤로 미룰 이유가 없었습니다.
 
 1~3단계는 **OCR 없이도 동작**하고, 샘플에서 실제로 발견된 문제의 대부분을 잡아냅니다.
 여기까지 먼저 만들고 쓰기 시작하는 것을 권합니다.

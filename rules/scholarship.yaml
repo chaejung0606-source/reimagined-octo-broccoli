@@ -8,11 +8,11 @@ subtypes:
   TA:
     label: TA형 ((나)형 · 수업 조교)
     required_documents:
-      - { key: form1_recommendation, label: "[양식1] TA 추천 및 서약서" }
-      - { key: form2_privacy_consent, label: "[양식2] 개인정보 수집·이용 동의서" }
-      - { key: form3_id_bankbook,     label: "[양식3] 신분증 및 통장 사본" }
-      - { key: form4_enrollment,      label: "[양식4] 재학증명서" }
-      - { key: form5_worklog,         label: "[양식5] 근로장학생 근무상황부" }
+      - { key: ta_recommendation, label: "[양식1] TA 추천 및 서약서" }
+      - { key: privacy_consent, label: "[양식2] 개인정보 수집·이용 동의서" }
+      - { key: id_card_bankbook,     label: "[양식3] 신분증 및 통장 사본" }
+      - { key: enrollment_cert,      label: "[양식4] 재학증명서" }
+      - { key: worklog,         label: "[양식5] 근로장학생 근무상황부" }
       - { key: payment_roster,        label: "지급내역", provided_by: staff }
   SUPPORTERS:
     label: 서포터즈형 ((가)형 · 데이터라이브러리 운영)
@@ -21,7 +21,7 @@ subtypes:
       - { key: monthly_report,    label: "월간 활동 결과 보고서" }
       - { key: worklog_handwrite, label: "[붙임2] 운영활동 보고서(근무일지)" }
       - { key: privacy_consent,   label: "[붙임1] 개인정보 수집·이용 동의서" }
-      - { key: id_bankbook_enrollment, label: "[붙임2] 신분증·통장 사본, 재학증명서" }
+      - { key: id_card_bankbook, label: "[붙임2] 신분증·통장 사본, 재학증명서" }
       - { key: payment_roster,    label: "지급내역", provided_by: staff }
 
 # 지침 확정 전까지 참고값. settings 에서 덮어쓴다.
@@ -153,9 +153,9 @@ rules:
     layer: L2
     title: 확인자가 담당교수와 불일치
     severity: ERROR
-    requires: [worklog.approver, form1_recommendation.professor]
-    expr: "normalize(worklog.approver) == normalize(form1_recommendation.professor)"
-    message: "근무상황부 확인자({worklog.approver})가 담당교수({form1_recommendation.professor})와 다릅니다."
+    requires: [worklog.approver, ta_recommendation.professor]
+    expr: "normalize(worklog.approver) == normalize(ta_recommendation.professor)"
+    message: "근무상황부 확인자({worklog.approver})가 담당교수({ta_recommendation.professor})와 다릅니다."
     fix: "담당교수 확인을 받거나, 확인자 변경 사유를 첨부하세요."
 
   - id: R-SCH-014
@@ -171,9 +171,9 @@ rules:
     layer: L2
     title: 근로기간이 강의 운영일 밖
     severity: WARN
-    requires: [worklog.period, form1_recommendation.operating_period]
-    expr: "worklog.period within form1_recommendation.operating_period"
-    message: "근로기간이 강의 운영일({form1_recommendation.operating_period}) 범위를 벗어납니다."
+    requires: [worklog.period, ta_recommendation.operating_period]
+    expr: "worklog.period within ta_recommendation.operating_period"
+    message: "근로기간이 강의 운영일({ta_recommendation.operating_period}) 범위를 벗어납니다."
     fix: "운영일 범위 내로 근로일을 조정하세요."
 
   - id: R-SCH-016

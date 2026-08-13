@@ -4,10 +4,10 @@ version: 1
 scope: 혁신인재지원금
 
 required_documents:
-  - { key: form8_application,   label: "[양식8] 혁신인재지원금 신청서" }
-  - { key: form7_1_report,      label: "[양식7-1] 월별 활동 결과 보고서" }
-  - { key: attach1_worklog,     label: "[붙임1] 근로장학생 근무상황부" }
-  - { key: id_bankbook,         label: "신분증 및 통장 사본", once_only: true }
+  - { key: innovation_application,   label: "[양식8] 혁신인재지원금 신청서" }
+  - { key: club_report,      label: "[양식7-1] 월별 활동 결과 보고서" }
+  - { key: worklog,     label: "[붙임1] 근로장학생 근무상황부" }
+  - { key: id_card_bankbook,         label: "신분증 및 통장 사본", once_only: true }
   - { key: enrollment_cert,     label: "재학증명서" }
   - { key: payment_roster,      label: "지급내역", provided_by: staff }
 
@@ -24,28 +24,28 @@ rules:
     layer: L2
     title: 지원금액이 지급내역과 불일치
     severity: ERROR
-    requires: [form8_application.amount, roster.amount]
-    expr: "form8_application.amount == roster.amount"
-    message: "신청서 {form8_application.amount}원 vs 지급내역 {roster.amount}원."
+    requires: [innovation_application.amount, roster.amount]
+    expr: "innovation_application.amount == roster.amount"
+    message: "신청서 {innovation_application.amount}원 vs 지급내역 {roster.amount}원."
     fix: "신청서 지원금액을 {roster.amount}원 으로 정정하세요."
 
   - id: R-INN-002
     layer: L1
     title: 한글 금액 표기 불일치
     severity: ERROR
-    requires: [form8_application.amount, form8_application.amount_hangul]
-    expr: "hangul_amount(form8_application.amount) == form8_application.amount_hangul"
+    requires: [innovation_application.amount, innovation_application.amount_hangul]
+    expr: "hangul_amount(innovation_application.amount) == innovation_application.amount_hangul"
     # 예: 240000 → '금이십사만원정'
-    message: "숫자 금액({form8_application.amount})과 한글 표기('{form8_application.amount_hangul}')가 다릅니다."
+    message: "숫자 금액({innovation_application.amount})과 한글 표기('{innovation_application.amount_hangul}')가 다릅니다."
     fix: "한글 금액을 '{computed}' 로 정정하세요."
 
   - id: R-INN-003
     layer: L2
     title: 시간당 단가 이상
     severity: WARN
-    requires: [roster.amount, attach1_worklog.total_hours]
-    expr: "roster.amount / attach1_worklog.total_hours == settings.hourly_rate"
-    message: "{roster.amount}원 ÷ {attach1_worklog.total_hours}시간 = {computed}원/시간 (기준 {settings.hourly_rate}원)."
+    requires: [roster.amount, worklog.total_hours]
+    expr: "roster.amount / worklog.total_hours == settings.hourly_rate"
+    message: "{roster.amount}원 ÷ {worklog.total_hours}시간 = {computed}원/시간 (기준 {settings.hourly_rate}원)."
     fix: "근로시간 또는 지급액을 확인하세요. 정액 지급이라면 이 규칙을 비활성화하세요."
 
   - id: R-INN-004
@@ -63,7 +63,7 @@ rules:
     title: 소학회명 불일치
     severity: ERROR
     check: cross_field_equal
-    params: { field: club.name, sources: [form8_application, form7_1_report, payment_roster] }
+    params: { field: club.name, sources: [innovation_application, club_report, payment_roster] }
     message: "소학회명이 서류마다 다릅니다: {values}"
     fix: "소학회명을 '{expected}' 로 통일하세요."
 
@@ -71,9 +71,9 @@ rules:
     layer: L2
     title: 신청자가 회장과 불일치
     severity: ERROR
-    requires: [form8_application.applicant, form7_1_report.president, roster.name]
-    expr: "all_equal(form8_application.applicant, form7_1_report.president, roster.name)"
-    message: "신청자({form8_application.applicant}) / 활동보고서 회장({form7_1_report.president}) / 지급대상({roster.name}) 이 서로 다릅니다."
+    requires: [innovation_application.applicant, club_report.president, roster.name]
+    expr: "all_equal(innovation_application.applicant, club_report.president, roster.name)"
+    message: "신청자({innovation_application.applicant}) / 활동보고서 회장({club_report.president}) / 지급대상({roster.name}) 이 서로 다릅니다."
     fix: "진행요원비는 소학회 회장 본인이 신청해야 합니다. 인적사항을 통일하세요."
 
   - id: R-INN-007
@@ -81,7 +81,7 @@ rules:
     title: 지도교수 불일치
     severity: ERROR
     check: cross_field_equal
-    params: { field: club.advisor, sources: [form8_application, form7_1_report] }
+    params: { field: club.advisor, sources: [innovation_application, club_report] }
     message: "지도교수가 서류마다 다릅니다: {values}"
     fix: "지도교수명을 통일하세요."
 
@@ -89,26 +89,26 @@ rules:
     layer: L2
     title: 근무상황부 확인자가 지도교수와 불일치
     severity: WARN
-    requires: [attach1_worklog.approver, club.advisor]
-    expr: "normalize(attach1_worklog.approver) == normalize(club.advisor)"
-    message: "근무상황부 확인자({attach1_worklog.approver})가 지도교수({club.advisor})와 다릅니다."
+    requires: [worklog.approver, club.advisor]
+    expr: "normalize(worklog.approver) == normalize(club.advisor)"
+    message: "근무상황부 확인자({worklog.approver})가 지도교수({club.advisor})와 다릅니다."
     fix: "지도교수 확인을 받거나, 대리 확인 사유를 명시하세요."
 
   - id: R-INN-009
     layer: L2
     title: 활동분야 불일치
     severity: ERROR
-    requires: [form8_application.field, form7_1_report.field_checked]
-    expr: "form8_application.field == form7_1_report.field_checked"
-    message: "신청서 활동분야('{form8_application.field}')와 보고서 체크('{form7_1_report.field_checked}')가 다릅니다."
-    fix: "보고서의 활동분야 체크를 '{form8_application.field}' 로 정정하세요."
+    requires: [innovation_application.field, club_report.field_checked]
+    expr: "innovation_application.field == club_report.field_checked"
+    message: "신청서 활동분야('{innovation_application.field}')와 보고서 체크('{club_report.field_checked}')가 다릅니다."
+    fix: "보고서의 활동분야 체크를 '{innovation_application.field}' 로 정정하세요."
 
   - id: R-INN-010
     layer: L2
     title: 활동주제 불일치
     severity: WARN
-    requires: [form8_application.topic, form7_1_report.topic]
-    expr: "similarity(form8_application.topic, form7_1_report.topic) >= 0.8"
+    requires: [innovation_application.topic, club_report.topic]
+    expr: "similarity(innovation_application.topic, club_report.topic) >= 0.8"
     message: "신청서와 보고서의 활동주제 기술이 다릅니다."
     fix: "활동주제를 동일하게 기재하세요."
 
@@ -118,17 +118,17 @@ rules:
     title: 근로일자가 근로기간 밖
     severity: ERROR
     scope: each_row
-    requires: ["attach1_worklog.rows[].date", "attach1_worklog.period"]
-    expr: "attach1_worklog.period.start <= row.date <= attach1_worklog.period.end"
-    message: "{row.date} 는 근로기간({attach1_worklog.period}) 밖입니다."
+    requires: ["worklog.rows[].date", "worklog.period"]
+    expr: "worklog.period.start <= row.date <= worklog.period.end"
+    message: "{row.date} 는 근로기간({worklog.period}) 밖입니다."
     fix: "근로기간을 정정하거나 해당 일자를 제외하세요."
 
   - id: R-INN-012
     layer: L2
     title: 보고서 활동일과 근무상황부 근로일 불일치
     severity: WARN
-    requires: ["form7_1_report.activity_dates", "attach1_worklog.rows[].date"]
-    expr: "set(form7_1_report.activity_dates) <= set(attach1_worklog.rows[].date)"
+    requires: ["club_report.activity_dates", "worklog.rows[].date"]
+    expr: "set(club_report.activity_dates) <= set(worklog.rows[].date)"
     message: "보고서에 적힌 활동일 {missing} 이(가) 근무상황부에 없습니다."
     # 샘플: AIMPACT 5월 — 보고서 5/4·5/18 vs 근무상황부 5/6·5/13·5/20
     fix: "활동일과 근로일자를 일치시키거나, 무보수 활동임을 보고서에 명시하세요."
@@ -137,9 +137,9 @@ rules:
     layer: L1
     title: 근로시간 합계 오류
     severity: ERROR
-    requires: [attach1_worklog.rows, attach1_worklog.total_hours]
-    expr: "sum(attach1_worklog.rows[].hours) == attach1_worklog.total_hours"
-    message: "행별 합계 {computed}시간 vs 기재된 총 {attach1_worklog.total_hours}시간."
+    requires: [worklog.rows, worklog.total_hours]
+    expr: "sum(worklog.rows[].hours) == worklog.total_hours"
+    message: "행별 합계 {computed}시간 vs 기재된 총 {worklog.total_hours}시간."
     fix: "총 근로시간을 {computed} 으로 정정하세요."
 
   # ---- 팀원 명단 ----
@@ -148,7 +148,7 @@ rules:
     title: 팀원 학번 형식 오류
     severity: WARN
     scope: each_member
-    requires: ["form7_1_report.members[].student_id"]
+    requires: ["club_report.members[].student_id"]
     expr: "match(member.student_id, settings.student_id_pattern)"
     message: "{member.name} 의 학번 '{member.student_id}' 이(가) 9자리 형식이 아닙니다."
     # 샘플: 최용빈 20213452 (8자리)
@@ -159,7 +159,7 @@ rules:
     title: 팀원 중복 또는 연락처 오류
     severity: WARN
     check: member_list_sanity
-    params: { field: form7_1_report.members }
+    params: { field: club_report.members }
     message: "팀원 명단에 문제가 있습니다: {issues}"
     fix: "중복 인원을 제거하고 연락처 형식(010-0000-0000)을 맞추세요."
 
@@ -168,7 +168,7 @@ rules:
     title: 소학회 인원 요건 미달
     severity: WARN
     enabled_if: "settings.min_members != null"
-    expr: "len(form7_1_report.members) >= settings.min_members"
+    expr: "len(club_report.members) >= settings.min_members"
     message: "소학회 인원 {computed}명 — 최소 {settings.min_members}명 미달."
     fix: "인원 요건을 확인하세요."
 
@@ -177,9 +177,9 @@ rules:
     layer: L1
     title: 활동보고서 분량 초과
     severity: WARN
-    requires: [form7_1_report.page_count]
-    expr: "form7_1_report.page_count <= settings.report_max_pages"
-    message: "활동보고서가 {form7_1_report.page_count}페이지입니다 (지침: {settings.report_max_pages}페이지 요약)."
+    requires: [club_report.page_count]
+    expr: "club_report.page_count <= settings.report_max_pages"
+    message: "활동보고서가 {club_report.page_count}페이지입니다 (지침: {settings.report_max_pages}페이지 요약)."
     fix: "1페이지로 요약하여 다시 작성하세요."
 
   - id: R-INN-018
@@ -187,7 +187,7 @@ rules:
     title: 성과표 실적 미기재
     severity: WARN
     check: outcome_table_filled
-    params: { field: form7_1_report.outcomes }
+    params: { field: club_report.outcomes }
     message: "성과표의 '이번 달 실적'/'누적 달성 값'이 전부 공란 또는 0입니다."
     fix: "실제 실적을 기재하거나, 실적이 없다면 사유를 향후 계획란에 명시하세요."
 
@@ -196,7 +196,7 @@ rules:
     title: 증빙서류 체크와 실제 첨부 불일치
     severity: ERROR
     check: checkbox_matches_attachments
-    params: { field: form8_application.attachments_checked }
+    params: { field: innovation_application.attachments_checked }
     message: "신청서에 체크된 증빙서류 중 실제로 첨부되지 않은 것이 있습니다: {missing}"
     fix: "{missing} 을(를) 첨부하거나 체크를 해제하세요."
 
@@ -205,7 +205,7 @@ rules:
     title: 오탈자·날짜 표기 오류
     severity: WARN
     check: text_anomaly
-    params: { fields: [form7_1_report.highlights] }
+    params: { fields: [club_report.highlights] }
     # 샘플: '5원 4일' (→ '5월 4일')
     message: "본문에 오탈자로 보이는 표기가 있습니다: {found}"
     fix: "해당 표기를 확인하고 수정하세요."
