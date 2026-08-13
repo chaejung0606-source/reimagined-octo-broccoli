@@ -247,3 +247,70 @@ class ReviewResult:
     @property
     def is_clean(self) -> bool:
         return not any(self.counts.values())
+
+    # 서류 전체에 걸린 지적(필수 서류 누락 등)은 특정 파일에 속하지 않는다.
+    GENERAL_KEY = "__general__"
+
+    def by_document(self) -> dict[str, list[Finding]]:
+        """파일별 보완사항. 한 지적이 여러 파일을 근거로 하면 양쪽에 모두 걸린다."""
+        grouped: dict[str, list[Finding]] = {
+            document.name: [] for document in self.documents
+        }
+        for finding in self.sorted_findings:
+            names = {source.document for source in finding.sources}
+            if not names:
+                grouped.setdefault(self.GENERAL_KEY, []).append(finding)
+                continue
+            for name in names:
+                grouped.setdefault(name, []).append(finding)
+        return grouped
+
+    def document_summary(self) -> list["DocumentSummary"]:
+        """파일 카드 한 줄씩. 지적이 심한 순 → 파일명 순으로 정렬한다."""
+        grouped = self.by_document()
+        summaries = [
+            DocumentSummary(
+                name=document.name,
+                doc_label=document.doc_label or "미분류",
+                doc_type=document.doc_type,
+                findings=grouped.get(document.name, []),
+            )
+            for document in self.documents
+        ]
+        if general := grouped.get(self.GENERAL_KEY):
+            summaries.append(DocumentSummary(
+                name="서류 전체", doc_label="파일이 특정되지 않은 지적",
+                doc_type=None, findings=general, is_general=True,
+            ))
+        return sorted(summaries, key=lambda s: (-s.weight, s.name))
+
+
+@dataclass
+class DocumentSummary:
+    """파일 하나의 검토 상태. UI의 '파일별 보완사항' 카드에 대응한다."""
+
+    name: str
+    doc_label: str
+    doc_type: str | None
+    findings: list[Finding] = field(default_factory=list)
+    is_general: bool = False
+
+    @property
+    def counts(self) -> dict[Severity, int]:
+        return {
+            severity: sum(1 for f in self.findings if f.severity is severity)
+            for severity in (Severity.ERROR, Severity.WARN, Severity.REVIEW)
+        }
+
+    @property
+    def status(self) -> Severity:
+        for severity in (Severity.ERROR, Severity.WARN, Severity.REVIEW):
+            if self.counts[severity]:
+                return severity
+        return Severity.PASS
+
+    @property
+    def weight(self) -> int:
+        """정렬용 가중치. 🔴 가 가장 먼저 오게 한다."""
+        counts = self.counts
+        return counts[Severity.ERROR] * 100 + counts[Severity.WARN] * 10 + counts[Severity.REVIEW]

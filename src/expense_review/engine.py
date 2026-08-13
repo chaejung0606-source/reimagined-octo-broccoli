@@ -17,6 +17,7 @@ from typing import Any, Callable, Iterable
 
 import yaml
 
+from .config import load_overrides
 from .models import (
     CONFIDENCE_THRESHOLD,
     Document,
@@ -62,6 +63,20 @@ class Rule:
     enabled: bool = True
     enabled_if: str | None = None
     params: dict = field(default_factory=dict)
+    overridden: tuple[str, ...] = ()      # 사용자가 앱에서 고친 항목
+
+    def apply_override(self, values: dict) -> None:
+        """사용자 오버라이드를 얹는다. 판정 로직은 코드에 있으므로 건드리지 않는다."""
+        changed = []
+        for key, value in values.items():
+            if key == "severity":
+                self.severity = Severity(value)
+            elif key in ("enabled", "message", "fix", "title"):
+                setattr(self, key, value)
+            else:
+                continue
+            changed.append(key)
+        self.overridden = tuple(changed)
 
     @classmethod
     def from_yaml(cls, data: dict) -> "Rule":
@@ -86,8 +101,13 @@ class RuleSet:
     subtypes: dict[str, Any]
 
 
-def load_ruleset(expense_type: str, subtype: str | None = None) -> RuleSet:
-    """공통 규칙 + 지출종류 전용 규칙을 합쳐 돌려준다."""
+def load_ruleset(expense_type: str, subtype: str | None = None,
+                 apply_overrides: bool = True) -> RuleSet:
+    """공통 규칙 + 지출종류 전용 규칙을 합쳐 돌려준다.
+
+    배포본 YAML 위에 사용자가 앱에서 고친 값을 덮어 얹는다. 배포본 파일 자체는
+    건드리지 않으므로 자동 업데이트와 충돌하지 않는다(config.py 참고).
+    """
     rules: list[Rule] = []
     settings: dict[str, Any] = {}
     required: list[dict] = []
@@ -102,6 +122,12 @@ def load_ruleset(expense_type: str, subtype: str | None = None) -> RuleSet:
 
     if subtype and subtype in subtypes:
         required.extend(subtypes[subtype].get("required_documents") or [])
+
+    if apply_overrides:
+        overrides = load_overrides()
+        for rule in rules:
+            rule.apply_override(overrides["rules"].get(rule.id, {}))
+        settings.update(overrides["settings"].get(expense_type, {}))
 
     return RuleSet(rules=rules, settings=settings, required_documents=required, subtypes=subtypes)
 
