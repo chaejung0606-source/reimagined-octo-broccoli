@@ -30,10 +30,10 @@ from PySide6.QtWidgets import (
 )
 
 from .. import config, updater
-from .mascot import MascotWidget, paint_gingham
+from .mascot import MascotWidget, paint_gingham, paint_starfield
 from .pages import FilesPage, ReviewPage, RulesPage, UpdatesPage
 from .state import AppState
-from .theme import COLORS, is_cozy, set_theme, stylesheet
+from .theme import COLORS, DEFAULT_THEME, is_cozy, is_galaxy, set_theme, stylesheet
 
 NAV_ITEMS = [
     ("검토", "서류를 읽고 기준에 맞춰 확인합니다"),
@@ -44,11 +44,14 @@ NAV_ITEMS = [
 
 
 class RootWidget(QWidget):
-    """창 전체 배경. 포근한 테마에서는 깅엄 체크를 깐다."""
+    """창 전체 배경. 갤럭시 테마는 별하늘, 포근한 테마는 깅엄 체크를 깐다."""
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        if is_cozy():
+        if is_galaxy():
+            paint_starfield(painter, QRectF(self.rect()),
+                            QColor(COLORS["bg"]), QColor(COLORS["gingham"]))
+        elif is_cozy():
             paint_gingham(painter, QRectF(self.rect()),
                           QColor(COLORS["bg"]), QColor(COLORS["gingham"]))
         else:
@@ -186,7 +189,7 @@ def main() -> int:
     logging.getLogger("pypdf").setLevel(logging.CRITICAL)
     app = QApplication(sys.argv)
     app.setApplicationName("지출 서류 검토")
-    app.setStyleSheet(set_theme(config.load_settings().get("theme", "cozy")))
+    app.setStyleSheet(set_theme(config.load_settings().get("theme", DEFAULT_THEME)))
     window = MainWindow()
     window.show()
     return app.exec()

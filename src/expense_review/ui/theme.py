@@ -20,6 +20,51 @@ from PySide6.QtWidgets import QGraphicsDropShadowEffect, QWidget
 # ── 팔레트 ────────────────────────────────────────────────────────────────
 
 PALETTES: dict[str, dict[str, str]] = {
+    "galaxy": {
+        "label": "퍼플 갤럭시",
+        # 딥 퍼플 배경 + 라벤더 카드. 배경과 카드의 명도 차로 '떠 있는' 느낌을 만든다.
+        "bg":            "#2B2750",
+        "gingham":       "#4B4488",   # 별하늘 배경의 성운 톤
+        "surface":       "#443E7C",
+        "surface_hi":    "#524B94",   # 카드 상단 하이라이트 (soft 3D)
+        "surface_alt":   "#575096",
+        "border":        "#5F58A8",   # 카드 림 라이트
+        "border_strong": "#7A72C4",
+
+        "text":          "#F1EFFF",
+        "text_muted":    "#BEB9EA",
+        "text_faint":    "#8F89C6",
+
+        "navy":          "#1E1B3E",   # 사이드바 그라데이션
+        "indigo":        "#6C63C8",
+        "blue":          "#8F87E8",
+        "blue_soft":     "#B9B3F2",
+        "teal":          "#C9C4FA",   # 밝은 라벤더 포인트
+        "teal_soft":     "#E4E1FF",
+
+        "error":         "#FF7B72",
+        "warn":          "#FFC466",
+        "review":        "#9DBEFF",
+        "pass":          "#7BE0B8",
+
+        "on_dark":       "#FFFFFF",
+        "on_dark_muted": "#CFCAF4",
+        "shadow":        "#100C28",
+        "radius":        "24",
+
+        # 마스코트 — 보랏빛 플러시
+        "fur":           "#7A72C4",
+        "fur_dark":      "#5F58A8",
+        "face":          "#E9E6FF",
+        "ink":           "#241F49",
+        "nose":          "#241F49",
+        "blush":         "#D4A9F0",
+        "accent":        "#B9B3F2",
+        "berry":         "#FF9BE0",
+        "mint":          "#8FE8D0",
+        "butter":        "#FFE08A",
+        "sky":           "#9FC4FF",
+    },
     "cozy": {
         "label": "포근한 체크",
         "bg":            "#FBF4E6",   # 크림
@@ -47,6 +92,9 @@ PALETTES: dict[str, dict[str, str]] = {
 
         "on_dark":       "#FFF8EC",
         "on_dark_muted": "#F0CFC4",
+        "shadow":        "#4A3527",
+        "radius":        "20",
+        "surface_hi":    "#FFFCF5",
 
         # 마스코트·스티커
         "fur":           "#7C5438",
@@ -88,6 +136,9 @@ PALETTES: dict[str, dict[str, str]] = {
 
         "on_dark":       "#FFFFFF",
         "on_dark_muted": "#B9C2E8",
+        "shadow":        "#141B34",
+        "radius":        "20",
+        "surface_hi":    "#FFFFFF",
 
         "fur":           "#5A6488",
         "fur_dark":      "#464E6C",
@@ -103,7 +154,7 @@ PALETTES: dict[str, dict[str, str]] = {
     },
 }
 
-DEFAULT_THEME = "cozy"
+DEFAULT_THEME = "galaxy"
 
 # 다른 모듈이 참조하는 객체. 제자리에서 갱신한다.
 COLORS: dict[str, str] = dict(PALETTES[DEFAULT_THEME])
@@ -151,6 +202,10 @@ def is_cozy() -> bool:
     return _current_theme == "cozy"
 
 
+def is_galaxy() -> bool:
+    return _current_theme == "galaxy"
+
+
 _refresh_derived()
 
 
@@ -159,14 +214,14 @@ def card_shadow(widget: QWidget, blur: int = 26, alpha: int = 30, dy: int = 6) -
     effect = QGraphicsDropShadowEffect(widget)
     effect.setBlurRadius(blur)
     effect.setOffset(0, dy)
-    base = QColor(COLORS["text"])
+    base = QColor(COLORS.get("shadow", COLORS["text"]))
     effect.setColor(QColor(base.red(), base.green(), base.blue(), alpha))
     widget.setGraphicsEffect(effect)
 
 
 def stylesheet() -> str:
     c = COLORS
-    radius = RADIUS
+    radius = int(c.get("radius", str(RADIUS)))
     return f"""
 * {{
     font-family: {FONT_FAMILY};
@@ -221,7 +276,9 @@ QLabel#versionLabel {{
 
 /* ── 카드 ─────────────────────────────────────────────── */
 QFrame#card {{
-    background: {c['surface']};
+    /* 위가 살짝 밝은 그라데이션 + 밝은 테두리(림 라이트) = 부드러운 입체감 */
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 {c['surface_hi']}, stop:1 {c['surface']});
     border: 1px solid {c['border']};
     border-radius: {radius}px;
 }}
@@ -256,6 +313,7 @@ QLabel#sectionHead {{ font-size: 13px; font-weight: 800; }}
 /* ── 입력 ─────────────────────────────────────────────── */
 QLineEdit, QComboBox, QSpinBox, QPlainTextEdit, QTextEdit {{
     background: {c['surface']};
+    color: {c['text']};
     border: 1px solid {c['border_strong']};
     border-radius: 12px;
     padding: 8px 12px;
@@ -278,7 +336,8 @@ QComboBox QAbstractItemView {{
 }}
 
 QPushButton {{
-    background: {c['surface']};
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                stop:0 {c['surface_hi']}, stop:1 {c['surface']});
     border: 1px solid {c['border_strong']};
     border-radius: 13px;
     padding: 8px 15px;
@@ -286,7 +345,8 @@ QPushButton {{
     font-weight: 700;
     min-height: 17px;
 }}
-QPushButton:hover    {{ border-color: {c['indigo']}; color: {c['indigo']}; }}
+QPushButton:hover    {{ border-color: {c['border_strong']}; color: {c['teal_soft']}; background: {c['surface_alt']}; }}
+QPushButton:pressed  {{ padding-top: 10px; padding-bottom: 6px; background: {c['surface']}; }}
 QPushButton:disabled {{ color: {c['text_faint']}; border-color: {c['border']}; }}
 
 QPushButton#primary {{
@@ -298,7 +358,8 @@ QPushButton#primary {{
     font-weight: 800;
     padding: 11px 20px;
 }}
-QPushButton#primary:hover    {{ background: {c['blue']}; }}
+QPushButton#primary:hover    {{ background: {c['blue']}; color: {c['on_dark']}; }}
+QPushButton#primary:pressed  {{ padding-top: 13px; padding-bottom: 9px; background: {c['indigo']}; }}
 QPushButton#primary:disabled {{ background: {c['border_strong']}; color: {c['surface']}; }}
 
 QPushButton:checked {{
@@ -313,7 +374,7 @@ QPushButton#ghost {{
     border: 1px solid {c['border_strong']};
     color: {c['text_muted']};
 }}
-QPushButton#ghost:hover {{ color: {c['indigo']}; border-color: {c['indigo']}; }}
+QPushButton#ghost:hover {{ color: {c['teal_soft']}; border-color: {c['border_strong']}; background: {c['surface_alt']}; }}
 
 QCheckBox {{ font-size: 12px; spacing: 7px; }}
 QCheckBox::indicator {{
@@ -344,6 +405,7 @@ QTreeWidget::item:selected, QListWidget::item:selected {{
 }}
 QTreeWidget::branch {{ background: transparent; }}
 QTreeWidget::branch:selected {{ background: {c['surface_alt']}; }}
+QHeaderView {{ background: transparent; }}
 QHeaderView::section {{
     background: transparent;
     border: none;

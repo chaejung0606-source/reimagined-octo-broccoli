@@ -12,9 +12,10 @@ import math
 
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import (
     QBrush, QColor, QPainter, QPainterPath, QPainterPathStroker, QPen, QPixmap,
+    QRadialGradient,
 )
 from PySide6.QtWidgets import QWidget
 
@@ -208,27 +209,54 @@ def _paint_bow(painter: QPainter, center: QPointF, size: float, color: QColor) -
 
 
 class MascotWidget(QWidget):
-    """마스코트 하나를 그리는 위젯. 상태에 따라 표정이 바뀐다."""
+    """마스코트 하나를 그리는 위젯. 상태에 따라 표정이 바뀐다.
+
+    갤럭시 테마 분위기에 맞춰 위아래로 아주 천천히 떠다닌다. 진폭 3px,
+    한 주기 6초 — 눈에 거슬리지 않을 만큼만. 창에서 사라지면 타이머를 멈춘다.
+    """
+
+    FLOAT_AMPLITUDE = 3.0
+    FLOAT_PERIOD_MS = 6000
 
     def __init__(self, size: int = 96, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setFixedSize(size, size)
+        # 떠오를 여유 공간을 위아래로 조금 남긴다.
+        self.setFixedSize(size, size + int(self.FLOAT_AMPLITUDE * 2))
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self._mood = "happy"
+        self._phase = 0.0
+        self._float_timer = QTimer(self)
+        self._float_timer.setInterval(80)
+        self._float_timer.timeout.connect(self._advance_float)
 
     def set_mood(self, mood: str) -> None:
         if mood != self._mood:
             self._mood = mood
             self.update()
 
+    def _advance_float(self) -> None:
+        self._phase += 2 * math.pi * self._float_timer.interval() / self.FLOAT_PERIOD_MS
+        self.update()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._float_timer.start()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        self._float_timer.stop()
+
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        offset = math.sin(self._phase) * self.FLOAT_AMPLITUDE
+        area = QRectF(0, self.FLOAT_AMPLITUDE + offset,
+                      self.width(), self.height() - self.FLOAT_AMPLITUDE * 2)
         path = custom_mascot_path(self._mood)
         if path is not None and (pixmap := load_user_image(path)) is not None:
-            _draw_fitted(painter, pixmap, QRectF(self.rect()))
+            _draw_fitted(painter, pixmap, area)
             return
-        paint_mascot(painter, QRectF(self.rect()), self._mood)
+        paint_mascot(painter, area, self._mood)
 
 
 # ── 스티커 ────────────────────────────────────────────────────────────────
@@ -337,6 +365,73 @@ class StickerStrip(QWidget):
                     _draw_fitted(painter, pixmap, rect)
                     continue
             paint_sticker(painter, rect, kind, QColor(palette[index % len(palette)]))
+
+
+# ── 별하늘 배경 (갤럭시 테마) ─────────────────────────────────────────────
+
+def _star_field(width: float, height: float) -> list[tuple[float, float, float, int]]:
+    """(x, y, 반지름, 알파) 목록. 해시 기반이라 창 크기가 같으면 늘 같은 배치다.
+
+    난수를 쓰면 창을 다시 그릴 때마다 별이 자리를 옮겨 배경이 '지글거린다'.
+    """
+    stars = []
+    cell = 72.0
+    cols = int(width / cell) + 2
+    rows = int(height / cell) + 2
+    for gy in range(rows):
+        for gx in range(cols):
+            seed = (gx * 73856093) ^ (gy * 19349663)
+            # 한 칸에 별 0~2개
+            for k in range(seed % 3):
+                s2 = (seed >> (k * 5)) ^ (k * 83492791)
+                x = gx * cell + (s2 % 997) / 997 * cell
+                y = gy * cell + ((s2 // 7) % 991) / 991 * cell
+                radius = 0.6 + ((s2 // 11) % 17) / 17 * 1.3
+                alpha = 60 + ((s2 // 13) % 19) / 19 * 150
+                stars.append((x, y, radius, int(alpha)))
+    return stars
+
+
+def paint_starfield(painter: QPainter, rect: QRectF, base: QColor,
+                    nebula: QColor) -> None:
+    """딥 퍼플 배경에 성운 몇 덩이와 별을 얹는다."""
+    painter.save()
+    painter.fillRect(rect, base)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(Qt.NoPen)
+
+    width, height = rect.width(), rect.height()
+
+    # 성운 — 반투명 라디얼 그라데이션 몇 덩이로 배경 명도에 흐름을 만든다
+    for fx, fy, fr, alpha in ((0.82, 0.10, 0.55, 46), (0.16, 0.85, 0.50, 38),
+                              (0.45, 0.40, 0.65, 22)):
+        center = QPointF(rect.left() + width * fx, rect.top() + height * fy)
+        glow = QRadialGradient(center, max(width, height) * fr)
+        tint = QColor(nebula)
+        tint.setAlpha(alpha)
+        glow.setColorAt(0.0, tint)
+        glow.setColorAt(1.0, QColor(0, 0, 0, 0))
+        painter.setBrush(QBrush(glow))
+        painter.drawEllipse(center, max(width, height) * fr, max(width, height) * fr)
+
+    # 별
+    for x, y, radius, alpha in _star_field(width, height):
+        if x > width or y > height:
+            continue
+        star = QColor(255, 255, 255, alpha)
+        painter.setBrush(star)
+        painter.drawEllipse(QPointF(rect.left() + x, rect.top() + y), radius, radius)
+        # 큰 별에만 십자 빛
+        if radius > 1.6:
+            pen = QPen(QColor(255, 255, 255, alpha // 2), 0.8)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(rect.left() + x - radius * 2.6, rect.top() + y),
+                             QPointF(rect.left() + x + radius * 2.6, rect.top() + y))
+            painter.drawLine(QPointF(rect.left() + x, rect.top() + y - radius * 2.6),
+                             QPointF(rect.left() + x, rect.top() + y + radius * 2.6))
+            painter.setPen(Qt.NoPen)
+
+    painter.restore()
 
 
 # ── 깅엄 체크 배경 ────────────────────────────────────────────────────────

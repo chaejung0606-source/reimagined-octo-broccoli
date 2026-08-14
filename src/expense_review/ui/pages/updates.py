@@ -282,7 +282,8 @@ class UpdatesPage(QWidget):
         buttons.addStretch(1)
         picker.addLayout(buttons)
         picker.addWidget(muted_label(
-            "'포근한 체크' 는 크림색 깅엄 바탕에 마스코트가 함께 나옵니다. "
+            "'퍼플 갤럭시' 는 딥 퍼플 별하늘 바탕의 기본 테마입니다. "
+            "'포근한 체크' 는 크림색 깅엄 바탕, "
             "'차분한 대시보드' 는 색을 줄인 업무용 화면입니다."
         ))
         row.addLayout(picker, 1)
