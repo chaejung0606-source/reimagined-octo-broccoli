@@ -1,16 +1,10 @@
 """디자인 토큰과 스타일시트.
 
-테마는 세 가지다.
+화면은 하나뿐이다 — 아이보리 바탕에 유광 플라스틱 컨트롤.
+2000년대 전자기기 느낌으로, 크롬 림·유광 반사·안쪽 그림자를 겹쳐 만든다.
 
-  y2k    — 아이보리 바탕에 유광 플라스틱 컨트롤(기본값).
-           2000년대 전자기기 느낌 — 크롬 림·유광 반사·안쪽 그림자.
-  galaxy — 딥 퍼플 별하늘 바탕에 반투명 유리 카드.
-  cozy   — 크림색 바탕에 깅엄 체크, 딸기빛 포인트, 통통한 라운드.
-  studio — 청회색 바탕에 남색 그라데이션. 차분한 대시보드.
-
-색은 COLORS 딕셔너리를 **제자리에서 갱신**한다. 다른 모듈이
-`from .theme import COLORS` 로 같은 객체를 들고 있으므로, 테마를 바꾸면
-다시 임포트하지 않아도 따라온다.
+여기서는 '무슨 색인가'만 정한다. '어떻게 빛나는가'는 glossy.py 에 있다.
+스타일시트로는 낼 수 없는 질감이라 위젯이 직접 그리기 때문이다.
 
 Qt 스타일시트에는 box-shadow 가 없어 그림자는 QGraphicsDropShadowEffect 로 준다.
 """
@@ -19,195 +13,54 @@ from __future__ import annotations
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QGraphicsDropShadowEffect, QWidget
 
-# ── 팔레트 ────────────────────────────────────────────────────────────────
+# ── 색 ───────────────────────────────────────────────────────────────────
+# 다른 모듈이 `from .theme import COLORS` 로 이 객체를 그대로 들고 쓴다.
+COLORS: dict[str, str] = {
+    # 2000년대 초 전자기기 느낌 — 아이보리 바탕에 유광 플라스틱 컨트롤.
+    # 색면·반사·안쪽 그림자는 스타일시트로 안 되므로 glossy.py 가 직접 그린다.
+    # 여기 값은 '무슨 색인가'만 정하고, '어떻게 빛나는가'는 그쪽에 있다.
+    "bg":            "#E7DCC6",   # 따뜻한 아이보리
+    "center_light":  "#FFFBF0",   # 배경 가운데를 밝히는 빛
+    "pearl":         "#EBE5DA",   # 크림빛 플라스틱 (기본 버튼·패널)
+    "surface":       "#F6F2E9",
+    "surface_hi":    "#FFFDF8",
+    "surface_alt":   "#EDE7DA",
+    "border":        "#CFC7B6",
+    "border_strong": "#A9A08C",
 
-PALETTES: dict[str, dict[str, str]] = {
-    "y2k": {
-        "label": "유광 플라스틱",
-        # 2000년대 초 전자기기 느낌 — 아이보리 바탕에 유광 플라스틱 컨트롤.
-        # 색면·반사·안쪽 그림자는 스타일시트로 안 되므로 glossy.py 가 직접 그린다.
-        # 여기 값은 '무슨 색인가'만 정하고, '어떻게 빛나는가'는 그쪽에 있다.
-        "bg":            "#E7DCC6",   # 따뜻한 아이보리
-        "gingham":       "#FFFBF0",   # 가운데를 밝히는 빛
-        "pearl":         "#EBE5DA",   # 크림빛 플라스틱 (기본 버튼·패널)
-        "surface":       "#F6F2E9",
-        "surface_hi":    "#FFFDF8",
-        "surface_alt":   "#EDE7DA",
-        "border":        "#CFC7B6",
-        "border_strong": "#A9A08C",
+    "text":          "#221F2E",
+    "text_muted":    "#5E5869",
+    "text_faint":    "#7E7689",
 
-        "text":          "#221F2E",
-        "text_muted":    "#5E5869",
-        "text_faint":    "#7E7689",
+    "navy":          "#2A3566",   # 사이드바 — 짙은 남색 플라스틱
+    "indigo":        "#3A55B8",
+    "blue":          "#4A7BE0",
+    "blue_soft":     "#9CBCF2",
+    "teal":          "#1F8E86",
+    "teal_soft":     "#7FD3C8",
 
-        "navy":          "#2A3566",   # 사이드바 — 짙은 남색 플라스틱
-        "indigo":        "#3A55B8",
-        "blue":          "#4A7BE0",
-        "blue_soft":     "#9CBCF2",
-        "teal":          "#1F8E86",
-        "teal_soft":     "#7FD3C8",
+    "error":         "#C7332F",
+    "warn":          "#E08A1E",
+    "review":        "#3A6BC4",
+    "pass":          "#2E9E6B",
 
-        "error":         "#C7332F",
-        "warn":          "#E08A1E",
-        "review":        "#3A6BC4",
-        "pass":          "#2E9E6B",
+    "on_dark":       "#FFFFFF",
+    "on_dark_muted": "#EDF1FF",
+    "shadow":        "#5A5140",
+    "shadow_boost":  "1.5",
+    "radius":        "22",
 
-        "on_dark":       "#FFFFFF",
-        "on_dark_muted": "#EDF1FF",
-        "shadow":        "#5A5140",
-        "shadow_boost":  "1.5",
-        "radius":        "22",
-
-        "card_top":      "#FFFDF8",
-        "card_mid":      "#F8F4EB",
-        "card_bottom":   "#EFE9DC",
-        "card_border":   "#CFC7B6",
-        "card_rim":      "#FFFFFF",
-        "btn_top":       "#FFFDF8",
-        "btn_mid":       "#F4EFE4",
-        "btn_bottom":    "#E4DCCC",
-        "btn_border":    "#A9A08C",
-        "btn_rim":       "#FFFFFF",
-    },
-    "galaxy": {
-        "label": "퍼플 갤럭시",
-        # 어두운 보랏빛 바탕 위에 '반투명 유리판'을 얹은 화면.
-        # 카드 배경에 알파를 주면 뒤의 별하늘이 비쳐, 색만 칠한 것과 달리
-        # 깊이가 생긴다. 테두리는 밝게 둬서 유리 모서리에 빛이 걸린 느낌을 낸다.
-        "bg":            "#17112E",
-        "gingham":       "#6B4FCF",   # 배경 성운(bloom) 톤
-        "surface":       "#2E2552",
-        "surface_hi":    "#3D3168",
-        "surface_alt":   "#453873",
-        "border":        "#514296",
-        "border_strong": "#8F6FE0",
-
-        "text":          "#F4F0FF",
-        "text_muted":    "#C4B9F0",
-        "text_faint":    "#8B7FC4",
-
-        "navy":          "#150F2C",   # 사이드바 그라데이션
-        "indigo":        "#7B5CE6",
-        "blue":          "#A98BFF",
-        "blue_soft":     "#C9B6FF",
-        "teal":          "#D9CBFF",
-        "teal_soft":     "#EFE8FF",
-
-        "error":         "#FF8A93",
-        "warn":          "#FFCB6B",
-        "review":        "#9DBEFF",
-        "pass":          "#7BE0B8",
-
-        "on_dark":       "#FFFFFF",
-        "on_dark_muted": "#CFC4FA",
-        "shadow":        "#3A1370",   # 검정 대신 짙은 보라 — 어두운 배경에서 헤일로로 읽힌다
-        "shadow_boost":  "2.1",       # 그림자를 진하게 (유리판이 떠 보이도록)
-        "glow":          "#8F6FE0",   # 강조 버튼에 두르는 네온 헤일로
-        "radius":        "26",
-
-        # 유리판 — 알파값이 핵심이다. 불투명하게 바꾸면 깊이가 사라진다.
-        "bloom":         "#B06AE8",   # 배경 번짐에 섞는 분홍빛
-        "card_top":      "rgba(160, 140, 235, 0.50)",
-        "card_mid":      "rgba(104, 88, 172, 0.34)",
-        "card_bottom":   "rgba(44, 35, 80, 0.68)",
-        "card_border":   "rgba(198, 182, 255, 0.26)",
-        "card_rim":      "rgba(255, 255, 255, 0.44)",   # 윗면 반사선
-        "btn_top":       "rgba(168, 150, 238, 0.44)",
-        "btn_mid":       "rgba(112, 96, 186, 0.34)",
-        "btn_bottom":    "rgba(60, 50, 112, 0.56)",
-        "btn_border":    "rgba(190, 172, 255, 0.34)",
-        "btn_rim":       "rgba(255, 255, 255, 0.38)",
-    },
-    "cozy": {
-        "label": "포근한 체크",
-        "bg":            "#FBF4E6",   # 크림
-        "gingham":       "#D6564E",   # 체크 줄무늬
-        "surface":       "#FFFCF5",
-        "surface_alt":   "#F7EFE0",
-        "border":        "#EADFCB",
-        "border_strong": "#D9C7AC",
-
-        "text":          "#4A3728",   # 따뜻한 갈색 먹
-        "text_muted":    "#8C7460",
-        "text_faint":    "#B3A08C",
-
-        "navy":          "#8C4A3F",   # 사이드바 그라데이션 (구운 벽돌빛)
-        "indigo":        "#C0564C",
-        "blue":          "#D6564E",
-        "blue_soft":     "#E8A49C",
-        "teal":          "#7FBFA3",
-        "teal_soft":     "#B6DCC7",
-
-        "error":         "#D14343",
-        "warn":          "#E0913A",
-        "review":        "#6D93C9",
-        "pass":          "#6FAE86",
-
-        "on_dark":       "#FFF8EC",
-        "on_dark_muted": "#F0CFC4",
-        "shadow":        "#4A3527",
-        "radius":        "20",
-        "surface_hi":    "#FFFCF5",
-
-        "card_top":      "#FFFCF5",
-        "card_mid":      "#FFFCF5",
-        "card_bottom":   "#FFFCF5",
-        "card_border":   "#EADFCB",
-        "card_rim":      "#EADFCB",
-        "btn_top":       "#FFFCF5",
-        "btn_mid":       "#FBF6EB",
-        "btn_bottom":    "#F7EFE0",
-        "btn_border":    "#D9C7AC",
-        "btn_rim":       "#D9C7AC",
-    },
-    "studio": {
-        "label": "차분한 대시보드",
-        "bg":            "#EDF0F7",
-        "gingham":       "#C3CDE4",
-        "surface":       "#FFFFFF",
-        "surface_alt":   "#F6F8FC",
-        "border":        "#E2E8F4",
-        "border_strong": "#CBD5EA",
-
-        "text":          "#141B34",
-        "text_muted":    "#6B7490",
-        "text_faint":    "#9AA3B8",
-
-        "navy":          "#1E2A78",
-        "indigo":        "#3B4BC8",
-        "blue":          "#2E4BFF",
-        "blue_soft":     "#93A6F5",
-        "teal":          "#2ECFBB",
-        "teal_soft":     "#7BE3D6",
-
-        "error":         "#E5484D",
-        "warn":          "#F5A524",
-        "review":        "#3E8BFF",
-        "pass":          "#2ECFBB",
-
-        "on_dark":       "#FFFFFF",
-        "on_dark_muted": "#B9C2E8",
-        "shadow":        "#141B34",
-        "radius":        "20",
-        "surface_hi":    "#FFFFFF",
-
-        "card_top":      "#FFFFFF",
-        "card_mid":      "#FFFFFF",
-        "card_bottom":   "#FFFFFF",
-        "card_border":   "#E2E8F4",
-        "card_rim":      "#E2E8F4",
-        "btn_top":       "#FFFFFF",
-        "btn_mid":       "#FBFCFE",
-        "btn_bottom":    "#F6F8FC",
-        "btn_border":    "#CBD5EA",
-        "btn_rim":       "#CBD5EA",
-    },
+    "card_top":      "#FFFDF8",
+    "card_mid":      "#F8F4EB",
+    "card_bottom":   "#EFE9DC",
+    "card_border":   "#CFC7B6",
+    "card_rim":      "#FFFFFF",
+    "btn_top":       "#FFFDF8",
+    "btn_mid":       "#F4EFE4",
+    "btn_bottom":    "#E4DCCC",
+    "btn_border":    "#A9A08C",
+    "btn_rim":       "#FFFFFF",
 }
-
-DEFAULT_THEME = "y2k"
-
-# 다른 모듈이 참조하는 객체. 제자리에서 갱신한다.
-COLORS: dict[str, str] = dict(PALETTES[DEFAULT_THEME])
 
 SEVERITY_STYLE: dict[str, dict[str, str]] = {}
 
@@ -217,11 +70,9 @@ CHART_SERIES: list[str] = []
 RADIUS = 20
 FONT_FAMILY = '"Pretendard", "Noto Sans KR", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif'
 
-_current_theme = DEFAULT_THEME
 
-
-def _refresh_derived() -> None:
-    SEVERITY_STYLE.clear()
+def _fill_derived() -> None:
+    """COLORS 에서 파생되는 표를 채운다. 모듈을 읽을 때 한 번 돈다."""
     SEVERITY_STYLE.update({
         "ERROR":  {"color": COLORS["error"],  "label": "수정 필요", "icon": "●"},
         "WARN":   {"color": COLORS["warn"],   "label": "확인 요망", "icon": "●"},
@@ -232,35 +83,7 @@ def _refresh_derived() -> None:
     CHART_SERIES[:] = [COLORS["indigo"], COLORS["teal"], COLORS["blue_soft"], COLORS["navy"]]
 
 
-def set_theme(name: str) -> str:
-    """테마를 바꾸고 새 스타일시트를 돌려준다."""
-    global _current_theme
-    if name not in PALETTES:
-        name = DEFAULT_THEME
-    _current_theme = name
-    COLORS.clear()
-    COLORS.update(PALETTES[name])
-    _refresh_derived()
-    return stylesheet()
-
-
-def current_theme() -> str:
-    return _current_theme
-
-
-def is_cozy() -> bool:
-    return _current_theme == "cozy"
-
-
-def is_galaxy() -> bool:
-    return _current_theme == "galaxy"
-
-
-def is_y2k() -> bool:
-    return _current_theme == "y2k"
-
-
-_refresh_derived()
+_fill_derived()
 
 
 def card_shadow(widget: QWidget, blur: int = 26, alpha: int = 30, dy: int = 6) -> None:
@@ -268,30 +91,11 @@ def card_shadow(widget: QWidget, blur: int = 26, alpha: int = 30, dy: int = 6) -
     effect = QGraphicsDropShadowEffect(widget)
     effect.setBlurRadius(blur)
     effect.setOffset(0, dy)
-    base = QColor(COLORS.get("shadow", COLORS["text"]))
-    # 테마별 배율. 호출부가 정한 상대적 세기(카드 > 타일 > 파일카드)는 지키면서
-    # 어두운 테마에서만 전체적으로 진해진다.
-    boost = float(COLORS.get("shadow_boost", "1"))
+    base = QColor(COLORS["shadow"])
+    # 호출부가 정한 상대적 세기(카드 > 타일 > 파일카드)를 한 번에 조절한다.
+    boost = float(COLORS["shadow_boost"])
     effect.setColor(QColor(base.red(), base.green(), base.blue(),
                            min(255, round(alpha * boost))))
-    widget.setGraphicsEffect(effect)
-
-
-def neon_glow(widget: QWidget, blur: int = 30, alpha: int = 150) -> None:
-    """강조 요소 뒤에 깔리는 네온 헤일로.
-
-    그림자를 아래로 내리지 않고 사방으로 퍼뜨리면 '빛난다'로 읽힌다.
-    glow 색이 없는 테마(밝은 배경)에서는 평범한 그림자로 물러난다.
-    """
-    accent = COLORS.get("glow")
-    if accent is None:
-        card_shadow(widget, blur=18, alpha=28, dy=4)
-        return
-    effect = QGraphicsDropShadowEffect(widget)
-    effect.setBlurRadius(blur)
-    effect.setOffset(0, 0)
-    color = QColor(accent)
-    effect.setColor(QColor(color.red(), color.green(), color.blue(), alpha))
     widget.setGraphicsEffect(effect)
 
 
@@ -352,8 +156,8 @@ QLabel#versionLabel {{
 
 /* ── 카드 ─────────────────────────────────────────────── */
 QFrame#card {{
-    /* 반투명 유리판. 뒤의 별하늘이 비쳐 보여야 깊이가 생긴다.
-       위가 밝은 그라데이션 + 밝은 테두리(림 라이트)로 모서리에 빛을 건다. */
+    /* 카드는 glossy.py 가 직접 그린다. 여기 값은 그리기 전 잠깐 보이는 바탕과
+       QSS 로만 스타일이 오는 자잘한 프레임을 위한 것이다. */
     background: qlineargradient(x1:0, y1:0, x2:0.25, y2:1,
                 stop:0 {c['card_top']}, stop:0.42 {c['card_mid']},
                 stop:1 {c['card_bottom']});

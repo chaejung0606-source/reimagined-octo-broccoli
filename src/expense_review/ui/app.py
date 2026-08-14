@@ -5,7 +5,7 @@
   검토            지출종류 선택 → 폴더 지정 → 대시보드 요약
   파일별 보완사항  어떤 파일을 무엇 때문에 고쳐야 하는지
   검토 기준        서류 종류별 기준 확인·수정
-  업데이트         기능 갱신 확인·적용
+  설정            구글시트 연동 · 기능 갱신 확인·적용
 
 검토는 별도 스레드에서 돌린다. PDF 수십 장을 읽는 동안 창이 멈추면
 사용자는 앱이 죽은 줄 안다.
@@ -31,38 +31,26 @@ from PySide6.QtWidgets import (
 )
 
 from .. import config, updater
-from .backgrounds import paint_gingham, paint_ivory, paint_starfield
+from .backgrounds import paint_ivory
 from .pages import FilesPage, ReviewPage, RulesPage, UpdatesPage
 from .state import AppState
-from .theme import (
-    COLORS, DEFAULT_THEME, is_cozy, is_galaxy, is_y2k, set_theme, stylesheet,
-)
+from .theme import COLORS, stylesheet
 
 NAV_ITEMS = [
     ("검토", "서류를 읽고 기준에 맞춰 확인합니다"),
     ("파일별 보완사항", "파일마다 고칠 부분을 모아 봅니다"),
     ("검토 기준", "기준을 확인하고 고칩니다"),
-    ("설정", "화면 모양과 기능 갱신"),
+    ("설정", "구글시트 연동과 기능 갱신"),
 ]
 
 
 class RootWidget(QWidget):
-    """창 전체 배경. 테마마다 다른 바탕을 깐다 — 아이보리 · 별하늘 · 깅엄."""
+    """창 전체 배경. 아이보리 바탕에 가운데가 밝은 빛을 깐다."""
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        if is_y2k():
-            paint_ivory(painter, QRectF(self.rect()),
-                        QColor(COLORS["bg"]), QColor(COLORS["gingham"]))
-        elif is_galaxy():
-            paint_starfield(painter, QRectF(self.rect()),
-                            QColor(COLORS["bg"]), QColor(COLORS["gingham"]),
-                            QColor(COLORS["bloom"]))
-        elif is_cozy():
-            paint_gingham(painter, QRectF(self.rect()),
-                          QColor(COLORS["bg"]), QColor(COLORS["gingham"]))
-        else:
-            painter.fillRect(self.rect(), QColor(COLORS["bg"]))
+        paint_ivory(painter, QRectF(self.rect()),
+                    QColor(COLORS["bg"]), QColor(COLORS["center_light"]))
 
 
 class MainWindow(QMainWindow):
@@ -101,7 +89,6 @@ class MainWindow(QMainWindow):
         # 시작 직후 창이 그려지고 나서 확인한다. 네트워크가 느려도 창은 바로 뜬다.
         QTimer.singleShot(1200, self.updates_page.check_quietly)
         QTimer.singleShot(2000, self.updates_page.refresh_sheet_quietly)
-        self.updates_page.theme_changed.connect(self.apply_theme)
         self.updates_page.sheet_refreshed.connect(self._on_sheet_refreshed)
 
     def _build_sidebar(self) -> QWidget:
@@ -159,18 +146,6 @@ class MainWindow(QMainWindow):
         self.rules_page._reload(self.rules_page.expense_type.currentText())
         self.statusBar().showMessage(message)
 
-    def apply_theme(self, name: str) -> None:
-        """테마를 바꾸고 화면 전체를 다시 칠한다."""
-        QApplication.instance().setStyleSheet(set_theme(name))
-        # KPI 타일은 테마에 따라 글자색 역할이 달라진다 (컬러 면 위 → 밝은 글자)
-        from .widgets import StatTile
-        for tile in self.findChildren(StatTile):
-            tile.refresh_theme()
-        for widget in self.findChildren(QWidget):
-            widget.update()
-        self.update()
-
-
 ICON_PATH = Path(__file__).parent / "assets" / "icon.png"
 
 
@@ -180,7 +155,7 @@ def main() -> int:
     app.setApplicationName("지출 서류 검토")
     if ICON_PATH.exists():
         app.setWindowIcon(QIcon(str(ICON_PATH)))
-    app.setStyleSheet(set_theme(config.load_settings().get("theme", DEFAULT_THEME)))
+    app.setStyleSheet(stylesheet())
     window = MainWindow()
     window.show()
     return app.exec()

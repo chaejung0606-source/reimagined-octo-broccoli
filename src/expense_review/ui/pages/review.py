@@ -30,7 +30,7 @@ from ...models import ReviewResult, Severity
 from ...report import mask, to_markdown
 from ...review import EXPENSE_TYPES, review, review_batch
 from ..state import AppState
-from ..theme import COLORS, SEVERITY_STYLE, neon_glow
+from ..theme import COLORS, SEVERITY_STYLE, card_shadow
 from ..glossy import GlossyButton
 from ..widgets import Card, DonutChart, EmptyState, StatTile, muted_label
 
@@ -150,7 +150,7 @@ class ReviewPage(QWidget):
         actions.addWidget(self.export_button)
         self.run_button = GlossyButton("검토 시작")
         self.run_button.setObjectName("primary")
-        neon_glow(self.run_button)
+        card_shadow(self.run_button, blur=18, alpha=28, dy=4)
         self.run_button.clicked.connect(self._run)
         actions.addWidget(self.run_button)
         card.add_layout(actions)

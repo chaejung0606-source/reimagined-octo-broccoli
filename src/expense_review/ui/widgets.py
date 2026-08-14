@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .theme import COLORS, SEVERITY_STYLE, card_shadow, is_y2k
+from .theme import COLORS, SEVERITY_STYLE, card_shadow
 
 # 카드 변형 이름 → 유광 테마에서 쓸 색 토큰
 _VARIANT_TINT = {"cardAccent": "navy", "cardTeal": "teal"}
@@ -65,13 +65,10 @@ class Card(QFrame):
             self._header.addWidget(widget)
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        """유광 테마에서는 스타일시트 대신 직접 그린다.
+        """스타일시트 대신 직접 그린다.
 
         아크릴 판의 두께감(크롬 림 + 윗면 반사 + 안쪽 그림자)은 QSS 로 낼 수 없다.
         """
-        if not is_y2k():
-            super().paintEvent(event)
-            return
         from .glossy import paint_glossy
 
         painter = QPainter(self)
@@ -107,20 +104,20 @@ class StatTile(QFrame):
         self.value = QLabel(value)
         self.caption = QLabel(caption)
         self.caption.setWordWrap(True)
-        self.refresh_theme()
+        self._apply_text_roles()
 
         layout.addWidget(self.label)
         layout.addWidget(self.value)
         layout.addWidget(self.caption)
         layout.addStretch(1)
 
-    def refresh_theme(self) -> None:
-        """글자색 역할을 테마에 맞춘다.
+    def _apply_text_roles(self) -> None:
+        """글자색 역할을 정한다.
 
-        유광 테마에서는 타일 자체가 컬러 플라스틱이 되므로, 숫자에 심각도 색을
-        입히면 같은 색 위에 같은 색이라 읽히지 않는다. 밝은 글자로 바꾼다.
+        타일 자체가 컬러 플라스틱이므로 숫자에 심각도 색을 입히면 같은 색 위에
+        같은 색이라 읽히지 않는다. 컬러 면에서는 밝은 글자를 쓴다.
         """
-        on_color = self._variant != "card" or (is_y2k() and self._tone)
+        on_color = self._variant != "card" or bool(self._tone)
         self.label.setObjectName("statLabelDark" if on_color else "statLabel")
         self.caption.setObjectName("statLabelDark" if on_color else "statCaption")
         if on_color:
@@ -142,9 +139,6 @@ class StatTile(QFrame):
             self.caption.setText(caption)
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        if not is_y2k():
-            super().paintEvent(event)
-            return
         from .glossy import paint_glossy
 
         painter = QPainter(self)
@@ -320,9 +314,6 @@ class FileCard(QFrame):
         layout.addLayout(pills)
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        if not is_y2k():
-            super().paintEvent(event)
-            return
         from .glossy import paint_glossy
 
         painter = QPainter(self)

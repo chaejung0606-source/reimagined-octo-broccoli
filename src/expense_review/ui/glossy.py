@@ -22,7 +22,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QFrame, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
-from .theme import COLORS, card_shadow, is_y2k
+from .theme import COLORS, card_shadow
 
 RIM = 2.6          # 크롬 테두리 두께
 PRESS_DROP = 1.0   # 눌렸을 때 내려가는 거리
@@ -131,11 +131,7 @@ def paint_pearl_panel(painter: QPainter, rect: QRectF, radius: float,
 # ── 컨트롤 ────────────────────────────────────────────────────────────────
 
 class GlossyButton(QPushButton):
-    """유광 플라스틱 버튼.
-
-    y2k 테마에서만 직접 그린다. 다른 테마에서는 평범한 버튼으로 물러나므로
-    기존 화면이 그대로 유지된다.
-    """
+    """유광 플라스틱 버튼. 크롬 림·색면·반사·안쪽 그림자를 직접 그린다."""
 
     def __init__(self, text: str = "", parent: QWidget | None = None,
                  accent: str | None = None):
@@ -169,10 +165,6 @@ class GlossyButton(QPushButton):
         super().leaveEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        if not is_y2k():
-            super().paintEvent(event)
-            return
-
         painter = QPainter(self)
         rect = QRectF(self.rect()).adjusted(1, 1, -1, -2)
         radius = rect.height() / 2 if self._pill() else 13.0
@@ -204,9 +196,6 @@ class GlossyCircleButton(GlossyButton):
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        if not is_y2k():
-            super().paintEvent(event)
-            return
         painter = QPainter(self)
         rect = QRectF(self.rect()).adjusted(1, 1, -1, -2)
         side = min(rect.width(), rect.height())
@@ -234,9 +223,6 @@ class GlossyPanel(QFrame):
         self._layout.setSpacing(12)
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        if not is_y2k():
-            super().paintEvent(event)
-            return
         painter = QPainter(self)
         paint_glossy(painter, QRectF(self.rect()).adjusted(1, 1, -1, -2),
                      self._radius, QColor(COLORS["pearl"]), gloss=0.30, rim=2.0)

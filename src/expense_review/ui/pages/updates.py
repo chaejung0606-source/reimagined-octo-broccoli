@@ -1,4 +1,4 @@
-"""설정 페이지 — 화면 모양과 업데이트.
+"""설정 페이지 — 구글시트 연동과 업데이트.
 
 업데이트는 확인과 적용을 나눠 두었다. 사용자가 무엇이 바뀌는지 보고 나서
 누르게 하려는 것이다.
@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ... import config, sheets, updater
-from ..theme import COLORS, PALETTES, current_theme, neon_glow
+from ..theme import COLORS, card_shadow
 from ..glossy import GlossyButton
 from ..widgets import Card, muted_label
 
@@ -50,7 +50,6 @@ class UpdateWorker(QObject):
 
 class UpdatesPage(QWidget):
     version_changed = Signal(str)
-    theme_changed = Signal(str)
     sheet_refreshed = Signal(str)   # 성공 요약 문구
 
     def __init__(self, parent: QWidget | None = None):
@@ -78,12 +77,11 @@ class UpdatesPage(QWidget):
         title.setObjectName("pageTitle")
         header.addWidget(title)
         header.addWidget(muted_label(
-            "화면 모양과 기능 갱신을 다룹니다. 앱에서 고친 검토 기준은 "
+            "구글시트 연동과 기능 갱신을 다룹니다. 앱에서 고친 검토 기준은 "
             "별도 폴더에 저장되어 업데이트해도 유지됩니다."
         ))
         layout.addLayout(header)
 
-        layout.addWidget(self._build_theme_card())
         layout.addWidget(self._build_sheet_card())
 
         status_card = Card("설치 상태")
@@ -101,7 +99,7 @@ class UpdatesPage(QWidget):
         self.check_button.clicked.connect(lambda: self._start("check"))
         self.apply_button = GlossyButton("업데이트 적용")
         self.apply_button.setObjectName("primary")
-        neon_glow(self.apply_button)
+        card_shadow(self.apply_button, blur=18, alpha=28, dy=4)
         self.apply_button.setEnabled(False)
         self.apply_button.clicked.connect(self._confirm_apply)
         buttons.addWidget(self.check_button)
@@ -250,43 +248,6 @@ class UpdatesPage(QWidget):
             return "테스트 행을 보냈습니다. 시트에서 확인해 보세요."
 
         self._run_in_thread(work, lambda ok, message: self.sheet_status.setText(message))
-
-    # ── 화면 모양 ────────────────────────────────────────────────────────
-    def _build_theme_card(self) -> QWidget:
-        card = Card("화면 모양")
-        row = QHBoxLayout()
-        row.setSpacing(16)
-
-        picker = QVBoxLayout()
-        picker.setSpacing(6)
-        self.theme_buttons: dict[str, QPushButton] = {}
-        buttons = QHBoxLayout()
-        buttons.setSpacing(8)
-        active = current_theme()
-        for name, palette in PALETTES.items():
-            button = GlossyButton(palette["label"])
-            button.setCheckable(True)
-            button.setChecked(name == active)
-            button.setCursor(Qt.PointingHandCursor)
-            button.clicked.connect(lambda _c, key=name: self._choose_theme(key))
-            self.theme_buttons[name] = button
-            buttons.addWidget(button)
-        buttons.addStretch(1)
-        picker.addLayout(buttons)
-        picker.addWidget(muted_label(
-            "'유광 플라스틱' 은 아이보리 바탕에 유광 컨트롤을 얹은 기본 테마입니다. "
-            "'퍼플 갤럭시' 는 딥 퍼플 별하늘, '포근한 체크' 는 크림색 깅엄 바탕, "
-            "'차분한 대시보드' 는 색을 줄인 업무용 화면입니다."
-        ))
-        row.addLayout(picker, 1)
-        card.add_layout(row)
-        return card
-
-    def _choose_theme(self, name: str) -> None:
-        for key, button in self.theme_buttons.items():
-            button.setChecked(key == name)
-        config.update_setting("theme", name)
-        self.theme_changed.emit(name)
 
     # ── 실행 ─────────────────────────────────────────────────────────────
     def check_quietly(self) -> None:
