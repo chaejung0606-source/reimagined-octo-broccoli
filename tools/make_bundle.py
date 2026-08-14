@@ -29,6 +29,30 @@ SKIP_SUFFIXES = {".pyc", ".pyo"}
 NEVER_PACK = {".pdf", ".hwp", ".hwpx", ".jpg", ".jpeg"}
 
 
+def check_batch_files(root: Path) -> None:
+    """윈도우 배치 파일이 한글 윈도우에서 깨지지 않는지 확인한다.
+
+    한 번 크게 데인 곳이다. UTF-8 로 저장하고 chcp 65001 을 넣었더니,
+    cmd 가 파일을 읽던 위치를 잃어버려 'echo.' 이 'cho.' 로 잘려 나갔다.
+    규칙은 두 가지다 — CP949 로 저장하고, chcp 를 쓰지 않는다.
+    """
+    for path in sorted(root.glob("*.bat")):
+        raw = path.read_bytes()
+        try:
+            text = raw.decode("cp949")
+        except UnicodeDecodeError as error:
+            raise SystemExit(
+                f"중단: {path.name} 이 CP949 가 아닙니다 ({error}).\n"
+                "      한글 윈도우 cmd 가 읽지 못합니다."
+            ) from error
+        for number, line in enumerate(text.splitlines(), 1):
+            if line.strip().lower().startswith("chcp"):
+                raise SystemExit(
+                    f"중단: {path.name} {number}번 줄에 chcp 가 있습니다.\n"
+                    "      코드페이지를 바꾸면 cmd 의 배치 파일 읽기가 어긋납니다."
+                )
+
+
 def collect(root: Path) -> list[Path]:
     files = []
     for path in sorted(root.rglob("*")):
@@ -48,6 +72,7 @@ def collect(root: Path) -> list[Path]:
 
 
 def build(target: Path) -> Path:
+    check_batch_files(REPO_ROOT)
     files = collect(REPO_ROOT)
     target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:

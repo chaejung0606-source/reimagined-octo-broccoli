@@ -1,27 +1,20 @@
 @echo off
-chcp 65001 > nul
 cd /d "%~dp0"
-title ë°”íƒ•í™”ë©´ ë°”ë¡œê°€ê¸° ë§Œë“¤ê¸°
+title ¹ÙÅÁÈ­¸é ¹Ù·Î°¡±â ¸¸µé±â
 
-rem 'ì•± ì‹¤í–‰.bat' ì„ ê°€ë¦¬í‚¤ëŠ” ë°”ë¡œê°€ê¸°ë¥¼ ë°”íƒ•í™”ë©´ì— ë§Œë“ ë‹¤.
-rem ì•„ì´ì½˜ì€ ì €ì¥ì†Œì— ë“¤ì–´ ìˆëŠ” icon.ico ë¥¼ ì“´ë‹¤.
+rem ÀÌ ÆÄÀÏµµ CP949 ·Î ÀúÀåÇÑ´Ù. chcp ´Â ¾²Áö ¾Ê´Â´Ù.
+rem ½ÇÁ¦ ÀÛ¾÷Àº ÆÄÀÌ½ãÀÌ ÇÑ´Ù. ¹èÄ¡¿¡¼­ ÇÑ±Û °æ·Î¸¦ ´Ù·ç¸é ±úÁö±â ½±´Ù.
 
-powershell -NoProfile -Command ^
-  "$d=[Environment]::GetFolderPath('Desktop');" ^
-  "$s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d 'ì§€ì¶œ ì„œë¥˜ ê²€í† .lnk'));" ^
-  "$s.TargetPath=(Join-Path '%CD%' 'ì•± ì‹¤í–‰.bat');" ^
-  "$s.WorkingDirectory='%CD%';" ^
-  "$s.IconLocation=(Join-Path '%CD%' 'src\expense_review\ui\assets\icon.ico');" ^
-  "$s.Description='ì§€ì¶œ ì„œë¥˜ë¥¼ ê¸°ì¤€ì— ë”°ë¼ ìë™ ê²€í† í•©ë‹ˆë‹¤';" ^
-  "$s.Save()"
-
-if errorlevel 1 (
+set PYEXE=.venv\Scripts\python.exe
+if not exist "%PYEXE%" (
     echo.
-    echo   ë°”ë¡œê°€ê¸°ë¥¼ ë§Œë“¤ì§€ ëª»í–ˆìŠµë‹ˆë‹¤.
+    echo   ¸ÕÀú [ ¾Û ½ÇÇà.bat ] À» ÇÑ ¹ø ½ÇÇàÇØ ÁÖ¼¼¿ä.
+    echo   ÁØºñ°¡ ³¡³­ µÚ¿¡ ¹Ù·Î°¡±â¸¦ ¸¸µé ¼ö ÀÖ½À´Ï´Ù.
     echo.
-) else (
-    echo.
-    echo   ë°”íƒ•í™”ë©´ì— 'ì§€ì¶œ ì„œë¥˜ ê²€í† ' ë°”ë¡œê°€ê¸°ë¥¼ ë§Œë“¤ì—ˆìŠµë‹ˆë‹¤.
-    echo.
+    pause
+    exit /b 1
 )
+
+"%PYEXE%" tools\create_shortcut.py
+echo.
 pause

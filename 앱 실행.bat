@@ -1,55 +1,62 @@
 @echo off
-chcp 65001 > nul
 cd /d "%~dp0"
-title ì§€ì¶œ ì„œë¥˜ ê²€í† 
+title ÁöÃâ ¼­·ù °ËÅä
 
-rem ì²˜ìŒ ì‹¤í–‰í•˜ë©´ .venv í´ë”ë¥¼ ë§Œë“¤ê³  í•„ìš”í•œ ê²ƒë“¤ì„ ë°›ëŠ”ë‹¤. ë‘ ë²ˆì§¸ë¶€í„°ëŠ” ë°”ë¡œ ëœ¬ë‹¤.
-rem ì¤€ë¹„ë¥¼ ëê¹Œì§€ ë§ˆì³¤ì„ ë•Œë§Œ í‘œì‹ íŒŒì¼ì„ ë‚¨ê¸´ë‹¤. ì¤‘ê°„ì— ëŠê¸°ë©´ ë‹¤ìŒì— ì´ì–´ì„œ ë‹¤ì‹œ í•œë‹¤.
+rem ÀÌ ÆÄÀÏÀº CP949(ÇÑ±Û À©µµ¿ì ±âº»)·Î ÀúÀåÇÑ´Ù.
+rem chcp ·Î ÄÚµåÆäÀÌÁö¸¦ ¹Ù²Ù¸é cmd °¡ ¹èÄ¡ ÆÄÀÏÀ» ÀÐ´ø À§Ä¡¸¦ ÀÒ¾î¹ö·Á
+rem ¸í·ÉÀÌ Åä¸· ³ª¹Ç·Î Àý´ë ¾²Áö ¾Ê´Â´Ù.
+rem ¸í·É°ú °æ·Î´Â ¸ðµÎ ¿µ¹®À¸·Î µÐ´Ù. ÇÑ±ÛÀº È­¸é¿¡ Âï´Â ±ÛÀÚ¿¡¸¸ ¾´´Ù.
+
+rem Ã³À½ ½ÇÇàÇÏ¸é .venv Æú´õ¸¦ ¸¸µé°í ÇÊ¿äÇÑ °ÍµéÀ» ¹Þ´Â´Ù.
+rem ³¡±îÁö ¸¶ÃÆÀ» ¶§¸¸ setup-done.txt ¸¦ ³²±â¹Ç·Î, Áß°£¿¡ ²÷±â¸é ´Ù½Ã ÀÌ¾î¼­ ¹Þ´Â´Ù.
 
 set PY=
-where py > nul 2>&1 && set PY=py
-if "%PY%"=="" (where python > nul 2>&1 && set PY=python)
+where py >nul 2>&1 && set PY=py
+if not defined PY (
+    where python >nul 2>&1 && set PY=python
+)
 
-if "%PY%"=="" (
+if not defined PY (
     echo.
-    echo   íŒŒì´ì¬ì´ ì„¤ì¹˜ë˜ì–´ ìžˆì§€ ì•ŠìŠµë‹ˆë‹¤.
+    echo   ÆÄÀÌ½ãÀÌ ¼³Ä¡µÇ¾î ÀÖÁö ¾Ê½À´Ï´Ù.
     echo.
-    echo   https://www.python.org/downloads/  ì—ì„œ ë‚´ë ¤ë°›ì•„ ì„¤ì¹˜í•˜ì„¸ìš”.
-    echo   ì„¤ì¹˜ í™”ë©´ì—ì„œ "Add python.exe to PATH" ë¥¼ ë°˜ë“œì‹œ ì²´í¬í•´ì•¼ í•©ë‹ˆë‹¤.
+    echo   https://www.python.org/downloads/  ¿¡¼­ ³»·Á¹Þ¾Æ ¼³Ä¡ÇÏ¼¼¿ä.
+    echo   ¼³Ä¡ Ã¹ È­¸éÀÇ "Add python.exe to PATH" ¸¦ ¹Ýµå½Ã Ã¼Å©ÇØ¾ß ÇÕ´Ï´Ù.
+    echo   ¼³Ä¡ÇÑ µÚ ÀÌ ÆÄÀÏÀ» ´Ù½Ã ½ÇÇàÇÏ¼¼¿ä.
     echo.
     pause
     exit /b 1
 )
 
-if not exist ".venv\setup-done.txt" (
-    echo.
-    echo   â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    echo    ì²˜ìŒ ì‹¤í–‰ì´ë¼ í•„ìš”í•œ ê²ƒë“¤ì„ ë°›ìŠµë‹ˆë‹¤.
-    echo.
-    echo    í™”ë©´ ê·¸ë¦¬ê¸° ë¼ì´ë¸ŒëŸ¬ë¦¬ë§Œ 100MBê°€ ë„˜ì–´ì„œ
-    echo    ë³´í†µ 3~7ë¶„, ì¸í„°ë„·ì´ ëŠë¦¬ë©´ ê·¸ ì´ìƒ ê±¸ë¦½ë‹ˆë‹¤.
-    echo.
-    echo    ì•„ëž˜ì— Downloading ... ì§„í–‰ ë§‰ëŒ€ê°€ ì›€ì§ì´ë©´ ì •ìƒìž…ë‹ˆë‹¤.
-    echo    ì´ ì°½ì„ ë‹«ì§€ ë§ˆì„¸ìš”. ì•±ì´ ëœ¨ë©´ ì €ì ˆë¡œ ì‚¬ë¼ì§‘ë‹ˆë‹¤.
-    echo   â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    echo.
+if exist ".venv\setup-done.txt" goto launch
 
-    if not exist ".venv\Scripts\python.exe" (
-        %PY% -m venv .venv
-        if errorlevel 1 goto failed
-    )
-    ".venv\Scripts\python.exe" -m pip install -q --upgrade pip --disable-pip-version-check
-    ".venv\Scripts\python.exe" -m pip install -e ".[gui]" --disable-pip-version-check
+echo.
+echo   Ã³À½ ½ÇÇàÀÌ¶ó ÇÊ¿äÇÑ °ÍµéÀ» ¹Þ½À´Ï´Ù.
+echo.
+echo   È­¸é ±×¸®±â ¶óÀÌºê·¯¸®¸¸ 100MB°¡ ³Ñ¾î¼­
+echo   º¸Åë 3~7ºÐ, ÀÎÅÍ³ÝÀÌ ´À¸®¸é ±× ÀÌ»ó °É¸³´Ï´Ù.
+echo.
+echo   ¾Æ·¡¿¡ Downloading ÁøÇà ¸·´ë°¡ ¿òÁ÷ÀÌ¸é Á¤»óÀÔ´Ï´Ù.
+echo   ÀÌ Ã¢À» ´ÝÁö ¸¶¼¼¿ä. ¾ÛÀÌ ¶ß¸é ÀúÀý·Î »ç¶óÁý´Ï´Ù.
+echo.
+
+if not exist ".venv\Scripts\python.exe" (
+    "%PY%" -m venv .venv
     if errorlevel 1 goto failed
-
-    echo ì¤€ë¹„ë¥¼ ë§ˆì¹œ í‘œì‹ìž…ë‹ˆë‹¤. ì§€ìš°ë©´ ë‹¤ìŒ ì‹¤í–‰ ë•Œ ë‹¤ì‹œ ì¤€ë¹„í•©ë‹ˆë‹¤. > ".venv\setup-done.txt"
-    echo.
-    echo   ì¤€ë¹„ë¥¼ ë§ˆì³¤ìŠµë‹ˆë‹¤. ì•±ì„ ë„ì›ë‹ˆë‹¤.
-    echo.
 )
 
-rem ì¡°ìš©ížˆ ë„ìš°ê¸° ì „ì— í•œ ë²ˆ í™•ì¸í•œë‹¤. ë¹ ì§„ ê²ƒì´ ìžˆìœ¼ë©´ ì°½ì´ ë‹«ížˆê¸° ì „ì— ì•Œë ¤ ì¤€ë‹¤.
-".venv\Scripts\python.exe" -c "import expense_review.ui.app" 2> "%TEMP%\expense-review-error.txt"
+".venv\Scripts\python.exe" -m pip install -q --upgrade pip --disable-pip-version-check
+".venv\Scripts\python.exe" -m pip install -e ".[gui]" --disable-pip-version-check
+if errorlevel 1 goto failed
+
+echo done > ".venv\setup-done.txt"
+echo.
+echo   ÁØºñ¸¦ ¸¶ÃÆ½À´Ï´Ù. ¾ÛÀ» ¶ç¿ó´Ï´Ù.
+echo.
+
+:launch
+rem Á¶¿ëÈ÷ ¶ç¿ì±â Àü¿¡ È®ÀÎÇÑ´Ù. ºüÁø °ÍÀÌ ÀÖÀ¸¸é Ã¢ÀÌ ´ÝÈ÷±â Àü¿¡ ¾Ë·Á ÁØ´Ù.
+".venv\Scripts\python.exe" -c "import expense_review.ui.app" 2>"%TEMP%\expense-review-error.txt"
 if errorlevel 1 goto broken
 
 start "" ".venv\Scripts\pythonw.exe" -m expense_review.ui.app
@@ -57,20 +64,20 @@ exit /b 0
 
 :failed
 echo.
-echo   ì¤€ë¹„ ì¤‘ ë¬¸ì œê°€ ìƒê²¼ìŠµë‹ˆë‹¤. ìœ„ì— ë¹¨ê°„ ê¸€ì”¨ê°€ ìžˆìœ¼ë©´ ê·¸ëŒ€ë¡œ ì•Œë ¤ ì£¼ì„¸ìš”.
+echo   ÁØºñ Áß ¹®Á¦°¡ »ý°å½À´Ï´Ù. À§ ¸Þ½ÃÁö¸¦ ±×´ë·Î ¾Ë·Á ÁÖ¼¼¿ä.
 echo.
-echo   ì¸í„°ë„·ì´ ëŠê²¼ë˜ ê²ƒë¿ì´ë¼ë©´ ì´ íŒŒì¼ì„ ë‹¤ì‹œ ì‹¤í–‰í•˜ë©´ ì´ì–´ì„œ ë°›ìŠµë‹ˆë‹¤.
+echo   ÀÎÅÍ³ÝÀÌ ²÷°å´ø °Í»ÓÀÌ¶ó¸é ÀÌ ÆÄÀÏÀ» ´Ù½Ã ½ÇÇàÇÏ¸é ÀÌ¾î¼­ ¹Þ½À´Ï´Ù.
 echo.
 pause
 exit /b 1
 
 :broken
 echo.
-echo   ì•±ì„ ë„ìš°ì§€ ëª»í–ˆìŠµë‹ˆë‹¤. ì¤€ë¹„ê°€ ëœ ëœ ê²ƒ ê°™ìŠµë‹ˆë‹¤.
+echo   ¾ÛÀ» ¶ç¿ìÁö ¸øÇß½À´Ï´Ù. ÁØºñ°¡ ´ú µÈ °Í °°½À´Ï´Ù.
 echo.
 type "%TEMP%\expense-review-error.txt"
 echo.
-echo   .venv í´ë”ë¥¼ í†µì§¸ë¡œ ì§€ìš°ê³  ì´ íŒŒì¼ì„ ë‹¤ì‹œ ì‹¤í–‰í•´ ë³´ì„¸ìš”.
+echo   .venv Æú´õ¸¦ ÅëÂ°·Î Áö¿ì°í ÀÌ ÆÄÀÏÀ» ´Ù½Ã ½ÇÇàÇØ º¸¼¼¿ä.
 echo.
 pause
 exit /b 1

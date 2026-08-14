@@ -19,9 +19,17 @@ ASSETS = REPO_ROOT / "src" / "expense_review" / "ui" / "assets"
 
 
 def _pythonw() -> Path:
-    """콘솔 창 없이 띄우는 pythonw 가 있으면 그쪽을 쓴다(윈도우)."""
-    candidate = Path(sys.executable).with_name("pythonw.exe")
-    return candidate if candidate.exists() else Path(sys.executable)
+    """콘솔 창 없이 띄울 실행 파일.
+
+    '앱 실행.bat' 이 만든 .venv 를 먼저 찾는다. 거기에 앱 의존성이 들어 있다.
+    없으면 지금 이 스크립트를 돌리는 파이썬으로 돌아간다.
+    """
+    for base in (REPO_ROOT / ".venv" / "Scripts", Path(sys.executable).parent):
+        for name in ("pythonw.exe", "python.exe", "python3", "python"):
+            candidate = base / name
+            if candidate.exists():
+                return candidate
+    return Path(sys.executable)
 
 
 def make_windows() -> Path:
@@ -55,7 +63,7 @@ def make_linux() -> Path:
         "[Desktop Entry]\n"
         "Type=Application\n"
         f"Name={APP_NAME}\n"
-        f"Exec={sys.executable} -m expense_review.ui.app\n"
+        f"Exec={_pythonw()} -m expense_review.ui.app\n"
         f"Path={REPO_ROOT}\n"
         f"Icon={ASSETS / 'icon.png'}\n"
         "Terminal=false\n",
