@@ -5,15 +5,11 @@
 """
 from __future__ import annotations
 
-import shutil
 import traceback
-from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
-    QFileDialog,
     QLineEdit,
     QFrame,
     QHBoxLayout,
@@ -27,7 +23,6 @@ from PySide6.QtWidgets import (
 )
 
 from ... import config, sheets, updater
-from ..mascot import IMAGE_SUFFIXES, MascotWidget, StickerStrip
 from ..theme import COLORS, PALETTES, current_theme
 from ..widgets import Card, muted_label
 
@@ -55,7 +50,6 @@ class UpdateWorker(QObject):
 class UpdatesPage(QWidget):
     version_changed = Signal(str)
     theme_changed = Signal(str)
-    mascot_changed = Signal()
     sheet_refreshed = Signal(str)   # 성공 요약 문구
 
     def __init__(self, parent: QWidget | None = None):
@@ -89,7 +83,6 @@ class UpdatesPage(QWidget):
         layout.addLayout(header)
 
         layout.addWidget(self._build_theme_card())
-        layout.addWidget(self._build_mascot_card())
         layout.addWidget(self._build_sheet_card())
 
         status_card = Card("설치 상태")
@@ -262,9 +255,6 @@ class UpdatesPage(QWidget):
         row = QHBoxLayout()
         row.setSpacing(16)
 
-        preview = MascotWidget(76)
-        row.addWidget(preview)
-
         picker = QVBoxLayout()
         picker.setSpacing(6)
         self.theme_buttons: dict[str, QPushButton] = {}
@@ -288,80 +278,7 @@ class UpdatesPage(QWidget):
         ))
         row.addLayout(picker, 1)
         card.add_layout(row)
-        card.add(StickerStrip(height=28))
         return card
-
-    def _build_mascot_card(self) -> QWidget:
-        card = Card("나만의 마스코트")
-        card.add(muted_label(
-            "가지고 있는 그림을 넣으면 기본 마스코트 대신 그 이미지가 나옵니다. "
-            "배경이 투명한 PNG(누끼 딴 이미지)를 권합니다. 이미지는 이 컴퓨터의 "
-            "설정 폴더에만 저장되고, 앱은 파일을 그대로 표시만 합니다."
-        ))
-
-        buttons = QHBoxLayout()
-        buttons.setSpacing(8)
-        for label, mood in (("웃는 표정(기본)", "happy"),
-                            ("걱정 표정", "worried"),
-                            ("졸린 표정", "sleepy")):
-            button = QPushButton(label)
-            button.clicked.connect(lambda _c, m=mood: self._pick_mascot_image(m))
-            buttons.addWidget(button)
-        sticker_button = QPushButton("스티커 이미지 추가")
-        sticker_button.clicked.connect(self._add_sticker_images)
-        buttons.addWidget(sticker_button)
-        buttons.addStretch(1)
-        card.add_layout(buttons)
-
-        tail = QHBoxLayout()
-        tail.setSpacing(8)
-        open_button = QPushButton("이미지 폴더 열기")
-        open_button.setObjectName("ghost")
-        open_button.clicked.connect(lambda: QDesktopServices.openUrl(
-            QUrl.fromLocalFile(str(config.config_dir()))))
-        reset_button = QPushButton("기본 그림으로 되돌리기")
-        reset_button.setObjectName("ghost")
-        reset_button.clicked.connect(self._reset_mascot_images)
-        tail.addWidget(open_button)
-        tail.addWidget(reset_button)
-        tail.addStretch(1)
-        card.add_layout(tail)
-        return card
-
-    def _pick_mascot_image(self, mood: str) -> None:
-        chosen, _ = QFileDialog.getOpenFileName(
-            self, "이미지 선택", filter="이미지 (*.png *.webp *.jpg *.jpeg *.gif)"
-        )
-        if not chosen:
-            return
-        source = Path(chosen)
-        target_dir = config.mascot_dir()
-        # 같은 표정의 다른 확장자 파일이 남아 있으면 그쪽이 먼저 잡힐 수 있다.
-        for suffix in IMAGE_SUFFIXES:
-            (target_dir / f"{mood}{suffix}").unlink(missing_ok=True)
-        shutil.copyfile(source, target_dir / f"{mood}{source.suffix.lower()}")
-        self.mascot_changed.emit()
-
-    def _add_sticker_images(self) -> None:
-        chosen, _ = QFileDialog.getOpenFileNames(
-            self, "스티커 이미지 선택", filter="이미지 (*.png *.webp *.jpg *.jpeg *.gif)"
-        )
-        for item in chosen:
-            source = Path(item)
-            shutil.copyfile(source, config.stickers_dir() / source.name)
-        if chosen:
-            self.mascot_changed.emit()
-
-    def _reset_mascot_images(self) -> None:
-        removed = 0
-        for directory in (config.mascot_dir(), config.stickers_dir()):
-            for path in directory.iterdir():
-                if path.is_file():
-                    path.unlink()
-                    removed += 1
-        if removed:
-            self.mascot_changed.emit()
-        QMessageBox.information(self, "되돌림", "기본 그림으로 되돌렸습니다.")
 
     def _choose_theme(self, name: str) -> None:
         for key, button in self.theme_buttons.items():

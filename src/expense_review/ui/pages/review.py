@@ -31,7 +31,6 @@ from ...report import mask, to_markdown
 from ...review import EXPENSE_TYPES, review, review_batch
 from ..state import AppState
 from ..theme import COLORS, SEVERITY_STYLE
-from ..mascot import StickerStrip
 from ..widgets import Card, DonutChart, EmptyState, StatTile, muted_label
 
 SUBTYPES = {
@@ -198,7 +197,6 @@ class ReviewPage(QWidget):
         legend_holder.setLayout(self.legend)
         donut_row.addWidget(legend_holder)
         donut_card.add_layout(donut_row)
-        donut_card.add(StickerStrip(height=26))
         right_layout.addWidget(donut_card)
 
         detail_card = Card("상세", "선택한 항목")

@@ -271,23 +271,14 @@ class FileCard(QFrame):
 
 
 class EmptyState(QWidget):
-    """아직 보여 줄 게 없을 때. 빈 네모 대신 마스코트가 말을 건다."""
+    """아직 보여 줄 게 없을 때 안내 문구를 가운데 띄운다."""
 
     def __init__(self, message: str, mood: str = "sleepy", parent: QWidget | None = None):
         super().__init__(parent)
-        from .mascot import MascotWidget
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 12, 0, 12)
         layout.setSpacing(6)
         layout.addStretch(1)
-
-        self.mascot = MascotWidget(96)
-        row = QHBoxLayout()
-        row.addStretch(1)
-        row.addWidget(self.mascot)
-        row.addStretch(1)
-        layout.addLayout(row)
 
         self.label = QLabel(message)
         self.label.setAlignment(Qt.AlignCenter)
@@ -296,11 +287,8 @@ class EmptyState(QWidget):
         layout.addWidget(self.label)
         layout.addStretch(1)
 
-        self.mascot.set_mood(mood)
-
     def set_message(self, message: str, mood: str = "sleepy") -> None:
         self.label.setText(message)
-        self.mascot.set_mood(mood)
 
 
 def _tint(hex_color: str, alpha: float) -> str:

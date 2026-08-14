@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import config, updater
-from .mascot import MascotWidget, paint_gingham, paint_starfield
+from .backgrounds import paint_gingham, paint_starfield
 from .pages import FilesPage, ReviewPage, RulesPage, UpdatesPage
 from .state import AppState
 from .theme import COLORS, DEFAULT_THEME, is_cozy, is_galaxy, set_theme, stylesheet
@@ -96,7 +96,6 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(2000, self.updates_page.refresh_sheet_quietly)
         self.updates_page.theme_changed.connect(self.apply_theme)
         self.updates_page.sheet_refreshed.connect(self._on_sheet_refreshed)
-        self.updates_page.mascot_changed.connect(self._refresh_mascots)
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
@@ -107,17 +106,10 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.mascot = MascotWidget(88)
-        mascot_row = QHBoxLayout()
-        mascot_row.setContentsMargins(0, 18, 0, 2)
-        mascot_row.addStretch(1)
-        mascot_row.addWidget(self.mascot)
-        mascot_row.addStretch(1)
-        layout.addLayout(mascot_row)
-
         brand = QLabel("지출 서류 검토")
         brand.setObjectName("brand")
         brand.setAlignment(Qt.AlignCenter)
+        brand.setContentsMargins(0, 22, 0, 0)
         layout.addWidget(brand)
         subtitle = QLabel("근로장학금 · 혁신인재지원금 · 출장비")
         subtitle.setObjectName("brandSub")
@@ -155,27 +147,10 @@ class MainWindow(QMainWindow):
         button = self.nav_group.button(1)
         button.setText(f"파일별 보완사항 ({self.state.document_count()})")
 
-        # 마스코트 표정으로 전체 상태를 한 번 더 알려 준다.
-        from ..models import Severity
-        totals = self.state.totals()
-        if totals[Severity.ERROR]:
-            self.mascot.set_mood("worried")
-        else:
-            self.mascot.set_mood("happy")
-
     def _on_sheet_refreshed(self, message: str) -> None:
         """시트 기준이 갱신되면 기준 화면을 다시 읽고 상태줄에 알린다."""
         self.rules_page._reload(self.rules_page.expense_type.currentText())
         self.statusBar().showMessage(message)
-
-    def _refresh_mascots(self) -> None:
-        """사용자 이미지를 바꾸면 화면에 있는 마스코트·스티커를 다시 그린다."""
-        from .mascot import MascotWidget, StickerStrip
-
-        for widget in self.findChildren(MascotWidget):
-            widget.update()
-        for widget in self.findChildren(StickerStrip):
-            widget.update()
 
     def apply_theme(self, name: str) -> None:
         """테마를 바꾸고 화면 전체를 다시 칠한다."""

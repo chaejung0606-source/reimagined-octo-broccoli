@@ -1,9 +1,9 @@
 """디자인 토큰과 스타일시트.
 
-테마는 두 가지다.
+테마는 세 가지다.
 
-  cozy  — 크림색 바탕에 깅엄 체크, 딸기빛 포인트, 통통한 라운드.
-          귀여운 인형 스티커 콜라주 분위기(기본값).
+  galaxy — 딥 퍼플 별하늘 바탕에 라벤더 카드(기본값).
+  cozy   — 크림색 바탕에 깅엄 체크, 딸기빛 포인트, 통통한 라운드.
   studio — 청회색 바탕에 남색 그라데이션. 차분한 대시보드.
 
 색은 COLORS 딕셔너리를 **제자리에서 갱신**한다. 다른 모듈이
@@ -51,19 +51,6 @@ PALETTES: dict[str, dict[str, str]] = {
         "on_dark_muted": "#CFCAF4",
         "shadow":        "#100C28",
         "radius":        "24",
-
-        # 마스코트 — 보랏빛 플러시
-        "fur":           "#7A72C4",
-        "fur_dark":      "#5F58A8",
-        "face":          "#E9E6FF",
-        "ink":           "#241F49",
-        "nose":          "#241F49",
-        "blush":         "#D4A9F0",
-        "accent":        "#B9B3F2",
-        "berry":         "#FF9BE0",
-        "mint":          "#8FE8D0",
-        "butter":        "#FFE08A",
-        "sky":           "#9FC4FF",
     },
     "cozy": {
         "label": "포근한 체크",
@@ -95,19 +82,6 @@ PALETTES: dict[str, dict[str, str]] = {
         "shadow":        "#4A3527",
         "radius":        "20",
         "surface_hi":    "#FFFCF5",
-
-        # 마스코트·스티커
-        "fur":           "#7C5438",
-        "fur_dark":      "#674229",
-        "face":          "#F2DDC2",
-        "ink":           "#3B2A1D",
-        "nose":          "#3B2A1D",
-        "blush":         "#F0AFA6",
-        "accent":        "#D6564E",
-        "berry":         "#C0435C",
-        "mint":          "#9CCFB4",
-        "butter":        "#F2D384",
-        "sky":           "#9FBEE3",
     },
     "studio": {
         "label": "차분한 대시보드",
@@ -139,18 +113,6 @@ PALETTES: dict[str, dict[str, str]] = {
         "shadow":        "#141B34",
         "radius":        "20",
         "surface_hi":    "#FFFFFF",
-
-        "fur":           "#5A6488",
-        "fur_dark":      "#464E6C",
-        "face":          "#E4E9F6",
-        "ink":           "#1B2340",
-        "nose":          "#1B2340",
-        "blush":         "#B9C2E8",
-        "accent":        "#3B4BC8",
-        "berry":         "#E5484D",
-        "mint":          "#2ECFBB",
-        "butter":        "#F5A524",
-        "sky":           "#93A6F5",
     },
 }
 
