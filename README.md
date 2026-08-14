@@ -23,6 +23,17 @@ expense-review <폴더> --type 혁신인재지원금 --markdown 수정요청서.
 `--batch` 는 하위 폴더 하나를 제출자 한 명으로 보고 한 번에 검토합니다.
 `--markdown` 은 제출자에게 그대로 보낼 수 있는 수정 요청서를 저장합니다.
 
+### 바탕화면 바로가기
+
+```bash
+python tools/create_shortcut.py
+```
+
+바탕화면에 갤럭시 아이콘이 붙은 **지출 서류 검토** 바로가기가 생깁니다.
+더블클릭하면 앱이 바로 뜹니다. (윈도우 `.lnk` / 리눅스 `.desktop`)
+아이콘 파일은 `src/expense_review/ui/assets/icon.ico` 에 있어, 다른 바로가기에
+직접 지정해도 됩니다.
+
 ## 화면
 
 | 화면 | 하는 일 |

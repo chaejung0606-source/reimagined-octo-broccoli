@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QIcon, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -160,10 +161,15 @@ class MainWindow(QMainWindow):
         self.update()
 
 
+ICON_PATH = Path(__file__).parent / "assets" / "icon.png"
+
+
 def main() -> int:
     logging.getLogger("pypdf").setLevel(logging.CRITICAL)
     app = QApplication(sys.argv)
     app.setApplicationName("지출 서류 검토")
+    if ICON_PATH.exists():
+        app.setWindowIcon(QIcon(str(ICON_PATH)))
     app.setStyleSheet(set_theme(config.load_settings().get("theme", DEFAULT_THEME)))
     window = MainWindow()
     window.show()

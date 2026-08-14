@@ -25,7 +25,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-expense_review = ["py.typed"]
+expense_review = ["py.typed", "ui/assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
