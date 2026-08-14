@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#B3372F">
+<title>포켓 다이어리</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="phone">
+
+  <!-- ── 홈 ─────────────────────────────────────────── -->
+  <main id="tab-home" class="screen is-active" aria-label="홈">
+    <header class="hero">
+      <div class="hero-gingham" aria-hidden="true"></div>
+      <p class="hero-date" id="today-label">오늘</p>
+      <h1 class="hero-title">오늘도 포근하게</h1>
+
+      <!-- 캐릭터는 소장 원본 이미지를 그대로 표시한다.
+           object-fit: contain — 비율 유지, 얼굴 위에 UI를 겹치지 않는다.
+           파일이 없으면 대체 그림 없이 텍스트 안내만 나온다(app.js). -->
+      <figure class="hero-figure">
+        <img class="char-img" src="assets/images/monchhichi-original.png"
+             alt="빨간 리본을 한 몬치치 캐릭터" data-missing-note="히어로 이미지">
+      </figure>
+
+      <div class="hero-stickers" aria-hidden="true">
+        <span class="stk stk-star"></span>
+        <span class="stk stk-heart"></span>
+        <span class="stk stk-apple"></span>
+      </div>
+    </header>
+
+    <section class="sheet" aria-label="오늘의 할 일">
+      <div class="sheet-head">
+        <h2>오늘의 할 일</h2>
+        <span class="badge" id="todo-count">0개 남음</span>
+      </div>
+
+      <ul class="todo-list" id="todo-list"></ul>
+
+      <form class="todo-add" id="todo-form">
+        <input id="todo-input" type="text" inputmode="text" maxlength="40"
+               placeholder="할 일을 적어 주세요" aria-label="새 할 일">
+        <button type="submit" class="btn-primary">추가</button>
+      </form>
+    </section>
+
+    <section class="sheet" aria-label="한 줄 일기">
+      <div class="sheet-head"><h2>한 줄 일기</h2><span class="badge badge-cream">매일 한 줄</span></div>
+      <textarea id="diary" rows="3" maxlength="200"
+                placeholder="오늘 있었던 포근한 일 하나"
+                aria-label="한 줄 일기"></textarea>
+      <p class="hint" id="diary-hint">쓰는 대로 이 기기에만 저장됩니다.</p>
+    </section>
+  </main>
+
+  <!-- ── 컬렉션 ─────────────────────────────────────── -->
+  <main id="tab-gallery" class="screen" aria-label="컬렉션">
+    <header class="page-head">
+      <h1>컬렉션</h1>
+      <p>소장 중인 사진을 모아 보는 곳이에요.</p>
+    </header>
+
+    <section class="gallery">
+      <figure class="card photo-card">
+        <img class="char-img" src="assets/images/monchhichi-costumes.png"
+             alt="동물 옷을 입은 몬치치 4종" data-missing-note="컬렉션 사진 1">
+        <figcaption>코스튬 시리즈</figcaption>
+      </figure>
+      <figure class="card photo-card">
+        <img class="char-img" src="assets/images/monchhichi-pattern.png"
+             alt="턱받이를 한 몬치치 패턴" data-missing-note="컬렉션 사진 2">
+        <figcaption>클래식 패턴</figcaption>
+      </figure>
+      <figure class="card photo-card wide">
+        <img class="char-img" src="assets/images/monchhichi-trio.png"
+             alt="벚꽃과 몬치치 친구들" data-missing-note="컬렉션 사진 3">
+        <figcaption>봄 나들이</figcaption>
+      </figure>
+    </section>
+
+    <p class="hint center">이미지는 이 기기의 <code>assets/images/</code> 폴더에서 읽어요.</p>
+  </main>
+
+  <!-- ── 설정 ───────────────────────────────────────── -->
+  <main id="tab-settings" class="screen" aria-label="설정">
+    <header class="page-head"><h1>설정</h1><p>작지만 필요한 것들.</p></header>
+
+    <section class="sheet">
+      <div class="sheet-head"><h2>이미지 에셋</h2></div>
+      <ul class="asset-list" id="asset-list">
+        <li data-src="assets/images/monchhichi-original.png">monchhichi-original.png <em>확인 중…</em></li>
+        <li data-src="assets/images/monchhichi-costumes.png">monchhichi-costumes.png <em>확인 중…</em></li>
+        <li data-src="assets/images/monchhichi-pattern.png">monchhichi-pattern.png <em>확인 중…</em></li>
+        <li data-src="assets/images/monchhichi-trio.png">monchhichi-trio.png <em>확인 중…</em></li>
+      </ul>
+      <p class="hint">파일이 없으면 화면에는 대체 그림 없이 안내 문구만 표시됩니다.</p>
+    </section>
+
+    <section class="sheet">
+      <div class="sheet-head"><h2>기록 지우기</h2></div>
+      <button class="btn-ghost" id="clear-data">할 일·일기 모두 지우기</button>
+    </section>
+  </main>
+
+  <!-- ── 하단 탭 ────────────────────────────────────── -->
+  <nav class="tabbar" aria-label="주 메뉴">
+    <button class="tab is-active" data-tab="tab-home" aria-label="홈">
+      <span class="tab-ico" aria-hidden="true">♥</span>홈</button>
+    <button class="tab" data-tab="tab-gallery" aria-label="컬렉션">
+      <span class="tab-ico" aria-hidden="true">★</span>컬렉션</button>
+    <button class="tab" data-tab="tab-settings" aria-label="설정">
+      <span class="tab-ico" aria-hidden="true">✿</span>설정</button>
+  </nav>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

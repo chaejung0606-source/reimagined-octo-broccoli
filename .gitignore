@@ -23,3 +23,7 @@ Thumbs.db
 *.egg-info/
 .pytest_cache/
 수정요청서*.md
+
+# 모바일 앱의 캐릭터 이미지 — 사용자 소장 이미지라 공개 저장소에 올리지 않는다
+mobile-app/assets/images/*
+!mobile-app/assets/images/README.md
