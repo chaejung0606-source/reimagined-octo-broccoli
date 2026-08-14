@@ -98,7 +98,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "auto_update_check": True,     # 시작할 때 새 버전이 있는지 확인
     "auto_update_apply": False,    # 확인만 하고, 적용은 사용자가 누른다
     "last_folder": "",
-    "theme": "galaxy",             # galaxy | cozy | studio
+    "theme": "y2k",                # y2k | galaxy | cozy | studio
     "sheet_url": "",               # 기준값 구글시트 (링크 공유 또는 웹 게시)
     "sheet_log_url": "",           # 검토 기록 Apps Script 웹훅
     "sheet_log_enabled": False,    # 검토 후 요약을 기록 시트로 전송

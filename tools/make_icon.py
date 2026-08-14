@@ -1,6 +1,7 @@
-"""앱 아이콘 생성기 — 퍼플 갤럭시 테마.
+"""앱 아이콘 생성기 — 유광 플라스틱 테마.
 
-딥 퍼플 별하늘 바탕에 라벤더 서류 한 장과 체크 배지를 그린다.
+파란 유광 플라스틱 위에 크림색 서류 한 장과 체크 배지를 그린다.
+크롬 림 + 윗면 반사 + 안쪽 그림자로 앱 화면과 같은 질감을 낸다.
 결과물은 저장소에 함께 커밋되므로 보통은 다시 돌릴 일이 없다.
 디자인을 바꿀 때만 실행한다:
 
@@ -16,23 +17,17 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter
 
-# 갤럭시 팔레트 (src/expense_review/ui/theme.py 와 맞춘다)
-BG_TOP = (43, 39, 80)        # #2B2750
-BG_BOTTOM = (68, 62, 124)    # #443E7C
-NEBULA = (75, 68, 136)       # #4B4488
-PAPER = (228, 225, 255)      # #E4E1FF
-PAPER_LINE = (143, 135, 232) # #8F87E8
-BADGE_A = (108, 99, 200)     # #6C63C8
-BADGE_B = (143, 135, 232)    # #8F87E8
+# 유광 플라스틱 팔레트 (src/expense_review/ui/theme.py 와 맞춘다)
+BG_TOP = (108, 148, 232)     # 윗면 — 빛을 받는 쪽
+BG_BOTTOM = (28, 46, 112)    # 아랫면 — 그늘
+NEBULA = (150, 190, 255)
+PAPER = (252, 249, 240)      # 크림색 서류
+PAPER_LINE = (150, 168, 214)
+BADGE_A = (32, 140, 104)     # 체크 배지 — 초록 플라스틱
+BADGE_B = (86, 200, 150)
 WHITE = (255, 255, 255)
+CHROME = (238, 240, 246)
 
-# 별 배치는 고정값으로 둔다 — 돌릴 때마다 아이콘이 달라지면 곤란하다.
-STARS = [  # (x, y, r, alpha)  0~1 좌표
-    (0.14, 0.12, 0.012, 235), (0.30, 0.07, 0.007, 150), (0.86, 0.10, 0.009, 200),
-    (0.76, 0.20, 0.014, 245), (0.08, 0.38, 0.008, 160), (0.92, 0.42, 0.007, 140),
-    (0.12, 0.80, 0.010, 190), (0.88, 0.82, 0.012, 220), (0.46, 0.10, 0.006, 120),
-    (0.62, 0.06, 0.008, 170), (0.05, 0.58, 0.006, 120), (0.94, 0.62, 0.008, 150),
-]
 SIZE = 1024
 SS = 4  # 슈퍼샘플링 배율 — PIL 도형은 안티앨리어싱이 없어 크게 그려 줄인다
 
@@ -51,26 +46,23 @@ def draw_icon(size: int = SIZE) -> Image.Image:
     base = _vertical_gradient(big, BG_TOP, BG_BOTTOM).convert("RGBA")
     draw = ImageDraw.Draw(base, "RGBA")
 
-    # 성운 — 모서리 쪽에 옅은 보라 글로우
-    for cx, cy, radius, alpha in ((0.85, 0.12, 0.55, 60), (0.12, 0.88, 0.50, 46)):
-        glow = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-        gdraw = ImageDraw.Draw(glow)
-        r = big * radius
-        gdraw.ellipse((big * cx - r, big * cy - r, big * cx + r, big * cy + r),
-                      fill=NEBULA + (alpha,))
-        glow = glow.filter(ImageFilter.GaussianBlur(big * 0.12))
-        base = Image.alpha_composite(base, glow)
-    draw = ImageDraw.Draw(base, "RGBA")
+    # 윗면 라디얼 하이라이트 — 플라스틱이 빛을 받는 자리
+    glow = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    gdraw = ImageDraw.Draw(glow)
+    r = big * 0.62
+    gdraw.ellipse((big * 0.5 - r, big * 0.02 - r, big * 0.5 + r, big * 0.02 + r),
+                  fill=NEBULA + (86,))
+    glow = glow.filter(ImageFilter.GaussianBlur(big * 0.10))
+    base = Image.alpha_composite(base, glow)
 
-    # 별
-    for x, y, r, alpha in STARS:
-        px, py, pr = x * big, y * big, r * big
-        draw.ellipse((px - pr, py - pr, px + pr, py + pr), fill=WHITE + (alpha,))
-        if r >= 0.010:  # 큰 별에는 십자 빛
-            arm = pr * 3.2
-            width = max(2, int(pr * 0.5))
-            draw.line((px - arm, py, px + arm, py), fill=WHITE + (alpha // 2,), width=width)
-            draw.line((px, py - arm, px, py + arm), fill=WHITE + (alpha // 2,), width=width)
+    # 아랫면 안쪽 그림자 — 두께가 생긴다
+    shade = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    sdraw = ImageDraw.Draw(shade)
+    for i in range(int(big * 0.30)):
+        alpha = int(96 * (i / (big * 0.30)) ** 2)
+        sdraw.line((0, big - i, big, big - i), fill=(6, 14, 46, alpha))
+    base = Image.alpha_composite(base, shade)
+    draw = ImageDraw.Draw(base, "RGBA")
 
     # 서류 — 가운데 라벤더 시트, 오른쪽 위 접힌 귀
     left, top = big * 0.28, big * 0.20
@@ -125,7 +117,29 @@ def draw_icon(size: int = SIZE) -> Image.Image:
         draw.ellipse((point[0] - width / 2, point[1] - width / 2,
                       point[0] + width / 2, point[1] + width / 2), fill=WHITE + (255,))
 
-    # 둥근 사각형으로 오려낸다 (반경 22% — 갤럭시 카드 라운드와 맞춘 비율)
+    # 유광 반사 — 윗면을 덮는 넓은 흰 타원
+    shine = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    ImageDraw.Draw(shine).ellipse(
+        (-big * 0.18, -big * 0.52, big * 1.18, big * 0.40), fill=WHITE + (74,))
+    shine = shine.filter(ImageFilter.GaussianBlur(big * 0.012))
+    base = Image.alpha_composite(base, shine)
+
+    # 크롬 림 — 바깥 테두리. 위는 하양, 아래는 회색
+    rim = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    rdraw = ImageDraw.Draw(rim)
+    width = int(big * 0.030)
+    rdraw.rounded_rectangle((width / 2, width / 2, big - width / 2, big - width / 2),
+                            radius=big * 0.22, outline=CHROME + (255,), width=width)
+    # 위에서 아래로 갈수록 흐려지게 — 아래쪽 테두리는 그늘이 져야 금속처럼 보인다
+    fade = Image.new("L", (big, big), 0)
+    fdraw = ImageDraw.Draw(fade)
+    for y in range(big):
+        fdraw.line((0, y, big, y), fill=int(255 - 150 * (y / big)))
+    rim.putalpha(Image.composite(rim.getchannel("A"),
+                                 Image.new("L", (big, big), 0), fade))
+    base = Image.alpha_composite(base, rim)
+
+    # 둥근 사각형으로 오려낸다
     cut = Image.new("L", (big, big), 0)
     ImageDraw.Draw(cut).rounded_rectangle((0, 0, big, big), radius=big * 0.22, fill=255)
     base.putalpha(cut)

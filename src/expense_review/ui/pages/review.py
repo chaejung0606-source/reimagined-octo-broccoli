@@ -31,6 +31,7 @@ from ...report import mask, to_markdown
 from ...review import EXPENSE_TYPES, review, review_batch
 from ..state import AppState
 from ..theme import COLORS, SEVERITY_STYLE, neon_glow
+from ..glossy import GlossyButton
 from ..widgets import Card, DonutChart, EmptyState, StatTile, muted_label
 
 SUBTYPES = {
@@ -102,7 +103,7 @@ class ReviewPage(QWidget):
 
         self.path_edit = QLineEdit()
         self.path_edit.setPlaceholderText("서류가 담긴 폴더를 선택하세요")
-        browse = QPushButton("찾아보기")
+        browse = GlossyButton("찾아보기")
         browse.setObjectName("ghost")
         browse.clicked.connect(self._choose_folder)
 
@@ -111,7 +112,7 @@ class ReviewPage(QWidget):
 
         self.roster_edit = QLineEdit()
         self.roster_edit.setPlaceholderText("폴더 밖에 있을 때만")
-        roster_browse = QPushButton("파일")
+        roster_browse = GlossyButton("파일")
         roster_browse.setObjectName("ghost")
         roster_browse.clicked.connect(self._choose_roster)
 
@@ -142,12 +143,12 @@ class ReviewPage(QWidget):
         self.batch_check = QCheckBox("하위 폴더마다 제출자로 보고 일괄 검토")
         actions.addWidget(self.batch_check)
         actions.addStretch(1)
-        self.export_button = QPushButton("수정 요청서 저장")
+        self.export_button = GlossyButton("수정 요청서 저장")
         self.export_button.setObjectName("ghost")
         self.export_button.setEnabled(False)
         self.export_button.clicked.connect(self._export)
         actions.addWidget(self.export_button)
-        self.run_button = QPushButton("검토 시작")
+        self.run_button = GlossyButton("검토 시작")
         self.run_button.setObjectName("primary")
         neon_glow(self.run_button)
         self.run_button.clicked.connect(self._run)

@@ -2,7 +2,9 @@
 
 테마는 세 가지다.
 
-  galaxy — 딥 퍼플 별하늘 바탕에 라벤더 카드(기본값).
+  y2k    — 아이보리 바탕에 유광 플라스틱 컨트롤(기본값).
+           2000년대 전자기기 느낌 — 크롬 림·유광 반사·안쪽 그림자.
+  galaxy — 딥 퍼플 별하늘 바탕에 반투명 유리 카드.
   cozy   — 크림색 바탕에 깅엄 체크, 딸기빛 포인트, 통통한 라운드.
   studio — 청회색 바탕에 남색 그라데이션. 차분한 대시보드.
 
@@ -20,6 +22,53 @@ from PySide6.QtWidgets import QGraphicsDropShadowEffect, QWidget
 # ── 팔레트 ────────────────────────────────────────────────────────────────
 
 PALETTES: dict[str, dict[str, str]] = {
+    "y2k": {
+        "label": "유광 플라스틱",
+        # 2000년대 초 전자기기 느낌 — 아이보리 바탕에 유광 플라스틱 컨트롤.
+        # 색면·반사·안쪽 그림자는 스타일시트로 안 되므로 glossy.py 가 직접 그린다.
+        # 여기 값은 '무슨 색인가'만 정하고, '어떻게 빛나는가'는 그쪽에 있다.
+        "bg":            "#E7DCC6",   # 따뜻한 아이보리
+        "gingham":       "#FFFBF0",   # 가운데를 밝히는 빛
+        "pearl":         "#EBE5DA",   # 크림빛 플라스틱 (기본 버튼·패널)
+        "surface":       "#F6F2E9",
+        "surface_hi":    "#FFFDF8",
+        "surface_alt":   "#EDE7DA",
+        "border":        "#CFC7B6",
+        "border_strong": "#A9A08C",
+
+        "text":          "#221F2E",
+        "text_muted":    "#5E5869",
+        "text_faint":    "#7E7689",
+
+        "navy":          "#2A3566",   # 사이드바 — 짙은 남색 플라스틱
+        "indigo":        "#3A55B8",
+        "blue":          "#4A7BE0",
+        "blue_soft":     "#9CBCF2",
+        "teal":          "#1F8E86",
+        "teal_soft":     "#7FD3C8",
+
+        "error":         "#C7332F",
+        "warn":          "#E08A1E",
+        "review":        "#3A6BC4",
+        "pass":          "#2E9E6B",
+
+        "on_dark":       "#FFFFFF",
+        "on_dark_muted": "#EDF1FF",
+        "shadow":        "#5A5140",
+        "shadow_boost":  "1.5",
+        "radius":        "22",
+
+        "card_top":      "#FFFDF8",
+        "card_mid":      "#F8F4EB",
+        "card_bottom":   "#EFE9DC",
+        "card_border":   "#CFC7B6",
+        "card_rim":      "#FFFFFF",
+        "btn_top":       "#FFFDF8",
+        "btn_mid":       "#F4EFE4",
+        "btn_bottom":    "#E4DCCC",
+        "btn_border":    "#A9A08C",
+        "btn_rim":       "#FFFFFF",
+    },
     "galaxy": {
         "label": "퍼플 갤럭시",
         # 어두운 보랏빛 바탕 위에 '반투명 유리판'을 얹은 화면.
@@ -155,7 +204,7 @@ PALETTES: dict[str, dict[str, str]] = {
     },
 }
 
-DEFAULT_THEME = "galaxy"
+DEFAULT_THEME = "y2k"
 
 # 다른 모듈이 참조하는 객체. 제자리에서 갱신한다.
 COLORS: dict[str, str] = dict(PALETTES[DEFAULT_THEME])
@@ -205,6 +254,10 @@ def is_cozy() -> bool:
 
 def is_galaxy() -> bool:
     return _current_theme == "galaxy"
+
+
+def is_y2k() -> bool:
+    return _current_theme == "y2k"
 
 
 _refresh_derived()

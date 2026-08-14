@@ -31,10 +31,12 @@ from PySide6.QtWidgets import (
 )
 
 from .. import config, updater
-from .backgrounds import paint_gingham, paint_starfield
+from .backgrounds import paint_gingham, paint_ivory, paint_starfield
 from .pages import FilesPage, ReviewPage, RulesPage, UpdatesPage
 from .state import AppState
-from .theme import COLORS, DEFAULT_THEME, is_cozy, is_galaxy, set_theme, stylesheet
+from .theme import (
+    COLORS, DEFAULT_THEME, is_cozy, is_galaxy, is_y2k, set_theme, stylesheet,
+)
 
 NAV_ITEMS = [
     ("검토", "서류를 읽고 기준에 맞춰 확인합니다"),
@@ -45,11 +47,14 @@ NAV_ITEMS = [
 
 
 class RootWidget(QWidget):
-    """창 전체 배경. 갤럭시 테마는 별하늘, 포근한 테마는 깅엄 체크를 깐다."""
+    """창 전체 배경. 테마마다 다른 바탕을 깐다 — 아이보리 · 별하늘 · 깅엄."""
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        if is_galaxy():
+        if is_y2k():
+            paint_ivory(painter, QRectF(self.rect()),
+                        QColor(COLORS["bg"]), QColor(COLORS["gingham"]))
+        elif is_galaxy():
             paint_starfield(painter, QRectF(self.rect()),
                             QColor(COLORS["bg"]), QColor(COLORS["gingham"]),
                             QColor(COLORS["bloom"]))
@@ -157,6 +162,10 @@ class MainWindow(QMainWindow):
     def apply_theme(self, name: str) -> None:
         """테마를 바꾸고 화면 전체를 다시 칠한다."""
         QApplication.instance().setStyleSheet(set_theme(name))
+        # KPI 타일은 테마에 따라 글자색 역할이 달라진다 (컬러 면 위 → 밝은 글자)
+        from .widgets import StatTile
+        for tile in self.findChildren(StatTile):
+            tile.refresh_theme()
         for widget in self.findChildren(QWidget):
             widget.update()
         self.update()

@@ -18,7 +18,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .theme import COLORS, SEVERITY_STYLE, card_shadow
+from .theme import COLORS, SEVERITY_STYLE, card_shadow, is_y2k
+
+# 카드 변형 이름 → 유광 테마에서 쓸 색 토큰
+_VARIANT_TINT = {"cardAccent": "navy", "cardTeal": "teal"}
+_TONE_COLOR = {"Error": "error", "Warn": "warn", "Review": "review"}
 
 
 class Card(QFrame):
@@ -60,6 +64,23 @@ class Card(QFrame):
         if self._header is not None:
             self._header.addWidget(widget)
 
+    def paintEvent(self, event) -> None:  # noqa: N802
+        """유광 테마에서는 스타일시트 대신 직접 그린다.
+
+        아크릴 판의 두께감(크롬 림 + 윗면 반사 + 안쪽 그림자)은 QSS 로 낼 수 없다.
+        """
+        if not is_y2k():
+            super().paintEvent(event)
+            return
+        from .glossy import paint_glossy
+
+        painter = QPainter(self)
+        tint = _VARIANT_TINT.get(self.objectName())
+        base = QColor(COLORS[tint]) if tint else QColor(COLORS["pearl"])
+        paint_glossy(painter, QRectF(self.rect()).adjusted(1, 1, -1, -2),
+                     float(COLORS.get("radius", "22")), base,
+                     gloss=0.30 if tint is None else 0.42, rim=2.0)
+
 
 class StatTile(QFrame):
     """KPI 타일. 큰 숫자 + 라벨 + 보조 문구.
@@ -76,36 +97,69 @@ class StatTile(QFrame):
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         card_shadow(self, blur=22, alpha=30)
 
-        dark = variant != "card"
+        self._tone = tone
+        self._variant = variant
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 14, 18, 14)
         layout.setSpacing(2)
 
         self.label = QLabel(label)
-        self.label.setObjectName("statLabelDark" if dark else "statLabel")
         self.value = QLabel(value)
-        # 숫자 자체에 심각도 색을 준다 — 수치가 먼저 읽히게.
-        # 인라인 스타일 대신 objectName 을 쓴다. 테마를 바꿀 때 스타일시트만
-        # 다시 적용하면 색이 따라오기 때문이다.
-        if dark:
-            self.value.setObjectName("statValueDark")
-        elif tone:
-            self.value.setObjectName(f"statValue{tone}")
-        else:
-            self.value.setObjectName("statValue")
         self.caption = QLabel(caption)
-        self.caption.setObjectName("statLabelDark" if dark else "statCaption")
         self.caption.setWordWrap(True)
+        self.refresh_theme()
 
         layout.addWidget(self.label)
         layout.addWidget(self.value)
         layout.addWidget(self.caption)
         layout.addStretch(1)
 
+    def refresh_theme(self) -> None:
+        """글자색 역할을 테마에 맞춘다.
+
+        유광 테마에서는 타일 자체가 컬러 플라스틱이 되므로, 숫자에 심각도 색을
+        입히면 같은 색 위에 같은 색이라 읽히지 않는다. 밝은 글자로 바꾼다.
+        """
+        on_color = self._variant != "card" or (is_y2k() and self._tone)
+        self.label.setObjectName("statLabelDark" if on_color else "statLabel")
+        self.caption.setObjectName("statLabelDark" if on_color else "statCaption")
+        if on_color:
+            self.value.setObjectName("statValueDark")
+        elif self._tone:
+            # 인라인 스타일 대신 objectName 을 쓴다. 테마를 바꿀 때 스타일시트만
+            # 다시 적용하면 색이 따라오기 때문이다.
+            self.value.setObjectName(f"statValue{self._tone}")
+        else:
+            self.value.setObjectName("statValue")
+        for widget in (self.label, self.value, self.caption):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+        self.update()
+
     def set_value(self, value: str, caption: str = "") -> None:
         self.value.setText(value)
         if caption:
             self.caption.setText(caption)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        if not is_y2k():
+            super().paintEvent(event)
+            return
+        from .glossy import paint_glossy
+
+        painter = QPainter(self)
+        tint = _VARIANT_TINT.get(self.objectName())
+        if tint:
+            base = QColor(COLORS[tint])
+        elif self._tone:
+            # 레퍼런스처럼 타일 자체를 컬러 플라스틱으로 — 화면에 리듬이 생긴다
+            base = QColor(COLORS[_TONE_COLOR[self._tone]])
+        else:
+            base = QColor(COLORS["pearl"])
+        # 글자가 얹히는 면이라 반사를 약하게 — 강하면 라벨이 흰빛에 묻힌다
+        paint_glossy(painter, QRectF(self.rect()).adjusted(1, 1, -1, -2),
+                     float(COLORS.get("radius", "22")), base,
+                     gloss=0.30, rim=2.4, shine=86)
 
 
 class DonutChart(QWidget):
@@ -264,6 +318,16 @@ class FileCard(QFrame):
                     pills.addWidget(Pill(f"{style['label']} {count}", style["color"]))
         pills.addStretch(1)
         layout.addLayout(pills)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        if not is_y2k():
+            super().paintEvent(event)
+            return
+        from .glossy import paint_glossy
+
+        painter = QPainter(self)
+        paint_glossy(painter, QRectF(self.rect()).adjusted(1, 1, -1, -2),
+                     18.0, QColor(COLORS["pearl"]), gloss=0.32, rim=2.0)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         self.clicked.emit(self.summary)

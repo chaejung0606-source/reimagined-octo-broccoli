@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from ... import config, sheets, updater
 from ..theme import COLORS, PALETTES, current_theme, neon_glow
+from ..glossy import GlossyButton
 from ..widgets import Card, muted_label
 
 
@@ -95,10 +96,10 @@ class UpdatesPage(QWidget):
         status_card.add(self.status_label)
 
         buttons = QHBoxLayout()
-        self.check_button = QPushButton("업데이트 확인")
+        self.check_button = GlossyButton("업데이트 확인")
         self.check_button.setObjectName("ghost")
         self.check_button.clicked.connect(lambda: self._start("check"))
-        self.apply_button = QPushButton("업데이트 적용")
+        self.apply_button = GlossyButton("업데이트 적용")
         self.apply_button.setObjectName("primary")
         neon_glow(self.apply_button)
         self.apply_button.setEnabled(False)
@@ -148,7 +149,7 @@ class UpdatesPage(QWidget):
         self.sheet_url.setPlaceholderText("https://docs.google.com/spreadsheets/d/…")
         self.sheet_url.editingFinished.connect(
             lambda: config.update_setting("sheet_url", self.sheet_url.text().strip()))
-        pull = QPushButton("지금 불러오기")
+        pull = GlossyButton("지금 불러오기")
         pull.clicked.connect(self._pull_sheet)
         row1.addWidget(self.sheet_url, 1)
         row1.addWidget(pull)
@@ -165,7 +166,7 @@ class UpdatesPage(QWidget):
         self.log_url.setPlaceholderText("https://script.google.com/macros/s/…/exec")
         self.log_url.editingFinished.connect(
             lambda: config.update_setting("sheet_log_url", self.log_url.text().strip()))
-        test = QPushButton("테스트 전송")
+        test = GlossyButton("테스트 전송")
         test.clicked.connect(self._test_log)
         row2.addWidget(self.log_url, 1)
         row2.addWidget(test)
@@ -263,7 +264,7 @@ class UpdatesPage(QWidget):
         buttons.setSpacing(8)
         active = current_theme()
         for name, palette in PALETTES.items():
-            button = QPushButton(palette["label"])
+            button = GlossyButton(palette["label"])
             button.setCheckable(True)
             button.setChecked(name == active)
             button.setCursor(Qt.PointingHandCursor)
@@ -273,8 +274,8 @@ class UpdatesPage(QWidget):
         buttons.addStretch(1)
         picker.addLayout(buttons)
         picker.addWidget(muted_label(
-            "'퍼플 갤럭시' 는 딥 퍼플 별하늘 바탕의 기본 테마입니다. "
-            "'포근한 체크' 는 크림색 깅엄 바탕, "
+            "'유광 플라스틱' 은 아이보리 바탕에 유광 컨트롤을 얹은 기본 테마입니다. "
+            "'퍼플 갤럭시' 는 딥 퍼플 별하늘, '포근한 체크' 는 크림색 깅엄 바탕, "
             "'차분한 대시보드' 는 색을 줄인 업무용 화면입니다."
         ))
         row.addLayout(picker, 1)
