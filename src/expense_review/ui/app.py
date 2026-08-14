@@ -90,7 +90,9 @@ class MainWindow(QMainWindow):
 
         # 시작 직후 창이 그려지고 나서 확인한다. 네트워크가 느려도 창은 바로 뜬다.
         QTimer.singleShot(1200, self.updates_page.check_quietly)
+        QTimer.singleShot(2000, self.updates_page.refresh_sheet_quietly)
         self.updates_page.theme_changed.connect(self.apply_theme)
+        self.updates_page.sheet_refreshed.connect(self._on_sheet_refreshed)
         self.updates_page.mascot_changed.connect(self._refresh_mascots)
 
     def _build_sidebar(self) -> QWidget:
@@ -157,6 +159,11 @@ class MainWindow(QMainWindow):
             self.mascot.set_mood("worried")
         else:
             self.mascot.set_mood("happy")
+
+    def _on_sheet_refreshed(self, message: str) -> None:
+        """시트 기준이 갱신되면 기준 화면을 다시 읽고 상태줄에 알린다."""
+        self.rules_page._reload(self.rules_page.expense_type.currentText())
+        self.statusBar().showMessage(message)
 
     def _refresh_mascots(self) -> None:
         """사용자 이미지를 바꾸면 화면에 있는 마스코트·스티커를 다시 그린다."""

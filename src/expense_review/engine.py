@@ -124,10 +124,16 @@ def load_ruleset(expense_type: str, subtype: str | None = None,
         required.extend(subtypes[subtype].get("required_documents") or [])
 
     if apply_overrides:
-        overrides = load_overrides()
+        # 우선순위: 배포본 < 구글시트(팀 공용, 캐시만 읽음) < 앱에서 직접 수정(개인)
+        from . import sheets
+
+        sheet = sheets.cached_overrides()
+        local = load_overrides()
         for rule in rules:
-            rule.apply_override(overrides["rules"].get(rule.id, {}))
-        settings.update(overrides["settings"].get(expense_type, {}))
+            merged = {**sheet["rules"].get(rule.id, {}), **local["rules"].get(rule.id, {})}
+            rule.apply_override(merged)
+        settings.update(sheet["settings"].get(expense_type, {}))
+        settings.update(local["settings"].get(expense_type, {}))
 
     return RuleSet(rules=rules, settings=settings, required_documents=required, subtypes=subtypes)
 

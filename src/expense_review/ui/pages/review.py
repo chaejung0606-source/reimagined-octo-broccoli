@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import config
+from ... import config, sheets
 from ...models import ReviewResult, Severity
 from ...report import mask, to_markdown
 from ...review import EXPENSE_TYPES, review, review_batch
@@ -278,6 +278,27 @@ class ReviewPage(QWidget):
         self.export_button.setEnabled(bool(results))
         self.state.set_busy(False, "검토를 마쳤습니다.")
         self.state.set_results(results)
+        self._log_to_sheet(results)
+
+    def _log_to_sheet(self, results: list) -> None:
+        """설정된 경우 요약 행을 기록 시트로 보낸다. 요약뿐 — 서류 내용은 보내지 않는다."""
+        settings = config.load_settings()
+        url = settings.get("sheet_log_url", "").strip()
+        if not settings.get("sheet_log_enabled") or not url:
+            return
+
+        import logging
+        import threading
+
+        rows = sheets.result_rows(results)
+
+        def send():
+            try:
+                sheets.post_log(url, rows)
+            except Exception as exc:
+                logging.getLogger(__name__).warning("기록 시트 전송 실패: %s", exc)
+
+        threading.Thread(target=send, daemon=True).start()
 
     def _on_worker_failed(self, message: str) -> None:
         self._stop_thread()
