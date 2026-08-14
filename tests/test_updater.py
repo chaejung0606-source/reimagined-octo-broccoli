@@ -102,3 +102,31 @@ def test_git_is_decoded_as_utf8(monkeypatch):
     assert seen["encoding"] == "utf-8"
     # 자격 증명 창이 떠서 앱이 멈추는 일이 없어야 한다
     assert seen["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_git_output_is_never_none(monkeypatch):
+    """캡처가 비면 파이썬이 None 을 준다. 그대로 흘리면 .strip() 에서 앱이 죽는다.
+
+    사용자 PC에서 실제로 여기서 터졌다:
+        AttributeError: 'NoneType' object has no attribute 'strip'
+    """
+    monkeypatch.setattr(subprocess, "run",
+                        lambda args, **kwargs: subprocess.CompletedProcess(args, 0, None, None))
+    done = updater._git("log")
+    assert done.stdout == "" and done.stderr == ""
+
+
+def test_check_survives_none_output(monkeypatch):
+    """git 이 아무것도 돌려주지 않아도 화면까지 도달해야 한다."""
+    def run(args, **kwargs):
+        if "remote" in args:
+            return subprocess.CompletedProcess(
+                args, 0, f"https://github.com/{updater.EXPECTED_REPO}", None)
+        if "rev-list" in args:
+            return subprocess.CompletedProcess(args, 0, "3", None)
+        return subprocess.CompletedProcess(args, 0, None, None)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    status = updater.check()          # 예외 없이 끝나야 한다
+    assert status.behind == 3
+    assert status.messages == ()

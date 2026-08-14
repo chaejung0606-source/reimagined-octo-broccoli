@@ -68,22 +68,32 @@ def _git(*args: str) -> subprocess.CompletedProcess:
         "GIT_OPTIONAL_LOCKS": "0",
     }
     try:
-        return subprocess.run(
+        done = subprocess.run(
             ["git", "-C", str(REPO_ROOT), *args],
             capture_output=True, text=True, timeout=GIT_TIMEOUT,
             encoding="utf-8", errors="replace", env=env,
         )
     except FileNotFoundError:
-        return subprocess.CompletedProcess(
-            args, 127, "",
-            "Git 이 설치되어 있지 않습니다. https://git-scm.com/download/win 에서 "
-            "설치한 뒤 앱을 다시 시작하세요.")
+        return _result(args, 127,
+                       "Git 이 설치되어 있지 않습니다. https://git-scm.com/download/win "
+                       "에서 설치한 뒤 앱을 다시 시작하세요.")
     except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(
-            args, 124, "",
-            f"응답이 {GIT_TIMEOUT}초 안에 오지 않았습니다. 네트워크를 확인해 주세요.")
+        return _result(args, 124,
+                       f"응답이 {GIT_TIMEOUT}초 안에 오지 않았습니다. 네트워크를 확인해 주세요.")
     except OSError as error:
-        return subprocess.CompletedProcess(args, 1, "", str(error))
+        return _result(args, 1, str(error))
+
+    # stdout/stderr 를 문자열로 못박는다.
+    # 캡처가 되지 않으면 파이썬은 None 을 돌려준다. 호출부는 .strip() 을 부르므로
+    # 그대로 두면 'NoneType has no attribute strip' 으로 앱이 죽는다.
+    # 실제로 사용자 PC에서 이 지점이 터졌다.
+    return subprocess.CompletedProcess(
+        done.args, done.returncode, done.stdout or "", done.stderr or "")
+
+
+def _result(args, code: int, message: str) -> subprocess.CompletedProcess:
+    """git 을 못 돌렸을 때 쓸 결과. 호출부가 returncode 만 보면 되도록 모양을 맞춘다."""
+    return subprocess.CompletedProcess(args, code, "", message)
 
 
 def _first_line(text: str, fallback: str) -> str:
