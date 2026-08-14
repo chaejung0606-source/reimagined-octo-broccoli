@@ -361,6 +361,9 @@ class UpdatesPage(QWidget):
             QMessageBox.warning(self, "업데이트", message)
 
     def _on_failed(self, message: str) -> None:
+        """예상 못 한 예외. 마지막 줄이라도 화면에 띄워야 원인을 알 수 있다."""
         self._stop()
-        self.status_label.setText("업데이트 처리 중 오류가 발생했습니다.")
+        lines = [line.strip() for line in message.splitlines() if line.strip()]
+        reason = lines[-1] if lines else "알 수 없는 오류"
+        self.status_label.setText(f"업데이트 처리 중 오류가 발생했습니다 — {reason}")
         self.log.setHtml(f"<pre style='font-size:11px;'>{message}</pre>")

@@ -12,6 +12,7 @@ Claude 가 저장소에 기능을 올리면 앱이 그것을 받아 오도록 �
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,10 +52,44 @@ class UpdateStatus:
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", str(REPO_ROOT), *args],
-        capture_output=True, text=True, timeout=GIT_TIMEOUT,
-    )
+    """git 을 돌리고 결과를 돌려준다. 실패해도 예외를 던지지 않는다.
+
+    호출부가 returncode 만 보게 하려는 것이다. 예외가 위로 새면 화면에는
+    '오류가 발생했습니다' 만 남고 무엇이 문제인지 알 수 없다.
+
+    인코딩을 UTF-8 로 못박는다. 한글 윈도우에서 text=True 만 주면 파이썬이
+    CP949 로 해석해 커밋 메시지와 날짜 구분점(·)이 깨진다.
+    """
+    env = {
+        **os.environ,
+        # 자격 증명 창이 뜨면 앱이 멈춘 것처럼 보인다. 물어보지 말고 실패시킨다.
+        "GIT_TERMINAL_PROMPT": "0",
+        "GCM_INTERACTIVE": "never",
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+    try:
+        return subprocess.run(
+            ["git", "-C", str(REPO_ROOT), *args],
+            capture_output=True, text=True, timeout=GIT_TIMEOUT,
+            encoding="utf-8", errors="replace", env=env,
+        )
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(
+            args, 127, "",
+            "Git 이 설치되어 있지 않습니다. https://git-scm.com/download/win 에서 "
+            "설치한 뒤 앱을 다시 시작하세요.")
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args, 124, "",
+            f"응답이 {GIT_TIMEOUT}초 안에 오지 않았습니다. 네트워크를 확인해 주세요.")
+    except OSError as error:
+        return subprocess.CompletedProcess(args, 1, "", str(error))
+
+
+def _first_line(text: str, fallback: str) -> str:
+    """git 이 남긴 설명 중 쓸 만한 마지막 줄. 비어 있으면 준비된 문구로."""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return lines[-1][:200] if lines else fallback
 
 
 def is_git_checkout() -> bool:
@@ -77,18 +112,26 @@ def current_version() -> str:
 def check() -> UpdateStatus:
     """원격에 새 커밋이 있는지 본다. 파일은 건드리지 않는다."""
     if not is_git_checkout():
-        return UpdateStatus(error="git 작업본이 아니라 자동 업데이트를 쓸 수 없습니다.")
-    if not _remote_is_expected():
+        return UpdateStatus(
+            error="설치 폴더에 저장소 정보(.git)가 없어 자동 업데이트를 쓸 수 없습니다. "
+                  "새 zip 을 받아 폴더째 교체해 주세요.")
+    remote = _git("remote", "get-url", "origin")
+    if remote.returncode != 0:
+        return UpdateStatus(error=_first_line(remote.stderr, "저장소 정보를 읽지 못했습니다."))
+    if EXPECTED_REPO not in remote.stdout:
         return UpdateStatus(error="원격 저장소가 예상과 다릅니다. 업데이트를 중단합니다.")
 
     fetched = _git("fetch", "origin", BRANCH)
     if fetched.returncode != 0:
-        return UpdateStatus(error=(fetched.stderr or "네트워크 오류").strip().splitlines()[-1][:200])
+        return UpdateStatus(error=_first_line(fetched.stderr, "네트워크 오류"))
 
     counted = _git("rev-list", "--count", f"HEAD..origin/{BRANCH}")
     if counted.returncode != 0:
-        return UpdateStatus(error="변경 사항을 세지 못했습니다.")
-    behind = int(counted.stdout.strip() or 0)
+        return UpdateStatus(error=_first_line(counted.stderr, "변경 사항을 세지 못했습니다."))
+    try:
+        behind = int(counted.stdout.strip() or 0)
+    except ValueError:
+        return UpdateStatus(error="변경 사항 수를 읽지 못했습니다.")
 
     status = UpdateStatus(
         available=behind > 0,
@@ -123,6 +166,6 @@ def apply() -> tuple[bool, str]:
     if pulled.returncode != 0:
         return False, (
             "빨리감기로 갱신할 수 없습니다. 로컬 커밋이 있는지 확인하세요.\n"
-            + (pulled.stderr or "").strip()[:300]
+            + _first_line(pulled.stderr, "")
         )
     return True, f"업데이트 {status.behind}건을 적용했습니다. 앱을 다시 시작하면 반영됩니다."
