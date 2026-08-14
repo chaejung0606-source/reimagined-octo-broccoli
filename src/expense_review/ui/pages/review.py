@@ -30,7 +30,7 @@ from ...models import ReviewResult, Severity
 from ...report import mask, to_markdown
 from ...review import EXPENSE_TYPES, review, review_batch
 from ..state import AppState
-from ..theme import COLORS, SEVERITY_STYLE
+from ..theme import COLORS, SEVERITY_STYLE, neon_glow
 from ..widgets import Card, DonutChart, EmptyState, StatTile, muted_label
 
 SUBTYPES = {
@@ -149,6 +149,7 @@ class ReviewPage(QWidget):
         actions.addWidget(self.export_button)
         self.run_button = QPushButton("검토 시작")
         self.run_button.setObjectName("primary")
+        neon_glow(self.run_button)
         self.run_button.clicked.connect(self._run)
         actions.addWidget(self.run_button)
         card.add_layout(actions)

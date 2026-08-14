@@ -35,26 +35,49 @@ def _star_field(width: float, height: float) -> list[tuple[float, float, float, 
 
 
 def paint_starfield(painter: QPainter, rect: QRectF, base: QColor,
-                    nebula: QColor) -> None:
-    """딥 퍼플 배경에 성운 몇 덩이와 별을 얹는다."""
+                    nebula: QColor, accent: QColor | None = None) -> None:
+    """딥 퍼플 배경에 뿌연 보랏빛 번짐과 별을 얹는다.
+
+    유리판(카드)이 얹힐 바탕이라, 배경 자체가 균일하면 유리가 유리로 보이지
+    않는다. 큰 라디얼 그라데이션 몇 덩이로 밝기에 흐름을 만들고, 가장자리는
+    어둡게 눌러 가운데가 떠 보이게 한다.
+    """
     painter.save()
     painter.fillRect(rect, base)
     painter.setRenderHint(QPainter.Antialiasing)
     painter.setPen(Qt.NoPen)
 
     width, height = rect.width(), rect.height()
+    span = max(width, height)
+    accent = accent or nebula
 
-    # 성운 — 반투명 라디얼 그라데이션 몇 덩이로 배경 명도에 흐름을 만든다
-    for fx, fy, fr, alpha in ((0.82, 0.10, 0.55, 46), (0.16, 0.85, 0.50, 38),
-                              (0.45, 0.40, 0.65, 22)):
+    # 번짐 — 넓고 옅게. 좁고 진하면 '얼룩'으로 보인다.
+    blooms = (
+        (0.80, 0.06, 0.72, 74, nebula),
+        (0.12, 0.92, 0.66, 60, accent),
+        (0.42, 0.34, 0.90, 30, nebula),
+    )
+    for fx, fy, fr, alpha, color in blooms:
         center = QPointF(rect.left() + width * fx, rect.top() + height * fy)
-        glow = QRadialGradient(center, max(width, height) * fr)
-        tint = QColor(nebula)
+        radius = span * fr
+        glow = QRadialGradient(center, radius)
+        tint = QColor(color)
         tint.setAlpha(alpha)
+        mid = QColor(color)
+        mid.setAlpha(alpha // 3)
         glow.setColorAt(0.0, tint)
-        glow.setColorAt(1.0, QColor(0, 0, 0, 0))
+        glow.setColorAt(0.45, mid)
+        glow.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
         painter.setBrush(QBrush(glow))
-        painter.drawEllipse(center, max(width, height) * fr, max(width, height) * fr)
+        painter.drawEllipse(center, radius, radius)
+
+    # 가장자리를 눌러 주는 비네트
+    vignette = QRadialGradient(rect.center(), span * 0.78)
+    vignette.setColorAt(0.0, QColor(0, 0, 0, 0))
+    vignette.setColorAt(0.62, QColor(0, 0, 0, 0))
+    vignette.setColorAt(1.0, QColor(0, 0, 0, 92))
+    painter.setBrush(QBrush(vignette))
+    painter.drawRect(rect)
 
     # 별
     for x, y, radius, alpha in _star_field(width, height):

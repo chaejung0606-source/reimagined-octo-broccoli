@@ -22,35 +22,52 @@ from PySide6.QtWidgets import QGraphicsDropShadowEffect, QWidget
 PALETTES: dict[str, dict[str, str]] = {
     "galaxy": {
         "label": "퍼플 갤럭시",
-        # 딥 퍼플 배경 + 라벤더 카드. 배경과 카드의 명도 차로 '떠 있는' 느낌을 만든다.
-        "bg":            "#2B2750",
-        "gingham":       "#4B4488",   # 별하늘 배경의 성운 톤
-        "surface":       "#443E7C",
-        "surface_hi":    "#524B94",   # 카드 상단 하이라이트 (soft 3D)
-        "surface_alt":   "#575096",
-        "border":        "#5F58A8",   # 카드 림 라이트
-        "border_strong": "#7A72C4",
+        # 어두운 보랏빛 바탕 위에 '반투명 유리판'을 얹은 화면.
+        # 카드 배경에 알파를 주면 뒤의 별하늘이 비쳐, 색만 칠한 것과 달리
+        # 깊이가 생긴다. 테두리는 밝게 둬서 유리 모서리에 빛이 걸린 느낌을 낸다.
+        "bg":            "#17112E",
+        "gingham":       "#6B4FCF",   # 배경 성운(bloom) 톤
+        "surface":       "#2E2552",
+        "surface_hi":    "#3D3168",
+        "surface_alt":   "#453873",
+        "border":        "#514296",
+        "border_strong": "#8F6FE0",
 
-        "text":          "#F1EFFF",
-        "text_muted":    "#BEB9EA",
-        "text_faint":    "#8F89C6",
+        "text":          "#F4F0FF",
+        "text_muted":    "#C4B9F0",
+        "text_faint":    "#8B7FC4",
 
-        "navy":          "#1E1B3E",   # 사이드바 그라데이션
-        "indigo":        "#6C63C8",
-        "blue":          "#8F87E8",
-        "blue_soft":     "#B9B3F2",
-        "teal":          "#C9C4FA",   # 밝은 라벤더 포인트
-        "teal_soft":     "#E4E1FF",
+        "navy":          "#150F2C",   # 사이드바 그라데이션
+        "indigo":        "#7B5CE6",
+        "blue":          "#A98BFF",
+        "blue_soft":     "#C9B6FF",
+        "teal":          "#D9CBFF",
+        "teal_soft":     "#EFE8FF",
 
-        "error":         "#FF7B72",
-        "warn":          "#FFC466",
+        "error":         "#FF8A93",
+        "warn":          "#FFCB6B",
         "review":        "#9DBEFF",
         "pass":          "#7BE0B8",
 
         "on_dark":       "#FFFFFF",
-        "on_dark_muted": "#CFCAF4",
-        "shadow":        "#100C28",
-        "radius":        "24",
+        "on_dark_muted": "#CFC4FA",
+        "shadow":        "#3A1370",   # 검정 대신 짙은 보라 — 어두운 배경에서 헤일로로 읽힌다
+        "shadow_boost":  "2.1",       # 그림자를 진하게 (유리판이 떠 보이도록)
+        "glow":          "#8F6FE0",   # 강조 버튼에 두르는 네온 헤일로
+        "radius":        "26",
+
+        # 유리판 — 알파값이 핵심이다. 불투명하게 바꾸면 깊이가 사라진다.
+        "bloom":         "#B06AE8",   # 배경 번짐에 섞는 분홍빛
+        "card_top":      "rgba(160, 140, 235, 0.50)",
+        "card_mid":      "rgba(104, 88, 172, 0.34)",
+        "card_bottom":   "rgba(44, 35, 80, 0.68)",
+        "card_border":   "rgba(198, 182, 255, 0.26)",
+        "card_rim":      "rgba(255, 255, 255, 0.44)",   # 윗면 반사선
+        "btn_top":       "rgba(168, 150, 238, 0.44)",
+        "btn_mid":       "rgba(112, 96, 186, 0.34)",
+        "btn_bottom":    "rgba(60, 50, 112, 0.56)",
+        "btn_border":    "rgba(190, 172, 255, 0.34)",
+        "btn_rim":       "rgba(255, 255, 255, 0.38)",
     },
     "cozy": {
         "label": "포근한 체크",
@@ -82,6 +99,17 @@ PALETTES: dict[str, dict[str, str]] = {
         "shadow":        "#4A3527",
         "radius":        "20",
         "surface_hi":    "#FFFCF5",
+
+        "card_top":      "#FFFCF5",
+        "card_mid":      "#FFFCF5",
+        "card_bottom":   "#FFFCF5",
+        "card_border":   "#EADFCB",
+        "card_rim":      "#EADFCB",
+        "btn_top":       "#FFFCF5",
+        "btn_mid":       "#FBF6EB",
+        "btn_bottom":    "#F7EFE0",
+        "btn_border":    "#D9C7AC",
+        "btn_rim":       "#D9C7AC",
     },
     "studio": {
         "label": "차분한 대시보드",
@@ -113,6 +141,17 @@ PALETTES: dict[str, dict[str, str]] = {
         "shadow":        "#141B34",
         "radius":        "20",
         "surface_hi":    "#FFFFFF",
+
+        "card_top":      "#FFFFFF",
+        "card_mid":      "#FFFFFF",
+        "card_bottom":   "#FFFFFF",
+        "card_border":   "#E2E8F4",
+        "card_rim":      "#E2E8F4",
+        "btn_top":       "#FFFFFF",
+        "btn_mid":       "#FBFCFE",
+        "btn_bottom":    "#F6F8FC",
+        "btn_border":    "#CBD5EA",
+        "btn_rim":       "#CBD5EA",
     },
 }
 
@@ -177,7 +216,29 @@ def card_shadow(widget: QWidget, blur: int = 26, alpha: int = 30, dy: int = 6) -
     effect.setBlurRadius(blur)
     effect.setOffset(0, dy)
     base = QColor(COLORS.get("shadow", COLORS["text"]))
-    effect.setColor(QColor(base.red(), base.green(), base.blue(), alpha))
+    # 테마별 배율. 호출부가 정한 상대적 세기(카드 > 타일 > 파일카드)는 지키면서
+    # 어두운 테마에서만 전체적으로 진해진다.
+    boost = float(COLORS.get("shadow_boost", "1"))
+    effect.setColor(QColor(base.red(), base.green(), base.blue(),
+                           min(255, round(alpha * boost))))
+    widget.setGraphicsEffect(effect)
+
+
+def neon_glow(widget: QWidget, blur: int = 30, alpha: int = 150) -> None:
+    """강조 요소 뒤에 깔리는 네온 헤일로.
+
+    그림자를 아래로 내리지 않고 사방으로 퍼뜨리면 '빛난다'로 읽힌다.
+    glow 색이 없는 테마(밝은 배경)에서는 평범한 그림자로 물러난다.
+    """
+    accent = COLORS.get("glow")
+    if accent is None:
+        card_shadow(widget, blur=18, alpha=28, dy=4)
+        return
+    effect = QGraphicsDropShadowEffect(widget)
+    effect.setBlurRadius(blur)
+    effect.setOffset(0, 0)
+    color = QColor(accent)
+    effect.setColor(QColor(color.red(), color.green(), color.blue(), alpha))
     widget.setGraphicsEffect(effect)
 
 
@@ -238,10 +299,13 @@ QLabel#versionLabel {{
 
 /* ── 카드 ─────────────────────────────────────────────── */
 QFrame#card {{
-    /* 위가 살짝 밝은 그라데이션 + 밝은 테두리(림 라이트) = 부드러운 입체감 */
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                stop:0 {c['surface_hi']}, stop:1 {c['surface']});
-    border: 1px solid {c['border']};
+    /* 반투명 유리판. 뒤의 별하늘이 비쳐 보여야 깊이가 생긴다.
+       위가 밝은 그라데이션 + 밝은 테두리(림 라이트)로 모서리에 빛을 건다. */
+    background: qlineargradient(x1:0, y1:0, x2:0.25, y2:1,
+                stop:0 {c['card_top']}, stop:0.42 {c['card_mid']},
+                stop:1 {c['card_bottom']});
+    border: 1px solid {c['card_border']};
+    border-top: 1px solid {c['card_rim']};
     border-radius: {radius}px;
 }}
 QFrame#cardAccent {{
@@ -274,10 +338,11 @@ QLabel#sectionHead {{ font-size: 13px; font-weight: 800; }}
 
 /* ── 입력 ─────────────────────────────────────────────── */
 QLineEdit, QComboBox, QSpinBox, QPlainTextEdit, QTextEdit {{
-    background: {c['surface']};
+    background: qlineargradient(x1:0, y1:0, x2:0.3, y2:1,
+                stop:0 {c['btn_top']}, stop:1 {c['btn_bottom']});
     color: {c['text']};
-    border: 1px solid {c['border_strong']};
-    border-radius: 12px;
+    border: 1px solid {c['btn_border']};
+    border-radius: 14px;
     padding: 8px 12px;
     font-size: 12px;
     selection-background-color: {c['indigo']};
@@ -298,27 +363,32 @@ QComboBox QAbstractItemView {{
 }}
 
 QPushButton {{
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                stop:0 {c['surface_hi']}, stop:1 {c['surface']});
-    border: 1px solid {c['border_strong']};
-    border-radius: 13px;
-    padding: 8px 15px;
+    /* 알약 모양 유리 버튼. radius 를 높이의 절반보다 크게 줘서 양끝이 둥글다. */
+    background: qlineargradient(x1:0, y1:0, x2:0.25, y2:1,
+                stop:0 {c['btn_top']}, stop:0.5 {c['btn_mid']},
+                stop:1 {c['btn_bottom']});
+    border: 1px solid {c['btn_border']};
+    border-top: 1px solid {c['btn_rim']};
+    border-radius: 18px;
+    padding: 8px 17px;
     font-size: 12px;
     font-weight: 700;
     min-height: 17px;
 }}
-QPushButton:hover    {{ border-color: {c['border_strong']}; color: {c['teal_soft']}; background: {c['surface_alt']}; }}
-QPushButton:pressed  {{ padding-top: 10px; padding-bottom: 6px; background: {c['surface']}; }}
+QPushButton:hover    {{ border-color: {c['border_strong']}; color: {c['teal_soft']}; }}
+QPushButton:pressed  {{ padding-top: 10px; padding-bottom: 6px; background: {c['btn_bottom']}; }}
 QPushButton:disabled {{ color: {c['text_faint']}; border-color: {c['border']}; }}
 
 QPushButton#primary {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                 stop:0 {c['indigo']}, stop:1 {c['blue']});
-    border: none;
+    /* 밝은 테두리 한 줄이 네온 링처럼 읽힌다 */
+    border: 1px solid {c['btn_border']};
+    border-radius: 20px;
     color: {c['on_dark']};
     font-size: 13px;
     font-weight: 800;
-    padding: 11px 20px;
+    padding: 11px 22px;
 }}
 QPushButton#primary:hover    {{ background: {c['blue']}; color: {c['on_dark']}; }}
 QPushButton#primary:pressed  {{ padding-top: 13px; padding-bottom: 9px; background: {c['indigo']}; }}

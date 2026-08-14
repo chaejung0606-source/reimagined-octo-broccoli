@@ -120,10 +120,18 @@ class FilesPage(QWidget):
         self.detail_stack.setCurrentWidget(self.detail_empty)
 
     def _clear_grid(self) -> None:
+        """카드를 걷어낸다.
+
+        deleteLater 만 걸면 실제 삭제가 다음 이벤트 루프로 밀린다. 카드가
+        반투명이라 그동안 새 카드 밑으로 옛 카드가 비쳐 글자가 겹쳐 보인다.
+        setParent(None) 로 화면에서 먼저 떼어 내야 한다.
+        """
         while self.grid.count():
             item = self.grid.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
 
     def _rebuild_grid(self) -> None:
         from ..widgets import FileCard
@@ -135,6 +143,7 @@ class FilesPage(QWidget):
             self.grid.addWidget(card, position // CARD_COLUMNS, position % CARD_COLUMNS)
         for column in range(CARD_COLUMNS):
             self.grid.setColumnStretch(column, 1)
+        self.grid_holder.update()
 
     # ── 상세 ─────────────────────────────────────────────────────────────
     def _show_summary(self, summary: DocumentSummary) -> None:

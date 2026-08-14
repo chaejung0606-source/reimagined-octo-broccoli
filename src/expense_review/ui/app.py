@@ -51,7 +51,8 @@ class RootWidget(QWidget):
         painter = QPainter(self)
         if is_galaxy():
             paint_starfield(painter, QRectF(self.rect()),
-                            QColor(COLORS["bg"]), QColor(COLORS["gingham"]))
+                            QColor(COLORS["bg"]), QColor(COLORS["gingham"]),
+                            QColor(COLORS["bloom"]))
         elif is_cozy():
             paint_gingham(painter, QRectF(self.rect()),
                           QColor(COLORS["bg"]), QColor(COLORS["gingham"]))

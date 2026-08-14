@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ... import config, sheets, updater
-from ..theme import COLORS, PALETTES, current_theme
+from ..theme import COLORS, PALETTES, current_theme, neon_glow
 from ..widgets import Card, muted_label
 
 
@@ -100,6 +100,7 @@ class UpdatesPage(QWidget):
         self.check_button.clicked.connect(lambda: self._start("check"))
         self.apply_button = QPushButton("업데이트 적용")
         self.apply_button.setObjectName("primary")
+        neon_glow(self.apply_button)
         self.apply_button.setEnabled(False)
         self.apply_button.clicked.connect(self._confirm_apply)
         buttons.addWidget(self.check_button)

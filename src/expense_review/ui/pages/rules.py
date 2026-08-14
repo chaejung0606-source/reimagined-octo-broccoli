@@ -32,7 +32,7 @@ from ...classify import DOC_LABELS
 from ...engine import CHECKS, Rule, load_ruleset
 from ...models import Severity
 from ...review import EXPENSE_TYPES
-from ..theme import COLORS, SEVERITY_STYLE
+from ..theme import COLORS, SEVERITY_STYLE, neon_glow
 from ..widgets import Card, muted_label
 
 LAYER_LABELS = {
@@ -150,6 +150,7 @@ class RulesPage(QWidget):
         self.reset_button.clicked.connect(self._reset_rule)
         self.save_button = QPushButton("저장")
         self.save_button.setObjectName("primary")
+        neon_glow(self.save_button)
         self.save_button.clicked.connect(self._save_rule)
         buttons.addWidget(self.reset_button)
         buttons.addWidget(self.save_button)
@@ -179,6 +180,7 @@ class RulesPage(QWidget):
         buttons.addStretch(1)
         save = QPushButton("설정 저장")
         save.setObjectName("primary")
+        neon_glow(save)
         save.clicked.connect(self._save_settings)
         buttons.addWidget(save)
         card.add_layout(buttons)
