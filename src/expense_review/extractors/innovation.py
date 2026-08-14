@@ -28,7 +28,10 @@ def extract_application(document: Document) -> None:
         _put(document, "activity_field", match.group("field"))
 
     _capture(document, "topic", flat, r"활동주제(.+?)신청자정보")
-    _capture(document, "rrn", flat, r"주민등록번호([\d\-]+)", cast=nz.digits_only)
+    # 라벨 뒤에 붙은 숫자를 그대로 믿으면 안 된다. 표가 평문으로 눌리면
+    # '주민등록번호' 다음에 옆 칸의 학번이 따라붙어 202312559 를 주민번호로 읽고
+    # '13자리로 기재하라'는 엉뚱한 요청이 나간다. 자릿수가 맞을 때만 받는다.
+    _capture(document, "rrn", flat, r"주민등록번호(\d{6}\s*-\s*\d{7})", cast=nz.digits_only)
     _capture(document, "account_no", flat, r"계좌번호(\d[\d\-]*)", cast=nz.digits_only)
     _capture(document, "bank", flat, r"은행([가-힣]+(?:은행|뱅크))", cast=nz.bank_alias)
 

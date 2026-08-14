@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 from ... import config, sheets
 from ...models import ReviewResult, Severity
 from ...report import mask, to_markdown
-from ...review import EXPENSE_TYPES, review, review_batch
+from ...review import EXPENSE_TYPES, review_folder
 from ..state import AppState
 from ..theme import COLORS, SEVERITY_STYLE, card_shadow
 from ..glossy import GlossyButton
@@ -50,13 +50,11 @@ class ReviewWorker(QObject):
     def run(self) -> None:
         try:
             options = self.options
-            if options["batch"]:
-                results = review_batch(options["path"], options["expense_type"],
-                                       options["subtype"], options["roster"])
-            else:
-                results = [review(options["path"], options["expense_type"],
-                                  options["owner"] or options["path"].name,
-                                  options["subtype"], options["roster"])]
+            # 사람별로 나누는 일은 review_folder 가 알아서 한다. 사용자가 '한 명씩'과
+            # '여러 명'을 고르게 두면, 잘못 고른 채로 서로 다른 사람의 개인정보를
+            # 통일하라는 요청이 나간다.
+            results = review_folder(options["path"], options["expense_type"],
+                                    options["subtype"], options["roster"])
             self.finished.emit(results)
         except Exception:
             self.failed.emit(traceback.format_exc())
@@ -140,8 +138,9 @@ class ReviewPage(QWidget):
 
         actions = QHBoxLayout()
         actions.setSpacing(10)
-        self.batch_check = QCheckBox("하위 폴더마다 제출자로 보고 일괄 검토")
-        actions.addWidget(self.batch_check)
+        actions.addWidget(muted_label(
+            "하위 폴더가 있으면 폴더별로, 파일만 있으면 서류에서 읽은 학번·성명으로 "
+            "지급대상자를 갈라 검토합니다."))
         actions.addStretch(1)
         self.export_button = GlossyButton("수정 요청서 저장")
         self.export_button.setObjectName("ghost")
@@ -248,7 +247,6 @@ class ReviewPage(QWidget):
             "subtype": self.subtype.currentData(),
             "owner": self.owner_edit.text().strip(),
             "roster": Path(roster_text) if roster_text else None,
-            "batch": self.batch_check.isChecked(),
         }
         config.update_setting("last_folder", str(path))
 

@@ -1,6 +1,6 @@
 """명령줄 인터페이스.
 
-  expense-review <폴더> --type 출장비 [--roster 지급내역.pdf] [--batch]
+  expense-review <폴더> --type 출장비 [--roster 지급내역.pdf]
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from .report import to_markdown, to_text
-from .review import EXPENSE_TYPES, review, review_batch
+from .review import EXPENSE_TYPES, review_folder
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,7 +22,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--subtype", choices=("TA", "SUPPORTERS"), help="근로장학금 하위 유형")
     parser.add_argument("--owner", help="제출자 성명 (기본값: 폴더명)")
     parser.add_argument("--roster", type=Path, help="지급내역 파일 (폴더 밖에 있을 때)")
-    parser.add_argument("--batch", action="store_true", help="하위 폴더마다 제출자로 보고 일괄 검토")
     parser.add_argument("--markdown", type=Path, help="수정 요청서를 마크다운 파일로 저장")
     parser.add_argument("--show-skipped", action="store_true", help="자동 검사하지 않은 규칙도 표시")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -43,11 +42,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"경로를 찾을 수 없습니다: {args.path}", file=sys.stderr)
         return 2
 
-    if args.batch:
-        results = review_batch(args.path, args.type, args.subtype, args.roster)
-    else:
-        owner = args.owner or (args.path.name if args.path.is_dir() else None)
-        results = [review(args.path, args.type, owner, args.subtype, args.roster)]
+    # 사람별로 나누는 일은 review_folder 가 알아서 한다.
+    results = review_folder(args.path, args.type, args.subtype, args.roster)
 
     for result in results:
         print(to_text(result, show_skipped=args.show_skipped))
