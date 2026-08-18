@@ -37,11 +37,11 @@ class FilesPage(QWidget):
         self._summaries: list[DocumentSummary] = []
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(32, 26, 32, 26)
+        layout.setSpacing(22)
 
         header = QVBoxLayout()
-        header.setSpacing(2)
+        header.setSpacing(4)
         title = QLabel("파일별 보완사항")
         title.setObjectName("pageTitle")
         header.addWidget(title)
@@ -49,7 +49,7 @@ class FilesPage(QWidget):
         layout.addLayout(header)
 
         picker = QHBoxLayout()
-        picker.setSpacing(10)
+        picker.setSpacing(14)
         picker.addWidget(_label("제출자"))
         self.owner_combo = QComboBox()
         self.owner_combo.setMinimumWidth(220)
@@ -69,8 +69,8 @@ class FilesPage(QWidget):
         self.grid_holder = QWidget()
         self.grid_holder.setObjectName("page")
         self.grid = QGridLayout(self.grid_holder)
-        self.grid.setContentsMargins(2, 2, 2, 2)
-        self.grid.setSpacing(12)
+        self.grid.setContentsMargins(4, 4, 4, 4)
+        self.grid.setSpacing(18)
         self.grid.setAlignment(Qt.AlignTop)
         self.scroll.setWidget(self.grid_holder)
         cards_card.add(self.scroll, 1)

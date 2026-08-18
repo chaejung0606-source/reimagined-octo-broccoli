@@ -299,7 +299,7 @@ QTreeWidget, QListWidget, QTableWidget {{
     outline: none;
 }}
 QTreeWidget::item, QListWidget::item {{
-    padding: 8px 4px;
+    padding: 10px 6px;
     border-radius: 10px;
 }}
 QTreeWidget::item:hover, QListWidget::item:hover {{ background: {c['surface_alt']}; }}
@@ -332,7 +332,7 @@ QScrollBar::handle:horizontal {{
     background: {c['border_strong']}; border-radius: 4px; min-width: 30px;
 }}
 
-QSplitter::handle {{ background: transparent; width: 14px; }}
+QSplitter::handle {{ background: transparent; width: 22px; }}
 
 QStatusBar {{ background: transparent; color: {c['text_faint']}; font-size: 11px; }}
 QToolTip {{

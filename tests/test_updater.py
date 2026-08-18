@@ -130,3 +130,37 @@ def test_check_survives_none_output(monkeypatch):
     status = updater.check()          # 예외 없이 끝나야 한다
     assert status.behind == 3
     assert status.messages == ()
+
+
+# ── 무슨 일이 있어도 예외가 밖으로 새지 않는다 ─────────────────────────────
+
+def test_check_never_raises(monkeypatch):
+    """예상 못 한 예외도 화면에 띄울 문구로 바뀐다."""
+    def boom(*args, **kwargs):
+        raise RuntimeError("알 수 없는 무언가")
+
+    monkeypatch.setattr(updater, "is_git_checkout", boom)
+    status = updater.check()
+    assert not status.available
+    assert "예상 못 한 문제" in status.error
+
+
+def test_apply_never_raises(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("알 수 없는 무언가")
+
+    monkeypatch.setattr(updater, "check", boom)
+    ok, message = updater.apply()
+    assert ok is False and "예상 못 한 문제" in message
+
+
+def test_fetch_failure_suggests_zip(monkeypatch):
+    """망에서 막히면 대안을 함께 알려 준다."""
+    def run(args, **kwargs):
+        if "remote" in args:
+            return subprocess.CompletedProcess(
+                args, 0, f"https://github.com/{updater.EXPECTED_REPO}", "")
+        return subprocess.CompletedProcess(args, 128, "", "fatal: unable to access")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert "zip" in updater.check().error

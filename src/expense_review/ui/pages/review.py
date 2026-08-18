@@ -67,8 +67,8 @@ class ReviewPage(QWidget):
         self._thread: QThread | None = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(32, 26, 32, 26)
+        layout.setSpacing(22)
 
         layout.addLayout(self._build_heading())
         layout.addWidget(self._build_input_card())
@@ -90,8 +90,8 @@ class ReviewPage(QWidget):
     def _build_input_card(self) -> QWidget:
         card = Card()
         grid = QGridLayout()
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(8)
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(10)
 
         self.expense_type = QComboBox()
         self.expense_type.addItems(EXPENSE_TYPES)
@@ -119,7 +119,7 @@ class ReviewPage(QWidget):
         grid.addWidget(self.subtype, 1, 1)
         grid.addWidget(_field_label("서류 폴더"), 0, 2)
         folder_row = QHBoxLayout()
-        folder_row.setSpacing(6)
+        folder_row.setSpacing(8)
         folder_row.addWidget(self.path_edit, 1)
         folder_row.addWidget(browse)
         grid.addLayout(folder_row, 1, 2)
@@ -127,7 +127,7 @@ class ReviewPage(QWidget):
         grid.addWidget(self.owner_edit, 1, 3)
         grid.addWidget(_field_label("지급내역"), 0, 4)
         roster_row = QHBoxLayout()
-        roster_row.setSpacing(6)
+        roster_row.setSpacing(8)
         roster_row.addWidget(self.roster_edit, 1)
         roster_row.addWidget(roster_browse)
         grid.addLayout(roster_row, 1, 4)
@@ -136,7 +136,7 @@ class ReviewPage(QWidget):
         card.add_layout(grid)
 
         actions = QHBoxLayout()
-        actions.setSpacing(10)
+        actions.setSpacing(14)
         actions.addWidget(muted_label(
             "하위 폴더가 있으면 폴더별로, 파일만 있으면 서류에서 읽은 학번·성명으로 "
             "지급대상자를 갈라 검토합니다."))
@@ -161,7 +161,7 @@ class ReviewPage(QWidget):
 
     def _build_stat_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
-        row.setSpacing(14)
+        row.setSpacing(18)
         self.tile_total = StatTile("검토 대상", "0", "제출자 · 파일", variant="cardAccent")
         self.tile_error = StatTile("수정 필요", "0", "반드시 고쳐야 하는 항목", tone="Error")
         self.tile_warn = StatTile("확인 요망", "0", "담당자 판단이 필요", tone="Warn")
@@ -185,14 +185,14 @@ class ReviewPage(QWidget):
         right.setObjectName("page")
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(14)
+        right_layout.setSpacing(18)
 
         donut_card = Card("구성비", "심각도")
         donut_row = QHBoxLayout()
         self.donut = DonutChart()
         donut_row.addWidget(self.donut, 1)
         self.legend = QVBoxLayout()
-        self.legend.setSpacing(6)
+        self.legend.setSpacing(10)
         legend_holder = QWidget()
         legend_holder.setLayout(self.legend)
         donut_row.addWidget(legend_holder)

@@ -67,11 +67,11 @@ class UpdatesPage(QWidget):
         outer.addWidget(scroll)
 
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(32, 26, 32, 26)
+        layout.setSpacing(22)
 
         header = QVBoxLayout()
-        header.setSpacing(2)
+        header.setSpacing(4)
         title = QLabel("설정")
         title.setObjectName("pageTitle")
         header.addWidget(title)

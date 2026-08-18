@@ -31,12 +31,12 @@ class Card(QFrame):
         card_shadow(self)
 
         self._layout = QVBoxLayout(self)
-        self._layout.setContentsMargins(18, 16, 18, 16)
-        self._layout.setSpacing(12)
+        self._layout.setContentsMargins(24, 22, 24, 22)
+        self._layout.setSpacing(16)
 
         if title or hint:
             header = QHBoxLayout()
-            header.setSpacing(8)
+            header.setSpacing(10)
             label = QLabel(title)
             label.setObjectName("cardTitle")
             header.addWidget(label)
@@ -73,15 +73,15 @@ class StatTile(QFrame):
                  parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName(variant)
-        self.setMinimumHeight(104)
+        self.setMinimumHeight(116)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         card_shadow(self, blur=22, alpha=30)
 
         self._tone = tone
         self._variant = variant
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 14, 18, 14)
-        layout.setSpacing(2)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(4)
 
         self.label = QLabel(label)
         self.value = QLabel(value)
@@ -243,8 +243,8 @@ class FileCard(QFrame):
         card_shadow(self, blur=18, alpha=20, dy=4)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(9)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(11)
 
         top = QHBoxLayout()
         top.setSpacing(8)

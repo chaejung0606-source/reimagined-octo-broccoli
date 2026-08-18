@@ -52,11 +52,11 @@ class RulesPage(QWidget):
         self._current: Rule | None = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(32, 26, 32, 26)
+        layout.setSpacing(22)
 
         header = QVBoxLayout()
-        header.setSpacing(2)
+        header.setSpacing(4)
         title = QLabel("검토 기준")
         title.setObjectName("pageTitle")
         header.addWidget(title)
@@ -67,7 +67,7 @@ class RulesPage(QWidget):
         layout.addLayout(header)
 
         picker = QHBoxLayout()
-        picker.setSpacing(10)
+        picker.setSpacing(14)
         picker.addWidget(_label("지출종류"))
         self.expense_type = QComboBox()
         self.expense_type.addItems(EXPENSE_TYPES)
@@ -111,12 +111,12 @@ class RulesPage(QWidget):
         holder.setObjectName("page")
         scroll.setWidget(holder)
         outer = QVBoxLayout(holder)
-        outer.setContentsMargins(0, 0, 6, 0)
-        outer.setSpacing(14)
+        outer.setContentsMargins(4, 4, 12, 6)
+        outer.setSpacing(20)
 
         self.editor_card = Card("기준 편집", "선택한 기준")
         form = QFormLayout()
-        form.setSpacing(9)
+        form.setSpacing(12)
 
         self.rule_title = QLabel("왼쪽에서 기준을 선택하세요.")
         self.rule_title.setWordWrap(True)
@@ -182,7 +182,7 @@ class RulesPage(QWidget):
         self.settings_holder = QWidget()
         self.settings_holder.setObjectName("page")
         self.settings_form = QFormLayout(self.settings_holder)
-        self.settings_form.setSpacing(8)
+        self.settings_form.setSpacing(12)
         scroll.setWidget(self.settings_holder)
         card.add(scroll, 1)
 

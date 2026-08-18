@@ -120,7 +120,19 @@ def current_version() -> str:
 
 
 def check() -> UpdateStatus:
-    """원격에 새 커밋이 있는지 본다. 파일은 건드리지 않는다."""
+    """원격에 새 커밋이 있는지 본다. 파일은 건드리지 않는다.
+
+    무슨 일이 있어도 예외를 던지지 않는다. 예외가 위로 새면 화면에는
+    '오류가 발생했습니다' 만 남고 무엇이 문제인지 알 수 없다. 예상 못 한
+    상황이라도 사람이 읽을 수 있는 문구로 바꿔 돌려준다.
+    """
+    try:
+        return _check()
+    except Exception as error:                       # noqa: BLE001
+        return UpdateStatus(error=f"업데이트 확인 중 예상 못 한 문제: {error}"[:200])
+
+
+def _check() -> UpdateStatus:
     if not is_git_checkout():
         return UpdateStatus(
             error="설치 폴더에 저장소 정보(.git)가 없어 자동 업데이트를 쓸 수 없습니다. "
@@ -133,7 +145,11 @@ def check() -> UpdateStatus:
 
     fetched = _git("fetch", "origin", BRANCH)
     if fetched.returncode != 0:
-        return UpdateStatus(error=_first_line(fetched.stderr, "네트워크 오류"))
+        # 학교망·방화벽에서 막히는 일이 실제로 있었다. 막힌 채로 두지 않고
+        # 다른 길을 함께 알려 준다.
+        return UpdateStatus(error=(
+            _first_line(fetched.stderr, "네트워크 오류")
+            + "  ·  받아오지 못하면 새 zip 을 받아 폴더째 교체하셔도 됩니다."))
 
     counted = _git("rev-list", "--count", f"HEAD..origin/{BRANCH}")
     if counted.returncode != 0:
@@ -163,7 +179,17 @@ def check() -> UpdateStatus:
 
 
 def apply() -> tuple[bool, str]:
-    """확인된 업데이트를 적용한다. 되돌릴 수 없는 병합은 하지 않는다."""
+    """확인된 업데이트를 적용한다. 되돌릴 수 없는 병합은 하지 않는다.
+
+    check() 와 마찬가지로 예외를 밖으로 내보내지 않는다.
+    """
+    try:
+        return _apply()
+    except Exception as error:                       # noqa: BLE001
+        return False, f"업데이트 적용 중 예상 못 한 문제: {error}"[:200]
+
+
+def _apply() -> tuple[bool, str]:
     status = check()
     if status.error:
         return False, status.error
