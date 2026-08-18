@@ -20,10 +20,6 @@ from PySide6.QtWidgets import (
 
 from .theme import COLORS, SEVERITY_STYLE, card_shadow
 
-# 카드 변형 이름 → 유광 테마에서 쓸 색 토큰
-_VARIANT_TINT = {"cardAccent": "navy", "cardTeal": "teal"}
-_TONE_COLOR = {"Error": "error", "Warn": "warn", "Review": "review"}
-
 
 class Card(QFrame):
     """흰 카드. 제목과 오른쪽 보조 위젯을 얹을 수 있다."""
@@ -64,19 +60,6 @@ class Card(QFrame):
         if self._header is not None:
             self._header.addWidget(widget)
 
-    def paintEvent(self, event) -> None:  # noqa: N802
-        """스타일시트 대신 직접 그린다.
-
-        아크릴 판의 두께감(크롬 림 + 윗면 반사 + 안쪽 그림자)은 QSS 로 낼 수 없다.
-        """
-        from .glossy import paint_glossy
-
-        painter = QPainter(self)
-        tint = _VARIANT_TINT.get(self.objectName())
-        base = QColor(COLORS[tint]) if tint else QColor(COLORS["pearl"])
-        paint_glossy(painter, QRectF(self.rect()).adjusted(1, 1, -1, -2),
-                     float(COLORS.get("radius", "22")), base,
-                     gloss=0.30 if tint is None else 0.42, rim=2.0)
 
 
 class StatTile(QFrame):
@@ -114,10 +97,10 @@ class StatTile(QFrame):
     def _apply_text_roles(self) -> None:
         """글자색 역할을 정한다.
 
-        타일 자체가 컬러 플라스틱이므로 숫자에 심각도 색을 입히면 같은 색 위에
-        같은 색이라 읽히지 않는다. 컬러 면에서는 밝은 글자를 쓴다.
+        색을 입힌 카드(cardAccent) 위에서만 밝은 글자를 쓴다. 흰 카드에서는
+        숫자에 판정 색을 입혀 수치가 먼저 읽히게 한다.
         """
-        on_color = self._variant != "card" or bool(self._tone)
+        on_color = self._variant != "card"
         self.label.setObjectName("statLabelDark" if on_color else "statLabel")
         self.caption.setObjectName("statLabelDark" if on_color else "statCaption")
         if on_color:
@@ -138,22 +121,6 @@ class StatTile(QFrame):
         if caption:
             self.caption.setText(caption)
 
-    def paintEvent(self, event) -> None:  # noqa: N802
-        from .glossy import paint_glossy
-
-        painter = QPainter(self)
-        tint = _VARIANT_TINT.get(self.objectName())
-        if tint:
-            base = QColor(COLORS[tint])
-        elif self._tone:
-            # 레퍼런스처럼 타일 자체를 컬러 플라스틱으로 — 화면에 리듬이 생긴다
-            base = QColor(COLORS[_TONE_COLOR[self._tone]])
-        else:
-            base = QColor(COLORS["pearl"])
-        # 글자가 얹히는 면이라 반사를 약하게 — 강하면 라벨이 흰빛에 묻힌다
-        paint_glossy(painter, QRectF(self.rect()).adjusted(1, 1, -1, -2),
-                     float(COLORS.get("radius", "22")), base,
-                     gloss=0.30, rim=2.4, shine=86)
 
 
 class DonutChart(QWidget):
@@ -313,12 +280,6 @@ class FileCard(QFrame):
         pills.addStretch(1)
         layout.addLayout(pills)
 
-    def paintEvent(self, event) -> None:  # noqa: N802
-        from .glossy import paint_glossy
-
-        painter = QPainter(self)
-        paint_glossy(painter, QRectF(self.rect()).adjusted(1, 1, -1, -2),
-                     18.0, QColor(COLORS["pearl"]), gloss=0.32, rim=2.0)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         self.clicked.emit(self.summary)

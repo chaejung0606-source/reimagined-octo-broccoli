@@ -31,26 +31,54 @@ from PySide6.QtWidgets import (
 )
 
 from .. import config, updater
-from .backgrounds import paint_ivory
+from .backgrounds import paint_aurora
 from .pages import FilesPage, ReviewPage, RulesPage, UpdatesPage
 from .state import AppState
+from .icons import paint_icon
 from .theme import COLORS, stylesheet
 
 NAV_ITEMS = [
-    ("검토", "서류를 읽고 기준에 맞춰 확인합니다"),
-    ("파일별 보완사항", "파일마다 고칠 부분을 모아 봅니다"),
-    ("검토 기준", "기준을 확인하고 고칩니다"),
-    ("설정", "구글시트 연동과 기능 갱신"),
+    ("검토", "document-check", "서류를 읽고 기준에 맞춰 확인합니다"),
+    ("파일별 보완사항", "folder", "파일마다 고칠 부분을 모아 봅니다"),
+    ("검토 기준", "sliders", "기준을 확인하고 고칩니다"),
+    ("설정", "gear", "구글시트 연동과 기능 갱신"),
 ]
 
 
 class RootWidget(QWidget):
-    """창 전체 배경. 아이보리 바탕에 가운데가 밝은 빛을 깐다."""
+    """창 전체 배경. 민트 → 하늘색 → 연한 남보라로 아주 옅게 흐른다."""
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
-        paint_ivory(painter, QRectF(self.rect()),
-                    QColor(COLORS["bg"]), QColor(COLORS["center_light"]))
+        paint_aurora(painter, QRectF(self.rect()),
+                     QColor(COLORS["grad_mint"]), QColor(COLORS["grad_cyan"]),
+                     QColor(COLORS["grad_blue"]))
+
+
+class NavButton(QPushButton):
+    """사이드바 항목. 라인 아이콘 + 글자.
+
+    아이콘을 QSS 로 넣으려면 파일이 있어야 한다. 코드로 그리면 파일이 없고,
+    선택 여부에 따라 색이 저절로 따라온다.
+    """
+
+    ICON = 18
+
+    def __init__(self, label: str, icon_name: str, parent: QWidget | None = None):
+        super().__init__(label, parent)
+        self.setObjectName("navItem")
+        self.setCheckable(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self._icon_name = icon_name
+        # 아이콘 자리를 왼쪽에 비워 둔다
+        self.setStyleSheet(f"padding-left: {self.ICON + 22}px;")
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        painter = QPainter(self)
+        color = QColor(COLORS["on_dark"] if self.isChecked() else COLORS["text_muted"])
+        box = QRectF(24, (self.height() - self.ICON) / 2, self.ICON, self.ICON)
+        paint_icon(painter, box, self._icon_name, color)
 
 
 class MainWindow(QMainWindow):
@@ -113,12 +141,9 @@ class MainWindow(QMainWindow):
 
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
-        for index, (label, tooltip) in enumerate(NAV_ITEMS):
-            button = QPushButton(label)
-            button.setObjectName("navItem")
-            button.setCheckable(True)
+        for index, (label, icon_name, tooltip) in enumerate(NAV_ITEMS):
+            button = NavButton(label, icon_name)
             button.setToolTip(tooltip)
-            button.setCursor(Qt.PointingHandCursor)
             button.clicked.connect(lambda _checked, i=index: self.stack.setCurrentIndex(i))
             self.nav_group.addButton(button, index)
             layout.addWidget(button)

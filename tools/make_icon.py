@@ -1,7 +1,7 @@
-"""앱 아이콘 생성기 — 유광 플라스틱 테마.
+"""앱 아이콘 생성기.
 
-파란 유광 플라스틱 위에 크림색 서류 한 장과 체크 배지를 그린다.
-크롬 림 + 윗면 반사 + 안쪽 그림자로 앱 화면과 같은 질감을 낸다.
+민트→아쿠아 그라데이션 위에 흰 서류 한 장과 체크 배지를 그린다.
+앱 화면과 같은 색 체계를 쓴다 (theme.py 의 primary / accent).
 결과물은 저장소에 함께 커밋되므로 보통은 다시 돌릴 일이 없다.
 디자인을 바꿀 때만 실행한다:
 
@@ -17,16 +17,16 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter
 
-# 유광 플라스틱 팔레트 (src/expense_review/ui/theme.py 와 맞춘다)
-BG_TOP = (108, 148, 232)     # 윗면 — 빛을 받는 쪽
-BG_BOTTOM = (28, 46, 112)    # 아랫면 — 그늘
-NEBULA = (150, 190, 255)
-PAPER = (252, 249, 240)      # 크림색 서류
-PAPER_LINE = (150, 168, 214)
-BADGE_A = (32, 140, 104)     # 체크 배지 — 초록 플라스틱
-BADGE_B = (86, 200, 150)
+# src/expense_review/ui/theme.py 의 primary / accent 와 맞춘다
+BG_TOP = (61, 214, 196)      # 민트
+BG_BOTTOM = (42, 159, 224)   # 아쿠아
+NEBULA = (190, 245, 240)
+PAPER = (255, 255, 255)      # 흰 서류
+PAPER_LINE = (168, 205, 224)
+BADGE_A = (255, 255, 255)    # 체크 배지 — 흰 원
+BADGE_B = (240, 251, 253)
 WHITE = (255, 255, 255)
-CHROME = (238, 240, 246)
+CHROME = (255, 255, 255)
 
 SIZE = 1024
 SS = 4  # 슈퍼샘플링 배율 — PIL 도형은 안티앨리어싱이 없어 크게 그려 줄인다
@@ -59,7 +59,7 @@ def draw_icon(size: int = SIZE) -> Image.Image:
     shade = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     sdraw = ImageDraw.Draw(shade)
     for i in range(int(big * 0.30)):
-        alpha = int(96 * (i / (big * 0.30)) ** 2)
+        alpha = int(52 * (i / (big * 0.30)) ** 2)
         sdraw.line((0, big - i, big, big - i), fill=(6, 14, 46, alpha))
     base = Image.alpha_composite(base, shade)
     draw = ImageDraw.Draw(base, "RGBA")
@@ -112,22 +112,22 @@ def draw_icon(size: int = SIZE) -> Image.Image:
     points = [(bx - br * 0.45, by + br * 0.02),
               (bx - br * 0.10, by + br * 0.38),
               (bx + br * 0.50, by - br * 0.34)]
-    draw.line(points, fill=WHITE + (255,), width=width, joint="curve")
+    draw.line(points, fill=BG_BOTTOM + (255,), width=width, joint="curve")
     for point in points:  # 끝을 둥글게
         draw.ellipse((point[0] - width / 2, point[1] - width / 2,
-                      point[0] + width / 2, point[1] + width / 2), fill=WHITE + (255,))
+                      point[0] + width / 2, point[1] + width / 2), fill=BG_BOTTOM + (255,))
 
     # 유광 반사 — 윗면을 덮는 넓은 흰 타원
     shine = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     ImageDraw.Draw(shine).ellipse(
-        (-big * 0.18, -big * 0.52, big * 1.18, big * 0.40), fill=WHITE + (74,))
+        (-big * 0.18, -big * 0.52, big * 1.18, big * 0.40), fill=WHITE + (40,))
     shine = shine.filter(ImageFilter.GaussianBlur(big * 0.012))
     base = Image.alpha_composite(base, shine)
 
     # 크롬 림 — 바깥 테두리. 위는 하양, 아래는 회색
     rim = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     rdraw = ImageDraw.Draw(rim)
-    width = int(big * 0.030)
+    width = int(big * 0.016)
     rdraw.rounded_rectangle((width / 2, width / 2, big - width / 2, big - width / 2),
                             radius=big * 0.22, outline=CHROME + (255,), width=width)
     # 위에서 아래로 갈수록 흐려지게 — 아래쪽 테두리는 그늘이 져야 금속처럼 보인다

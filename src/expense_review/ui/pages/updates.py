@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
 
 from ... import config, sheets, updater
 from ..theme import COLORS, card_shadow
-from ..glossy import GlossyButton
 from ..widgets import Card, muted_label
 
 
@@ -94,10 +93,10 @@ class UpdatesPage(QWidget):
         status_card.add(self.status_label)
 
         buttons = QHBoxLayout()
-        self.check_button = GlossyButton("업데이트 확인")
+        self.check_button = QPushButton("업데이트 확인")
         self.check_button.setObjectName("ghost")
         self.check_button.clicked.connect(lambda: self._start("check"))
-        self.apply_button = GlossyButton("업데이트 적용")
+        self.apply_button = QPushButton("업데이트 적용")
         self.apply_button.setObjectName("primary")
         card_shadow(self.apply_button, blur=18, alpha=28, dy=4)
         self.apply_button.setEnabled(False)
@@ -147,7 +146,7 @@ class UpdatesPage(QWidget):
         self.sheet_url.setPlaceholderText("https://docs.google.com/spreadsheets/d/…")
         self.sheet_url.editingFinished.connect(
             lambda: config.update_setting("sheet_url", self.sheet_url.text().strip()))
-        pull = GlossyButton("지금 불러오기")
+        pull = QPushButton("지금 불러오기")
         pull.clicked.connect(self._pull_sheet)
         row1.addWidget(self.sheet_url, 1)
         row1.addWidget(pull)
@@ -164,7 +163,7 @@ class UpdatesPage(QWidget):
         self.log_url.setPlaceholderText("https://script.google.com/macros/s/…/exec")
         self.log_url.editingFinished.connect(
             lambda: config.update_setting("sheet_log_url", self.log_url.text().strip()))
-        test = GlossyButton("테스트 전송")
+        test = QPushButton("테스트 전송")
         test.clicked.connect(self._test_log)
         row2.addWidget(self.log_url, 1)
         row2.addWidget(test)

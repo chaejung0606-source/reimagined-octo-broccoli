@@ -43,8 +43,8 @@ python tools/create_shortcut.py
 | **검토 기준** | 서류 종류별 기준 확인·수정 (등급·문구·한도값) |
 | **설정** | 구글시트 연동 · 기능 갱신 확인·적용 |
 
-화면은 아이보리 바탕에 유광 플라스틱 컨트롤을 얹은 2000년대 전자기기풍입니다.
-크롬 테두리·유광 반사·안쪽 그림자를 QPainter 로 직접 그립니다.
+화면은 민트·스카이블루 계열의 밝은 대시보드입니다. 아주 옅은 그라데이션 바탕
+위에 흰 카드가 떠 있고, 색·라운드·그림자 값은 `ui/theme.py` 한 곳에서 관리합니다.
 
 자세한 사용법은 [05. 앱 사용 안내](docs/05-app-guide.md)를 보세요.
 
@@ -125,8 +125,8 @@ src/expense_review/
   cli.py           명령줄
   ui/
     theme.py       디자인 토큰 · 스타일시트
-    backgrounds.py 아이보리 배경 (QPainter 드로잉)
-    glossy.py      유광 플라스틱 컨트롤 (크롬 림·반사·안쪽 그림자)
+    backgrounds.py 그라데이션 배경 (QPainter 드로잉)
+    icons.py       라인 아이콘 한 벌 (QPainter 드로잉)
     widgets.py     카드 · KPI 타일 · 도넛 차트 · 파일 카드
     pages/         검토 · 파일별 보완사항 · 검토 기준 · 업데이트
 ```

@@ -33,7 +33,6 @@ from ...engine import CHECKS, Rule, load_ruleset
 from ...models import Severity
 from ...review import EXPENSE_TYPES
 from ..theme import COLORS, SEVERITY_STYLE, card_shadow
-from ..glossy import GlossyButton
 from ..widgets import Card, muted_label
 
 LAYER_LABELS = {
@@ -101,10 +100,18 @@ class RulesPage(QWidget):
 
     # ── 오른쪽: 편집기 ──────────────────────────────────────────────────
     def _build_editor(self) -> QWidget:
+        """편집 칸은 스크롤 안에 넣는다.
+
+        창이 작아지면 입력칸이 서로 겹쳐 글자가 잘린다. 억지로 한 화면에
+        욱여넣는 대신 세로로 넘겨 보게 한다.
+        """
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
         holder = QWidget()
         holder.setObjectName("page")
+        scroll.setWidget(holder)
         outer = QVBoxLayout(holder)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(0, 0, 6, 0)
         outer.setSpacing(14)
 
         self.editor_card = Card("기준 편집", "선택한 기준")
@@ -132,11 +139,13 @@ class RulesPage(QWidget):
         form.addRow("사용 여부", self.enabled_combo)
 
         self.message_edit = QPlainTextEdit()
-        self.message_edit.setFixedHeight(66)
+        self.message_edit.setMinimumHeight(66)
+        self.message_edit.setMaximumHeight(90)
         form.addRow("검출 문구", self.message_edit)
 
         self.fix_edit = QPlainTextEdit()
-        self.fix_edit.setFixedHeight(66)
+        self.fix_edit.setMinimumHeight(66)
+        self.fix_edit.setMaximumHeight(90)
         form.addRow("조치 문구", self.fix_edit)
 
         self.editor_card.add_layout(form)
@@ -146,10 +155,10 @@ class RulesPage(QWidget):
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        self.reset_button = GlossyButton("기본값으로")
+        self.reset_button = QPushButton("기본값으로")
         self.reset_button.setObjectName("ghost")
         self.reset_button.clicked.connect(self._reset_rule)
-        self.save_button = GlossyButton("저장")
+        self.save_button = QPushButton("저장")
         self.save_button.setObjectName("primary")
         card_shadow(self.save_button, blur=18, alpha=28, dy=4)
         self.save_button.clicked.connect(self._save_rule)
@@ -160,7 +169,7 @@ class RulesPage(QWidget):
         outer.addWidget(self.editor_card)
 
         outer.addWidget(self._build_settings_card(), 1)
-        return holder
+        return scroll
 
     def _build_settings_card(self) -> QWidget:
         card = Card("한도·기준값", "지출종류별 설정")
@@ -179,7 +188,7 @@ class RulesPage(QWidget):
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        save = GlossyButton("설정 저장")
+        save = QPushButton("설정 저장")
         save.setObjectName("primary")
         card_shadow(save, blur=18, alpha=28, dy=4)
         save.clicked.connect(self._save_settings)
