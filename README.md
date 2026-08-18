@@ -15,12 +15,13 @@ pip install -e ".[gui,dev]"
 python -m expense_review.ui.app
 
 # 명령줄
-expense-review <폴더> --type 출장비 --batch
+expense-review <폴더> --type 출장비
 expense-review <폴더> --type 근로장학금 --subtype TA --roster 지급내역.pdf
 expense-review <폴더> --type 혁신인재지원금 --markdown 수정요청서.md
 ```
 
-`--batch` 는 하위 폴더 하나를 제출자 한 명으로 보고 한 번에 검토합니다.
+하위 폴더가 있으면 폴더별로, 파일만 있으면 서류에서 읽은 학번·성명으로
+지급대상자를 갈라 검토합니다.
 `--markdown` 은 제출자에게 그대로 보낼 수 있는 수정 요청서를 저장합니다.
 
 ### 바탕화면 바로가기
