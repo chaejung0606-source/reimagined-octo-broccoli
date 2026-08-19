@@ -30,13 +30,13 @@ NEVER_PACK = {".pdf", ".hwp", ".hwpx", ".jpg", ".jpeg"}
 
 
 def check_batch_files(root: Path) -> None:
-    """윈도우 배치 파일이 한글 윈도우에서 깨지지 않는지 확인한다.
+    """윈도우 실행 파일(.bat/.vbs)이 한글 윈도우에서 깨지지 않는지 확인한다.
 
     한 번 크게 데인 곳이다. UTF-8 로 저장하고 chcp 65001 을 넣었더니,
     cmd 가 파일을 읽던 위치를 잃어버려 'echo.' 이 'cho.' 로 잘려 나갔다.
     규칙은 두 가지다 — CP949 로 저장하고, chcp 를 쓰지 않는다.
     """
-    for path in sorted(root.glob("*.bat")):
+    for path in sorted(list(root.glob("*.bat")) + list(root.glob("*.vbs"))):
         raw = path.read_bytes()
         try:
             text = raw.decode("cp949")
