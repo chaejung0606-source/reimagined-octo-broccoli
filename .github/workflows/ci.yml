@@ -1,0 +1,47 @@
+# 배포본이 깨진 채로 사용자에게 내려가는 것을 막는다.
+# 앱은 이 브랜치에서 git pull 로 업데이트를 받으므로(updater.py), 여기 올라간
+# 커밋은 곧바로 담당자 컴퓨터에서 도는 코드가 된다. 푸시마다 검사한다.
+name: 검사
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # GUI(PySide6)는 넣지 않는다. 100MB가 넘고 테스트는 이것 없이 전부 돈다.
+      - name: 설치
+        run: pip install -e ".[dev]"
+
+      - name: 테스트
+        run: python -m pytest -q
+
+      - name: 규칙 정의 검증
+        run: python tools/validate_rules.py
+
+      # UI 코드는 PySide6 가 없어 실행할 수 없다. 문법 오류만이라도 걸러 둔다.
+      - name: 문법 검사
+        run: python -m compileall -q src tools
+
+      # 서류에는 주민등록번호·계좌번호가 들어 있다. .gitignore 를 믿지 않고
+      # 실제로 올라간 파일을 확인한다. 한 번 올라가면 이력에서 지우기 어렵다.
+      - name: 개인정보 파일 혼입 검사
+        run: |
+          found=$(git ls-files '*.pdf' '*.hwp' '*.hwpx' '*.jpg' '*.jpeg' 'samples/*' '서류/*')
+          if [ -n "$found" ]; then
+            echo "중단: 서류 파일이 저장소에 올라가 있습니다."
+            echo "$found"
+            exit 1
+          fi
+          echo "혼입 없음"
