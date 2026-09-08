@@ -18,6 +18,8 @@ Extractor = Callable[[Document], None]
 REGISTRY: dict[str, Extractor] = {
     "payment_roster": common.extract_roster,
     "privacy_consent": common.extract_privacy_consent,
+    "enrollment_cert": common.extract_enrollment_cert,
+    "id_card_bankbook": common.extract_id_card_bankbook,
     "worklog": scholarship.extract_worklog,
     "worklog_handwrite": scholarship.extract_worklog_handwrite,
     "claim_form": scholarship.extract_claim_form,

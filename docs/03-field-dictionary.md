@@ -41,11 +41,18 @@
 | `person.rank` | str | strip_spaces | 출장신청서 |
 | `submission.date` | date | date | 서류 하단 작성일 |
 | `period.start` / `period.end` | date | date | 근로기간·활동기간·출장기간 |
-| `bankbook.holder` / `.account_no` | str | — | 통장 사본 (Vision) |
-| `enrollment_cert.issued_at` | date | date | 재학증명서 (Vision) |
+| `id_card_bankbook.bankbook_holder` | str | strip_spaces | 통장 사본 — 라벨('예금주') 뒤에서만 읽는다 |
+| `id_card_bankbook.bankbook_account_no` | str | digits_only | 통장 사본 — `person.account_no` 로 새지 않는다 |
+| `id_card_bankbook.bankbook_bank` | str | bank_alias | 통장 사본 |
+| `enrollment_cert.issued_at` | date | date | 재학증명서 — 발급일 라벨, 없으면 증명 주체 앞 날짜 |
 | `roster.*` | — | — | 지급내역 표 (마스터) |
 
 `roster` 하위: `name`, `student_id`, `bank`, `account_no`, `unit_price`, `hours`, `amount`, `course_name`, `club_name`
+
+> 통장 사본의 값만 `bankbook_*` 로 따로 담는다. `person.account_no` 에 함께 넣으면
+> 계좌가 틀렸을 때 R-CMN-005(서류 간 불일치)와 R-CMN-016(통장과 신청서 불일치)이
+> 같은 사실을 두 번 보고한다. 통장은 비교 대상이 아니라 '원본' 이므로 대사는
+> R-CMN-016 하나가 맡는다.
 
 ---
 
@@ -158,7 +165,7 @@ receipts[]                       모든 영수증 (교통·체류 통합)
   ├ .card_no       "0140-02**-****-4852"
   ├ .approval_no   승인번호          ← 중복 검출 키
   ├ .tollgate_in / .tollgate_out    입구영업소 / 영업소
-  ├ .items[]       .name / .qty / .amount   (편의점 전표)
+  ├ .items[]       .name / .quantity / .amount   (전표 품목 줄 — 합계·부가세 줄은 제외)
   └ .stated_total  영수증에 적힌 "총 N건 / 합계"
 
 claim.daily / .meal / .lodging / .nights / .mileage_amount   ← 여비 산정 결과

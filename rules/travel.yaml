@@ -19,6 +19,7 @@ settings:
   km_rate: null                  # TODO: 자가용 km당 단가
   route_asymmetry_tolerance: 0.30 # 편도/복도 거리 차 30% 초과 시 경고
   non_reimbursable_keywords: ["주류", "소주", "맥주", "담배", "위스키", "와인"]
+  conflict_window_minutes: 60      # 이 시간 안에 다른 지역 영수증이 있으면 확인 요망
 
 rules:
   # ---- L0 : 서식 블록 완비성 ----

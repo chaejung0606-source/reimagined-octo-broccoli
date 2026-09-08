@@ -345,3 +345,148 @@ def card_consistency(ctx: Context):
             "receipt.card_no": ", ".join(sorted(cards)),
         })
     return None
+
+
+# ── 경로·인적사항·품목 ────────────────────────────────────────────────────
+
+@check("R-TRV-014")
+def tollgate_route_continuity(ctx: Context):
+    """하이패스 구간이 사슬처럼 이어지는지 본다.
+
+    한 건의 통행료 영수증은 '입구영업소 → 출구영업소' 한 구간이다. 왕복이면
+    가는 길 출구와 오는 길 입구가 같은 영업소여야 이어진다. 끊긴 자리는
+    그 사이를 국도로 갔거나, 영수증이 빠졌거나, 다른 출장 건이 섞인 것이다.
+    어느 쪽인지는 사람이 판단할 일이라 WARN 으로 올리고 사유 기재를 안내한다.
+    """
+    start, end = _period(ctx)
+    legs = [
+        receipt for receipt in _all_receipts(ctx)
+        if receipt.get("kind") == "tollgate" and _in_period(receipt, start, end)
+        and receipt.get("tollgate_in") and receipt.get("merchant")
+    ]
+    if len(legs) < 2:
+        return None  # 구간이 하나면 이어질 것이 없다
+
+    legs.sort(key=lambda receipt: receipt["datetime"])
+    breaks = []
+    for previous, following in zip(legs, legs[1:]):
+        exit_gate = _gate(previous["merchant"])
+        entry_gate = _gate(following["tollgate_in"])
+        if exit_gate and entry_gate and exit_gate != entry_gate:
+            breaks.append(f"{exit_gate} 출구 → {entry_gate} 입구")
+
+    if breaks:
+        return Fail({"breaks": breaks}, [leg["_source"] for leg in legs[:1]])
+    return None
+
+
+def _gate(name: str) -> str:
+    """'한국도로공사 대관령영업소' · '대관령(IC)' → '대관령'.
+
+    같은 영업소가 영수증마다 다르게 찍혀 나온다. 접미사를 떼지 않으면
+    이어진 구간도 끊긴 것으로 보고한다.
+    """
+    text = nz.strip_spaces(name)
+    for word in ("한국도로공사", "영업소", "톨게이트", "TG", "IC", "(", ")"):
+        text = text.replace(word, "")
+    return text
+
+
+@check("R-TRV-015")
+def traveller_matches(ctx: Context):
+    """출장신청서의 출장자 명단에 검토 대상자가 있는지.
+
+    같은 신청서가 동승자 4명 폴더에 각각 들어 있다. 엉뚱한 사람의 신청서를
+    붙여 낸 경우 여기서 걸린다 — 다른 규칙은 전부 이 신청서를 근거로 삼으므로
+    이것이 틀리면 나머지 판정이 모두 헛것이 된다.
+    """
+    document = ctx.doc("trip_request")
+    if document is None:
+        raise NeedsReview("출장신청서를 찾지 못했습니다")
+    trips = document.fields.get("trips")
+    if trips is None or not trips.is_present:
+        raise NeedsReview("출장신청서에서 출장자 명단을 읽지 못했습니다")
+
+    owner = nz.strip_spaces(ctx.docs.owner or "")
+    if not owner:
+        raise NeedsReview("검토 대상자의 성명을 확인하지 못했습니다")
+
+    listed = [nz.strip_spaces(trip.get("name") or "") for trip in trips.value]
+    listed = [name for name in listed if name]
+    if not listed:
+        raise NeedsReview("출장신청서에서 출장자 성명을 읽지 못했습니다")
+
+    if owner not in listed:
+        return Fail(
+            {"values": [f"신청서 {', '.join(listed)}", f"제출자 {owner}"]},
+            [document.source(1)],
+        )
+    return None
+
+
+@check("R-TRV-023")
+def non_reimbursable_items(ctx: Context):
+    """체류 영수증의 품목에 정산 불가 품목이 있는지."""
+    keywords = ctx.settings.get("non_reimbursable_keywords") or []
+    if not keywords:
+        return None
+
+    failures, unreadable = [], []
+    for receipt in _all_receipts(ctx):
+        if receipt.get("kind") == "tollgate":
+            continue
+        items = receipt.get("items")
+        if not items:
+            unreadable.append(f"{receipt['_document']}의 {receipt.get('label', '영수증')}")
+            continue
+        found = [
+            item["name"] for item in items
+            if any(word in item.get("name", "") for word in keywords)
+        ]
+        if found:
+            failures.append(Fail(
+                {"receipt.label": receipt.get("label", "영수증"), "found": found},
+                [receipt["_source"]],
+            ))
+
+    if failures:
+        return failures
+    # 읽은 영수증에 문제가 없더라도, 못 읽은 영수증을 통과시키지는 않는다.
+    if unreadable:
+        raise NeedsReview(f"품목을 읽지 못한 영수증이 있습니다: {', '.join(unreadable)}")
+    return None
+
+
+@check("R-TRV-024")
+def spatiotemporal_conflict(ctx: Context):
+    """가까운 시각에 서로 먼 지역의 영수증이 함께 있는지.
+
+    통행료 영수증은 제외한다. 고속도로 영업소는 이동 중 지출이라 출장지와
+    다른 것이 정상이고(R-TRV-013 과 같은 이유), 넣으면 정상 건마다 걸린다.
+    """
+    window = dt.timedelta(minutes=ctx.number_setting("conflict_window_minutes", 60))
+
+    located = []
+    for receipt in _all_receipts(ctx):
+        when, address = receipt.get("datetime"), receipt.get("merchant_address")
+        if receipt.get("kind") == "tollgate" or when is None or not address:
+            continue
+        region = nz.region_of(address)
+        if region:
+            located.append((when, region, receipt))
+
+    located.sort(key=lambda item: item[0])
+    failures = []
+    for index, (when, region, receipt) in enumerate(located):
+        for other_when, other_region, other in located[index + 1:]:
+            if other_when - when > window:
+                break
+            if other_region != region:
+                failures.append(Fail({
+                    "time": when.strftime("%m/%d %H:%M"),
+                    "receipts": [
+                        f"{receipt.get('label', '영수증')}({region})",
+                        f"{other.get('label', '영수증')}({other_region})",
+                    ],
+                }, [receipt["_source"], other["_source"]]))
+    return failures

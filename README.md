@@ -70,7 +70,7 @@ rules/*.yaml          ← 배포본. 업데이트가 덮어씁니다
 ## 구현 상태
 
 OCR 없이 **텍스트 레이어에서 읽을 수 있는 범위**까지 동작합니다(1~3단계).
-전체 규칙 87건 중 **64건이 자동 판정**되며, 나머지는 결과에 '미구현'으로 표시됩니다 —
+전체 규칙 87건 중 **73건이 자동 판정**되며, 나머지는 결과에 '미구현'으로 표시됩니다 —
 조용히 통과 처리하지 않습니다.
 
 | 단계 | 범위 | 상태 |
@@ -95,7 +95,7 @@ OCR 없이 **텍스트 레이어에서 읽을 수 있는 범위**까지 동작�
 | [03. 필드 사전](docs/03-field-dictionary.md) | 추출 필드 정의와 정규화 규칙, 신뢰도 처리 |
 | [04. 아키텍처](docs/04-architecture.md) | 앱 흐름, 추출 파이프라인, 기술 스택, 개인정보 처리 |
 | [05. 앱 사용 안내](docs/05-app-guide.md) | 네 화면 사용법, 기준 편집, 업데이트 |
-| [06. 남은 작업](docs/06-backlog.md) | 현재 상태와 다음에 할 일. 미구현 규칙 23건 목록 |
+| [06. 남은 작업](docs/06-backlog.md) | 현재 상태와 다음에 할 일. 미구현 규칙 14건 목록 |
 
 ## 규칙 정의
 
@@ -104,10 +104,10 @@ OCR 없이 **텍스트 레이어에서 읽을 수 있는 범위**까지 동작�
 
 | 파일 | 규칙 수 | 자동 판정 |
 |---|---|---|
-| [`rules/common.yaml`](rules/common.yaml) | 19 (전 지출종류 공통) | 11 |
-| [`rules/scholarship.yaml`](rules/scholarship.yaml) | 20 (근로장학금) | 17 |
+| [`rules/common.yaml`](rules/common.yaml) | 19 (전 지출종류 공통) | 15 |
+| [`rules/scholarship.yaml`](rules/scholarship.yaml) | 20 (근로장학금) | 18 |
 | [`rules/innovation.yaml`](rules/innovation.yaml) | 20 (혁신인재지원금) | 18 |
-| [`rules/travel.yaml`](rules/travel.yaml) | 28 (출장비) | 18 |
+| [`rules/travel.yaml`](rules/travel.yaml) | 28 (출장비) | 22 |
 
 ## 코드 구조
 
@@ -197,7 +197,7 @@ L3 한도 규칙은 규정값이 없어 꺼져 있습니다. 아래 값을 확�
 ```bash
 pip install -e ".[gui,dev]"
 
-python -m pytest -q              # 80건
+python -m pytest -q              # 105건
 python tools/validate_rules.py   # 규칙 YAML 검증
 ```
 

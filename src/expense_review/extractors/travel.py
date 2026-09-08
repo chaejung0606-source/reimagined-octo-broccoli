@@ -206,6 +206,22 @@ def extract_tollgate_receipts(document: Document) -> None:
 
 # ── 카드 매출전표 (체류 영수증) ───────────────────────────────────────────
 
+# 품목 줄. '아메리카노 2 9,000' 처럼 품명·수량·금액이 한 줄에 온다.
+# 수량이 없는 전표도 있어 수량은 선택으로 둔다.
+_ITEM_LINE_RE = re.compile(
+    r"^[ \t]*(?P<name>[가-힣A-Za-z][가-힣A-Za-z0-9 ()./]{0,24}?)"
+    r"(?:[ \t]+(?P<qty>\d{1,3}))?"
+    r"[ \t]+(?P<amount>[\d,]{3,})[ \t]*$",
+    re.MULTILINE,
+)
+# 전표의 금액 요약·결제정보 줄은 품목이 아니다. 이것을 걸러내지 않으면
+# '합계' 나 '부가세' 가 품목명으로 들어가 R-TRV-023 이 엉뚱한 것을 훑는다.
+_NOT_AN_ITEM = (
+    "합계", "소계", "총액", "부가세", "공급가액", "면세", "과세", "봉사료", "할부",
+    "승인번호", "카드번호", "거래일자", "가맹점", "사업자", "대표자", "전화", "주소",
+    "결제", "잔액", "포인트", "매출", "전표", "금액", "수량", "단가", "품명", "받을금액",
+)
+
 _CARD_FIELDS = {
     "approval_no": re.compile(r"승인번호\s*[:\s]\s*(\S+)"),
     "datetime": re.compile(r"거래일자\s*[:\s]\s*([\d.]+\s*[·\s]\s*[\d:]+)"),
@@ -231,6 +247,7 @@ def extract_card_receipts(document: Document) -> None:
                 receipt[name] = match.group(1).strip()
         receipt["amount"] = nz.money(receipt.get("amount"))
         receipt["datetime"] = _parse_slip_datetime(receipt.get("datetime"))
+        receipt["items"] = _parse_items(block)
         if receipt["amount"] is not None:
             receipts.append(receipt)
 
@@ -238,6 +255,26 @@ def extract_card_receipts(document: Document) -> None:
         existing = document.fields.get("receipts")
         merged = (existing.value if existing and existing.is_present else []) + receipts
         document.fields["receipts"] = Value(merged, CONFIDENCE["pdf_text"], document.source(1))
+
+
+def _parse_items(block: str) -> list[dict]:
+    """전표에 적힌 품목 줄. 정산 불가 품목 검사(R-TRV-023)의 입력이 된다."""
+    items = []
+    for match in _ITEM_LINE_RE.finditer(block):
+        name = match.group("name").strip()
+        if any(word in name for word in _NOT_AN_ITEM):
+            continue
+        # 가맹점 주소가 번지로 끝나면 '강원 평창군 대관령면 100' 이 품목 줄과 같은
+        # 모양이 된다. 시/군/구 지명이 들어 있으면 주소로 보고 버린다. 음식 이름은
+        # '짜장면' 처럼 지명 접미사를 닮아도 시/군/구 토큰이 없어 걸리지 않는다.
+        if nz.region_of(name):
+            continue
+        items.append({
+            "name": name,
+            "quantity": int(match.group("qty")) if match.group("qty") else None,
+            "amount": nz.money(match.group("amount")),
+        })
+    return items
 
 
 def _parse_slip_datetime(value: str | None) -> dt.datetime | None:

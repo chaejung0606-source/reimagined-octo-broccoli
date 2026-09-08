@@ -5,6 +5,11 @@
 version: 1
 scope: common
 
+settings:
+  # 샘플 서식('기본정보' 양식)이 '최근 1개월 이내 발급' 을 명시한다. 지침 확인 전까지
+  # 그 값을 쓴다. 담당자가 앱의 [검토 기준] 화면에서 고칠 수 있고, 비우면 규칙이 꺼진다.
+  enrollment_cert_valid_days: 30
+
 rules:
   - id: R-CMN-001
     layer: L0
@@ -119,9 +124,10 @@ rules:
     title: 재학증명서 발급일 경과
     severity: ERROR
     requires: [enrollment_cert.issued_at, submission.date]
-    expr: "(submission.date - enrollment_cert.issued_at).days <= 30"
-    message: "재학증명서 발급일({enrollment_cert.issued_at})이 1개월을 넘었습니다."
-    fix: "최근 1개월 이내 발급한 재학증명서를 다시 제출하세요."
+    enabled_if: "settings.enrollment_cert_valid_days != null"
+    expr: "(submission.date - enrollment_cert.issued_at).days <= settings.enrollment_cert_valid_days"
+    message: "재학증명서 발급일({enrollment_cert.issued_at})이 제출일 기준 {elapsed}일 지났습니다."
+    fix: "최근 {settings.enrollment_cert_valid_days}일 이내에 발급한 재학증명서를 다시 제출하세요."
 
   - id: R-CMN-014
     layer: L1

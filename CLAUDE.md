@@ -31,7 +31,7 @@ PR 은 쓰지 않는다. 지금까지 전부 이 브랜치에 직접 커밋해 �
 ```bash
 pip install -e ".[gui,dev]"
 
-python -m pytest -q              # 80건
+python -m pytest -q              # 105건
 python tools/validate_rules.py   # 규칙 YAML 문법·필수항목·ID 중복
 
 python -m expense_review.ui.app  # 데스크톱 앱 (PySide6 필요)
@@ -66,7 +66,7 @@ def route_total(ctx: Context):
 ```
 
 `@check` 로 등록되지 않은 규칙은 조용히 통과되지 않는다. 결과에 **'미구현'** 으로
-올라간다. 현재 87건 중 64건이 등록되어 있다. 남은 23건은
+올라간다. 현재 87건 중 73건이 등록되어 있다. 남은 14건은
 [`docs/06-backlog.md`](docs/06-backlog.md) 에 목록이 있다.
 
 새 규칙을 추가하면 `tools/validate_rules.py` 를 돌리고 `tests/` 에 케이스를 넣는다.

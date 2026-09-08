@@ -189,6 +189,20 @@ class Context:
             results.append(found.value)
         return results[0] if len(results) == 1 else tuple(results)
 
+    def number_setting(self, name: str, default: Any = None) -> float:
+        """숫자 설정값. 담당자가 화면에서 직접 입력하는 값이라 검증하고 꺼낸다.
+
+        '삼십' 처럼 숫자가 아닌 값이 들어오면 판정하지 않고 REVIEW 로 넘긴다.
+        그대로 int() 에 넘기면 '검사 중 오류' 만 남아 무엇이 문제인지 알 수 없다.
+        """
+        raw = self.settings.get(name, default)
+        if isinstance(raw, bool) or raw is None:
+            raise NeedsReview(f"기준값 '{name}' 이 설정되어 있지 않습니다")
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            raise NeedsReview(f"기준값 '{name}' 에 숫자가 아닌 값이 들어 있습니다: {raw}")
+
     def requires_doc(self, doc_type: str) -> bool:
         """이 지출종류(하위유형 포함)가 요구하는 서류인지."""
         return any(item["key"] == doc_type for item in getattr(self, "required_documents", []))

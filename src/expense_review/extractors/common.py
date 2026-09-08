@@ -60,7 +60,13 @@ MULTI_PERSON_TYPES = {"payment_roster"}
 
 # 출장 서류에는 신청인의 은행 계좌가 없다. 그대로 두면 승인번호(H673-7301-04539)나
 # 전화번호를 계좌로 읽어 교차대사에서 오탐이 된다.
-NO_ACCOUNT_TYPES = {"trip_request", "trip_evidence", "receipt_tollgate", "receipt_card", "purpose_evidence"}
+#
+# 통장 사본을 뺀 이유는 다르다. 통장은 계좌의 '원본' 이라 다른 서류와 대등하게
+# 비교할 대상이 아니다. 여기에 account_no 를 채우면 계좌가 틀렸을 때 R-CMN-005
+# (서류 간 계좌 불일치)와 R-CMN-016(통장과 신청서 불일치)이 같은 사실을 두 번
+# 보고한다. 통장 값은 bankbook_* 로 따로 담고, 대사는 R-CMN-016 이 맡는다.
+NO_ACCOUNT_TYPES = {"trip_request", "trip_evidence", "receipt_tollgate", "receipt_card",
+                    "purpose_evidence", "id_card_bankbook"}
 
 
 def extract_person(document: Document) -> None:
@@ -193,3 +199,59 @@ def extract_privacy_consent(document: Document) -> None:
     if (match := re.search(r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일", flat)):
         date = nz.parse_date(f"{match.group(1)}.{match.group(2)}.{match.group(3)}")
         _set(document, "signed_at", date, match.group(0))
+
+
+# ── 재학증명서 ────────────────────────────────────────────────────────────
+
+# 서식마다 라벨이 다르다. 라벨이 붙은 발급일을 먼저 찾고, 없으면 증명 주체
+# (총장·학장) 바로 앞의 날짜를 쓴다. 증명서 본문의 날짜는 그 자리 하나뿐이다.
+_CERT_ISSUED_LABELED_RE = re.compile(
+    r"(?:발급일자|발급일|발행일자|발행일|발급년월일)[:：]?"
+    r"(\d{4}[.\-년]\s*\d{1,2}[.\-월]\s*\d{1,2}일?)"
+)
+_CERT_ISSUED_TAIL_RE = re.compile(
+    r"(\d{4}[.\-년]\s*\d{1,2}[.\-월]\s*\d{1,2}일?)\.?\s*(?=[가-힣]{2,10}(?:대학교)?(?:총장|학장|처장))"
+)
+
+
+def extract_enrollment_cert(document: Document) -> None:
+    """재학증명서. 발급일 하나를 위해 읽는다 (R-CMN-013).
+
+    스캔본이면 텍스트가 없어 값이 비고, 규칙 엔진이 REVIEW 로 넘긴다.
+    여기서 억지로 채우지 않는다.
+    """
+    flat = flatten(document.text)
+    if not flat:
+        return
+
+    match = _CERT_ISSUED_LABELED_RE.search(flat) or _CERT_ISSUED_TAIL_RE.search(flat)
+    if match:
+        _set(document, "issued_at", nz.parse_date(match.group(1)), match.group(1))
+
+
+# ── 신분증 및 통장 사본 ───────────────────────────────────────────────────
+
+# 예금주는 반드시 라벨 뒤에서만 읽는다. 통장 사본에는 은행 상호·지점명·안내문구가
+# 함께 찍혀 있어, 라벨 없이 한글 2~4자를 집으면 '농협' 이나 '춘천' 을 예금주로 읽는다.
+_HOLDER_RE = re.compile(r"예금주(?:명)?[:：]?([가-힣]{2,5}?)(?=계좌|은행|번호|신분증|주민|$)")
+_BANKBOOK_ACCOUNT_RE = re.compile(r"계좌(?:번호)?[:：]?(\d[\d\-]{8,20})")
+
+
+def extract_id_card_bankbook(document: Document) -> None:
+    """통장 사본의 예금주·계좌번호 (R-CMN-015, R-CMN-016).
+
+    이 서류는 대개 스캔 이미지라 텍스트가 없다. 그래도 값을 채우지 않고 두면
+    규칙이 REVIEW 로 올라가, 담당자가 눈으로 대조해야 한다는 사실이 남는다.
+
+    필드 이름에 bankbook_ 을 붙이는 이유는 NO_ACCOUNT_TYPES 주석에 적었다.
+    """
+    flat = flatten(document.text)
+    if not flat:
+        return
+
+    if (match := _HOLDER_RE.search(flat)):
+        _set(document, "bankbook_holder", match.group(1), match.group(1))
+    if (match := _BANKBOOK_ACCOUNT_RE.search(flat)):
+        _set(document, "bankbook_account_no", nz.digits_only(match.group(1)), match.group(1))
+    if (match := _BANK_LABELED_RE.search(flat)):
+        _set(document, "bankbook_bank", nz.bank_alias(match.group(1)), match.group(1))

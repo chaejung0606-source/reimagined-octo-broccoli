@@ -342,6 +342,7 @@ def _label(text: str) -> QLabel:
 
 
 SETTING_LABELS = {
+    "enrollment_cert_valid_days": "재학증명서 유효기간(일)",
     "max_hours_per_day": "1일 근로시간 한도",
     "max_hours_per_month": "월 근로시간 한도",
     "allow_weekend_work": "주말·공휴일 근로 허용",

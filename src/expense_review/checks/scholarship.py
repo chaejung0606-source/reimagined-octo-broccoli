@@ -228,6 +228,27 @@ def approver_is_professor(ctx: Context):
     return None
 
 
+@check("R-SCH-014")
+def program_matches_course(ctx: Context):
+    """근무상황부 '프로그램/역할' 안에 지급내역 강좌명이 들어 있어야 한다.
+
+    같을 것을 요구하지 않는다. 근무상황부에는 '자료구조 TA' 처럼 역할이 함께
+    적히고 지급내역에는 강좌명만 있어서, 동일 비교로는 정상 건이 전부 걸린다.
+    """
+    program = ctx.require("worklog.program")
+    course = _roster_row(ctx).get("course_name")
+    if not course:
+        raise NeedsReview("지급내역의 강좌명을 읽지 못했습니다")
+
+    left, right = nz.strip_spaces(program), nz.strip_spaces(course)
+    if right in left or left in right:
+        return None
+    # 표기가 조금 다를 뿐인 경우(띄어쓰기·괄호·로마자)까지 잡으면 오탐이 된다.
+    if nz.similarity(left, right) >= 0.6:
+        return None
+    return Fail({"worklog.program": program, "roster.course_name": course})
+
+
 @check("R-SCH-015")
 def period_within_course(ctx: Context):
     if not ctx.requires_doc("ta_recommendation"):

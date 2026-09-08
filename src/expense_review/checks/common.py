@@ -189,3 +189,142 @@ def _owner_name(ctx: Context) -> str | None:
 
 # 팀원 명단 검사는 혁신인재지원금 전용이지만, 연락처 형식 검사는 공용으로 둔다.
 PHONE_RE = re.compile(r"^01[016789]-?\d{3,4}-?\d{4}$")
+
+
+# ── 제출 시점 ─────────────────────────────────────────────────────────────
+
+# 서류에 적힌 작성일. 검토를 언제 돌리는지와 무관하게 '제출 시점' 을 정한다.
+# dt.date.today() 를 쓰면 지난 학기 건을 다시 검토할 때 재학증명서가 전부
+# 기간 초과로 잡힌다.
+SUBMITTED_FIELDS = ("submitted_at", "signed_at")
+
+
+def _submission_date(ctx: Context):
+    """서류에 적힌 작성일 중 가장 늦은 날짜. 제출 시점의 근사값이다."""
+    dates = [
+        value.value
+        for document in ctx.docs
+        for name in SUBMITTED_FIELDS
+        if (value := document.fields.get(name)) is not None and value.is_present
+    ]
+    if not dates:
+        raise NeedsReview("서류에서 작성일을 찾지 못해 제출 시점을 알 수 없습니다")
+    return max(dates)
+
+
+@check("R-CMN-013")
+def enrollment_cert_fresh(ctx: Context):
+    if not _applies_to(ctx, "enrollment_cert"):
+        return None
+    document = ctx.doc("enrollment_cert")
+    if document is None:
+        return None  # 아예 없는 것은 R-CMN-001 이 보고한다
+
+    issued = document.fields.get("issued_at")
+    if issued is None or not issued.is_present:
+        raise NeedsReview("재학증명서의 발급일을 읽지 못했습니다")
+
+    limit = ctx.number_setting("enrollment_cert_valid_days")
+    elapsed = (_submission_date(ctx) - issued.value).days
+    if elapsed > limit:
+        return Fail(
+            {"enrollment_cert.issued_at": issued.value.isoformat(), "elapsed": elapsed},
+            [document.source(1)],
+        )
+    return None
+
+
+# ── 통장 사본 대사 ────────────────────────────────────────────────────────
+
+def _bankbook(ctx: Context):
+    """통장 사본 문서. 이 지출종류가 요구하지 않거나 안 냈으면 None."""
+    if not _applies_to(ctx, "id_card_bankbook"):
+        return None
+    return ctx.doc("id_card_bankbook")
+
+
+@check("R-CMN-015")
+def bankbook_holder_is_applicant(ctx: Context):
+    document = _bankbook(ctx)
+    if document is None:
+        return None
+
+    holder = document.fields.get("bankbook_holder")
+    if holder is None or not holder.is_present:
+        raise NeedsReview("통장 사본의 예금주를 읽지 못했습니다")
+
+    applicant = _owner_name(ctx)
+    if not applicant:
+        raise NeedsReview("신청인의 성명을 확인하지 못했습니다")
+
+    if nz.strip_spaces(holder.value) != nz.strip_spaces(applicant):
+        return Fail(
+            {"bankbook.holder": holder.value, "person.name": applicant},
+            [document.source(1)],
+        )
+    return None
+
+
+@check("R-CMN-016")
+def bankbook_account_matches(ctx: Context):
+    document = _bankbook(ctx)
+    if document is None:
+        return None
+
+    account = document.fields.get("bankbook_account_no")
+    if account is None or not account.is_present:
+        raise NeedsReview("통장 사본의 계좌번호를 읽지 못했습니다")
+
+    # 신청서·지급내역 등 나머지 서류가 적어 낸 계좌. 서류끼리 갈리는 경우는
+    # R-CMN-005 가 따로 보고하므로, 여기서는 가장 많이 쓰인 값과 비교한다.
+    stated: dict[str, list[str]] = {}
+    for other in ctx.docs:
+        value = other.fields.get("account_no")
+        if value is not None and value.is_present:
+            stated.setdefault(nz.digits_only(value.value), []).append(other.name)
+    if not stated:
+        raise NeedsReview("신청서에 기재된 계좌번호를 읽지 못했습니다")
+
+    expected = max(stated, key=lambda key: len(stated[key]))
+    if nz.digits_only(account.value) != expected:
+        return Fail(
+            {"bankbook.account_no": account.value, "person.account_no": expected},
+            [document.source(1)],
+        )
+    return None
+
+
+# ── 작성일 ────────────────────────────────────────────────────────────────
+
+# 활동이 끝난 뒤에 쓰는 서류만 본다. 개인정보 동의서는 사전 동의라 활동
+# 종료일보다 앞선 것이 정상이므로 대상이 아니다.
+_AFTER_ACTIVITY_TYPES = ("worklog", "claim_form", "monthly_report",
+                         "club_report", "innovation_application")
+
+
+@check("R-CMN-017")
+def written_after_activity(ctx: Context):
+    ends = [
+        value.value[1]
+        for document in ctx.docs
+        if (value := document.fields.get("period")) is not None and value.is_present
+        and isinstance(value.value, tuple) and len(value.value) == 2
+    ]
+    if not ends:
+        return None  # 활동기간이 없는 지출종류(출장비)에는 해당하지 않는다
+    activity_end = max(ends)
+
+    failures = []
+    for document in ctx.docs:
+        if not (document.contains & set(_AFTER_ACTIVITY_TYPES)):
+            continue
+        written = document.fields.get("submitted_at")
+        if written is None or not written.is_present:
+            continue
+        if written.value < activity_end:
+            failures.append(Fail(
+                {"submission.date": written.value.isoformat(),
+                 "period.end": activity_end.isoformat()},
+                [document.source(1)],
+            ))
+    return failures

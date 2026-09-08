@@ -336,3 +336,191 @@ def test_approver_other_than_advisor_is_reported():
 def test_activity_field_mismatch_is_reported():
     documents = _innovation_docs(field_checked="블록체인")
     assert "R-INN-009" in ids(run("혁신인재지원금", documents, owner="김예린"))
+
+
+# ── 통장·재학증명서·작성일 (공통) ─────────────────────────────────────────
+
+def _ta_docs_with(bankbook=None, cert=None, consent_date=dt.date(2026, 4, 1)):
+    """TA 기본서류에 통장·재학증명서 값을 실제로 채워 넣은 판."""
+    documents = _ta_docs()
+    for document in documents:
+        if document.doc_type == "id_card_bankbook" and bankbook:
+            document.fields.update(make_document("id_card_bankbook", **bankbook).fields)
+        if document.doc_type == "enrollment_cert" and cert:
+            document.fields.update(make_document("enrollment_cert", **cert).fields)
+        if document.doc_type == "privacy_consent":
+            document.fields.update(
+                make_document("privacy_consent", signed_at=consent_date).fields
+            )
+    return documents
+
+
+def test_bankbook_holder_other_than_applicant_is_reported():
+    """가족 명의 통장을 낸 경우. 지급 자체가 막히므로 🔴 다."""
+    documents = [_worklog(), _roster(),
+                 *_ta_docs_with(bankbook={"bankbook_holder": "권미영",
+                                          "bankbook_account_no": "110493878372"})]
+    result = run("근로장학금", documents, owner="권석재", subtype="TA")
+    assert "R-CMN-015" in ids(result)
+    assert "권미영" in next(f for f in result.findings if f.rule_id == "R-CMN-015").message
+
+
+def test_bankbook_account_mismatch_is_reported():
+    documents = [_worklog(), _roster(),
+                 *_ta_docs_with(bankbook={"bankbook_holder": "권석재",
+                                          "bankbook_account_no": "110493870000"})]
+    assert "R-CMN-016" in ids(run("근로장학금", documents, owner="권석재", subtype="TA"))
+
+
+def test_bankbook_account_notation_difference_is_not_a_finding():
+    """김예린 사례와 같은 표기 차이. 하이픈만 다르면 정상이다."""
+    documents = [_worklog(), _roster(),
+                 *_ta_docs_with(bankbook={"bankbook_holder": "권석재",
+                                          "bankbook_account_no": "110-493-878372"})]
+    assert ids(run("근로장학금", documents, owner="권석재", subtype="TA")) == set()
+
+
+def test_stale_enrollment_certificate_is_reported():
+    """근로기간 종료(3/31) 뒤 4/1 제출인데 재학증명서는 2/1 발급 — 59일 경과."""
+    documents = [_worklog(), _roster(),
+                 *_ta_docs_with(bankbook={"bankbook_holder": "권석재",
+                                          "bankbook_account_no": "110493878372"},
+                                cert={"issued_at": dt.date(2026, 2, 1)})]
+    result = run("근로장학금", documents, owner="권석재", subtype="TA")
+    assert "R-CMN-013" in ids(result)
+    assert "59일" in next(f for f in result.findings if f.rule_id == "R-CMN-013").message
+
+
+def test_fresh_enrollment_certificate_is_not_a_finding():
+    documents = [_worklog(), _roster(),
+                 *_ta_docs_with(bankbook={"bankbook_holder": "권석재",
+                                          "bankbook_account_no": "110493878372"},
+                                cert={"issued_at": dt.date(2026, 3, 20)})]
+    assert ids(run("근로장학금", documents, owner="권석재", subtype="TA")) == set()
+
+
+def test_worklog_written_before_activity_end_is_reported():
+    """근로기간이 3/31 까지인데 근무상황부 작성일이 3/20 이다."""
+    worklog = _worklog()
+    worklog.fields.update(make_document("worklog", submitted_at=dt.date(2026, 3, 20)).fields)
+    result = run("근로장학금", [worklog, _roster(), *_ta_docs()], owner="권석재", subtype="TA")
+    assert "R-CMN-017" in ids(result)
+
+
+def test_worklog_written_after_activity_end_is_not_a_finding():
+    worklog = _worklog()
+    worklog.fields.update(make_document("worklog", submitted_at=dt.date(2026, 3, 31)).fields)
+    assert ids(run("근로장학금", [worklog, _roster(), *_ta_docs()],
+                   owner="권석재", subtype="TA")) == set()
+
+
+# ── 강좌명 대사 (근로장학금) ──────────────────────────────────────────────
+
+def test_program_role_suffix_is_not_a_course_mismatch():
+    """근무상황부는 '강좌명/TA', 지급내역은 강좌명만 적는다. 정상이다."""
+    assert "R-SCH-014" not in ids(run("근로장학금", [_worklog(), _roster(), *_ta_docs()],
+                                      owner="권석재", subtype="TA"))
+
+
+def test_course_name_mismatch_is_reported():
+    documents = [_worklog(), _roster(course_name="운영체제"), *_ta_docs()]
+    result = run("근로장학금", documents, owner="권석재", subtype="TA")
+    assert "R-SCH-014" in ids(result)
+    assert "운영체제" in next(f for f in result.findings if f.rule_id == "R-SCH-014").message
+
+
+# ── 하이패스 경로·출장자·품목·장소 (출장비) ──────────────────────────────
+
+def _leg(when, amount, entry, exit_gate, label):
+    return {"kind": "tollgate", "label": label, "datetime": when, "amount": amount,
+            "tollgate_in": entry, "merchant": exit_gate,
+            "approval_no": f"H000-0000-{amount:05d}"}
+
+
+def _travel_docs(*receipt_documents, owner="임채정", **evidence):
+    fields = {"transport_block": True, "route_block": True,
+              "dist_out": 211, "dist_back": 154, "dist_total": 365,
+              "transport_amount": 10920,
+              "route_note": "경유지가 달라 왕복 거리가 다름",
+              "stay_dates": [dt.date(2026, 6, 29), dt.date(2026, 6, 30), dt.date(2026, 7, 1)]}
+    fields.update(evidence)
+    return [_trip_request(name=owner), make_document("trip_evidence", "출장증빙.pdf", **fields),
+            *receipt_documents]
+
+
+def test_connected_tollgate_legs_are_not_a_finding():
+    """가는 길 출구와 오는 길 입구가 같은 영업소면 이어진 것이다."""
+    receipts = _tollgate(
+        _leg(dt.datetime(2026, 6, 29, 11, 31), 5460, "춘천", "한국도로공사 대관령영업소", "하이패스 1"),
+        _leg(dt.datetime(2026, 7, 1, 17, 10), 5460, "대관령(IC)", "춘천영업소", "하이패스 2"),
+    )
+    assert "R-TRV-014" not in ids(run("출장비", _travel_docs(receipts), owner="임채정"))
+
+
+def test_broken_tollgate_route_is_reported():
+    """대관령으로 나갔는데 다음 구간이 부산에서 시작한다."""
+    receipts = _tollgate(
+        _leg(dt.datetime(2026, 6, 29, 11, 31), 5460, "춘천", "대관령영업소", "하이패스 1"),
+        _leg(dt.datetime(2026, 7, 1, 17, 10), 5460, "부산", "춘천영업소", "하이패스 2"),
+    )
+    result = run("출장비", _travel_docs(receipts), owner="임채정")
+    assert "R-TRV-014" in ids(result)
+    assert "대관령" in next(f for f in result.findings if f.rule_id == "R-TRV-014").message
+
+
+def test_traveller_not_in_trip_request_is_reported():
+    """동승자 4명 폴더에 같은 신청서가 들어간다. 엉뚱한 사람 것이면 여기서 걸린다."""
+    documents = _travel_docs(_tollgate(toll(dt.datetime(2026, 6, 29, 11, 31), 10920)),
+                             owner="전상철")
+    result = run("출장비", documents, owner="황승재")
+    assert "R-TRV-015" in ids(result)
+
+
+def test_non_reimbursable_item_is_reported():
+    stay = make_document("receipt_card", "체류영수증.pdf", receipts=[{
+        "kind": "stay", "label": "카드전표 1", "datetime": dt.datetime(2026, 6, 29, 19, 20),
+        "amount": 32000, "approval_no": "00485918",
+        "items": [{"name": "삼겹살", "quantity": 2, "amount": 26000},
+                  {"name": "소주", "quantity": 2, "amount": 6000}],
+    }])
+    documents = _travel_docs(_tollgate(toll(dt.datetime(2026, 6, 29, 11, 31), 10920)), stay)
+    result = run("출장비", documents, owner="임채정")
+    assert "R-TRV-023" in ids(result)
+    assert "소주" in next(f for f in result.findings if f.rule_id == "R-TRV-023").message
+
+
+def test_readable_receipt_without_banned_item_is_not_a_finding():
+    stay = make_document("receipt_card", "체류영수증.pdf", receipts=[{
+        "kind": "stay", "label": "카드전표 1", "datetime": dt.datetime(2026, 6, 29, 19, 20),
+        "amount": 26000, "approval_no": "00485918",
+        "items": [{"name": "삼겹살", "quantity": 2, "amount": 26000}],
+    }])
+    documents = _travel_docs(_tollgate(toll(dt.datetime(2026, 6, 29, 11, 31), 10920)), stay)
+    assert "R-TRV-023" not in ids(run("출장비", documents, owner="임채정"))
+
+
+def test_receipts_in_two_regions_within_the_hour_are_reported():
+    stay = make_document("receipt_card", "체류영수증.pdf", receipts=[
+        {"kind": "stay", "label": "카드전표 1", "datetime": dt.datetime(2026, 6, 29, 12, 26),
+         "amount": 12000, "merchant_address": "강원특별자치도 평창군 대관령면",
+         "items": [{"name": "된장찌개", "quantity": 1, "amount": 12000}]},
+        {"kind": "stay", "label": "카드전표 2", "datetime": dt.datetime(2026, 6, 29, 12, 50),
+         "amount": 9000, "merchant_address": "강원특별자치도 강릉시 교동",
+         "items": [{"name": "아메리카노", "quantity": 2, "amount": 9000}]},
+    ])
+    documents = _travel_docs(_tollgate(toll(dt.datetime(2026, 6, 29, 11, 31), 10920)), stay)
+    result = run("출장비", documents, owner="임채정")
+    assert "R-TRV-024" in ids(result)
+
+
+def test_receipts_far_apart_in_time_are_not_a_finding():
+    stay = make_document("receipt_card", "체류영수증.pdf", receipts=[
+        {"kind": "stay", "label": "카드전표 1", "datetime": dt.datetime(2026, 6, 29, 12, 26),
+         "amount": 12000, "merchant_address": "강원특별자치도 평창군 대관령면",
+         "items": [{"name": "된장찌개", "quantity": 1, "amount": 12000}]},
+        {"kind": "stay", "label": "카드전표 2", "datetime": dt.datetime(2026, 6, 29, 19, 40),
+         "amount": 9000, "merchant_address": "강원특별자치도 강릉시 교동",
+         "items": [{"name": "아메리카노", "quantity": 2, "amount": 9000}]},
+    ])
+    documents = _travel_docs(_tollgate(toll(dt.datetime(2026, 6, 29, 11, 31), 10920)), stay)
+    assert "R-TRV-024" not in ids(run("출장비", documents, owner="임채정"))
