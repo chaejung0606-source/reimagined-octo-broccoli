@@ -122,19 +122,13 @@ QFrame#dock {{
 /* ── 홈 ──────────────────────────────────────────────── */
 QLabel#homeTitle {{ font-size: 28px; font-weight: 700; }}
 QLabel#homeSub {{ font-size: {f['section']}px; color: {c['text_muted']}; }}
-QFrame#taskCard {{
-    background: {c['surface']};
-    border: 1px solid {c['border']};
-    border-radius: {r_hero}px;
-}}
-QFrame#taskCard:hover {{ border-color: {c['border_strong']}; }}
-QFrame#taskCard[focused="true"] {{ border: 2px solid {c['primary']}; }}
+/* 업무 타일 — 테두리 없음. 마우스가 올라오면 옅은 바탕, 키보드 초점은 라벤더 테두리 */
+QFrame#taskTile {{ background: transparent; border: 2px solid transparent; border-radius: {r_hero}px; }}
+QFrame#taskTile:hover {{ background: {c['hover']}; }}
+QFrame#taskTile[focused="true"] {{ border: 2px solid {c['primary']}; }}
 {plate_rules}
-QLabel#taskName {{ font-size: 17px; font-weight: 600; }}
-QLabel#taskDesc {{ font-size: {f['small']}px; color: {c['text_muted']}; }}
-QLabel#taskStatus {{ font-size: {f['caption']}px; font-weight: 500; color: {c['text_muted']}; }}
-QLabel#taskArrow {{ font-size: 18px; color: {c['text_faint']}; }}
-QFrame#taskCard:hover QLabel#taskArrow {{ color: {c['primary_hover']}; }}
+QLabel#taskName {{ font-size: 16px; font-weight: 600; }}
+QLabel#taskStatus {{ font-size: {f['caption']}px; font-weight: 500; color: {c['text_faint']}; }}
 QLabel#homeSection {{ font-size: {f['section']}px; font-weight: 600; }}
 QFrame#recentRow {{
     background: {c['surface']}; border: 1px solid {c['border']}; border-radius: {r_ctl + 4}px;

@@ -1,6 +1,6 @@
 """업무 도구함 홈 — 어떤 업무를 시작할지 고르는 곳.
 
-업무 카드 넷은 창 폭에 따라 4열 · 2열 · 1열. 아래에는
+업무 타일 넷(그림 + 이름뿐)은 늘 한 줄. 아래에는
 
   이어서 작업하기   실제로 재개할 수 있는 일만 — 지금은 청구서 받기가 중간에 멈춰 남은 건이
                     있을 때뿐이다. 준비 중 화면을 열어 봤다는 것은 여기에 넣지 않는다.
@@ -31,8 +31,6 @@ from ..shell import TaskCard
 from ..tasks import TASKS
 from ..widgets import Pill, WrapLabel, muted_label
 
-ONE_COLUMN_BELOW = 760
-TWO_COLUMNS_BELOW = 1180
 RECENT_LIMIT = 3
 
 
@@ -97,7 +95,7 @@ class HomePage(QWidget):
         layout.addWidget(sub)
 
         self._grid = QGridLayout()
-        self._grid.setSpacing(16)
+        self._grid.setSpacing(8)
         self.cards: dict[str, TaskCard] = {}
         for task in TASKS:
             card = TaskCard(task)
@@ -133,14 +131,13 @@ class HomePage(QWidget):
         for card in self.cards.values():
             self._grid.removeWidget(card)
         for i, card in enumerate(self.cards.values()):
-            self._grid.addWidget(card, i // columns, i % columns)
-        for col in range(4):
-            self._grid.setColumnStretch(col, 1 if col < columns else 0)
+            self._grid.addWidget(card, i // columns, i % columns, Qt.AlignLeft)
+        # 타일은 고정 폭. 남는 폭은 오른쪽 빈 칸이 가져간다
+        for col in range(5):
+            self._grid.setColumnStretch(col, 1 if col == columns else 0)
 
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        width = self.width()
-        self._relayout(1 if width < ONE_COLUMN_BELOW else 2 if width < TWO_COLUMNS_BELOW else 4)
+    # 업무가 넷뿐이라 늘 한 줄에 둔다(담당자 요청). 타일 폭 196 × 4 는 최소 창(1120)에도 넉넉히 들어간다.
+    # 업무가 다섯 이상으로 늘면 여기서 창 폭에 따라 줄을 나누면 된다.
 
     # ── 이어서 작업하기 ──────────────────────────────────────────────
     def _build_continue(self) -> QWidget:
@@ -195,7 +192,7 @@ class HomePage(QWidget):
         cfg = settings.load()
         folders = archive.folder_status(cfg.out_root)
         waiting = sum(f.waiting for f in folders)
-        # 업무 카드의 현황 — 요약 카드와 같은 정의: 비목 폴더 바로 아래 = 플랫폼 업로드 대기
+        # 타일에는 숫자를 쓰지 않는다 — 말풍선에만. 정의는 요약 카드와 같다(비목 폴더 바로 아래 = 업로드 대기)
         self.cards["download"].set_status(f"업로드 대기 {waiting}건" if folders else "")
 
         files = _recent_files(cfg.out_root)

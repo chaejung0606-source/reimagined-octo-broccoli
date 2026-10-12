@@ -544,9 +544,10 @@ class DockArea(QWidget):
 
 # ── 홈 업무 카드 ────────────────────────────────────────────────────────
 class TaskCard(QFrame):
-    """업무 하나 — 큰 입체 그림 · 이름 · 설명 · (실제 현황) · 화살표. 카드 전체가 누르는 곳이다.
+    """업무 하나 — 큰 입체 그림과 이름뿐. 타일 전체가 누르는 곳이다.
 
-    그림 자리는 흰 판에 업무 색 테두리만 두른다. 그림 에셋이 흰 바탕에 맞춰 만들어져,
+    설명·현황·화살표·테두리는 두지 않는다(담당자 요청). 준비 중인 업무만 이름 아래 작게 적는다.
+    그림 자리는 흰 판에 업무 색 테두리만 두른다 — 그림 에셋이 흰 바탕에 맞춰 만들어져,
     색을 채우면 그림 둘레에 사각 경계가 드러나기 때문이다.
     """
 
@@ -555,56 +556,41 @@ class TaskCard(QFrame):
     def __init__(self, task: Task, parent: QWidget | None = None):
         super().__init__(parent)
         self.task = task
-        self.setObjectName("taskCard")
+        self.setObjectName("taskTile")
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAccessibleName(f"{task.name} 열기" + ("" if task.ready else " (준비 중, 미리보기)"))
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setMinimumHeight(228)
-        card_shadow(self, "hero")
+        # 타일은 폭을 못박고 왼쪽부터 늘어놓는다. 창 폭에 맞춰 늘이면 넷이 멀찍이 흩어져 '도구함' 으로 안 읽힌다
+        self.setFixedSize(196, 186)
         self.setAttribute(Qt.WA_Hover, True)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 22, 22, 18)
+        layout.setContentsMargins(12, 14, 12, 10)
         layout.setSpacing(10)
 
-        top = QHBoxLayout()
-        top.setSpacing(8)
-        plate = QFrame()
-        plate.setObjectName(f"taskArt_{task.accent}")
-        plate.setFixedSize(100, 100)
-        plate_layout = QVBoxLayout(plate)
+        self.plate = QFrame()
+        self.plate.setObjectName(f"taskArt_{task.accent}")
+        self.plate.setFixedSize(108, 108)
+        plate_layout = QVBoxLayout(self.plate)
         plate_layout.setContentsMargins(0, 0, 0, 0)
-        plate_layout.addWidget(Art(task.art, 84), 0, Qt.AlignCenter)
-        top.addWidget(plate)
-        top.addStretch(1)
-        self.status = QLabel("")
-        self.status.setObjectName("taskStatus")
-        top.addWidget(self.status, 0, Qt.AlignTop)
-        layout.addLayout(top)
+        plate_layout.addWidget(Art(task.art, 92), 0, Qt.AlignCenter)
+        layout.addWidget(self.plate, 0, Qt.AlignHCenter)
 
         name = QLabel(task.name)
         name.setObjectName("taskName")
+        name.setAlignment(Qt.AlignCenter)
         layout.addWidget(name)
-        desc = WrapLabel(task.description)
-        desc.setObjectName("taskDesc")
-        layout.addWidget(desc)
+
+        self.badge = QLabel("준비 중")
+        self.badge.setObjectName("taskStatus")
+        self.badge.setAlignment(Qt.AlignCenter)
+        self.badge.setVisible(not task.ready)
+        layout.addWidget(self.badge)
         layout.addStretch(1)
 
-        bottom = QHBoxLayout()
-        self.badge = QLabel("준비 중 · 미리보기")
-        self.badge.setObjectName("pill_neutral")
-        self.badge.setVisible(not task.ready)
-        bottom.addWidget(self.badge)
-        bottom.addStretch(1)
-        arrow = QLabel("→")
-        arrow.setObjectName("taskArrow")
-        bottom.addWidget(arrow)
-        layout.addLayout(bottom)
-
     def set_status(self, text: str) -> None:
-        """실제 데이터가 있을 때만 현황을 보인다. 예시 숫자를 넣지 않는다."""
-        self.status.setText(text)
+        """현황은 타일에 쓰지 않는다. 호출부 호환용으로 말풍선에만 남긴다."""
+        self.setToolTip(f"{self.task.name} · {text}" if text else self.task.name)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         # 누른 자리에서 뗐을 때 한 번만. 안의 라벨은 마우스를 받지 않으므로 중복 실행이 없다
@@ -631,9 +617,9 @@ class TaskCard(QFrame):
         super().focusOutEvent(event)
 
     def event(self, event: QEvent) -> bool:
-        # 마우스가 올라오면 2px 떠오른다. 애니메이션 없이 위치만 바꾼다
+        # 마우스가 올라오면 그림이 2px 떠오른다. 애니메이션 없이 위치만 바꾼다
         if event.type() == QEvent.HoverEnter:
-            self.setContentsMargins(0, 0, 0, 2)
+            self.plate.setContentsMargins(0, 0, 0, 2)
         elif event.type() == QEvent.HoverLeave:
-            self.setContentsMargins(0, 2, 0, 0)
+            self.plate.setContentsMargins(0, 2, 0, 0)
         return super().event(event)

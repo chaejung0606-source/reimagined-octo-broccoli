@@ -1,19 +1,14 @@
-"""카드청구 입체 그림 만들기 — 참고 이미지에 없는 오브젝트라 새로 그린다.
+"""카드청구 입체 그림 만들기 — 담당자가 보낸 참고 그림(흰 영수증 뒤에 놓인 흰 카드)을 도형으로 옮긴다.
 
     python tools/make_card_art.py
 
-참고 이미지의 다른 오브젝트와 같은 약속으로 그린다.
-  - 흰 무광 몸체, 왼쪽 위에서 오는 빛(위·왼쪽 면이 밝고 아래·오른쪽이 살짝 어둡다)
-  - 부드러운 접촉 그림자(아래로 조금 치우친 넓고 옅은 그림자)
-  - 포인트는 파스텔 블루·시안 하나와 작은 라벤더 칩
-  - 흰 바탕에 맞춘 사각 캔버스 + 가장자리 투명 풀기 (tools/make_art.py 와 같은 규격)
+담당자의 원본 PNG 는 채팅에 그림으로만 와서 파일을 받지 못했다. 그래서 같은 구성을 그린다.
+  - 뒤: 위가 살짝 말리고 오른쪽 위 모서리가 접힌 흰 영수증, 회색 줄 두 개, 왼쪽으로 기울어짐
+  - 앞: 둥근 흰 카드, 라벤더 → 하늘 → 민트로 흐르는 띠, 라벤더 IC 칩, 짧은 줄 두 개
+  - 왼쪽 위에서 오는 빛, 가장자리에 라벤더·피치 반사광, 아래로 넓고 옅은 그림자
+흰 바탕 사각 캔버스 + 가장자리 투명 풀기 — tools/make_art.py 로 만든 다른 그림과 같은 규격.
 
-구성: 영수증 종이 한 장이 뒤에 비스듬히 서 있고, 그 앞에 둥근 모서리의 카드가 놓인다.
-카드 위에는 옅은 블루 띠와 작은 라벤더 칩(IC 칩 자리), 영수증에는 짧은 회색 줄 몇 개.
-
-4배로 그려서 줄인다. 결과는 저장소에 커밋되므로 보통은 다시 돌릴 일이 없다.
-원본 수준의 3D 렌더가 아니라 평면 도구로 흉내 낸 것이다 — 더 나은 원본이 생기면
-같은 이름(card-receipt.png)으로 바꿔 넣기만 하면 된다.
+원본 파일을 받으면 assets/art/card-receipt.png 를 그 파일로 바꾸기만 하면 된다(정사각, 흰 바탕).
 """
 from __future__ import annotations
 
@@ -27,91 +22,122 @@ SIDE = 200
 SS = 4
 FEATHER = 0.06
 
-WHITE = (255, 255, 255, 255)
-PAPER = (247, 247, 246, 255)
-PAPER_SHADE = (226, 228, 230, 255)
-CARD_SHADE = (222, 225, 229, 255)
-STRIPE_A = (169, 223, 236)        # 시안 #A9DFEC
-STRIPE_B = (196, 212, 248)        # 옅은 블루
-CHIP = (201, 184, 239, 255)       # 라벤더 #C9B8EF
-LINE = (205, 209, 214, 255)
-SHADOW = (35, 42, 52)
+WHITE = (255, 255, 255)
+PAPER = (250, 250, 250)
+PAPER_SIDE = (222, 224, 230)
+CARD_SIDE = (214, 218, 228)
+LINE = (214, 217, 224)
+CHIP = (206, 190, 243)
+CHIP_SIDE = (176, 158, 226)
+CHIP_LINE = (236, 229, 252)
+LAVENDER = (196, 184, 244)
+SKY = (158, 214, 246)
+MINT = (176, 240, 206)
+RIM_L = (214, 204, 250)
+RIM_R = (255, 226, 206)
+SHADOW = (49, 65, 110)
 
 
-def _shadow(size: int, box, radius: int, blur: float, alpha: int, dy: int) -> Image.Image:
+def _blur_shadow(size, box, radius, blur, alpha, dy):
     layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    ImageDraw.Draw(layer).rounded_rectangle(
-        (box[0], box[1] + dy, box[2], box[3] + dy), radius, fill=SHADOW + (alpha,))
+    ImageDraw.Draw(layer).rounded_rectangle((box[0], box[1] + dy, box[2], box[3] + dy), radius,
+                                            fill=SHADOW + (alpha,))
     return layer.filter(ImageFilter.GaussianBlur(blur))
 
 
-def _gradient_rect(w: int, h: int, left, right) -> Image.Image:
-    """왼쪽 → 오른쪽 가로 그라데이션 띠."""
-    x = np.linspace(0, 1, w)[None, :, None]
-    rgb = (np.array(left)[None, None, :] * (1 - x) + np.array(right)[None, None, :] * x)
-    rgb = np.repeat(rgb, h, axis=0).astype(np.uint8)
-    alpha = np.full((h, w, 1), 255, np.uint8)
-    return Image.fromarray(np.concatenate([rgb, alpha], axis=2), "RGBA")
+def _gradient(w, h, stops):
+    """가로 그라데이션. stops = [(위치 0~1, (r,g,b)), ...]"""
+    xs = np.linspace(0, 1, w)
+    cols = np.zeros((w, 3))
+    for i in range(len(stops) - 1):
+        p0, c0 = stops[i]
+        p1, c1 = stops[i + 1]
+        m = (xs >= p0) & (xs <= p1)
+        t = ((xs[m] - p0) / max(p1 - p0, 1e-6))[:, None]
+        cols[m] = np.array(c0) * (1 - t) + np.array(c1) * t
+    rgb = np.repeat(cols[None, :, :], h, axis=0).astype(np.uint8)
+    return Image.fromarray(np.dstack([rgb, np.full((h, w, 1), 255, np.uint8)]), "RGBA")
+
+
+def _rounded_mask(size, box, radius):
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(box, radius, fill=255)
+    return mask
 
 
 def draw() -> Image.Image:
     big = SIDE * SS
     u = big / 100
-    canvas = Image.new("RGBA", (big, big), WHITE)
+    canvas = Image.new("RGBA", (big, big), WHITE + (255,))
 
-    # ── 뒤의 영수증 종이 (살짝 기울여 세움) ─────────────────────────────
+    # ── 뒤: 영수증 ──────────────────────────────────────────────────
     paper = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     pd = ImageDraw.Draw(paper)
-    pbox = (30 * u, 14 * u, 76 * u, 66 * u)
-    pd.rounded_rectangle(pbox, 4 * u, fill=PAPER)
-    # 아래·오른쪽 가장자리의 어두운 면(두께)
-    pd.rounded_rectangle((pbox[0] + 1.5 * u, pbox[1] + 1.5 * u, pbox[2], pbox[3]), 4 * u,
-                         outline=PAPER_SHADE, width=max(2, int(0.9 * u)))
-    for i, (x0, x1) in enumerate([(38, 62), (38, 56), (38, 66), (38, 52)]):
-        y = 23 * u + i * 6.5 * u
-        pd.rounded_rectangle((x0 * u, y, x1 * u, y + 2.2 * u), 1.1 * u, fill=LINE)
-    paper = paper.rotate(-7, resample=Image.BICUBIC, center=(53 * u, 40 * u))
-    canvas.alpha_composite(_shadow(big, pbox, int(4 * u), 3 * u, 34, int(3 * u))
-                           .rotate(-7, resample=Image.BICUBIC, center=(53 * u, 40 * u)))
-    canvas.alpha_composite(paper)
+    pbox = (26 * u, 18 * u, 70 * u, 70 * u)
+    pr = 5 * u
+    pd.rounded_rectangle((pbox[0], pbox[1] + 1.6 * u, pbox[2] + 1.0 * u, pbox[3] + 1.6 * u), pr, fill=PAPER_SIDE)  # 두께
+    pd.rounded_rectangle(pbox, pr, fill=PAPER)
+    # 위쪽 말림 — 윗부분을 조금 밝은 띠와 그 아래 옅은 그늘로
+    pd.rounded_rectangle((pbox[0], pbox[1], pbox[2], pbox[1] + 7 * u), pr, fill=WHITE)
+    pd.rectangle((pbox[0] + 0.5 * u, pbox[1] + 6.5 * u, pbox[2] - 0.5 * u, pbox[1] + 8.5 * u), fill=(238, 239, 243))
+    # 오른쪽 위 접힌 모서리
+    fold = 10 * u
+    pd.polygon([(pbox[2] - fold, pbox[1]), (pbox[2], pbox[1] + fold), (pbox[2], pbox[1])], fill=WHITE)
+    pd.polygon([(pbox[2] - fold, pbox[1]), (pbox[2] - fold, pbox[1] + fold), (pbox[2], pbox[1] + fold)],
+               fill=(232, 233, 238))
+    for i, (x0, x1) in enumerate([(33, 56), (33, 48)]):
+        y = pbox[1] + 15 * u + i * 7 * u
+        pd.rounded_rectangle((x0 * u, y, x1 * u, y + 2.6 * u), 1.3 * u, fill=LINE)
+    angle = 10
+    center = ((pbox[0] + pbox[2]) / 2, (pbox[1] + pbox[3]) / 2)
+    canvas.alpha_composite(_blur_shadow(big, pbox, pr, 4 * u, 40, int(4 * u))
+                           .rotate(angle, resample=Image.BICUBIC, center=center))
+    canvas.alpha_composite(paper.rotate(angle, resample=Image.BICUBIC, center=center))
 
-    # ── 앞의 카드 ─────────────────────────────────────────────────────
-    cbox = (18 * u, 44 * u, 82 * u, 84 * u)
-    radius = int(6 * u)
-    canvas.alpha_composite(_shadow(big, cbox, radius, 4.5 * u, 44, int(5 * u)))
+    # ── 앞: 카드 ────────────────────────────────────────────────────
     card = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     cd = ImageDraw.Draw(card)
-    cd.rounded_rectangle(cbox, radius, fill=WHITE)
-    # 빛: 왼쪽 위는 흰색 그대로, 아래·오른쪽 가장자리에 옅은 그늘
-    cd.rounded_rectangle((cbox[0] + 1.2 * u, cbox[1] + 1.2 * u, cbox[2], cbox[3]), radius,
-                         outline=CARD_SHADE, width=max(2, int(1.0 * u)))
-    # 블루 띠 (상단) — 둥근 모서리에 맞춰 마스크로 자른다
-    stripe = _gradient_rect(int(cbox[2] - cbox[0]), int(9 * u), STRIPE_A, STRIPE_B)
-    mask = Image.new("L", (big, big), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(cbox, radius, fill=255)
-    stripe_layer = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    stripe_layer.paste(stripe, (int(cbox[0]), int(cbox[1] + 7 * u)))
-    stripe_layer.putalpha(ImageChops.darker(stripe_layer.getchannel("A"), mask))
-    card.alpha_composite(stripe_layer)
-    # 라벤더 칩
-    chip = (cbox[0] + 8 * u, cbox[1] + 21 * u, cbox[0] + 20 * u, cbox[1] + 30 * u)
+    cbox = (30 * u, 42 * u, 90 * u, 86 * u)
+    cr = 7 * u
+    # 반사광: 왼쪽은 라벤더, 오른쪽 아래는 피치 — 카드보다 조금 큰 테두리를 깔고 카드로 덮는다
+    cd.rounded_rectangle((cbox[0] - 1.2 * u, cbox[1] - 0.6 * u, cbox[2] + 1.2 * u, cbox[3] + 1.2 * u), cr, fill=RIM_R)
+    cd.rounded_rectangle((cbox[0] - 1.2 * u, cbox[1] - 0.6 * u, cbox[0] + 30 * u, cbox[3] + 1.2 * u), cr, fill=RIM_L)
+    cd.rounded_rectangle((cbox[0], cbox[1] + 1.4 * u, cbox[2] + 0.8 * u, cbox[3] + 1.4 * u), cr, fill=CARD_SIDE)  # 두께
+    cd.rounded_rectangle(cbox, cr, fill=WHITE)
+    # 띠: 라벤더 → 하늘 → 민트
+    stripe_h = int(11 * u)
+    stripe = _gradient(int(cbox[2] - cbox[0]) + 2, stripe_h, [(0, LAVENDER), (0.5, SKY), (1, MINT)])
+    layer = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    layer.paste(stripe, (int(cbox[0]), int(cbox[1] + 12 * u)))
+    layer.putalpha(ImageChops.darker(layer.getchannel("A"), _rounded_mask(big, cbox, cr)))
+    card.alpha_composite(layer)
+    # 띠 아래 얇은 그늘(두께감)
     cd = ImageDraw.Draw(card)
-    cd.rounded_rectangle(chip, 2.2 * u, fill=CHIP)
-    cd.rounded_rectangle((chip[0] + 0.8 * u, chip[1] + 0.8 * u, chip[2], chip[3]), 2.2 * u,
-                         outline=(182, 164, 226, 255), width=max(2, int(0.6 * u)))
-    # 카드 번호 자리 — 짧은 회색 토막 넷
-    for i in range(4):
-        x = cbox[0] + 8 * u + i * 13.5 * u
-        cd.rounded_rectangle((x, cbox[3] - 11 * u, x + 10 * u, cbox[3] - 8.6 * u), 1.2 * u, fill=LINE)
-    canvas.alpha_composite(card)
+    cd.rectangle((cbox[0] + 0.6 * u, cbox[1] + 12 * u + stripe_h, cbox[2] - 0.6 * u, cbox[1] + 12 * u + stripe_h + 1.2 * u),
+                 fill=(236, 238, 244))
+    # IC 칩
+    chip = (cbox[0] + 8 * u, cbox[1] + 27 * u, cbox[0] + 21 * u, cbox[1] + 37 * u)
+    cd.rounded_rectangle((chip[0], chip[1] + 0.9 * u, chip[2] + 0.6 * u, chip[3] + 0.9 * u), 2.4 * u, fill=CHIP_SIDE)
+    cd.rounded_rectangle(chip, 2.4 * u, fill=CHIP)
+    w = max(2, int(0.7 * u))
+    cd.line([(chip[0] + 6 * u, chip[1]), (chip[0] + 6 * u, chip[3])], fill=CHIP_LINE, width=w)
+    cd.line([(chip[0], chip[1] + 3.4 * u), (chip[2], chip[1] + 3.4 * u)], fill=CHIP_LINE, width=w)
+    cd.line([(chip[0], chip[1] + 6.6 * u), (chip[2], chip[1] + 6.6 * u)], fill=CHIP_LINE, width=w)
+    # 짧은 줄 두 개
+    for x0, x1 in ((58, 69), (72, 84)):
+        y = cbox[1] + 31 * u
+        cd.rounded_rectangle((cbox[0] + (x0 - 30) * u, y, cbox[0] + (x1 - 30) * u, y + 2.4 * u), 1.2 * u, fill=LINE)
+    angle = -7
+    center = ((cbox[0] + cbox[2]) / 2, (cbox[1] + cbox[3]) / 2)
+    canvas.alpha_composite(_blur_shadow(big, cbox, cr, 6 * u, 54, int(6 * u))
+                           .rotate(angle, resample=Image.BICUBIC, center=center))
+    canvas.alpha_composite(card.rotate(angle, resample=Image.BICUBIC, center=center))
 
-    # 참고 에셋과 같은 가장자리 투명 풀기
     rgb = np.asarray(canvas.convert("RGB")).astype(np.uint8)
     gy, gx = np.mgrid[0:big, 0:big]
     edge = np.minimum.reduce([gy, gx, big - 1 - gy, big - 1 - gx]).astype(float)
     alpha = (np.clip(edge / (big * FEATHER), 0, 1) * 255).astype(np.uint8)
-    out = Image.fromarray(np.dstack([rgb, alpha]), "RGBA")
-    return out.resize((SIDE, SIDE), Image.LANCZOS)
+    return Image.fromarray(np.dstack([rgb, alpha]), "RGBA").resize((SIDE, SIDE), Image.LANCZOS)
 
 
 if __name__ == "__main__":
