@@ -1,366 +1,261 @@
-"""디자인 토큰과 스타일시트.
+"""스타일시트 — tokens.py 의 값을 Qt 스타일시트로 옮긴다.
 
-민트 · 스카이블루 계열의 밝은 대시보드. 아주 연한 그라데이션 바탕 위에
-흰 카드가 떠 있고, 그림자는 존재를 알릴 정도로만 옅게 넣는다.
-
-색·라운드·그림자 값은 전부 여기 한 곳에 있다. 화면 코드에는 색을 직접
-적지 않는다 — 한 곳만 고치면 화면 전체가 따라오게 하려는 것이다.
+입체감은 카드와 대표 그림(art.py)에만 준다. 표·입력창·작은 버튼은 평평하게 두고
+선과 대비로 구분한다 — 오래 들여다보는 화면이라 모든 것이 볼록하면 피곤하다.
 
 Qt 스타일시트에는 box-shadow 가 없어 그림자는 QGraphicsDropShadowEffect 로 준다.
+상태 전환 애니메이션도 없으므로 '동작 줄이기' 설정과 부딪힐 일이 없다.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QGraphicsDropShadowEffect, QWidget
 
-# ── 색 ───────────────────────────────────────────────────────────────────
-# 다른 모듈이 `from .theme import COLORS` 로 이 객체를 그대로 들고 쓴다.
-COLORS: dict[str, str] = {
-    # 바탕 — 민트에서 하늘색을 지나 연한 남보라로 아주 옅게 흐른다
-    "bg":            "#EDF6F8",
-    "grad_mint":     "#E4F6F1",
-    "grad_cyan":     "#E7F2FC",
-    "grad_blue":     "#EDEFFD",
+from .tokens import COLORS, FONT_FAMILY, FONT_SIZE, RADIUS, SHADOW, SHADOW_RGB
 
-    # 면
-    "surface":       "#FFFFFF",   # 카드
-    "surface_alt":   "#F3F9FC",   # 목록 선택·연한 강조
-    "surface_hi":    "#FFFFFF",
-    "border":        "#E4EDF4",   # 실선은 얇고 옅게
-    "border_strong": "#CFDEE9",
+__all__ = ["COLORS", "STATUS", "card_shadow", "stylesheet"]
 
-    # 글자
-    "text":          "#16243C",   # 다크 네이비
-    "text_muted":    "#5D7387",   # 그레이 블루
-    "text_faint":    "#93A7B9",
+# QSS 의 image: 는 파일 경로만 받는다. 윈도우에서도 슬래시로 적어야 읽는다.
+CHECK_ICON = (Path(__file__).parent / "assets" / "check.svg").as_posix()
 
-    # 포인트 — Primary 는 민트→아쿠아 그라데이션으로 쓴다
-    "primary":       "#2BC9BC",
-    "primary_deep":  "#17A79C",
-    "accent":        "#31B4EC",   # 아쿠아 / 시안
-    "accent_deep":   "#1E90D2",
-    "secondary":     "#8AA4F8",   # 페리윙클
-    "navy":          "#16243C",
-
-    # 그래프 계열 (Primary/Secondary 안에서만 고른다)
-    "chart_1":       "#2BC9BC",
-    "chart_2":       "#31B4EC",
-    "chart_3":       "#8AA4F8",
-    "chart_4":       "#B7E4DC",
-
-    # 판정 — 파스텔로 낮춘 채도. 빨강도 눈을 찌르지 않게 한다
-    "error":         "#EE6A82",
-    "warn":          "#F2A950",
-    "review":        "#5C9DF5",
-    "pass":          "#2BC9A0",
-
-    "warn_bg":       "#FDF3E4",   # 사람이 해야 할 일을 알리는 띠
-    "error_bg":      "#FDECEF",
-
-    "on_dark":       "#FFFFFF",
-    "on_dark_muted": "#D6EEF6",
-
-    "shadow":        "#1B4A66",   # 푸른 기가 도는 그림자
-    "shadow_boost":  "0.75",      # 은은하게
-
-    "radius":        "20",
-    "radius_lg":     "24",
-    "radius_pill":   "999",
+# 상태 배지: 이름 → (글자색, 바탕색)
+STATUS = {
+    name: (COLORS[name], COLORS[f"{name}_bg"])
+    for name in ("success", "warning", "danger", "info", "neutral")
 }
 
-# 이전 이름을 쓰는 자리가 남아 있어 별칭을 둔다.
-COLORS["indigo"] = COLORS["accent_deep"]
-COLORS["blue"] = COLORS["accent"]
-COLORS["blue_soft"] = "#A9D9F5"
-COLORS["teal"] = COLORS["primary"]
-COLORS["teal_soft"] = "#A9E7E0"
-COLORS["pearl"] = COLORS["surface"]
-COLORS["center_light"] = COLORS["grad_cyan"]
 
-SEVERITY_STYLE: dict[str, dict[str, str]] = {}
-
-# 차트 계열색
-CHART_SERIES: list[str] = []
-
-RADIUS = 20
-FONT_FAMILY = '"Pretendard", "Noto Sans KR", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif'
-
-
-def _fill_derived() -> None:
-    """COLORS 에서 파생되는 표를 채운다. 모듈을 읽을 때 한 번 돈다."""
-    SEVERITY_STYLE.update({
-        "ERROR":  {"color": COLORS["error"],  "label": "수정 필요", "icon": "●"},
-        "WARN":   {"color": COLORS["warn"],   "label": "확인 요망", "icon": "●"},
-        "REVIEW": {"color": COLORS["review"], "label": "판독 불가", "icon": "●"},
-        "PASS":   {"color": COLORS["pass"],   "label": "이상 없음", "icon": "●"},
-        "INFO":   {"color": COLORS["text_muted"], "label": "참고", "icon": "●"},
-    })
-    CHART_SERIES[:] = [COLORS["chart_1"], COLORS["chart_2"],
-                       COLORS["chart_3"], COLORS["chart_4"]]
-
-
-_fill_derived()
-
-
-def card_shadow(widget: QWidget, blur: int = 30, alpha: int = 26, dy: int = 8) -> None:
-    """카드가 바탕에서 살짝 떠 보이게 하는 그림자.
-
-    윤곽선을 더 그리는 대신 그림자로 층을 만든다. 선이 많아지면 화면이
-    답답해지기 때문이다. 그래서 기본값이 넓고 옅다.
-    """
+def card_shadow(widget: QWidget, kind: str = "card") -> None:
+    """넓고 옅은 그림자. 카드가 바탕에서 살짝 떠 보일 정도로만."""
+    spec = SHADOW[kind]
     effect = QGraphicsDropShadowEffect(widget)
-    effect.setBlurRadius(blur)
-    effect.setOffset(0, dy)
-    base = QColor(COLORS["shadow"])
-    boost = float(COLORS["shadow_boost"])
-    effect.setColor(QColor(base.red(), base.green(), base.blue(),
-                           min(255, round(alpha * boost))))
+    effect.setBlurRadius(spec["blur"])
+    effect.setOffset(0, spec["dy"])
+    effect.setColor(QColor(*SHADOW_RGB, round(255 * spec["alpha"])))
     widget.setGraphicsEffect(effect)
 
 
 def stylesheet() -> str:
     c = COLORS
-    radius = int(c["radius"])
-    radius_lg = int(c["radius_lg"])
+    r_ctl, r_card, r_hero = RADIUS["control"], RADIUS["card"], RADIUS["hero"]
+    f = FONT_SIZE
     return f"""
 * {{
     font-family: {FONT_FAMILY};
+    font-size: {f['body']}px;
     color: {c['text']};
 }}
-
-QMainWindow {{ background: {c['bg']}; }}
-QWidget#page {{ background: transparent; }}
+QMainWindow, QWidget#root {{ background: {c['bg']}; }}
+QWidget#page, QWidget#pageBody {{ background: transparent; }}
 
 /* ── 사이드바 ─────────────────────────────────────────── */
 QWidget#sidebar {{
     background: {c['surface']};
-    border-right: 1px solid {c['border']};
+    border-right: 1px solid {c['divider']};
 }}
-QLabel#brand {{
-    color: {c['text']};
-    font-size: 16px;
-    font-weight: 700;
-    padding: 4px 22px 2px 22px;
-}}
-QLabel#brandSub {{
-    color: {c['text_faint']};
-    font-size: 11px;
-    padding: 0 22px 16px 22px;
+QLabel#brand {{ font-size: 16px; font-weight: 700; }}
+QLabel#workspace {{ font-size: {f['caption']}px; color: {c['text_muted']}; }}
+QLabel#navGroup {{
+    font-size: {f['caption']}px; font-weight: 600; color: {c['text_faint']};
+    padding: 18px 12px 6px 12px;
 }}
 QPushButton#navItem {{
     background: transparent;
     border: none;
-    border-radius: 14px;
+    border-radius: {r_ctl}px;
     color: {c['text_muted']};
-    font-size: 13px;
-    font-weight: 600;
-    padding: 11px 14px;
+    font-weight: 500;
+    padding: 9px 12px;
     text-align: left;
-    margin: 3px 12px;
+    min-height: 20px;
 }}
-QPushButton#navItem:hover {{
-    background: {c['surface_alt']};
-    color: {c['text']};
-}}
+QPushButton#navItem:hover {{ background: {c['hover']}; color: {c['text']}; }}
 QPushButton#navItem:checked {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 {c['primary']}, stop:1 {c['accent']});
-    color: {c['on_dark']};
+    background: {c['selection']};
+    color: {c['primary_hover']};
     font-weight: 700;
 }}
-QLabel#versionLabel {{
-    color: {c['text_faint']};
-    font-size: 10px;
-    padding: 8px 22px 16px 22px;
-}}
+QPushButton#navItem:focus {{ border: 2px solid {c['primary']}; padding: 7px 10px; }}
+QLabel#versionLabel {{ font-size: {f['caption']}px; color: {c['text_faint']}; }}
+
+/* ── 페이지 머리 ──────────────────────────────────────── */
+QLabel#breadcrumb {{ font-size: {f['caption']}px; color: {c['text_faint']}; }}
+QLabel#pageTitle  {{ font-size: {f['title']}px; font-weight: 700; }}
+QLabel#pageDesc   {{ font-size: {f['small']}px; color: {c['text_muted']}; }}
 
 /* ── 카드 ─────────────────────────────────────────────── */
 QFrame#card {{
     background: {c['surface']};
-    border: 1px solid {c['border']};
-    border-radius: {radius}px;
+    border: 1px solid {c['divider']};
+    border-radius: {r_card}px;
 }}
-/* 가장 중요한 카드 하나만 색을 입혀 위계를 만든다 */
-QFrame#cardAccent {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 {c['primary']}, stop:1 {c['accent']});
-    border: none;
-    border-radius: {radius}px;
+QFrame#hero {{
+    background: {c['surface']};
+    border: 1px solid {c['divider']};
+    border-radius: {r_hero}px;
 }}
-QFrame#cardTeal {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 {c['teal_soft']}, stop:1 {c['blue_soft']});
-    border: none;
-    border-radius: {radius}px;
+QLabel#cardTitle {{ font-size: {f['section']}px; font-weight: 700; }}
+QLabel#cardHint  {{ font-size: {f['small']}px; color: {c['text_muted']}; }}
+QLabel#body      {{ font-size: {f['body']}px; color: {c['text']}; }}
+QLabel#muted     {{ font-size: {f['small']}px; color: {c['text_muted']}; }}
+QLabel#stepNo    {{
+    font-size: {f['caption']}px; font-weight: 700; color: {c['primary_hover']};
+    background: {c['selection']}; border-radius: 10px; padding: 2px 8px;
 }}
-QLabel#cardTitle {{ font-size: 13px; font-weight: 700; color: {c['text']}; }}
-QLabel#cardHint  {{ font-size: 11px; color: {c['text_faint']}; }}
 
-QLabel#statValue        {{ font-size: 32px; font-weight: 800; color: {c['text']}; }}
-QLabel#statValueError   {{ font-size: 32px; font-weight: 800; color: {c['error']}; }}
-QLabel#statValueWarn    {{ font-size: 32px; font-weight: 800; color: {c['warn']}; }}
-QLabel#statValueReview  {{ font-size: 32px; font-weight: 800; color: {c['review']}; }}
-QLabel#statLabel        {{ font-size: 11px; font-weight: 600; color: {c['text_muted']}; }}
-QLabel#statValueDark    {{ font-size: 32px; font-weight: 800; color: {c['on_dark']}; }}
-QLabel#statLabelDark    {{ font-size: 11px; font-weight: 600; color: {c['on_dark_muted']}; }}
-QLabel#statCaption      {{ font-size: 11px; color: {c['text_faint']}; }}
+QLabel#kpiLabel   {{ font-size: {f['small']}px; font-weight: 600; color: {c['text_muted']}; }}
+QLabel#kpiValue   {{ font-size: {f['kpi']}px; font-weight: 700; color: {c['text']}; }}
+QLabel#kpiCaption {{ font-size: {f['caption']}px; color: {c['text_faint']}; }}
 
-QLabel#pageTitle   {{ font-size: 22px; font-weight: 700; }}
-QLabel#pageSub     {{ font-size: 12px; color: {c['text_muted']}; }}
-QLabel#sectionHead {{ font-size: 13px; font-weight: 700; }}
+/* 상태 배지 — 색과 글자를 함께 */
+{''.join(f"QLabel#pill_{n} {{ background: {bg}; color: {fg}; border-radius: 10px; padding: 2px 9px; font-size: {f['caption']}px; font-weight: 600; }}" for n, (fg, bg) in STATUS.items())}
+
+/* 사람 차례 알림 띠 */
+QFrame#banner {{
+    background: {c['warning_bg']};
+    border: 1px solid #F0D3A8;
+    border-radius: {r_ctl + 4}px;
+}}
+QLabel#bannerText {{ font-weight: 600; color: {c['text']}; }}
 
 /* ── 입력 ─────────────────────────────────────────────── */
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit {{
+QLabel#fieldLabel {{ font-size: {f['small']}px; font-weight: 600; color: {c['text']}; }}
+QLabel#fieldHelp  {{ font-size: {f['caption']}px; color: {c['text_muted']}; }}
+QLabel#fieldError {{ font-size: {f['caption']}px; color: {c['danger']}; font-weight: 600; }}
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit, QTextBrowser {{
     background: {c['surface']};
     color: {c['text']};
     border: 1px solid {c['border']};
-    border-radius: 14px;
-    padding: 9px 13px;
-    font-size: 12px;
-    selection-background-color: {c['accent']};
-    selection-color: {c['on_dark']};
-}}
-QLineEdit:hover, QComboBox:hover {{ border-color: {c['border_strong']}; }}
-QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus, QTextEdit:focus {{
-    border: 1px solid {c['primary']};
-}}
-QComboBox::drop-down {{ border: none; width: 22px; }}
-QComboBox::down-arrow {{ width: 9px; height: 9px; }}
-QComboBox QAbstractItemView {{
-    background: {c['surface']};
-    border: 1px solid {c['border']};
-    border-radius: 14px;
-    padding: 6px;
-    selection-background-color: {c['surface_alt']};
+    border-radius: {r_ctl}px;
+    padding: 7px 10px;
+    min-height: 20px;
+    selection-background-color: {c['selection']};
     selection-color: {c['text']};
+}}
+QLineEdit:hover, QComboBox:hover, QDoubleSpinBox:hover {{ border-color: {c['border_strong']}; }}
+QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus, QTextEdit:focus {{
+    border: 2px solid {c['primary']};
+    padding: 6px 9px;
+}}
+QLineEdit:read-only, QPlainTextEdit[readOnly="true"], QTextBrowser {{ background: {c['surface_alt']}; }}
+QLineEdit:disabled, QDoubleSpinBox:disabled {{ background: {c['surface_alt']}; color: {c['text_faint']}; }}
+QLineEdit[error="true"] {{ border: 2px solid {c['danger']}; padding: 6px 9px; }}
+QPlainTextEdit#logView {{
+    font-family: "D2Coding", "Consolas", "Cascadia Mono", monospace;
+    font-size: {f['caption']}px;
+    color: {c['text_muted']};
 }}
 
 /* ── 버튼 ─────────────────────────────────────────────── */
+/* 기본(보조) — 흰 바탕 + 선 */
 QPushButton {{
     background: {c['surface']};
-    border: 1px solid {c['border_strong']};
-    border-radius: 18px;
-    padding: 9px 18px;
-    font-size: 12px;
-    font-weight: 600;
-    color: {c['primary_deep']};
-    min-height: 17px;
-}}
-QPushButton:hover    {{ background: {c['surface_alt']}; border-color: {c['primary']}; }}
-QPushButton:pressed  {{ background: {c['surface_alt']}; padding-top: 10px; padding-bottom: 8px; }}
-QPushButton:disabled {{ color: {c['text_faint']}; border-color: {c['border']}; }}
-
-QPushButton#primary {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 {c['primary']}, stop:1 {c['accent']});
-    border: none;
-    border-radius: 20px;
-    color: {c['on_dark']};
-    font-size: 13px;
-    font-weight: 700;
-    padding: 12px 24px;
-}}
-QPushButton#primary:hover    {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 {c['primary_deep']}, stop:1 {c['accent_deep']});
-}}
-QPushButton#primary:pressed  {{ padding-top: 13px; padding-bottom: 11px; }}
-QPushButton#primary:disabled {{ background: {c['border_strong']}; color: {c['surface']}; }}
-
-QPushButton#ghost {{
-    background: transparent;
     border: 1px solid {c['border']};
-    color: {c['text_muted']};
-}}
-QPushButton#ghost:hover {{ border-color: {c['primary']}; color: {c['primary_deep']}; }}
-
-QPushButton:checked {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 {c['primary']}, stop:1 {c['accent']});
-    border-color: {c['primary']};
-    color: {c['on_dark']};
-}}
-
-QCheckBox {{ font-size: 12px; spacing: 8px; color: {c['text_muted']}; }}
-QCheckBox::indicator {{
-    width: 17px; height: 17px;
-    border: 1px solid {c['border_strong']};
-    border-radius: 6px;
-    background: {c['surface']};
-}}
-QCheckBox::indicator:checked {{
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 {c['primary']}, stop:1 {c['accent']});
-    border-color: {c['primary']};
-}}
-
-/* ── 목록·표 ──────────────────────────────────────────── */
-QTreeWidget, QListWidget, QTableWidget {{
-    background: transparent;
-    border: none;
-    font-size: 12px;
-    outline: none;
-}}
-QTreeWidget::item, QListWidget::item {{
-    padding: 10px 6px;
-    border-radius: 10px;
-}}
-QTreeWidget::item:hover, QListWidget::item:hover {{ background: {c['surface_alt']}; }}
-QTreeWidget::item:selected, QListWidget::item:selected {{
-    background: {c['surface_alt']};
+    border-radius: {r_ctl}px;
+    padding: 7px 14px;
+    min-height: 20px;
+    font-weight: 600;
     color: {c['text']};
 }}
-QTreeWidget::branch {{ background: transparent; }}
-QTreeWidget::branch:selected {{ background: {c['surface_alt']}; }}
-QHeaderView {{ background: transparent; }}
-QHeaderView::section {{
+QPushButton:hover    {{ background: {c['hover']}; border-color: {c['border_strong']}; }}
+QPushButton:pressed  {{ background: {c['divider']}; }}
+QPushButton:focus    {{ border: 2px solid {c['primary']}; padding: 6px 13px; }}
+QPushButton:disabled {{ background: {c['surface_alt']}; color: {c['text_faint']}; border-color: {c['divider']}; }}
+
+/* 주요 — 화면마다 하나 */
+QPushButton#primary {{
+    background: {c['primary']};
+    border: 1px solid {c['primary']};
+    color: {c['on_primary']};
+}}
+QPushButton#primary:hover   {{ background: {c['primary_hover']}; border-color: {c['primary_hover']}; }}
+QPushButton#primary:pressed {{ background: {c['primary_hover']}; }}
+QPushButton#primary:focus   {{ border: 2px solid {c['text']}; padding: 6px 13px; }}
+QPushButton#primary:disabled {{ background: {c['border']}; border-color: {c['border']}; color: {c['text_muted']}; }}
+
+/* 글자 버튼 — 덜 중요한 동작 */
+QPushButton#ghost {{ background: transparent; border: 1px solid transparent; color: {c['primary_hover']}; }}
+QPushButton#ghost:hover {{ background: {c['selection']}; }}
+QPushButton#ghost:focus {{ border: 2px solid {c['primary']}; padding: 6px 13px; }}
+QPushButton#ghost:disabled {{ color: {c['text_faint']}; background: transparent; }}
+
+/* 멈춤·중단 */
+QPushButton#danger {{ background: {c['surface']}; border: 1px solid #E8B4BD; color: {c['danger']}; }}
+QPushButton#danger:hover {{ background: {c['danger_bg']}; }}
+QPushButton#danger:disabled {{ background: {c['surface_alt']}; color: {c['text_faint']}; border-color: {c['divider']}; }}
+
+QCheckBox {{ spacing: 8px; }}
+QCheckBox::indicator {{
+    width: 18px; height: 18px;
+    border: 1px solid {c['border_strong']};
+    border-radius: 5px;
+    background: {c['surface']};
+}}
+QCheckBox::indicator:hover {{ border-color: {c['primary']}; }}
+QCheckBox::indicator:checked {{ background: {c['primary']}; border-color: {c['primary']}; image: url({CHECK_ICON}); }}
+QCheckBox:focus {{ color: {c['primary_hover']}; }}
+
+/* ── 탭 ───────────────────────────────────────────────── */
+QTabWidget::pane {{ border: none; border-top: 1px solid {c['divider']}; top: -1px; }}
+QTabBar::tab {{
     background: transparent;
     border: none;
-    border-bottom: 1px solid {c['border']};
-    color: {c['text_faint']};
-    font-size: 11px;
-    font-weight: 700;
+    border-bottom: 2px solid transparent;
     padding: 8px 4px;
+    margin-right: 20px;
+    color: {c['text_muted']};
+    font-weight: 600;
 }}
+QTabBar::tab:hover    {{ color: {c['text']}; }}
+QTabBar::tab:selected {{ color: {c['primary_hover']}; border-bottom: 2px solid {c['primary']}; }}
+QTabBar::tab:focus    {{ color: {c['primary_hover']}; }}
 
-QTableWidget::item {{ padding: 6px 4px; border-bottom: 1px solid {c['border']}; }}
-QTableWidget::item:selected {{ background: {c['surface_alt']}; color: {c['text']}; }}
-
-/* ── 사람 차례 알림 띠 ─────────────────────────────────── */
-QFrame#banner {{
-    background: {c['warn_bg']};
-    border: 1px solid {c['warn']};
-    border-radius: 16px;
+/* ── 표 ───────────────────────────────────────────────── */
+QTableWidget, QTableView {{
+    background: {c['surface']};
+    border: 1px solid {c['divider']};
+    border-radius: {r_ctl}px;
+    gridline-color: {c['divider']};
+    selection-background-color: {c['selection']};
+    selection-color: {c['text']};
+    outline: none;
 }}
-QFrame#bannerError {{
-    background: {c['error_bg']};
-    border: 1px solid {c['error']};
-    border-radius: 16px;
-}}
-QLabel#bannerText {{ font-size: 12px; font-weight: 600; color: {c['text']}; }}
-QPlainTextEdit#logView {{ font-family: "Consolas", "D2Coding", monospace; font-size: 11px; }}
-
-QScrollArea {{ background: transparent; border: none; }}
-QScrollBar:vertical {{ background: transparent; width: 9px; margin: 4px 2px; }}
-QScrollBar::handle:vertical {{
-    background: {c['border_strong']}; border-radius: 4px; min-height: 30px;
-}}
-QScrollBar::handle:vertical:hover {{ background: {c['primary']}; }}
-QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
-QScrollBar:horizontal {{ background: transparent; height: 9px; margin: 2px 4px; }}
-QScrollBar::handle:horizontal {{
-    background: {c['border_strong']}; border-radius: 4px; min-width: 30px;
-}}
-
-QSplitter::handle {{ background: transparent; width: 22px; }}
-
-QStatusBar {{ background: transparent; color: {c['text_faint']}; font-size: 11px; }}
-QToolTip {{
-    background: {c['navy']};
-    color: {c['on_dark']};
+QTableWidget::item, QTableView::item {{ padding: 0 10px; border-bottom: 1px solid {c['divider']}; }}
+QTableWidget::item:hover {{ background: {c['hover']}; }}
+QTableWidget::item:selected {{ background: {c['selection']}; color: {c['text']}; }}
+QHeaderView {{ background: {c['surface_alt']}; border: none; }}
+QHeaderView::section {{
+    background: {c['surface_alt']};
     border: none;
-    border-radius: 8px;
-    padding: 7px 10px;
-    font-size: 11px;
+    border-bottom: 1px solid {c['border']};
+    color: {c['text_muted']};
+    font-size: {f['caption']}px;
+    font-weight: 700;
+    padding: 9px 10px;
 }}
+QTableCornerButton::section {{ background: {c['surface_alt']}; border: none; }}
+
+/* ── 스크롤 · 기타 ───────────────────────────────────── */
+QScrollArea {{ background: transparent; border: none; }}
+QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
+QScrollBar::handle:vertical {{ background: {c['border']}; border-radius: 3px; min-height: 30px; }}
+QScrollBar::handle:vertical:hover {{ background: {c['border_strong']}; }}
+QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
+QScrollBar::handle:horizontal {{ background: {c['border']}; border-radius: 3px; min-width: 30px; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+
+QStatusBar {{ background: {c['surface']}; color: {c['text_muted']}; font-size: {f['caption']}px;
+              border-top: 1px solid {c['divider']}; }}
+QToolTip {{
+    background: {c['text']};
+    color: {c['surface']};
+    border: none;
+    padding: 6px 9px;
+    font-size: {f['caption']}px;
+}}
+QMessageBox {{ background: {c['surface']}; }}
+QMessageBox QLabel {{ font-size: {f['body']}px; }}
 """

@@ -25,7 +25,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-claim_downloader = ["ui/assets/*"]
+claim_downloader = ["ui/assets/*", "ui/assets/art/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

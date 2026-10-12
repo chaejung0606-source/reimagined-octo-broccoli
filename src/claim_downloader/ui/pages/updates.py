@@ -22,8 +22,8 @@ from PySide6.QtWidgets import (
 )
 
 from ... import settings, updater
-from ..theme import COLORS, card_shadow
-from ..widgets import Card, muted_label
+from ..theme import COLORS
+from ..widgets import Card, PageHeader, Pill, muted_label
 
 
 class UpdateWorker(QObject):
@@ -60,48 +60,52 @@ class UpdatesPage(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         content = QWidget()
-        content.setObjectName("page")
+        content.setObjectName("pageBody")
         scroll.setWidget(content)
         outer.addWidget(scroll)
 
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(32, 26, 32, 26)
-        layout.setSpacing(22)
-
-        header = QVBoxLayout()
-        header.setSpacing(4)
-        title = QLabel("업데이트")
-        title.setObjectName("pageTitle")
-        header.addWidget(title)
-        header.addWidget(muted_label(
+        layout.setContentsMargins(28, 24, 28, 28)
+        layout.setSpacing(16)
+        layout.addWidget(PageHeader(
+            "관리  ›  업데이트", "업데이트",
             "새 기능이나 고친 내용이 올라오면 여기서 받습니다. 설정과 받은 기록은 "
-            "앱 폴더 밖에 있어 업데이트해도 유지됩니다."
-        ))
-        layout.addLayout(header)
+            "앱 폴더 밖에 있어 업데이트해도 유지됩니다."))
 
-        status_card = Card("설치 상태")
+        column = QVBoxLayout()
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(16)
+        holder = QWidget()
+        holder.setMaximumWidth(920)
+        holder.setLayout(column)
+        layout.addWidget(holder, 1)
+
+        status_card = Card("설치 상태", "설치된 버전")
         self.version_label = QLabel(updater.current_version())
-        self.version_label.setObjectName("statValue")
+        self.version_label.setObjectName("kpiValue")
         status_card.add(self.version_label)
+        status_row = QHBoxLayout()
+        status_row.setSpacing(8)
+        self.status_pill = Pill("확인 전", "neutral")
+        status_row.addWidget(self.status_pill, 0, Qt.AlignTop)
         self.status_label = QLabel("업데이트를 확인하지 않았습니다.")
-        self.status_label.setObjectName("cardHint")
+        self.status_label.setObjectName("body")
         self.status_label.setWordWrap(True)
-        status_card.add(self.status_label)
+        status_row.addWidget(self.status_label, 1)
+        status_card.add_layout(status_row)
 
         buttons = QHBoxLayout()
         self.check_button = QPushButton("업데이트 확인")
-        self.check_button.setObjectName("ghost")
         self.check_button.clicked.connect(lambda: self._start("check"))
         self.apply_button = QPushButton("업데이트 적용")
         self.apply_button.setObjectName("primary")
-        card_shadow(self.apply_button, blur=18, alpha=28, dy=4)
         self.apply_button.setEnabled(False)
         self.apply_button.clicked.connect(self._confirm_apply)
         buttons.addWidget(self.check_button)
         buttons.addWidget(self.apply_button)
         buttons.addStretch(1)
         status_card.add_layout(buttons)
-        layout.addWidget(status_card)
+        column.addWidget(status_card)
 
         options_card = Card("자동 확인")
         self.auto_check = QCheckBox("앱을 시작할 때 새 업데이트가 있는지 확인")
@@ -114,14 +118,14 @@ class UpdatesPage(QWidget):
             "적용은 항상 직접 누르셔야 합니다. 확인만 자동으로 하고, 무엇이 바뀌는지 "
             "보여 준 뒤에 적용합니다."
         ))
-        layout.addWidget(options_card)
+        column.addWidget(options_card)
 
         log_card = Card("변경 내역", "적용하면 반영되는 내용")
         self.log = QTextBrowser()
         self.log.setFrameShape(QFrame.NoFrame)
         self.log.setMinimumHeight(140)
         log_card.add(self.log, 1)
-        layout.addWidget(log_card, 1)
+        column.addWidget(log_card, 1)
 
     # ── 실행 ─────────────────────────────────────────────────────────────
     def check_quietly(self) -> None:
@@ -134,6 +138,7 @@ class UpdatesPage(QWidget):
             return
         self.check_button.setEnabled(False)
         self.apply_button.setEnabled(False)
+        self.status_pill.set_status("확인 중" if action == "check" else "적용 중", "info")
         self.status_label.setText("확인 중입니다…" if action == "check" else "적용 중입니다…")
 
         self._thread = QThread()
@@ -156,17 +161,23 @@ class UpdatesPage(QWidget):
         self._stop()
         self._status = status
         self.status_label.setText(status.describe())
+        if status.error:
+            self.status_pill.set_status("확인 실패", "danger")
+        elif status.available:
+            self.status_pill.set_status(f"새 업데이트 {status.behind}건", "info")
+        else:
+            self.status_pill.set_status("최신", "success")
         self.apply_button.setEnabled(status.can_apply)
         self.version_label.setText(updater.current_version())
 
         if status.messages:
             items = "".join(f"<li>{message}</li>" for message in status.messages)
             self.log.setHtml(
-                f"<p style='color:{COLORS['text_muted']};font-size:11px;'>"
+                f"<p style='color:{COLORS['text_muted']};font-size:12px;'>"
                 f"새 변경 {status.behind}건</p><ul>{items}</ul>"
             )
         elif status.error:
-            self.log.setHtml(f"<p style='color:{COLORS['error']};'>{status.error}</p>")
+            self.log.setHtml(f"<p style='color:{COLORS['danger']};'>{status.error}</p>")
         else:
             self.log.setHtml(
                 f"<p style='color:{COLORS['text_muted']};'>받아 올 변경이 없습니다.</p>"
@@ -187,6 +198,7 @@ class UpdatesPage(QWidget):
     def _on_applied(self, ok: bool, message: str) -> None:
         self._stop()
         self.status_label.setText(message)
+        self.status_pill.set_status("적용됨" if ok else "적용 실패", "success" if ok else "danger")
         self.version_label.setText(updater.current_version())
         self.version_changed.emit(updater.current_version())
         self.apply_button.setEnabled(False)
@@ -201,4 +213,5 @@ class UpdatesPage(QWidget):
         lines = [line.strip() for line in message.splitlines() if line.strip()]
         reason = lines[-1] if lines else "알 수 없는 오류"
         self.status_label.setText(f"업데이트 처리 중 오류가 발생했습니다 — {reason}")
-        self.log.setHtml(f"<pre style='font-size:11px;'>{message}</pre>")
+        self.status_pill.set_status("오류", "danger")
+        self.log.setHtml(f"<pre style='font-size:12px;'>{message}</pre>")

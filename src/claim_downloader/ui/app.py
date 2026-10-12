@@ -18,11 +18,11 @@ from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QPainter
 from PySide6.QtWidgets import (
     QApplication,
-    QMessageBox,
     QButtonGroup,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -30,28 +30,20 @@ from PySide6.QtWidgets import (
 )
 
 from .. import updater
-from .backgrounds import paint_aurora
-from .pages import DownloadPage, SettingsPage, UpdatesPage
+from .art import Art
 from .icons import paint_icon
+from .pages import DownloadPage, SettingsPage, UpdatesPage
 from .theme import COLORS, stylesheet
 
 APP_NAME = "ERP 청구서 다운로더"
+WORKSPACE = "강원대 산학협력단 ERP"
 
-NAV_ITEMS = [
-    ("청구서 받기", "download", "승인된 청구서 PDF 를 받아 비목 폴더에 넣습니다"),
-    ("설정", "sliders", "저장 폴더 · 파일 이름 형식"),
-    ("업데이트", "gear", "기능 갱신 확인·적용"),
+# 업무 흐름대로 묶는다. (묶음, [(메뉴, 아이콘, 설명)])
+NAV_GROUPS = [
+    ("업무", [("청구서 받기", "download", "승인된 청구서 PDF 를 받아 비목 폴더에 넣습니다")]),
+    ("관리", [("설정", "sliders", "저장 폴더 · 파일 이름 형식"),
+             ("업데이트", "gear", "기능 갱신 확인·적용")]),
 ]
-
-
-class RootWidget(QWidget):
-    """창 전체 배경. 민트 → 하늘색 → 연한 남보라로 아주 옅게 흐른다."""
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        painter = QPainter(self)
-        paint_aurora(painter, QRectF(self.rect()),
-                     QColor(COLORS["grad_mint"]), QColor(COLORS["grad_cyan"]),
-                     QColor(COLORS["grad_blue"]))
 
 
 class NavButton(QPushButton):
@@ -68,6 +60,7 @@ class NavButton(QPushButton):
         self.setObjectName("navItem")
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
+        self.setAccessibleName(label)
         self._icon_name = icon_name
         # 아이콘 자리를 왼쪽에 비워 둔다
         self.setStyleSheet(f"padding-left: {self.ICON + 22}px;")
@@ -75,8 +68,8 @@ class NavButton(QPushButton):
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
         painter = QPainter(self)
-        color = QColor(COLORS["on_dark"] if self.isChecked() else COLORS["text_muted"])
-        box = QRectF(24, (self.height() - self.ICON) / 2, self.ICON, self.ICON)
+        color = QColor(COLORS["primary_hover"] if self.isChecked() else COLORS["text_muted"])
+        box = QRectF(12, (self.height() - self.ICON) / 2, self.ICON, self.ICON)
         paint_icon(painter, box, self._icon_name, color)
 
 
@@ -87,7 +80,7 @@ class MainWindow(QMainWindow):
         self.resize(1320, 860)
         self.setMinimumSize(1120, 720)
 
-        central = RootWidget()
+        central = QWidget()
         central.setObjectName("root")
         layout = QHBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -117,36 +110,47 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget()
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(216)
+        sidebar.setFixedWidth(232)
 
         layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(12, 20, 12, 16)
+        layout.setSpacing(2)
 
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(6, 0, 0, 4)
+        brand_row.setSpacing(10)
+        brand_row.addWidget(Art("register", 40))
+        names = QVBoxLayout()
+        names.setSpacing(0)
         brand = QLabel("청구서 다운로더")
         brand.setObjectName("brand")
-        brand.setAlignment(Qt.AlignCenter)
-        brand.setContentsMargins(0, 22, 0, 0)
-        layout.addWidget(brand)
-        subtitle = QLabel("강원대 ERP · 지출요구 및 결의서")
-        subtitle.setObjectName("brandSub")
-        subtitle.setWordWrap(True)
-        subtitle.setAlignment(Qt.AlignCenter)
-        layout.addWidget(subtitle)
+        names.addWidget(brand)
+        workspace = QLabel(WORKSPACE)
+        workspace.setObjectName("workspace")
+        names.addWidget(workspace)
+        brand_row.addLayout(names, 1)
+        layout.addLayout(brand_row)
 
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
-        for index, (label, icon_name, tooltip) in enumerate(NAV_ITEMS):
-            button = NavButton(label, icon_name)
-            button.setToolTip(tooltip)
-            button.clicked.connect(lambda _checked, i=index: self.stack.setCurrentIndex(i))
-            self.nav_group.addButton(button, index)
-            layout.addWidget(button)
+        index = 0
+        for group, items in NAV_GROUPS:
+            head = QLabel(group)
+            head.setObjectName("navGroup")
+            layout.addWidget(head)
+            for label, icon_name, tooltip in items:
+                button = NavButton(label, icon_name)
+                button.setToolTip(tooltip)
+                button.clicked.connect(lambda _checked, i=index: self.stack.setCurrentIndex(i))
+                self.nav_group.addButton(button, index)
+                layout.addWidget(button)
+                index += 1
         self.nav_group.button(0).setChecked(True)
 
         layout.addStretch(1)
         self.version_label = QLabel(f"버전 {updater.current_version()}")
         self.version_label.setObjectName("versionLabel")
+        self.version_label.setContentsMargins(12, 0, 0, 0)
         self.version_label.setWordWrap(True)
         layout.addWidget(self.version_label)
         self.updates_page.version_changed.connect(
