@@ -14,6 +14,8 @@ ERP(https://knu-icf.kangwon.ac.kr) 의 '청구서(지출요구 및 결의서)' P
   자동 다운로드 → 명명·분류, 성공 11 / 실패 0. 이 저장소는 그것을 데스크톱 앱으로 옮긴 것이다.
 - 이 저장소는 원래 '지출 서류 검토' 앱이었다. 서류 검토는 채팅에서 하기로 해서 2026-10-12 에
   걷어냈다. 그 코드는 git 이력(`bdcc2c3` 이전)에만 있다. 되살리지 않는다.
+- 2026-10-12 **회의록 생성**이 들어왔다 — 옛 '회의록 자동 작성 도구'(jubilant-happiness, `core.py`)를
+  `src/claim_downloader/minutes/` 로 옮긴 것. 13절. 청구서 받기와는 독립이다.
 - 다음 목표는 [`docs/roadmap.md`](docs/roadmap.md) — 일반청구·카드청구 *작성* 자동화(제출은 사람).
 
 ## 2. 사용자 업무 흐름 (반드시 보존)
@@ -40,6 +42,15 @@ PR 은 쓰지 않는다. 지금까지 전부 이 브랜치에 직접 커밋해 �
 
 푸시한 커밋은 곧바로 담당자 컴퓨터에서 도는 코드가 된다. CI(`.github/workflows/ci.yml`)가
 푸시마다 테스트·문법·개인정보 파일 혼입을 검사한다.
+
+### 동료 PC 에 처음 설치 — `설치.bat` (2026-10-12)
+
+윈도우만 있는 PC 에는 `설치.bat` 하나만 보낸다. 옆에 `setup.ps1` 이 없으면 이 브랜치의 raw 주소에서
+받아 돌린다. `setup.ps1` 이 파이썬(winget → python.org) · Git(무설치 MinGit zip) · 저장소 clone ·
+`앱 실행.bat` 까지 한다. 전부 `%LOCALAPPDATA%\COSS업무데스크\{app,tools}` 에 두어 관리자 권한이 없어도
+된다. `updater._git_executable()` 이 `tools\MinGit` 을 알고 있으므로 PATH 에 git 이 없어도 업데이트된다.
+`setup.ps1` 의 `$Branch` 는 `updater.BRANCH` 와 같아야 한다. 리눅스 컨테이너에서는 python.org 가
+막혀 있어 파이썬 설치 파일 주소는 실제 PC 에서만 확인된다(MinGit 주소는 확인함).
 
 ### 옛 설치본에서 넘어오는 길
 
@@ -82,17 +93,25 @@ src/claim_downloader/
   session.py    한 번의 받기 흐름 · 멈춤 재시도 · 로그
   reconcile.py  청구내역 엑셀 대조 (선택)
   cli.py        콘솔 실행
-  updater.py    자동 업데이트 (git pull --ff-only)
+  updater.py    자동 업데이트 (git pull --ff-only · PATH 밖의 MinGit 도 찾는다)
+  minutes/      회의록 생성 (13절) — 청구서 쪽 모듈을 읽지 않는다
+    rules.py    RULES_DEFAULT · load_rules (~/.claim-downloader/회의록규칙.txt)
+    schema.py   백엔드가 돌려줄 dict 의 모양 · 양식 고정값 · 참석자 행
+    hwpx.py     .hwpx 생성 (그대로 옮김 — 손대지 않는다)   docx.py  대체본
+    errors.py   오류 → 한국어 한 줄 · 치명 판정(login/limit/balance)
+    process.py  dict → 회의 폴더 안의 .hwpx · 여러 건 흐름(run)
+    backends/   base.py 규약(MinutesBackend) · claude_cli.py (1단계의 유일한 백엔드)
   ui/
     app.py      창 뼈대 — 상단 바 · 작업 탭 · 본문 · 하단 독. 업무 화면은 한 번 만들고 숨겼다 보인다
     tasks.py    업무 목록(이름·설명·그림·색·화면·준비 여부) — 홈 카드 · 독 · 탭이 모두 이 표를 읽는다
     shell.py    상단 바 · 작업 탭 · 하단 독 · 홈 업무 카드
     worker.py   브라우저 작업 스레드 (Playwright 는 시작한 스레드에서만 쓸 수 있다)
+    minutes_worker.py  회의록 작업 스레드 — 브라우저 스레드와 섞지 않는다
     tokens.py   디자인 토큰(색·모서리·그림자·글자 크기) — Qt 없이 읽혀 CI 가 대비를 검사한다
     theme.py    토큰 → Qt 스타일시트
     art.py      입체 그림 — 업무 의미 이름 → assets/art/*.png
     widgets.py  페이지 머리 · 카드 · 요약 카드 · 단계 카드 · 빈 상태 · 배지 · 입력 칸
-    pages/      home(업무 데스크) · download(청구서 받기) · pending(회의록·일반청구·카드청구 준비 중) · settings · updates
+    pages/      home(업무 데스크) · download(청구서 받기) · minutes(회의록 생성) · pending(일반청구·카드청구 준비 중) · settings · updates
 src/expense_review/  옛 바로가기 넘겨주기 전용 (3절)
 
 ### 탐색 구조 (2026-10-12 개편)
@@ -228,7 +247,9 @@ src/expense_review/  옛 바로가기 넘겨주기 전용 (3절)
 
 청구서와 청구내역 엑셀에는 계좌번호와 이체자 이름이 들어 있다.
 
-- `.gitignore` 가 `*.pdf` `*.xls` `*.xlsx` 와 기록 파일을 막는다. **풀지 않는다.**
+- `.gitignore` 가 `*.pdf` `*.hwp` `*.hwpx` `*.xls` `*.xlsx` 와 기록 파일을 막는다. **풀지 않는다.**
+  회의 자료와 회의록(.hwpx)에는 참석자 실명이 있다. 테스트는 `tests/test_minutes.py` 의 `sample()` 처럼
+  가짜 데이터를 코드로 만든다.
 - `tools/make_bundle.py` 의 `NEVER_PACK` 이 배포 zip 에서 한 번 더 막는다.
 - 테스트는 실제 PDF 대신 `tests/conftest.py` 의 `make_row()` 로 목록 행을 직접 만든다.
 
@@ -243,9 +264,41 @@ src/expense_review/  옛 바로가기 넘겨주기 전용 (3절)
 
 `tools/make_bundle.py` 의 `check_batch_files()` 가 배포 시점에 이 두 가지를 검사한다.
 
+`setup.ps1` 은 반대로 **UTF-8 BOM** 으로 저장한다. BOM 이 없으면 PowerShell 5.1 이 CP949 로 읽어
+한글이 깨진다. `.gitattributes` 가 `* -text` 라 줄바꿈(CRLF)은 그대로 보존된다.
+
 ## 12. 글쓰기
 
 커밋 메시지 · 주석 · 문서 · 화면 문구 전부 **한국어**다. 사용자는 대학 행정 담당자다.
 
 커밋 메시지는 무엇을 왜 바꿨는지 한 줄로 쓴다. `앱 실행 시 검은 창이 깜빡이던 문제 개선` 처럼.
 주석은 **왜** 그렇게 했는지를 남긴다. 무엇을 하는지는 코드가 말한다.
+
+## 13. 회의록 생성 (`minutes/`) — 2026-10-12 이전
+
+옛 '회의록 자동 작성 도구'(`chaejung0606-source/jubilant-happiness`, `core.py` 1,413줄)를 옮긴 것이다.
+7개월치 회의록을 만들며 잡은 버그와 규칙이 코드에 녹아 있다. **새로 짜지 않는다.** 배경은 그 저장소의
+`인수인계.md` · `회의록-기능-이전-요청.md`.
+
+- 흐름: 회의 폴더 + 규칙 → 백엔드(`backends/`) → dict(`schema.py`) → `hwpx.build_hwpx()`(실패 시 `docx`).
+  회의록은 **그 회의 폴더 안에** `yyyy-mm-dd 요일 안건요약.hwpx` 로. 덮어쓰지 않고 `-2`, `-3`.
+- **글자 하나 바꾸지 않는 것**: `hwpx.py` 전체 · `rules.RULES_DEFAULT` · `errors._extract_json/_fatal_kind/
+  _failure_reason/_KNOWN_ERRORS` · `backends/claude_cli.build_prompt` 의 프롬프트 본문. 옮길 때 원본 조각이
+  그대로 들어갔는지 검사하며 옮겼다(줄 범위 슬라이스).
+- `.hwpx` 표 병합은 `.docx` 와 반대 — 첫 셀에 rowSpan, 이후 행에서는 셀을 생략. 격자에 겹침·빈칸이 하나라도
+  있으면 한글이 못 연다. `tests/test_minutes.py` 가 참석자 0·1·8·10·60·999 로 격자를 검사한다.
+  `mimetype` 은 첫 항목·무압축. id 참조·itemCnt 도 검사한다.
+- `--allowedTools` 에 **PowerShell** 이 빠지면 안 된다(윈도우에서 회의 1건에 22~33턴 낭비).
+- 치명 오류(로그인 풀림 · 한도 · 잔액)는 **첫 실패에서 멈추고 남은 회의는 '건너뜀'**. 서버 혼잡·네트워크는
+  그 회의만 실패하고 계속. 새 백엔드는 자기 오류를 `BackendError(kind=...)` 로 번역한다 — 400 은 kind 없음.
+- 파일명은 `minutes/naming._sanitize` 화이트리스트(한글·영문·숫자·공백·하이픈·밑줄). 청구서의 `naming.py`
+  와 규칙이 다르다. **합치지 않는다.** `업로드/` 보호는 같이 지킨다.
+- 1단계 = Claude Code CLI 백엔드 하나. 새 의존성 없음 → `setup-claim-v1` 을 올리지 않았다. Claude Code 가
+  없는 PC 에서는 화면은 보이되 안내 띠 + [작업 시작] 비활성 — 앱의 다른 화면은 영향 없음.
+- 사용자 파일: `~/.claim-downloader/회의록규칙.txt`(담당자가 고침) · `회의록규칙.기본값.txt`(기준). 둘이 같으면
+  업데이트 때 최신 기본 규칙으로 갈고, 다르면 담당자가 고친 것으로 보고 둔다. 설정 `claude_email`(로그인 창에
+  미리 채울 주소만) · `minutes_backend` · `minutes_model`. 로그는 `_실행로그.txt` 에 합류.
+- 백엔드를 더할 때는 `backends/base.py` 만 보면 된다 — 화면·작업 스레드는 고치지 않는다
+  (`tests/test_minutes.py` 의 FakeBackend 가 그 증거). 2·3단계(API 백엔드)는 `docs/roadmap.md` 0-1.
+- 검증: 모의 백엔드로 화면 흐름(정상 · 로그인 실패 → 건너뜀 · Claude 없음)까지 돌렸다. **실제 회의 폴더로
+  한글에서 열어 보는 확인은 담당자가 한다.** 격자 검사를 통과해도 한글이 거부한 적이 있었다.
