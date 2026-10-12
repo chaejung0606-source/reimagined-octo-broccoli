@@ -38,7 +38,7 @@ from .tasks import HOME_ICON, HOME_ID, TASKS, UTILITIES, Task, find
 from .theme import stylesheet
 
 APP_NAME = "COSS 업무데스크"
-WORKSPACE = "강원대 산학협력단 ERP"
+WORKSPACE = ""     # 이름 아래 기관 문구는 두지 않는다(담당자 요청)
 
 # 창이 이보다 낮으면 독과 여백을 줄인다
 COMPACT_BELOW = 800

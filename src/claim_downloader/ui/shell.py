@@ -100,7 +100,7 @@ class TopBar(QWidget):
     search_submitted = Signal(str)
     open_utility = Signal(str)       # 'settings' | 'updates'
 
-    def __init__(self, app_name: str, workspace: str, user_name: str, parent: QWidget | None = None):
+    def __init__(self, app_name: str, workspace: str = "", user_name: str = "", parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("topbar")
         self.setFixedHeight(56)
@@ -112,15 +112,13 @@ class TopBar(QWidget):
         logo.setPixmap(logo_pixmap(34))
         logo.setFixedSize(34, 34)
         row.addWidget(logo)
-        names = QVBoxLayout()
-        names.setSpacing(0)
         brand = QLabel(app_name)
         brand.setObjectName("brand")
-        names.addWidget(brand)
-        ws = QLabel(workspace)
-        ws.setObjectName("workspace")
-        names.addWidget(ws)
-        row.addLayout(names)
+        row.addWidget(brand, 0, Qt.AlignVCenter)
+        if workspace:                        # 지금은 비워 둔다 — 담당자가 기관 문구를 뺐다(2026-10-12)
+            ws = QLabel(workspace)
+            ws.setObjectName("workspace")
+            row.addWidget(ws, 0, Qt.AlignVCenter)
         row.addStretch(1)
 
         self.search = QLineEdit()
