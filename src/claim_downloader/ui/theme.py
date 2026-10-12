@@ -140,6 +140,10 @@ QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus, QT
     padding: 6px 9px;
 }}
 QLineEdit:read-only, QPlainTextEdit[readOnly="true"], QTextBrowser {{ background: {c['surface_alt']}; }}
+/* 숫자 칸 안쪽의 글자 칸에까지 위 여백·테두리가 겹쳐 붙으면 값이 칸 밖으로 밀려 안 보인다 */
+QAbstractSpinBox QLineEdit {{ border: none; padding: 0; min-height: 0; background: transparent; }}
+/* 화살표는 쓰지 않는다. 키보드 위·아래 화살표로는 값이 바뀐다 */
+QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{ width: 0; border: none; }}
 QLineEdit:disabled, QDoubleSpinBox:disabled {{ background: {c['surface_alt']}; color: {c['text_faint']}; }}
 QLineEdit[error="true"] {{ border: 2px solid {c['danger']}; padding: 6px 9px; }}
 QPlainTextEdit#logView {{

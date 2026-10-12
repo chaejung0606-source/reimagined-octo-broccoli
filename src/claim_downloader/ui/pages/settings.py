@@ -120,19 +120,21 @@ class SettingsPage(QWidget):
         column.addWidget(excel_card)
 
         # 동작
-        behave = Card("동작")
+        behave = Card("동작", "받는 방식을 조절합니다", art="settings")
         self.freeze = QCheckBox("상세화면이 멈추면 ERP 를 새로 열고, 다시 로그인한 뒤 같은 건부터 이어받기 (건당 최대 2번)")
         self.freeze.setChecked(cfg.freeze_reload)
         self.freeze.toggled.connect(lambda v: self._save(freeze_reload=v))
         behave.add(self.freeze)
         self.wait = QDoubleSpinBox()
-        # 화살표 버튼은 테마의 둥근 입력칸과 겹쳐 깨져 보인다. 숫자를 직접 넣게 한다.
-        self.wait.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        # 화살표는 스타일시트에서 폭 0 으로 숨긴다(theme.py). setButtonSymbols(NoButtons) 를 쓰면
+        # 스타일시트가 걸린 칸에서 Qt 가 글자 칸 폭을 1px 로 잡아 값이 안 보인다.
         self.wait.setRange(0, 30)
         self.wait.setSingleStep(0.5)
         self.wait.setDecimals(1)
         self.wait.setSuffix(" 초")
         self.wait.setValue(cfg.wait_sec)
+        # 숫자 칸 안쪽 글자 칸에는 스타일시트 여백이 먹지 않아 코드로 띄운다
+        self.wait.lineEdit().setTextMargins(10, 0, 0, 0)
         self.wait.valueChanged.connect(lambda v: self._save(wait_sec=float(v)))
         wait_field = Field("건마다 쉬는 시간", self.wait, "ERP 가 느릴 때만 늘리세요. 기본 2초.")
         wait_field.setMaximumWidth(320)
