@@ -107,7 +107,7 @@ class DownloadPage(QWidget):
         self._attempted = False               # 한 번이라도 받기를 시작했는지 (이어서 작업하기 판단)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 18, 24, 16)
+        layout.setContentsMargins(24, 18, 24, 26)
         layout.setSpacing(12)
 
         # 머리 — 한 줄

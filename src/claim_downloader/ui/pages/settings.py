@@ -50,7 +50,7 @@ class SettingsPage(QWidget):
         outer.addWidget(scroll)
 
         page = QVBoxLayout(content)
-        page.setContentsMargins(28, 24, 28, 28)
+        page.setContentsMargins(28, 24, 28, 34)
         page.setSpacing(16)
         page.addWidget(PageHeader(
             "관리  ›  설정", "설정",

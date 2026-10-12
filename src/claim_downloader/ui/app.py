@@ -2,11 +2,11 @@
 
     상단 바     로고 · 이름 | 검색 · 설정(설정·업데이트) · 사용자
     작업 탭     열려 있는 화면만. 홈 탭은 늘 있고 닫히지 않는다. [+] 로 새 업무
-    작업 표면   흰 면 — 선택한 탭과 이어진다
-    하단 독     홈 · 청구서 받기 · 회의록 생성 · 일반청구 · 카드청구
+    작업 표면   흰 면 — 선택한 탭과 이어진다. 아래 가운데에 독이 떠 있다
+    독          평소엔 짧은 둥근 선, 마우스를 대면 펼쳐진다 (홈 · 청구서 받기 · 회의록 · 일반청구 · 카드청구)
 
-높이는 위에서부터 상단 바(고정) · 탭 줄(고정) · 작업 표면(남는 높이 전부) · 독 영역
-(독 높이 + 여백만) 순으로 나눈다. 독은 작업 표면 위에 겹치지 않는다.
+높이는 위에서부터 상단 바(고정) · 탭 줄(고정) · 작업 표면(남는 높이 전부). 독은 따로 띠를
+갖지 않고 작업 표면 안에 겹쳐 뜬다(담당자 요청). 접힌 선은 페이지의 아래 여백 안에 들어간다.
 
 업무 화면은 처음 열 때 한 번 만들고 그 뒤로는 숨겼다 보이기만 한다. 그래서 탭을
 오가거나 닫았다 열어도 입력값·스크롤·진행 중인 받기가 그대로다. 청구서 받기는 별도
@@ -20,7 +20,7 @@ import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 
 from .. import updater
 from .pages.home import HomePage
-from .shell import Dock, DockArea, TopBar, WorkTabs
+from .shell import Dock, DockOverlay, TopBar, WorkTabs
 from .tasks import HOME_ICON, HOME_ID, TASKS, UTILITIES, Task, find
 from .theme import stylesheet
 
@@ -45,6 +45,16 @@ COMPACT_BELOW = 800
 
 ASSETS = Path(__file__).parent / "assets"
 log = logging.getLogger(__name__)
+
+
+class WorkSurface(QStackedWidget):
+    """흰 작업 표면. 크기가 바뀌면 알린다 — 위에 떠 있는 독이 자리를 다시 잡는다."""
+
+    resized = Signal()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.resized.emit()
 
 
 class MainWindow(QMainWindow):
@@ -77,22 +87,24 @@ class MainWindow(QMainWindow):
         surface_wrap.setObjectName("root")
         wrap_layout = QVBoxLayout(surface_wrap)
         wrap_layout.setContentsMargins(10, 0, 10, 0)
-        self.stack = QStackedWidget()
+        self.stack = WorkSurface()
         self.stack.setObjectName("work")
         wrap_layout.addWidget(self.stack)
         column.addWidget(surface_wrap, 1)
+        self.setCentralWidget(central)
 
+        # 독은 작업 표면 안에 떠 있다 — 평소엔 아래 가운데의 짧은 선, 마우스를 대면 펼쳐진다
         self.dock = Dock()
         self.dock.activated.connect(self.open)
-        self.dock_area = DockArea(self.dock)
-        column.addWidget(self.dock_area)
-        self.setCentralWidget(central)
+        self.dock_overlay = DockOverlay(self.dock, self.stack)
+        self.stack.resized.connect(self.dock_overlay.relayout)
 
         self.home = HomePage()
         self.home.open_task.connect(self.open)
         self.home.apply_update.connect(self._apply_update)
         self._pages[HOME_ID] = self.home
         self.stack.addWidget(self.home)
+        self.dock_overlay.raise_()
         self.tabs.add(HOME_ID, "홈", HOME_ICON, closable=False)
         self.show_task(HOME_ID)
 
@@ -114,6 +126,7 @@ class MainWindow(QMainWindow):
         self._wire(task, page)
         self._pages[task_id] = page
         self.stack.addWidget(page)
+        self.dock_overlay.raise_()      # 새 화면이 독 위로 올라오지 않게
         return page
 
     def _wire(self, task: Task, page: QWidget) -> None:
@@ -218,7 +231,7 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self.dock_area.set_compact(self.height() < COMPACT_BELOW)
+        self.dock_overlay.set_compact(self.height() < COMPACT_BELOW)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         download = self._pages.get("download")

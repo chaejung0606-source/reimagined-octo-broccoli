@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -521,23 +521,165 @@ class Dock(QFrame):
         super().keyPressEvent(event)
 
 
-class DockArea(QWidget):
-    """독이 놓이는 하단 전용 공간. 독 높이 + 상하 여백만 차지한다 — 본문 위에 겹치지 않는다."""
+class DockHandle(QWidget):
+    """접힌 독 — 작업 표면 아래 가운데의 짧고 둥근 선. 마우스를 대거나 초점이 오면 독이 펼쳐진다."""
 
-    def __init__(self, dock: Dock, parent: QWidget | None = None):
+    hovered = Signal()
+    focused = Signal()
+
+    WIDTH, HEIGHT = 112, 6
+
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self.setObjectName("dockArea")
+        self.setFixedSize(self.WIDTH + 24, self.HEIGHT + 16)   # 선보다 넓은 닿는 영역
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName("메뉴 펼치기")
+        self.setToolTip("메뉴")
+        self.setAttribute(Qt.WA_Hover, True)
+        self._hover = False
+
+    def event(self, event: QEvent) -> bool:
+        if event.type() == QEvent.HoverEnter:
+            self._hover = True
+            self.update()
+            self.hovered.emit()
+        elif event.type() == QEvent.HoverLeave:
+            self._hover = False
+            self.update()
+        return super().event(event)
+
+    def focusInEvent(self, event) -> None:  # noqa: N802
+        super().focusInEvent(event)
+        self.focused.emit()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space, Qt.Key_Up):
+            self.focused.emit()
+            return
+        super().keyPressEvent(event)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        color = COLORS["lavender"] if (self._hover or self.hasFocus()) else COLORS["border"]
+        painter.setBrush(QColor(color))
+        rect = QRectF((self.width() - self.WIDTH) / 2, (self.height() - self.HEIGHT) / 2, self.WIDTH, self.HEIGHT)
+        painter.drawRoundedRect(rect, self.HEIGHT / 2, self.HEIGHT / 2)
+        painter.end()
+
+
+class DockOverlay(QWidget):
+    """작업 표면 안, 아래 가운데에 떠 있는 독.
+
+    평소에는 짧은 둥근 선(DockHandle)만 보인다. 마우스를 대거나 키보드 초점이 오면 독이
+    아래에서 150ms 동안 미끄러져 올라오고, 마우스가 떠나면 잠시 뒤 다시 내려간다.
+    별도의 하단 띠는 두지 않는다 — 작업 표면과 메뉴 공간을 나누지 않는다(담당자 요청).
+    펼친 독은 본문 위에 잠깐 겹치지만, 접힌 선은 페이지 아래 여백 안에 들어간다.
+    """
+
+    SLIDE_MS = 150
+    COLLAPSE_DELAY_MS = 350
+    BOTTOM = 8
+
+    def __init__(self, dock: Dock, surface: QWidget):
+        super().__init__(surface)
+        self.setObjectName("dockOverlay")
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, False)
         self.dock = dock
-        layout = QHBoxLayout(self)
-        layout.addStretch(1)
-        layout.addWidget(dock)
-        layout.addStretch(1)
-        self.set_compact(False)
+        self.dock.setParent(self)
+        self.dock.setAttribute(Qt.WA_Hover, True)
+        self.dock.installEventFilter(self)
+        for button in self.dock._buttons.values():
+            button.installEventFilter(self)
+        self.handle = DockHandle(self)
+        self.handle.hovered.connect(self.expand)
+        self.handle.focused.connect(self.expand)
+        self._expanded = False
+        self._anim = QPropertyAnimation(self.dock, b"pos", self)
+        self._anim.setDuration(self.SLIDE_MS)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.finished.connect(self._after_anim)
+        self._collapse_timer = QTimer(self)
+        self._collapse_timer.setSingleShot(True)
+        self._collapse_timer.setInterval(self.COLLAPSE_DELAY_MS)
+        self._collapse_timer.timeout.connect(self._collapse_if_idle)
+        self.dock.hide()
+        self.relayout()
+
+    # ── 자리 잡기 ───────────────────────────────────────────────────
+    def relayout(self) -> None:
+        """부모(작업 표면) 크기에 맞춰 아래 가운데에 놓는다. 접힌 선·펼친 독 둘 다 여기서 잰다."""
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        dock_size = self.dock.sizeHint()
+        width = max(dock_size.width(), self.handle.width()) + 24
+        height = dock_size.height() + self.BOTTOM + 12
+        self.setGeometry((parent.width() - width) // 2, parent.height() - height, width, height)
+        self.handle.move((width - self.handle.width()) // 2, height - self.handle.height() - 2)
+        self.dock.resize(dock_size)
+        self.dock.move(self._dock_pos(self._expanded))
+        self.raise_()
+
+    def _dock_pos(self, expanded: bool) -> QPoint:
+        x = (self.width() - self.dock.width()) // 2
+        shown = self.height() - self.dock.height() - self.BOTTOM
+        hidden = self.height() + 6          # 캔버스 아래로 숨긴다
+        return QPoint(x, shown if expanded else hidden)
+
+    # ── 펼치기 · 접기 ───────────────────────────────────────────────
+    def expand(self) -> None:
+        self._collapse_timer.stop()
+        if self._expanded:
+            return
+        self._expanded = True
+        self.handle.hide()
+        self.dock.show()
+        self.dock.raise_()
+        self._slide(self._dock_pos(True))
+
+    def collapse(self) -> None:
+        if not self._expanded:
+            return
+        self._expanded = False
+        self._slide(self._dock_pos(False))
+
+    def _slide(self, target: QPoint) -> None:
+        self._anim.stop()
+        self._anim.setStartValue(self.dock.pos())
+        self._anim.setEndValue(target)
+        self._anim.start()
+
+    def _after_anim(self) -> None:
+        if not self._expanded:
+            self.dock.hide()
+            self.handle.show()
+
+    def _collapse_if_idle(self) -> None:
+        """마우스가 독 위에 없고 독 안에 초점도 없을 때만 접는다."""
+        inside = self.dock.underMouse() or self.handle.underMouse()
+        focused = self.dock.hasFocus() or any(b.hasFocus() for b in self.dock._buttons.values())
+        if not inside and not focused:
+            self.collapse()
+
+    def eventFilter(self, obj, event: QEvent) -> bool:
+        t = event.type()
+        if t in (QEvent.HoverEnter, QEvent.Enter, QEvent.FocusIn):
+            self._collapse_timer.stop()
+            self.expand()
+        elif t in (QEvent.HoverLeave, QEvent.Leave, QEvent.FocusOut):
+            self._collapse_timer.start()
+        return super().eventFilter(obj, event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._collapse_timer.start()
+        super().leaveEvent(event)
 
     def set_compact(self, compact: bool) -> None:
         self.dock.set_compact(compact)
-        self.layout().setContentsMargins(0, 4 if compact else 8, 0, 6 if compact else 10)
-        self.setFixedHeight(self.sizeHint().height())
+        self.relayout()
 
 
 # ── 홈 업무 카드 ────────────────────────────────────────────────────────

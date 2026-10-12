@@ -66,7 +66,7 @@ class UpdatesPage(QWidget):
         outer.addWidget(scroll)
 
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(28, 24, 28, 28)
+        layout.setContentsMargins(28, 24, 28, 34)
         layout.setSpacing(16)
         layout.addWidget(PageHeader(
             "관리  ›  업데이트", "업데이트",

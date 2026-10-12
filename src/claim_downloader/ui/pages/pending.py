@@ -75,7 +75,7 @@ class PendingPage(QWidget):
         outer.addWidget(scroll)
 
         layout = QVBoxLayout(body)
-        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setContentsMargins(24, 20, 24, 28)
         layout.setSpacing(14)
         head = QHBoxLayout()
         head.setSpacing(12)

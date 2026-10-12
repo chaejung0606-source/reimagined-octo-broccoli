@@ -67,7 +67,7 @@ class HomePage(QWidget):
         outer.addWidget(scroll)
 
         layout = QVBoxLayout(body)
-        layout.setContentsMargins(36, 28, 36, 24)
+        layout.setContentsMargins(36, 28, 36, 30)
         layout.setSpacing(18)
 
         # 업데이트 띠 — 새 버전이 있을 때만 보인다
