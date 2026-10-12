@@ -1,163 +1,120 @@
-"""앱 아이콘 생성기.
+"""앱 아이콘 생성기 — 화면 디자인과 같은 입체 그림으로 창·바로가기 아이콘을 만든다.
 
-민트→아쿠아 그라데이션 위에 흰 서류 한 장과 체크 배지를 그린다.
-앱 화면과 같은 색 체계를 쓴다 (theme.py 의 primary / accent).
-결과물은 저장소에 함께 커밋되므로 보통은 다시 돌릴 일이 없다.
-디자인을 바꿀 때만 실행한다:
+흰 둥근 판 위에 '트레이와 펜' 입체 그림(사이드바 로고와 같은 것)을 올린다.
+판 테두리는 옅은 라벤더, 아래로 넓고 옅은 그림자를 깐다(theme 토큰과 같은 색).
+
+입체 그림은 흰 바탕에 맞춰 만든 에셋이라(tools/make_art.py) 판 안쪽은 반드시 흰색이어야
+한다. 판에 그라데이션을 넣으면 그림 둘레에 흰 사각이 드러난다.
+
+작은 크기(16·24·32)는 입체 그림이 뭉개져 무엇인지 알아볼 수 없다. 그래서 같은 판 위에
+라벤더 트레이와 아래 화살표를 평면으로 그린다 — 색과 모양은 큰 아이콘과 맞춘다.
+
+결과물은 저장소에 함께 커밋되므로 보통은 다시 돌릴 일이 없다. 디자인을 바꿀 때만:
 
     python tools/make_icon.py
 
 생성 파일:
-    src/claim_downloader/ui/assets/icon.png   (256px, 창 아이콘용)
-    src/claim_downloader/ui/assets/icon.ico   (16~256px, 윈도우 바로가기용)
+    src/claim_downloader/ui/assets/icon.png   (256px)
+    src/claim_downloader/ui/assets/icons/icon-<크기>.png  (창 아이콘용, 크기별)
+    src/claim_downloader/ui/assets/icon.ico   (16~256px, 윈도우 바로가기·작업 표시줄용)
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
-# src/claim_downloader/ui/theme.py 의 primary / accent 와 맞춘다
-BG_TOP = (61, 214, 196)      # 민트
-BG_BOTTOM = (42, 159, 224)   # 아쿠아
-NEBULA = (190, 245, 240)
-PAPER = (255, 255, 255)      # 흰 서류
-PAPER_LINE = (168, 205, 224)
-BADGE_A = (255, 255, 255)    # 체크 배지 — 흰 원
-BADGE_B = (240, 251, 253)
-WHITE = (255, 255, 255)
-CHROME = (255, 255, 255)
+ASSETS = Path(__file__).resolve().parents[1] / "src" / "claim_downloader" / "ui" / "assets"
+ART = ASSETS / "art" / "tray-pen.png"
 
-SIZE = 1024
-SS = 4  # 슈퍼샘플링 배율 — PIL 도형은 안티앨리어싱이 없어 크게 그려 줄인다
+# ui/tokens.py 와 맞춘다
+WHITE = (255, 255, 255, 255)
+RIM = (217, 207, 245, 255)          # 라벤더(#C9B8EF)를 흰색 쪽으로 옅게
+PRIMARY = (109, 91, 208, 255)       # #6D5BD0
+LAVENDER = (201, 184, 239, 255)     # #C9B8EF
+SHADOW = (35, 42, 52)
 
-
-def _vertical_gradient(size: int, top: tuple, bottom: tuple) -> Image.Image:
-    image = Image.new("RGB", (size, size))
-    for y in range(size):
-        t = y / (size - 1)
-        row = tuple(round(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
-        image.paste(Image.new("RGB", (size, 1), row), (0, y))
-    return image
+SS = 4                              # 4배로 그려 줄여서 가장자리를 매끈하게
+SMALL = (16, 24, 32)
 
 
-def draw_icon(size: int = SIZE) -> Image.Image:
+def _box(big: int) -> tuple[tuple[int, int, int, int], int, int]:
+    """판의 바깥 상자 · 모서리 반지름 · 테두리 두께."""
+    inset = round(big * 0.055)
+    box = (inset, inset, big - inset, big - inset - round(big * 0.02))
+    return box, round(big * 0.24), max(SS, round(big * 0.012))
+
+
+def _plate(size: int) -> Image.Image:
+    """그림자 + 흰 둥근 판 + 라벤더 테두리. size 는 최종 한 변."""
     big = size * SS
-    base = _vertical_gradient(big, BG_TOP, BG_BOTTOM).convert("RGBA")
-    draw = ImageDraw.Draw(base, "RGBA")
+    canvas = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    box, radius, rim = _box(big)
 
-    # 윗면 라디얼 하이라이트 — 플라스틱이 빛을 받는 자리
-    glow = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    gdraw = ImageDraw.Draw(glow)
-    r = big * 0.62
-    gdraw.ellipse((big * 0.5 - r, big * 0.02 - r, big * 0.5 + r, big * 0.02 + r),
-                  fill=NEBULA + (86,))
-    glow = glow.filter(ImageFilter.GaussianBlur(big * 0.10))
-    base = Image.alpha_composite(base, glow)
+    if size > max(SMALL):
+        shadow = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+        ImageDraw.Draw(shadow).rounded_rectangle(
+            (box[0], box[1] + round(big * 0.03), box[2], box[3] + round(big * 0.03)),
+            radius, fill=SHADOW + (46,))
+        canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(big * 0.025)))
 
-    # 아랫면 안쪽 그림자 — 두께가 생긴다
-    shade = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    sdraw = ImageDraw.Draw(shade)
-    for i in range(int(big * 0.30)):
-        alpha = int(52 * (i / (big * 0.30)) ** 2)
-        sdraw.line((0, big - i, big, big - i), fill=(6, 14, 46, alpha))
-    base = Image.alpha_composite(base, shade)
-    draw = ImageDraw.Draw(base, "RGBA")
+    draw = ImageDraw.Draw(canvas)
+    draw.rounded_rectangle(box, radius, fill=RIM)
+    draw.rounded_rectangle((box[0] + rim, box[1] + rim, box[2] - rim, box[3] - rim),
+                           radius - rim, fill=WHITE)
+    return canvas
 
-    # 서류 — 가운데 라벤더 시트, 오른쪽 위 접힌 귀
-    left, top = big * 0.28, big * 0.20
-    right, bottom = big * 0.72, big * 0.80
-    fold = big * 0.12
-    corner = big * 0.035
-    sheet = [
-        (left + corner, top), (right - fold, top), (right, top + fold),
-        (right, bottom - corner), (right - corner, bottom),
-        (left + corner, bottom), (left, bottom - corner), (left, top + corner),
-    ]
-    # 그림자
-    shadow = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    ImageDraw.Draw(shadow).polygon(
-        [(x + big * 0.012, y + big * 0.018) for x, y in sheet], fill=(16, 12, 40, 110))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(big * 0.015))
-    base = Image.alpha_composite(base, shadow)
-    draw = ImageDraw.Draw(base, "RGBA")
 
-    draw.polygon(sheet, fill=PAPER + (255,))
-    draw.polygon([(right - fold, top), (right, top + fold),
-                  (right - fold, top + fold)], fill=PAPER_LINE + (160,))
+def _large(size: int) -> Image.Image:
+    canvas = _plate(size)
+    big = canvas.width
+    art = Image.open(ART).convert("RGBA")
+    side = round(big * 0.76)
+    art = art.resize((side, side), Image.LANCZOS)
+    layer = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    layer.paste(art, ((big - side) // 2, (big - side) // 2 - round(big * 0.012)))
+    # 그림의 흰 사각 바탕이 판의 둥근 모서리 밖으로 삐져나오지 않게 판 안쪽 모양으로 자른다
+    box, radius, rim = _box(big)
+    mask = Image.new("L", (big, big), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (box[0] + rim, box[1] + rim, box[2] - rim, box[3] - rim), radius - rim, fill=255)
+    layer.putalpha(ImageChops.darker(layer.getchannel("A"), mask))
+    canvas.alpha_composite(layer)
+    return canvas.resize((size, size), Image.LANCZOS)
 
-    # 서류 줄 — 검토 항목 느낌
-    line_x0, line_x1 = left + big * 0.07, right - big * 0.07
-    for i, ratio in enumerate((0.34, 0.44, 0.54)):
-        y = big * ratio
-        draw.rounded_rectangle(
-            (line_x0, y, line_x1 - (big * 0.05 if i == 2 else 0), y + big * 0.030),
-            radius=big * 0.015, fill=PAPER_LINE + (200,))
 
-    # 체크 배지 — 서류 오른쪽 아래에 겹친다
-    bx, by, br = big * 0.66, big * 0.72, big * 0.155
-    badge = _vertical_gradient(int(br * 2), BADGE_A, BADGE_B).convert("RGBA")
-    mask = Image.new("L", badge.size, 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, badge.size[0], badge.size[1]), fill=255)
-    ring = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    ImageDraw.Draw(ring).ellipse(
-        (bx - br - big * 0.014, by - br - big * 0.014,
-         bx + br + big * 0.014, by + br + big * 0.014), fill=BG_TOP + (255,))
-    base = Image.alpha_composite(base, ring)
-    base.paste(badge, (int(bx - br), int(by - br)), mask)
-    draw = ImageDraw.Draw(base, "RGBA")
+def _small(size: int) -> Image.Image:
+    """평면 판: 라벤더 트레이 + 내려받기 화살표."""
+    canvas = _plate(size)
+    big = canvas.width
+    draw = ImageDraw.Draw(canvas)
+    u = big / 16
+    # 트레이
+    draw.rounded_rectangle((3.2 * u, 9.0 * u, 12.8 * u, 12.6 * u), 1.2 * u, fill=LAVENDER)
+    draw.rectangle((5.6 * u, 9.0 * u, 10.4 * u, 10.4 * u), fill=WHITE)
+    # 화살표
+    w = max(SS, round(1.5 * u))
+    draw.line((8 * u, 3.4 * u, 8 * u, 8.4 * u), fill=PRIMARY, width=w)
+    draw.polygon([(5.4 * u, 6.4 * u), (10.6 * u, 6.4 * u), (8 * u, 9.2 * u)], fill=PRIMARY)
+    return canvas.resize((size, size), Image.LANCZOS)
 
-    # 체크 표시
-    width = int(br * 0.30)
-    points = [(bx - br * 0.45, by + br * 0.02),
-              (bx - br * 0.10, by + br * 0.38),
-              (bx + br * 0.50, by - br * 0.34)]
-    draw.line(points, fill=BG_BOTTOM + (255,), width=width, joint="curve")
-    for point in points:  # 끝을 둥글게
-        draw.ellipse((point[0] - width / 2, point[1] - width / 2,
-                      point[0] + width / 2, point[1] + width / 2), fill=BG_BOTTOM + (255,))
 
-    # 유광 반사 — 윗면을 덮는 넓은 흰 타원
-    shine = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    ImageDraw.Draw(shine).ellipse(
-        (-big * 0.18, -big * 0.52, big * 1.18, big * 0.40), fill=WHITE + (40,))
-    shine = shine.filter(ImageFilter.GaussianBlur(big * 0.012))
-    base = Image.alpha_composite(base, shine)
-
-    # 크롬 림 — 바깥 테두리. 위는 하양, 아래는 회색
-    rim = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    rdraw = ImageDraw.Draw(rim)
-    width = int(big * 0.016)
-    rdraw.rounded_rectangle((width / 2, width / 2, big - width / 2, big - width / 2),
-                            radius=big * 0.22, outline=CHROME + (255,), width=width)
-    # 위에서 아래로 갈수록 흐려지게 — 아래쪽 테두리는 그늘이 져야 금속처럼 보인다
-    fade = Image.new("L", (big, big), 0)
-    fdraw = ImageDraw.Draw(fade)
-    for y in range(big):
-        fdraw.line((0, y, big, y), fill=int(255 - 150 * (y / big)))
-    rim.putalpha(Image.composite(rim.getchannel("A"),
-                                 Image.new("L", (big, big), 0), fade))
-    base = Image.alpha_composite(base, rim)
-
-    # 둥근 사각형으로 오려낸다
-    cut = Image.new("L", (big, big), 0)
-    ImageDraw.Draw(cut).rounded_rectangle((0, 0, big, big), radius=big * 0.22, fill=255)
-    base.putalpha(cut)
-
-    return base.resize((size, size), Image.LANCZOS)
+def draw_icon(size: int) -> Image.Image:
+    return _small(size) if size in SMALL else _large(size)
 
 
 def main() -> None:
-    assets = Path(__file__).resolve().parents[1] / "src" / "claim_downloader" / "ui" / "assets"
-    assets.mkdir(parents=True, exist_ok=True)
-
-    icon = draw_icon()
-    icon.resize((256, 256), Image.LANCZOS).save(assets / "icon.png")
-    icon.resize((256, 256), Image.LANCZOS).save(
-        assets / "icon.ico",
-        sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
-    )
-    print(f"저장: {assets / 'icon.png'}, {assets / 'icon.ico'}")
+    sizes = [16, 24, 32, 48, 64, 128, 256]
+    frames = {s: draw_icon(s) for s in sizes}
+    frames[256].save(ASSETS / "icon.png")
+    # 창 제목줄·작업 표시줄은 Qt 가 크기별 그림을 골라 쓴다(ui/app.py). 256 하나만 주면 16px 가 뭉개진다.
+    (ASSETS / "icons").mkdir(exist_ok=True)
+    for s in sizes:
+        frames[s].save(ASSETS / "icons" / f"icon-{s}.png")
+    # ICO 는 크기마다 따로 그린 그림을 담는다. 큰 그림 하나를 줄이게 두면 16px 가 뭉개진다.
+    frames[256].save(ASSETS / "icon.ico", format="ICO", sizes=[(s, s) for s in sizes],
+                     append_images=[frames[s] for s in sizes if s != 256])
+    print("만들었습니다:", ASSETS / "icon.png", ASSETS / "icon.ico")
 
 
 if __name__ == "__main__":

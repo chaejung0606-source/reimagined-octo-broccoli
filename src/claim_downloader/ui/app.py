@@ -172,6 +172,17 @@ class MainWindow(QMainWindow):
 
 
 ICON_PATH = Path(__file__).parent / "assets" / "icon.png"
+ICON_DIR = Path(__file__).parent / "assets" / "icons"
+
+
+def _app_icon() -> QIcon:
+    """크기별 그림을 모두 넣는다. 작은 크기는 입체 그림 대신 평면 그림이다(tools/make_icon.py)."""
+    icon = QIcon()
+    for path in sorted(ICON_DIR.glob("icon-*.png")):
+        icon.addFile(str(path))
+    if icon.isNull() and ICON_PATH.exists():
+        icon.addFile(str(ICON_PATH))
+    return icon
 
 
 def main() -> int:
@@ -181,8 +192,7 @@ def main() -> int:
     logging.getLogger("pypdf").setLevel(logging.CRITICAL)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
-    if ICON_PATH.exists():
-        app.setWindowIcon(QIcon(str(ICON_PATH)))
+    app.setWindowIcon(_app_icon())
     app.setStyleSheet(stylesheet())
     window = MainWindow()
     window.show()
