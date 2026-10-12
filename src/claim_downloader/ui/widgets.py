@@ -242,7 +242,7 @@ class EmptyState(QWidget):
         """자리가 좁으면 그림을 줄이고, 더 좁으면 숨긴다. 글자와 버튼이 먼저다."""
         super().resizeEvent(event)
         height = self.height()
-        side = 128 if height >= 360 else 88 if height >= 280 else 0
+        side = 128 if height >= 360 else 88 if height >= 230 else 64 if height >= 170 else 0
         self.art.setVisible(side > 0)
         if side:
             self.art.set_size(side)

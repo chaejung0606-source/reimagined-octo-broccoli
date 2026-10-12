@@ -1,119 +1,153 @@
-"""앱 아이콘 생성기 — 화면 디자인과 같은 입체 그림으로 창·바로가기 아이콘을 만든다.
+"""앱 아이콘 생성기 — 담당자가 고른 디자인(2026-10-12)을 그대로 그린다.
 
-흰 둥근 판 위에 '트레이와 펜' 입체 그림(사이드바 로고와 같은 것)을 올린다.
-판 테두리는 옅은 라벤더, 아래로 넓고 옅은 그림자를 깐다(theme 토큰과 같은 색).
+흰 무광 둥근 판 위에 파스텔 타일 넷. 타일마다 흰 선 그림 하나.
+  왼쪽 위   라벤더  내려받기(트레이 + 아래 화살표)  → 청구서 받기
+  오른쪽 위 민트    펼친 책                         → 회의록 생성
+  왼쪽 아래 피치    체크 표시가 있는 문서            → 일반청구
+  오른쪽 아래 블루  카드                            → 카드청구
 
-입체 그림은 흰 바탕에 맞춰 만든 에셋이라(tools/make_art.py) 판 안쪽은 반드시 흰색이어야
-한다. 판에 그라데이션을 넣으면 그림 둘레에 흰 사각이 드러난다.
+담당자가 보낸 이미지는 화면 미리 보기로만 받아 파일이 없다. 그래서 같은 구성을 도형으로
+다시 그렸다. 도형이라 16px 까지 깨끗하게 줄어드는 장점이 있다. 원본 PNG 를 받으면
+assets/icon-source.png 로 두면(투명 배경 권장) 그 그림을 대신 쓴다.
 
-작은 크기(16·24·32)는 입체 그림이 뭉개져 무엇인지 알아볼 수 없다. 그래서 같은 판 위에
-라벤더 트레이와 아래 화살표를 평면으로 그린다 — 색과 모양은 큰 아이콘과 맞춘다.
-
-결과물은 저장소에 함께 커밋되므로 보통은 다시 돌릴 일이 없다. 디자인을 바꿀 때만:
+디자인을 바꿀 때만 돌린다:
 
     python tools/make_icon.py
 
 생성 파일:
-    src/claim_downloader/ui/assets/icon.png   (256px)
-    src/claim_downloader/ui/assets/icons/icon-<크기>.png  (창 아이콘용, 크기별)
-    src/claim_downloader/ui/assets/icon.ico   (16~256px, 윈도우 바로가기·작업 표시줄용)
+    src/claim_downloader/ui/assets/icon.png             (256px)
+    src/claim_downloader/ui/assets/icon.ico             (16~256px, 바로가기·작업 표시줄)
+    src/claim_downloader/ui/assets/icons/icon-<크기>.png (창 아이콘 · 상단 바 로고, 크기별)
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 
 ASSETS = Path(__file__).resolve().parents[1] / "src" / "claim_downloader" / "ui" / "assets"
-ART = ASSETS / "art" / "tray-pen.png"
+SOURCE = ASSETS / "icon-source.png"      # 원본 PNG 가 있으면 이것을 쓴다
 
-# ui/tokens.py 와 맞춘다
-WHITE = (255, 255, 255, 255)
-RIM = (217, 207, 245, 255)          # 라벤더(#C9B8EF)를 흰색 쪽으로 옅게
-PRIMARY = (109, 91, 208, 255)       # #6D5BD0
-LAVENDER = (201, 184, 239, 255)     # #C9B8EF
+SS = 4
+SIZES = [16, 24, 32, 48, 64, 128, 256]
+
+PLATE = (248, 247, 245)
+PLATE_EDGE = (224, 222, 218)
 SHADOW = (35, 42, 52)
-
-SS = 4                              # 4배로 그려 줄여서 가장자리를 매끈하게
-SMALL = (16, 24, 32)
-
-
-def _box(big: int) -> tuple[tuple[int, int, int, int], int, int]:
-    """판의 바깥 상자 · 모서리 반지름 · 테두리 두께."""
-    inset = round(big * 0.055)
-    box = (inset, inset, big - inset, big - inset - round(big * 0.02))
-    return box, round(big * 0.24), max(SS, round(big * 0.012))
+TILES = {                      # (윗면, 아래쪽 두께 면)
+    "lavender": ((196, 178, 236), (168, 148, 218)),
+    "mint":     ((160, 220, 190), (126, 194, 162)),
+    "peach":    ((246, 190, 158), (230, 160, 124)),
+    "sky":      ((118, 200, 230), (86, 170, 208)),
+}
+GLYPH = (255, 255, 255)
 
 
-def _plate(size: int) -> Image.Image:
-    """그림자 + 흰 둥근 판 + 라벤더 테두리. size 는 최종 한 변."""
-    big = size * SS
-    canvas = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    box, radius, rim = _box(big)
-
-    if size > max(SMALL):
-        shadow = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-        ImageDraw.Draw(shadow).rounded_rectangle(
-            (box[0], box[1] + round(big * 0.03), box[2], box[3] + round(big * 0.03)),
-            radius, fill=SHADOW + (46,))
-        canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(big * 0.025)))
-
-    draw = ImageDraw.Draw(canvas)
-    draw.rounded_rectangle(box, radius, fill=RIM)
-    draw.rounded_rectangle((box[0] + rim, box[1] + rim, box[2] - rim, box[3] - rim),
-                           radius - rim, fill=WHITE)
-    return canvas
-
-
-def _large(size: int) -> Image.Image:
-    canvas = _plate(size)
+def _plate(canvas: Image.Image) -> None:
     big = canvas.width
-    art = Image.open(ART).convert("RGBA")
-    side = round(big * 0.76)
-    art = art.resize((side, side), Image.LANCZOS)
-    layer = Image.new("RGBA", (big, big), (0, 0, 0, 0))
-    layer.paste(art, ((big - side) // 2, (big - side) // 2 - round(big * 0.012)))
-    # 그림의 흰 사각 바탕이 판의 둥근 모서리 밖으로 삐져나오지 않게 판 안쪽 모양으로 자른다
-    box, radius, rim = _box(big)
-    mask = Image.new("L", (big, big), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        (box[0] + rim, box[1] + rim, box[2] - rim, box[3] - rim), radius - rim, fill=255)
-    layer.putalpha(ImageChops.darker(layer.getchannel("A"), mask))
-    canvas.alpha_composite(layer)
-    return canvas.resize((size, size), Image.LANCZOS)
-
-
-def _small(size: int) -> Image.Image:
-    """평면 판: 라벤더 트레이 + 내려받기 화살표."""
-    canvas = _plate(size)
-    big = canvas.width
+    inset = round(big * 0.07)
+    box = (inset, inset, big - inset, big - inset)
+    radius = round(big * 0.23)
+    shadow = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle(
+        (box[0], box[1] + round(big * 0.035), box[2], box[3] + round(big * 0.035)), radius,
+        fill=SHADOW + (46,))
+    canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(big * 0.03)))
     draw = ImageDraw.Draw(canvas)
-    u = big / 16
-    # 트레이
-    draw.rounded_rectangle((3.2 * u, 9.0 * u, 12.8 * u, 12.6 * u), 1.2 * u, fill=LAVENDER)
-    draw.rectangle((5.6 * u, 9.0 * u, 10.4 * u, 10.4 * u), fill=WHITE)
-    # 화살표
-    w = max(SS, round(1.5 * u))
-    draw.line((8 * u, 3.4 * u, 8 * u, 8.4 * u), fill=PRIMARY, width=w)
-    draw.polygon([(5.4 * u, 6.4 * u), (10.6 * u, 6.4 * u), (8 * u, 9.2 * u)], fill=PRIMARY)
-    return canvas.resize((size, size), Image.LANCZOS)
+    draw.rounded_rectangle(box, radius, fill=PLATE_EDGE + (255,))
+    # 윗면: 아래 가장자리에 두께가 살짝 보이게 2% 덜 내려 그린다
+    draw.rounded_rectangle((box[0], box[1], box[2], box[3] - round(big * 0.02)), radius, fill=PLATE + (255,))
+
+
+def _tile(canvas: Image.Image, box, color) -> None:
+    big = canvas.width
+    radius = round((box[2] - box[0]) * 0.28)
+    top, side = color
+    shadow = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle(
+        (box[0], box[1] + big * 0.015, box[2], box[3] + big * 0.015), radius, fill=SHADOW + (40,))
+    canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(big * 0.012)))
+    draw = ImageDraw.Draw(canvas)
+    draw.rounded_rectangle(box, radius, fill=side + (255,))
+    draw.rounded_rectangle((box[0], box[1], box[2], box[3] - big * 0.012), radius, fill=top + (255,))
+
+
+def _glyphs(canvas: Image.Image, tiles: dict) -> None:
+    """타일 안 흰 선 그림. 선 굵기는 타일 폭의 7%, 끝은 둥글게."""
+    draw = ImageDraw.Draw(canvas)
+
+    def pen(box):
+        return max(2, round((box[2] - box[0]) * 0.07))
+
+    def u(box, x, y):
+        w = box[2] - box[0]
+        return (box[0] + w * x, box[1] + w * y)
+
+    def stroke(box, points, close=False):
+        w = pen(box)
+        pts = list(points) + ([points[0]] if close else [])
+        draw.line(pts, fill=GLYPH, width=w, joint="curve")
+        for p in pts:                       # 둥근 끝
+            draw.ellipse((p[0] - w / 2, p[1] - w / 2, p[0] + w / 2, p[1] + w / 2), fill=GLYPH)
+
+    # 내려받기
+    b = tiles["lavender"]
+    stroke(b, [u(b, .5, .22), u(b, .5, .58)])
+    stroke(b, [u(b, .36, .45), u(b, .5, .6), u(b, .64, .45)])
+    stroke(b, [u(b, .26, .62), u(b, .26, .76), u(b, .74, .76), u(b, .74, .62)])
+
+    # 펼친 책
+    b = tiles["mint"]
+    stroke(b, [u(b, .22, .28), u(b, .47, .34), u(b, .47, .76), u(b, .22, .70)], close=True)
+    stroke(b, [u(b, .78, .28), u(b, .53, .34), u(b, .53, .76), u(b, .78, .70)], close=True)
+    stroke(b, [u(b, .60, .46), u(b, .71, .43)])
+    stroke(b, [u(b, .60, .57), u(b, .71, .54)])
+
+    # 체크 문서
+    b = tiles["peach"]
+    stroke(b, [u(b, .30, .22), u(b, .58, .22), u(b, .72, .36), u(b, .72, .78), u(b, .30, .78)], close=True)
+    stroke(b, [u(b, .58, .22), u(b, .58, .36), u(b, .72, .36)])
+    stroke(b, [u(b, .40, .56), u(b, .48, .64), u(b, .62, .48)])
+
+    # 카드
+    b = tiles["sky"]
+    w = pen(b)
+    cw = b[2] - b[0]
+    draw.rounded_rectangle((b[0] + cw * .22, b[1] + cw * .32, b[0] + cw * .78, b[1] + cw * .68),
+                           round(cw * .07), outline=GLYPH, width=w)
+    stroke(b, [u(b, .22, .44), u(b, .78, .44)])
+    stroke(b, [u(b, .32, .58), u(b, .44, .58)])
 
 
 def draw_icon(size: int) -> Image.Image:
-    return _small(size) if size in SMALL else _large(size)
+    if SOURCE.exists():
+        return Image.open(SOURCE).convert("RGBA").resize((size, size), Image.LANCZOS)
+    big = size * SS
+    canvas = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    _plate(canvas)
+    # 타일 격자: 판 안쪽을 2×2 로 나눈다
+    inner0, inner1 = big * 0.165, big * 0.835
+    gap = big * 0.035
+    half = (inner1 - inner0 - gap) / 2
+    boxes = {}
+    for name, (r, c) in {"lavender": (0, 0), "mint": (0, 1), "peach": (1, 0), "sky": (1, 1)}.items():
+        x0 = inner0 + c * (half + gap)
+        y0 = inner0 + r * (half + gap) - big * 0.01
+        boxes[name] = (x0, y0, x0 + half, y0 + half)
+        _tile(canvas, boxes[name], TILES[name])
+    _glyphs(canvas, boxes)
+    return canvas.resize((size, size), Image.LANCZOS)
 
 
 def main() -> None:
-    sizes = [16, 24, 32, 48, 64, 128, 256]
-    frames = {s: draw_icon(s) for s in sizes}
+    frames = {s: draw_icon(s) for s in SIZES}
     frames[256].save(ASSETS / "icon.png")
-    # 창 제목줄·작업 표시줄은 Qt 가 크기별 그림을 골라 쓴다(ui/app.py). 256 하나만 주면 16px 가 뭉개진다.
-    (ASSETS / "icons").mkdir(exist_ok=True)
-    for s in sizes:
-        frames[s].save(ASSETS / "icons" / f"icon-{s}.png")
     # ICO 는 크기마다 따로 그린 그림을 담는다. 큰 그림 하나를 줄이게 두면 16px 가 뭉개진다.
-    frames[256].save(ASSETS / "icon.ico", format="ICO", sizes=[(s, s) for s in sizes],
-                     append_images=[frames[s] for s in sizes if s != 256])
+    frames[256].save(ASSETS / "icon.ico", format="ICO", sizes=[(s, s) for s in SIZES],
+                     append_images=[frames[s] for s in SIZES if s != 256])
+    (ASSETS / "icons").mkdir(exist_ok=True)
+    for s in SIZES:
+        frames[s].save(ASSETS / "icons" / f"icon-{s}.png")
     print("만들었습니다:", ASSETS / "icon.png", ASSETS / "icon.ico")
 
 

@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from ... import archive, settings
 from ...targets import volume_warning
+from ..art import Art
 from ..widgets import Card, EmptyState, KpiCard, PageHeader, Pill, PillDelegate, StepCard
 from ..worker import SessionWorker
 
@@ -72,6 +73,8 @@ def _tabular(font: QFont) -> QFont:
 
 class DownloadPage(QWidget):
     need_settings = Signal()
+    busy_changed = Signal(bool)      # 받는 중인지 — 작업 탭의 점과 '이어서 작업하기'가 본다
+    counts_changed = Signal()        # 보관·대기 숫자가 바뀜 — 홈의 최근 작업이 본다
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -106,6 +109,7 @@ class DownloadPage(QWidget):
         header = PageHeader(
             "업무  ›  청구서 받기", "청구서 받기",
             "승인된 청구서를 ERP 에서 받아 비목 폴더에 둡니다. ERP 에 입력·제출하지 않습니다.")
+        header.add_action(Art("receive", 48))
         self.folder_button = QPushButton()
         self.folder_button.setObjectName("ghost")
         self.folder_button.setToolTip("저장 폴더를 바꾸려면 누르세요")
@@ -116,10 +120,10 @@ class DownloadPage(QWidget):
         # 1) 요약
         kpis = QHBoxLayout()
         kpis.setSpacing(16)
-        self.kpi_done = KpiCard("보관된 청구서", "archive", "문서번호 기준")
-        self.kpi_waiting = KpiCard("업로드 대기", "upload", "비목 폴더 바로 아래")
-        self.kpi_targets = KpiCard("이번에 받을 건", "receive", "목록을 읽으면 표시")
-        self.kpi_ok = KpiCard("이번에 받은 건", "approved", "")
+        self.kpi_done = KpiCard("보관된 청구서", "archive", "받은 기록 · 문서번호 기준")
+        self.kpi_waiting = KpiCard("업로드 대기", "upload", "비목 폴더 바로 아래의 PDF")
+        self.kpi_targets = KpiCard("이번 목록의 대상", "receive", "목록을 읽으면 표시")
+        self.kpi_ok = KpiCard("이번에 받은 건", "approved", "남은 건은 대상 − 받은 건")
         self.kpi_ok.set_value("0")
         for card in (self.kpi_done, self.kpi_waiting, self.kpi_targets, self.kpi_ok):
             kpis.addWidget(card, 1)
@@ -293,6 +297,7 @@ class DownloadPage(QWidget):
 
     # ── 상태 ────────────────────────────────────────────────────────────
     def refresh_counts(self) -> None:
+        self.counts_changed.emit()
         cfg = settings.load()
         folders = archive.folder_status(cfg.out_root)
         self.kpi_waiting.set_value(str(sum(f.waiting for f in folders)) if folders else "—")
@@ -424,8 +429,16 @@ class DownloadPage(QWidget):
     def _append_log(self, text: str) -> None:
         self.log_view.appendPlainText(text)
 
+    def is_running(self) -> bool:
+        return self._busy and bool(self._running_rows)
+
+    def status_text(self) -> str:
+        """홈의 '이어서 작업하기' 에 보일 한 줄."""
+        return f"{self.state_pill.text()} · {self.guide.text()}"[:80]
+
     def _on_busy(self, busy: bool, message: str) -> None:
         self._busy = busy
+        self.busy_changed.emit(self.is_running())
         if message:
             self.window().statusBar().showMessage(message)
         elif not busy:
@@ -469,7 +482,8 @@ class DownloadPage(QWidget):
                     item.setToolTip(str(value))   # 말줄임된 내용 전체 보기
                 self.table.setItem(row, col, item)
             self._set_status(row, "waiting")
-        self.kpi_targets.set_value(str(len(self._targets)), f"보관되어 건너뜀 {selection.skipped}건")
+        self.kpi_targets.set_value(str(len(self._targets)), f"보관되어 건너뛴 건 {selection.skipped}건")
+        self.kpi_ok.set_value("0", f"남은 건 {len(self._targets)}건")
         if self._targets:
             self._set_state("확인 대기", "info", GUIDE_LISTED)
         else:
@@ -508,7 +522,7 @@ class DownloadPage(QWidget):
         self.table.scrollToItem(self.table.item(row, COL_STATUS))
         if status == "done":
             self._run_ok += 1
-            self.kpi_ok.set_value(str(self._run_ok), "")
+            self.kpi_ok.set_value(str(self._run_ok), f"남은 건 {len(self._remaining())}건")
             self.refresh_counts()
 
     def _on_finished(self, summary) -> None:
@@ -527,15 +541,15 @@ class DownloadPage(QWidget):
             self._set_state("멈춤", "warning", text)
         else:
             self._set_state("완료", "success", text)
-        self.kpi_ok.set_value(str(summary.ok), f"실패 {failed}건" if failed else "")
+        remaining = len(self._remaining())
+        self.kpi_ok.set_value(str(summary.ok), f"남은 건 {remaining}건" + (f" · 실패 {failed}건" if failed else ""))
         self.refresh_counts()
         self._sync_buttons()
 
     def _on_relogin(self, message: str) -> None:
         self.banner_text.setText(message)
         self.banner.show()
-        self._set_state("다시 로그인", "warning",
-                        "브라우저에서 다시 로그인하고 결의서내역 목록을 띄운 뒤 [계속] 을 누르세요.")
+        self._set_state("다시 로그인", "warning", "아래 안내를 따른 뒤 [계속] 을 누르세요.")
         self.window().raise_()
         self.window().activateWindow()
 

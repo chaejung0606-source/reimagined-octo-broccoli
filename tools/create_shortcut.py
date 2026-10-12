@@ -13,10 +13,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-APP_NAME = "ERP 청구서 다운로더"
-# 이 저장소가 지출 서류 검토 앱이던 시절의 바로가기. 남겨 두면 아이콘이 두 개가 돼
+APP_NAME = "업무 도구함"
+# 이 저장소가 이전 이름이던 시절의 바로가기들. 남겨 두면 아이콘이 여럿이 돼
 # 어느 쪽을 눌러야 할지 헷갈린다. 새 바로가기를 만들 때 함께 치운다.
-OLD_APP_NAME = "지출 서류 검토"
+OLD_APP_NAMES = ("지출 서류 검토", "ERP 청구서 다운로더")
 MODULE = "claim_downloader.ui.app"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ASSETS = REPO_ROOT / "src" / "claim_downloader" / "ui" / "assets"
@@ -51,11 +51,12 @@ $sc.TargetPath = '{_pythonw()}'
 $sc.Arguments = '-m {MODULE}'
 $sc.WorkingDirectory = '{REPO_ROOT}'
 $sc.IconLocation = '{ASSETS / "icon.ico"}'
-$sc.Description = 'ERP 에서 승인된 청구서 PDF 를 받아 비목 폴더에 넣습니다'
+$sc.Description = '청구서 받기 등 업무를 한곳에서 시작합니다'
 $sc.Save()
 """
     subprocess.run(["powershell", "-NoProfile", "-Command", script], check=True)
-    (desktop / f"{OLD_APP_NAME}.lnk").unlink(missing_ok=True)
+    for old in OLD_APP_NAMES:
+        (desktop / f"{old}.lnk").unlink(missing_ok=True)
     return link
 
 

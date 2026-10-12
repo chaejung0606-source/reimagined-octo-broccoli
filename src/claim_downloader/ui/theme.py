@@ -1,10 +1,11 @@
 """스타일시트 — tokens.py 의 값을 Qt 스타일시트로 옮긴다.
 
-입체감은 카드와 대표 그림(art.py)에만 준다. 표·입력창·작은 버튼은 평평하게 두고
-선과 대비로 구분한다 — 오래 들여다보는 화면이라 모든 것이 볼록하면 피곤하다.
+화면 뼈대는 위에서부터  상단 바(로고 · 검색 · 설정 · 사용자) → 작업 탭 → 본문 → 하단 독.
+입체감은 홈의 업무 카드와 대표 그림(art.py)에만 준다. 표·입력창·작은 버튼은 평평하게
+두고 선과 대비로 구분한다 — 오래 들여다보는 화면이라 모든 것이 볼록하면 피곤하다.
 
 Qt 스타일시트에는 box-shadow 가 없어 그림자는 QGraphicsDropShadowEffect 로 준다.
-상태 전환 애니메이션도 없으므로 '동작 줄이기' 설정과 부딪힐 일이 없다.
+상태 전환 애니메이션은 쓰지 않으므로 '동작 줄이기' 설정과 부딪힐 일이 없다.
 """
 from __future__ import annotations
 
@@ -39,8 +40,11 @@ def card_shadow(widget: QWidget, kind: str = "card") -> None:
 
 def stylesheet() -> str:
     c = COLORS
-    r_ctl, r_card, r_hero = RADIUS["control"], RADIUS["card"], RADIUS["hero"]
+    r_ctl, r_card, r_hero, r_dock = RADIUS["control"], RADIUS["card"], RADIUS["hero"], RADIUS["dock"]
     f = FONT_SIZE
+    accent_rules = "".join(
+        f"QFrame#taskArt_{name} {{ background: {c[name + '_bg']}; border-radius: {r_card}px; }}\n"
+        for name in ("lavender", "mint", "cyan", "peach", "sky"))
     return f"""
 * {{
     font-family: {FONT_FAMILY};
@@ -48,37 +52,108 @@ def stylesheet() -> str:
     color: {c['text']};
 }}
 QMainWindow, QWidget#root {{ background: {c['bg']}; }}
-QWidget#page, QWidget#pageBody {{ background: transparent; }}
+QWidget#page, QWidget#pageBody, QWidget#home {{ background: transparent; }}
 
-/* ── 사이드바 ─────────────────────────────────────────── */
-QWidget#sidebar {{
-    background: {c['surface']};
-    border-right: 1px solid {c['divider']};
-}}
+/* ── 상단 바 ─────────────────────────────────────────── */
+QWidget#topbar {{ background: {c['surface']}; border-bottom: 1px solid {c['divider']}; }}
 QLabel#brand {{ font-size: 16px; font-weight: 700; }}
 QLabel#workspace {{ font-size: {f['caption']}px; color: {c['text_muted']}; }}
-QLabel#navGroup {{
-    font-size: {f['caption']}px; font-weight: 600; color: {c['text_faint']};
-    padding: 18px 12px 6px 12px;
+QLineEdit#search {{
+    background: {c['surface_alt']};
+    border: 1px solid transparent;
+    border-radius: {r_ctl + 8}px;
+    padding: 6px 14px;
+    min-height: 18px;
+    max-width: 300px;
 }}
-QPushButton#navItem {{
-    background: transparent;
-    border: none;
-    border-radius: {r_ctl}px;
-    color: {c['text_muted']};
-    font-weight: 500;
-    padding: 9px 12px;
-    text-align: left;
-    min-height: 20px;
+QLineEdit#search:hover {{ border-color: {c['border']}; }}
+QLineEdit#search:focus {{ background: {c['surface']}; border: 2px solid {c['primary']}; padding: 5px 13px; }}
+QToolButton#topIcon {{
+    background: transparent; border: 1px solid transparent; border-radius: {r_ctl}px;
+    padding: 6px; min-width: 24px; min-height: 24px;
 }}
-QPushButton#navItem:hover {{ background: {c['hover']}; color: {c['text']}; }}
-QPushButton#navItem:checked {{
-    background: {c['selection']};
-    color: {c['primary_hover']};
-    font-weight: 700;
+QToolButton#topIcon:hover {{ background: {c['hover']}; }}
+QToolButton#topIcon:focus {{ border: 2px solid {c['primary']}; }}
+QToolButton#topIcon::menu-indicator {{ image: none; width: 0; }}
+QPushButton#userMenu {{
+    background: transparent; border: 1px solid transparent; border-radius: {r_ctl + 8}px;
+    padding: 4px 12px 4px 6px; font-weight: 600; color: {c['text']};
 }}
-QPushButton#navItem:focus {{ border: 2px solid {c['primary']}; padding: 7px 10px; }}
-QLabel#versionLabel {{ font-size: {f['caption']}px; color: {c['text_faint']}; }}
+QPushButton#userMenu:hover {{ background: {c['hover']}; }}
+QPushButton#userMenu::menu-indicator {{ image: none; width: 0; }}
+QLabel#avatar {{
+    background: {c['selection']}; color: {c['primary_hover']};
+    border-radius: 13px; min-width: 26px; max-width: 26px; min-height: 26px; max-height: 26px;
+    font-size: {f['caption']}px; font-weight: 700;
+}}
+QMenu {{
+    background: {c['surface']}; border: 1px solid {c['border']}; border-radius: {r_ctl + 2}px; padding: 6px;
+}}
+QMenu::item {{ padding: 7px 28px 7px 12px; border-radius: {r_ctl - 2}px; }}
+QMenu::item:selected {{ background: {c['selection']}; color: {c['primary_hover']}; }}
+QMenu::separator {{ height: 1px; background: {c['divider']}; margin: 6px 4px; }}
+
+/* ── 작업 탭 ─────────────────────────────────────────── */
+QWidget#tabRow {{ background: {c['surface']}; border-bottom: 1px solid {c['divider']}; }}
+QPushButton#workTab {{
+    background: transparent; border: none; border-bottom: 2px solid transparent;
+    border-radius: 0; padding: 9px 12px 7px 12px; margin: 0 2px;
+    color: {c['text_muted']}; font-weight: 600; min-height: 18px;
+}}
+QPushButton#workTab:hover {{ color: {c['text']}; background: {c['hover']}; }}
+QPushButton#workTab:checked {{ color: {c['primary_hover']}; border-bottom: 2px solid {c['primary']}; }}
+QPushButton#workTab:focus {{ background: {c['selection']}; }}
+QToolButton#tabClose {{
+    background: transparent; border: none; border-radius: 9px; padding: 0;
+    min-width: 18px; max-width: 18px; min-height: 18px; max-height: 18px;
+    color: {c['text_faint']}; font-size: {f['small']}px; font-weight: 700;
+}}
+QToolButton#tabClose:hover {{ background: {c['border']}; color: {c['text']}; }}
+QToolButton#tabMore {{
+    background: transparent; border: 1px solid transparent; border-radius: {r_ctl}px;
+    padding: 4px 8px; color: {c['text_muted']}; font-weight: 600;
+}}
+QToolButton#tabMore:hover {{ background: {c['hover']}; }}
+QToolButton#tabMore::menu-indicator {{ image: none; width: 0; }}
+QLabel#tabDot {{ color: {c['info']}; font-size: 10px; }}
+
+/* ── 하단 독 ─────────────────────────────────────────── */
+QWidget#dockArea {{ background: transparent; }}
+QFrame#dock {{
+    background: rgba(252, 252, 251, 0.94);
+    border: 1px solid {c['border']};
+    border-radius: {r_dock}px;
+}}
+QToolButton#dockItem {{
+    background: transparent; border: 1px solid transparent; border-radius: {r_ctl + 6}px;
+    padding: 6px 10px 5px 10px; color: {c['text_muted']};
+    font-size: {f['caption']}px; font-weight: 600;
+}}
+QToolButton#dockItem:hover {{ background: {c['hover']}; color: {c['text']}; padding-top: 4px; padding-bottom: 7px; }}
+QToolButton#dockItem:checked {{ background: {c['selection']}; color: {c['primary_hover']}; }}
+QToolButton#dockItem:focus {{ border: 2px solid {c['primary']}; }}
+QToolButton#dockItem:disabled {{ color: {c['text_faint']}; }}
+
+/* ── 홈 ──────────────────────────────────────────────── */
+QLabel#homeTitle {{ font-size: 30px; font-weight: 700; }}
+QLabel#homeSub {{ font-size: {f['section']}px; color: {c['text_muted']}; }}
+QFrame#taskCard {{
+    background: {c['surface']};
+    border: 1px solid {c['divider']};
+    border-radius: {r_hero}px;
+}}
+QFrame#taskCard:hover {{ border-color: {c['border']}; }}
+QFrame#taskCard[focused="true"] {{ border: 2px solid {c['primary']}; }}
+{accent_rules}
+QLabel#taskName {{ font-size: 17px; font-weight: 700; }}
+QLabel#taskDesc {{ font-size: {f['small']}px; color: {c['text_muted']}; }}
+QLabel#taskArrow {{ font-size: 18px; color: {c['text_faint']}; }}
+QFrame#taskCard:hover QLabel#taskArrow {{ color: {c['primary_hover']}; }}
+QLabel#homeSection {{ font-size: {f['section']}px; font-weight: 700; }}
+QFrame#recentRow {{
+    background: {c['surface']}; border: 1px solid {c['divider']}; border-radius: {r_card}px;
+}}
+QFrame#recentRow:hover {{ background: {c['hover']}; }}
 
 /* ── 페이지 머리 ──────────────────────────────────────── */
 QLabel#breadcrumb {{ font-size: {f['caption']}px; color: {c['text_faint']}; }}
@@ -120,6 +195,12 @@ QFrame#banner {{
 }}
 QLabel#bannerText {{ font-weight: 600; color: {c['text']}; }}
 
+/* 준비 중 안내 띠 */
+QFrame#notice {{
+    background: {c['info_bg']}; border: 1px solid #C9DDF0; border-radius: {r_ctl + 4}px;
+}}
+QLabel#noticeText {{ color: {c['text']}; }}
+
 /* ── 입력 ─────────────────────────────────────────────── */
 QLabel#fieldLabel {{ font-size: {f['small']}px; font-weight: 600; color: {c['text']}; }}
 QLabel#fieldHelp  {{ font-size: {f['caption']}px; color: {c['text_muted']}; }}
@@ -144,7 +225,9 @@ QLineEdit:read-only, QPlainTextEdit[readOnly="true"], QTextBrowser {{ background
 QAbstractSpinBox QLineEdit {{ border: none; padding: 0; min-height: 0; background: transparent; }}
 /* 화살표는 쓰지 않는다. 키보드 위·아래 화살표로는 값이 바뀐다 */
 QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{ width: 0; border: none; }}
-QLineEdit:disabled, QDoubleSpinBox:disabled {{ background: {c['surface_alt']}; color: {c['text_faint']}; }}
+QLineEdit:disabled, QDoubleSpinBox:disabled, QPlainTextEdit:disabled {{
+    background: {c['surface_alt']}; color: {c['text_faint']};
+}}
 QLineEdit[error="true"] {{ border: 2px solid {c['danger']}; padding: 6px 9px; }}
 QPlainTextEdit#logView {{
     font-family: "D2Coding", "Consolas", "Cascadia Mono", monospace;
@@ -153,7 +236,6 @@ QPlainTextEdit#logView {{
 }}
 
 /* ── 버튼 ─────────────────────────────────────────────── */
-/* 기본(보조) — 흰 바탕 + 선 */
 QPushButton {{
     background: {c['surface']};
     border: 1px solid {c['border']};
@@ -168,7 +250,6 @@ QPushButton:pressed  {{ background: {c['divider']}; }}
 QPushButton:focus    {{ border: 2px solid {c['primary']}; padding: 6px 13px; }}
 QPushButton:disabled {{ background: {c['surface_alt']}; color: {c['text_faint']}; border-color: {c['divider']}; }}
 
-/* 주요 — 화면마다 하나 */
 QPushButton#primary {{
     background: {c['primary']};
     border: 1px solid {c['primary']};
@@ -179,13 +260,11 @@ QPushButton#primary:pressed {{ background: {c['primary_hover']}; }}
 QPushButton#primary:focus   {{ border: 2px solid {c['text']}; padding: 6px 13px; }}
 QPushButton#primary:disabled {{ background: {c['border']}; border-color: {c['border']}; color: {c['text_muted']}; }}
 
-/* 글자 버튼 — 덜 중요한 동작 */
 QPushButton#ghost {{ background: transparent; border: 1px solid transparent; color: {c['primary_hover']}; }}
 QPushButton#ghost:hover {{ background: {c['selection']}; }}
 QPushButton#ghost:focus {{ border: 2px solid {c['primary']}; padding: 6px 13px; }}
 QPushButton#ghost:disabled {{ color: {c['text_faint']}; background: transparent; }}
 
-/* 멈춤·중단 */
 QPushButton#danger {{ background: {c['surface']}; border: 1px solid #E8B4BD; color: {c['danger']}; }}
 QPushButton#danger:hover {{ background: {c['danger_bg']}; }}
 QPushButton#danger:disabled {{ background: {c['surface_alt']}; color: {c['text_faint']}; border-color: {c['divider']}; }}
@@ -201,7 +280,7 @@ QCheckBox::indicator:hover {{ border-color: {c['primary']}; }}
 QCheckBox::indicator:checked {{ background: {c['primary']}; border-color: {c['primary']}; image: url({CHECK_ICON}); }}
 QCheckBox:focus {{ color: {c['primary_hover']}; }}
 
-/* ── 탭 ───────────────────────────────────────────────── */
+/* ── 탭(카드 안) ──────────────────────────────────────── */
 QTabWidget::pane {{ border: none; border-top: 1px solid {c['divider']}; top: -1px; }}
 QTabBar::tab {{
     background: transparent;
@@ -251,8 +330,7 @@ QScrollBar::handle:horizontal {{ background: {c['border']}; border-radius: 3px; 
 QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 
-QStatusBar {{ background: {c['surface']}; color: {c['text_muted']}; font-size: {f['caption']}px;
-              border-top: 1px solid {c['divider']}; }}
+QStatusBar {{ background: transparent; color: {c['text_muted']}; font-size: {f['caption']}px; }}
 QToolTip {{
     background: {c['text']};
     color: {c['surface']};

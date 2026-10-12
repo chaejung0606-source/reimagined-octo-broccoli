@@ -30,6 +30,12 @@ ART = {
     "register":  "tray-pen",        # 트레이와 펜 — 받아서 폴더에 등록
     "journal":   "book-pen",        # 책과 펜 — 진행 기록
     "settings":  "dial",            # 원형 다이얼 — 설정
+    # 업무 도구함
+    "meeting":   "book-pen",        # 펼쳐진 책과 펜 — 회의록 생성
+    "claim":     "signed-doc",      # 서명 문서 — 일반청구(결재)
+    "card":      "card-receipt",    # 카드와 영수증 — 카드청구 (tools/make_card_art.py 로 새로 그림)
+    "recent":    "folder-papers",   # 종이 겹친 폴더 — 최근 작업
+    "done":      "send-tray",       # 종이비행기와 트레이 — 완료 안내
 }
 # 에셋은 있으나 이 앱에 맞는 기능이 없어 쓰지 않는 것:
 # doc-users · keyboard-mouse · chat-bubbles · chat-mention · folder-heart

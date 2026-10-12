@@ -38,6 +38,13 @@ COLORS: dict[str, str] = {
     "mint":          "#BCE5CF",
     "cyan":          "#A9DFEC",
     "peach":         "#F4C7AD",
+    "sky":           "#C4D4F8",   # 옅은 블루 — 카드청구
+    # 아이콘 둘레의 아주 옅은 바탕(업무 카드 · 독). 위 파스텔을 흰색 쪽으로 더 푼 값
+    "lavender_bg":   "#F1ECFB",
+    "mint_bg":       "#EAF7F0",
+    "cyan_bg":       "#E9F5F9",
+    "peach_bg":      "#FCF0E9",
+    "sky_bg":        "#EEF2FC",
 
     # 상태 — 글자색(진하게)과 배지 바탕(옅게)을 짝으로. 색만으로 알리지 않고 글자를 함께 쓴다
     "success":       "#16794A", "success_bg": "#E6F4EC",
@@ -47,7 +54,7 @@ COLORS: dict[str, str] = {
     "neutral":       "#59616E", "neutral_bg": "#F1F2F0",
 }
 
-RADIUS = {"control": 8, "card": 16, "hero": 20}
+RADIUS = {"control": 8, "card": 18, "hero": 20, "dock": 24}
 
 # 카드 그림자: 0 2px 5px rgba(35,42,52,.025), 0 10px 28px rgba(35,42,52,.045)
 # Qt 의 QGraphicsDropShadowEffect 는 한 겹만 그릴 수 있어 두 겹을 한 겹으로 합쳐 근사한다.
