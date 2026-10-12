@@ -180,7 +180,7 @@ def test_git_disables_line_ending_conversion(monkeypatch):
     monkeypatch.setattr(updater.subprocess, "run", run)
     updater._git("status", "--porcelain")
     assert "core.autocrlf=false" in seen["args"]
-    assert seen["args"][0] == "git" and seen["args"][-2:] == ["status", "--porcelain"]
+    assert seen["args"][0].endswith("git") and seen["args"][-2:] == ["status", "--porcelain"]
 
 
 def test_git_hides_console_window_on_windows(monkeypatch):
@@ -214,3 +214,25 @@ def test_untracked_files_do_not_block_update(monkeypatch):
     status = updater.check()
     assert status.available and not status.blocked_reason
     assert ("status", "--porcelain", "--untracked-files=no") in calls
+
+
+def test_git_is_found_next_to_app_when_not_on_path(monkeypatch, tmp_path):
+    """설치 스크립트가 둔 휴대용 MinGit(앱 옆 tools/MinGit) — PATH 에 git 이 없어도 업데이트가 된다."""
+    monkeypatch.setattr(updater.shutil, "which", lambda name: None)
+    monkeypatch.setattr(updater, "REPO_ROOT", tmp_path / "app")
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.delenv("PROGRAMFILES", raising=False)
+    assert updater._git_executable() == "git"            # 아무 데도 없으면 그대로 'git' (설치 안내로 이어진다)
+    exe = tmp_path / "tools" / "MinGit" / "cmd" / "git.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    assert updater._git_executable() == str(exe)
+    seen = {}
+
+    def run(command, **kwargs):
+        seen["exe"] = command[0]
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(updater.subprocess, "run", run)
+    updater._git("status")
+    assert seen["exe"] == str(exe)

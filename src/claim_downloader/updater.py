@@ -13,6 +13,7 @@ Claude 가 저장소에 기능을 올리면 앱이 그것을 받아 오도록 �
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,7 +72,7 @@ def _git(*args: str) -> subprocess.CompletedProcess:
     # 줄바꿈 변환을 끈다. 저장소의 .bat/.vbs 는 CRLF 인데 윈도우 git 의 autocrlf=true 아래서는
     # 이 파일들이 늘 '수정됨' 으로 보여 업데이트가 "저장하지 않은 변경" 으로 막혔다(2026-10-12).
     # 받은 파일은 저장소에 있는 그대로(파이썬은 LF, 배치는 CRLF) 쓰면 되므로 변환이 필요 없다.
-    command = ["git", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false",
+    command = [_git_executable(), "-c", "core.autocrlf=false", "-c", "core.safecrlf=false",
                "-C", str(REPO_ROOT), *args]
     # 창 없는 실행(pythonw) 아래서는 git 이 호출마다 검은 콘솔 창을 띄웠다 닫는다. 숨긴다.
     hidden = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
@@ -97,6 +98,30 @@ def _git(*args: str) -> subprocess.CompletedProcess:
     # 실제로 사용자 PC에서 이 지점이 터졌다.
     return subprocess.CompletedProcess(
         done.args, done.returncode, done.stdout or "", done.stderr or "")
+
+
+def _git_executable() -> str:
+    """PATH 에 git 이 없어도 설치 스크립트(setup.ps1)가 둔 휴대용 MinGit 을 찾는다.
+
+    설치 스크립트는 관리자 권한 없이 쓰려고 Git 을 시스템에 설치하지 않고 앱 옆 tools\\MinGit 에
+    푼다. 바탕화면 바로가기로 띄운 앱의 PATH 에는 그것이 없으므로 여기서 직접 찾는다. 일반 설치본
+    (Git for Windows)의 기본 위치도 함께 본다 — PATH 에 안 넣고 설치한 경우가 있다.
+    """
+    found = shutil.which("git")
+    if found:
+        return found
+    local = os.environ.get("LOCALAPPDATA", "")
+    program_files = os.environ.get("PROGRAMFILES", "")
+    candidates = [REPO_ROOT.parent / "tools" / "MinGit" / "cmd" / "git.exe"]      # setup.ps1 의 배치
+    if local:
+        candidates.append(Path(local) / "COSS업무데스크" / "tools" / "MinGit" / "cmd" / "git.exe")
+        candidates.append(Path(local) / "Programs" / "Git" / "cmd" / "git.exe")
+    if program_files:
+        candidates.append(Path(program_files) / "Git" / "cmd" / "git.exe")
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return "git"
 
 
 def _result(args, code: int, message: str) -> subprocess.CompletedProcess:
