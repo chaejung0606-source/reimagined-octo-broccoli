@@ -1,6 +1,7 @@
 """파일 이름 짓기 · 비목 판정 · 저장 위치.
 
-파일명:  (YYMMDD) 적요_이체자_(금액).pdf
+파일명:  0N_(YYMMDD) 적요_이체자_(금액).pdf   (설정에 따라 0N_ 없이도)
+  0N     = 비목 번호. 못 정하면 00
   YYMMDD = 지출예정일. 이체일자가 아직 공란인 신규 건도 이 기준 — 기존 보관본과 같다.
   적요   = ERP 내용에서 선행 '0N_' 비목 접두어를 뗀 것
   이체자 = 1명이면 이름, 2명 이상이면 '첫이름 등 N명'
@@ -103,7 +104,7 @@ def fmt_owners(owners) -> str:
     return "%s 등 %d명" % (owners[0], len(owners))
 
 
-def build_name(row: dict, info: dict, name_date_first: bool = True) -> tuple[str, str]:
+def build_name(row: dict, info: dict, name_date_first: bool = False) -> tuple[str, str]:
     """(비목 코드, 파일명). 코드를 못 정하면 '00'."""
     remark = row.get("cont") or ""
     code = ""

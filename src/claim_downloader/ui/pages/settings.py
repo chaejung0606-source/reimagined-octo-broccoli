@@ -25,8 +25,8 @@ from PySide6.QtWidgets import (
 from ... import archive, settings
 from ..widgets import Card, muted_label
 
-EXAMPLE = "(261008) 2026년 사업단 정수기 임차료(9월)_코웨이(주)_(51,900).pdf"
-EXAMPLE_OLD = "09_" + EXAMPLE
+EXAMPLE_DATE = "(261008) 2026년 사업단 정수기 임차료(9월)_코웨이(주)_(51,900).pdf"
+EXAMPLE_CODE = "09_" + EXAMPLE_DATE
 
 
 class SettingsPage(QWidget):
@@ -80,7 +80,7 @@ class SettingsPage(QWidget):
 
         # 파일 이름
         name_card = Card("파일 이름")
-        self.name_old = QCheckBox("이름 앞에 비목 번호를 붙이기 (옛 매크로 형식)")
+        self.name_old = QCheckBox("이름 앞에 비목 번호를 붙이기 (끄면 날짜로 시작)")
         self.name_old.setChecked(not cfg.name_date_first)
         self.name_old.toggled.connect(self._save_name)
         name_card.add(self.name_old)
@@ -179,7 +179,7 @@ class SettingsPage(QWidget):
 
     def _refresh(self) -> None:
         cfg = settings.load()
-        self.name_example.setText("예) " + (EXAMPLE if cfg.name_date_first else EXAMPLE_OLD))
+        self.name_example.setText("예) " + (EXAMPLE_DATE if cfg.name_date_first else EXAMPLE_CODE))
         if not cfg.out_root:
             self.folder_status.setText("아직 지정하지 않았습니다.")
             return

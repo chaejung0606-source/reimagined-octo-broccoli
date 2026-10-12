@@ -12,14 +12,20 @@ from conftest import make_row
 
 
 def test_readme_example():
+    """기본은 비목 번호로 시작한다 (담당자 요청)."""
     code, name = naming.build_name(make_row(), {"owners": ["코웨이(주)"]})
     assert code == "09"
+    assert name == "09_(261008) 2026년 사업단 정수기 임차료(9월)_코웨이(주)_(51,900).pdf"
+
+
+def test_date_first_format():
+    _, name = naming.build_name(make_row(), {"owners": ["코웨이(주)"]}, name_date_first=True)
     assert name == "(261008) 2026년 사업단 정수기 임차료(9월)_코웨이(주)_(51,900).pdf"
 
 
-def test_old_macro_format_puts_code_first():
-    _, name = naming.build_name(make_row(), {"owners": ["코웨이(주)"]}, name_date_first=False)
-    assert name.startswith("09_(261008) ")
+def test_unsorted_gets_00():
+    _, name = naming.build_name(make_row(cont="특강 강사료"), {})
+    assert name.startswith("00_(261008) ")
 
 
 def test_two_or_more_owners():
@@ -40,7 +46,7 @@ def test_negative_amount_written_without_sign():
 
 def test_missing_date_keeps_placeholder():
     _, name = naming.build_name(make_row(expDt=""), {})
-    assert name.startswith("(------) ")
+    assert name.startswith("09_(------) ")
 
 
 def test_name_is_capped():

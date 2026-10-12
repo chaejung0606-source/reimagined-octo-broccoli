@@ -27,7 +27,9 @@ ERP_URL = "https://knu-icf.kangwon.ac.kr/rderp_layoutMain.act"
 class Settings:
     out_root: str = ""             # 비목 폴더(01. 인건비 …)가 바로 아래 있는 폴더
     excel_path: str = ""           # 누락 검토용 ERP 청구내역 엑셀. 비우면 건너뜀
-    name_date_first: bool = True   # False 면 옛 매크로 형식 '0N_(YYMMDD) …'
+    # 기본은 비목 번호를 앞에 붙인다 '0N_(YYMMDD) …'. 담당자가 이 형식으로 받기를 원했다.
+    # True 면 '(YYMMDD) …' — 2026년도 기존 보관본 형식.
+    name_date_first: bool = False
     wait_sec: float = 2.0          # 건당 여유(초)
     freeze_reload: bool = True     # 상세화면 멈춤 시 새로고침 후 이어받기
     auto_update_check: bool = True
