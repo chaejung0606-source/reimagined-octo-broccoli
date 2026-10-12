@@ -527,7 +527,7 @@ class DockHandle(QWidget):
     hovered = Signal()
     focused = Signal()
 
-    WIDTH, HEIGHT = 112, 6
+    WIDTH, HEIGHT = 336, 6        # 길이는 담당자가 3배로 늘려 달라고 해서 112 → 336
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -563,7 +563,8 @@ class DockHandle(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
-        color = COLORS["lavender"] if (self._hover or self.hasFocus()) else COLORS["border"]
+        # 강조색으로 칠한다(담당자 요청). 마우스가 오면 한 단계 진하게
+        color = COLORS["primary_hover"] if (self._hover or self.hasFocus()) else COLORS["primary"]
         painter.setBrush(QColor(color))
         rect = QRectF((self.width() - self.WIDTH) / 2, (self.height() - self.HEIGHT) / 2, self.WIDTH, self.HEIGHT)
         painter.drawRoundedRect(rect, self.HEIGHT / 2, self.HEIGHT / 2)
