@@ -1,4 +1,6 @@
-"""아직 기능이 없는 업무의 미리보기 화면 — 회의록 생성 · 일반청구 · 카드청구.
+"""아직 기능이 없는 업무의 미리보기 화면 — 일반청구 · 카드청구.
+
+회의록 생성은 2026-10-12 실제 기능(pages/minutes.py)으로 바뀌어 여기서 빠졌다.
 
 준비 중 안내는 위에 한 번만. 입력 칸은 비활성(점선 테두리·연한 글자)으로 두어 쓸 수
 있는 것처럼 보이지 않게 한다. 생성·저장·제출 버튼은 없다.
@@ -14,7 +16,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QPlainTextEdit,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -96,26 +97,6 @@ class PendingPage(QWidget):
 
     def build(self, layout: QVBoxLayout) -> None:
         raise NotImplementedError
-
-
-class MeetingPage(PendingPage):
-    notice = ("회의록 생성은 준비 중인 기능의 미리보기입니다. 입력 형식과 결과 형식이 정해지면 "
-              "왼쪽에 회의 내용을 넣고 오른쪽에서 회의록을 받게 됩니다.")
-
-    def build(self, layout: QVBoxLayout) -> None:
-        row = QHBoxLayout()
-        row.setSpacing(14)
-        left = Card("회의 내용", "녹취·메모를 붙여 넣는 곳")
-        source = QPlainTextEdit()
-        source.setPlaceholderText("비활성 — 기능이 준비되면 입력할 수 있습니다")
-        source.setEnabled(False)
-        source.setMinimumHeight(220)
-        left.add(source, 1)
-        right = Card("회의록")
-        right.add(_placeholder("meeting", "생성된 회의록이 여기에 표시됩니다"), 1)
-        row.addWidget(left, 1)
-        row.addWidget(right, 1)
-        layout.addLayout(row, 1)
 
 
 class ClaimPage(PendingPage):

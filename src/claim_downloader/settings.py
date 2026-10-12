@@ -8,7 +8,8 @@
       config.json      저장 폴더 · 파일명 형식 등
       _받은기록.json    받은 문서번호 (이어받기 · 중복 방지의 기준)
       _보관목록.json    보관 PDF 경로 → 문서번호 캐시 (지우면 다시 전체 스캔)
-      _실행로그.txt     실행 로그. 문제가 생기면 여기부터 본다.
+      _실행로그.txt     실행 로그. 문제가 생기면 여기부터 본다. 회의록 생성 기록도 여기에.
+      회의록규칙.txt    회의록 작성 규칙 (minutes/rules.py). 기본값 파일과 쌍으로.
 
 개인 경로를 기본값으로 넣지 않는다. 동료에게 그대로 공유할 수 있어야 한다.
 """
@@ -33,6 +34,10 @@ class Settings:
     wait_sec: float = 2.0          # 건당 여유(초)
     freeze_reload: bool = True     # 상세화면 멈춤 시 새로고침 후 이어받기
     auto_update_check: bool = True
+    # 회의록 생성 (minutes/). 이메일은 Claude 로그인 화면에 미리 채워 넣는 용도 — 비밀번호는 없다.
+    claude_email: str = ""
+    minutes_backend: str = "claude-cli"   # minutes/backends 의 key
+    minutes_model: str = ""               # 비우면 백엔드의 기본 모델
 
 
 def data_dir() -> Path:
@@ -57,6 +62,16 @@ def archive_cache_path() -> Path:
 
 def log_path() -> Path:
     return data_dir() / "_실행로그.txt"
+
+
+def minutes_rules_path() -> Path:
+    """담당자가 고쳐 쓰는 회의록 작성 규칙. 저장만 하면 다음 [작업 시작] 부터 반영된다."""
+    return data_dir() / "회의록규칙.txt"
+
+
+def minutes_rules_base_path() -> Path:
+    """마지막으로 써 준 기본 규칙 — 위 파일을 담당자가 고쳤는지 판단하는 기준."""
+    return data_dir() / "회의록규칙.기본값.txt"
 
 
 def load() -> Settings:

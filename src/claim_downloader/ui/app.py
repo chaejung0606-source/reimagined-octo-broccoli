@@ -3,14 +3,14 @@
     상단 바     로고 · 이름 | 검색 · 설정(설정·업데이트) · 사용자
     작업 탭     열려 있는 화면만. 홈 탭은 늘 있고 닫히지 않는다. [+] 로 새 업무
     작업 표면   흰 면 — 선택한 탭과 이어진다. 아래 가운데에 독이 떠 있다
-    독          평소엔 짧은 둥근 선, 마우스를 대면 펼쳐진다 (홈 · 청구서 받기 · 회의록 · 일반청구 · 카드청구)
+    독          평소엔 짧은 둥근 선, 마우스를 대면 펼쳐진다 (홈 · 청구서 받기 · 회의록 생성 · 일반청구 · 카드청구)
 
 높이는 위에서부터 상단 바(고정) · 탭 줄(고정) · 작업 표면(남는 높이 전부). 독은 따로 띠를
 갖지 않고 작업 표면 안에 겹쳐 뜬다(담당자 요청). 접힌 선은 페이지의 아래 여백 안에 들어간다.
 
 업무 화면은 처음 열 때 한 번 만들고 그 뒤로는 숨겼다 보이기만 한다. 그래서 탭을
-오가거나 닫았다 열어도 입력값·스크롤·진행 중인 받기가 그대로다. 청구서 받기는 별도
-스레드에서 돌므로(ui/worker.py) 다른 탭으로 가도 멈추지 않는다.
+오가거나 닫았다 열어도 입력값·스크롤·진행 중인 받기가 그대로다. 청구서 받기(ui/worker.py)와
+회의록 생성(ui/minutes_worker.py)은 각자 별도 스레드에서 돌므로 다른 탭으로 가도 멈추지 않는다.
 """
 from __future__ import annotations
 
@@ -42,6 +42,9 @@ WORKSPACE = ""     # 이름 아래 기관 문구는 두지 않는다(담당자 �
 
 # 창이 이보다 낮으면 독과 여백을 줄인다
 COMPACT_BELOW = 800
+
+# 별도 스레드에서 오래 도는 업무 — 탭·앱을 닫기 전에 묻고, 홈의 '이어서 작업하기' 에 보인다
+RUNNING_WORDS = {"download": "청구서를 받는", "meeting": "회의록을 만드는"}
 
 ASSETS = Path(__file__).parent / "assets"
 log = logging.getLogger(__name__)
@@ -134,6 +137,8 @@ class MainWindow(QMainWindow):
             page.need_settings.connect(lambda: self.open("settings"))
             page.busy_changed.connect(lambda busy: self._on_busy(task.id, busy))
             page.counts_changed.connect(self._sync_home)
+        elif task.id == "meeting":
+            page.busy_changed.connect(lambda busy: self._on_busy(task.id, busy))
         elif task.id == "settings":
             page.changed.connect(self._on_settings_changed)
         elif task.id == "updates":
@@ -165,10 +170,10 @@ class MainWindow(QMainWindow):
         page = self._pages.get(task_id)
         if page is None or task_id == HOME_ID:
             return
-        if task_id == "download" and page.is_running():
+        if task_id in RUNNING_WORDS and page.is_running():
             answer = QMessageBox.question(
                 self, APP_NAME,
-                "청구서를 받는 중입니다. 탭을 닫아도 받기는 이어지지만 진행 상황을 볼 수 없습니다.\n그래도 닫을까요?",
+                f"{RUNNING_WORDS[task_id]} 중입니다. 탭을 닫아도 작업은 이어지지만 진행 상황을 볼 수 없습니다.\n그래도 닫을까요?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if answer != QMessageBox.Yes:
                 return
@@ -194,11 +199,13 @@ class MainWindow(QMainWindow):
     def _sync_home(self) -> None:
         """홈의 '이어서 작업하기'(실제 재개 가능한 일만)와 최근 기록을 새로 읽는다."""
         items = []
-        download = self._pages.get("download")
-        if download is not None:
-            ok, text = download.resumable()
+        for task_id in RUNNING_WORDS:
+            page = self._pages.get(task_id)
+            if page is None:
+                continue
+            ok, text = page.resumable()
             if ok:
-                task = find("download")
+                task = find(task_id)
                 items.append((task.id, task.art, task.name, text))
         self.home.set_resumable(items)
         self.home.refresh_recent()
@@ -234,17 +241,18 @@ class MainWindow(QMainWindow):
         self.dock_overlay.set_compact(self.height() < COMPACT_BELOW)
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        download = self._pages.get("download")
-        if download is not None and download.is_running():
+        workers = [(tid, self._pages[tid]) for tid in RUNNING_WORDS if tid in self._pages]
+        running = [RUNNING_WORDS[tid] for tid, page in workers if page.is_running()]
+        if running:
             answer = QMessageBox.question(
                 self, APP_NAME,
-                "아직 청구서를 받는 중입니다. 지금 닫으면 받던 건이 끝나지 않습니다.\n그래도 닫을까요?",
+                f"아직 {' · '.join(running)} 중입니다. 지금 닫으면 하던 건이 끝나지 않습니다.\n그래도 닫을까요?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if answer != QMessageBox.Yes:
                 event.ignore()
                 return
-        if download is not None:
-            download.shutdown()
+        for _tid, page in workers:
+            page.shutdown()
         super().closeEvent(event)
 
 

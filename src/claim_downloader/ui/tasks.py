@@ -27,8 +27,8 @@ class Task:
 TASKS: tuple[Task, ...] = (
     Task("download", "청구서 받기", "ERP 청구서를 확인하고 파일로 보관합니다.",
          "receive", "download", "mint", "download:DownloadPage", ready=True),
-    Task("meeting", "회의록 생성", "회의 내용을 정리해 회의록을 작성합니다.",
-         "meeting", "book", "lavender", "pending:MeetingPage", ready=False),
+    Task("meeting", "회의록 생성", "회의 자료 폴더에서 정산용 회의록(.hwpx)을 만듭니다.",
+         "meeting", "book", "lavender", "minutes:MinutesPage", ready=True),
     Task("claim", "일반청구", "일반 지출 청구를 작성하고 관리합니다.",
          "claim", "document-check", "peach", "pending:ClaimPage", ready=False),
     Task("card", "카드청구", "카드 사용 내역과 증빙을 정리합니다.",

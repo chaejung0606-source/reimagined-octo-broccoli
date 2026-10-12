@@ -192,6 +192,14 @@ QFrame#banner {{
 }}
 QLabel#bannerText {{ font-weight: 500; color: {c['text']}; }}
 
+/* 회의 폴더 끌어다 놓기 — 점선 테두리, 끌고 들어오면 라벤더 */
+QFrame#dropZone {{
+    background: {c['surface_alt']}; border: 1.5px dashed {c['border_strong']}; border-radius: {r_card}px;
+}}
+QFrame#dropZone[active="true"] {{ background: {c['selection']}; border-color: {c['primary']}; }}
+QProgressBar {{ background: {c['surface_alt']}; border: 1px solid {c['border']}; border-radius: 4px; }}
+QProgressBar::chunk {{ background: {c['primary']}; border-radius: 3px; }}
+
 /* 준비 중 안내 띠 */
 QFrame#notice {{
     background: {c['info_bg']}; border: 1px solid #C9DDF0; border-radius: {r_ctl + 4}px;
