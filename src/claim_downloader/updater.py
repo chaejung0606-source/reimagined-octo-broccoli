@@ -68,11 +68,18 @@ def _git(*args: str) -> subprocess.CompletedProcess:
         "GCM_INTERACTIVE": "never",
         "GIT_OPTIONAL_LOCKS": "0",
     }
+    # 줄바꿈 변환을 끈다. 저장소의 .bat/.vbs 는 CRLF 인데 윈도우 git 의 autocrlf=true 아래서는
+    # 이 파일들이 늘 '수정됨' 으로 보여 업데이트가 "저장하지 않은 변경" 으로 막혔다(2026-10-12).
+    # 받은 파일은 저장소에 있는 그대로(파이썬은 LF, 배치는 CRLF) 쓰면 되므로 변환이 필요 없다.
+    command = ["git", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false",
+               "-C", str(REPO_ROOT), *args]
+    # 창 없는 실행(pythonw) 아래서는 git 이 호출마다 검은 콘솔 창을 띄웠다 닫는다. 숨긴다.
+    hidden = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
     try:
         done = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), *args],
+            command,
             capture_output=True, text=True, timeout=GIT_TIMEOUT,
-            encoding="utf-8", errors="replace", env=env,
+            encoding="utf-8", errors="replace", env=env, **hidden,
         )
     except FileNotFoundError:
         return _result(args, 127,
@@ -170,7 +177,7 @@ def _check() -> UpdateStatus:
         log = _git("log", "--format=%s", f"HEAD..origin/{BRANCH}")
         status.messages = tuple(line for line in log.stdout.strip().splitlines() if line)[:10]
 
-    dirty = _git("status", "--porcelain")
+    dirty = _git("status", "--porcelain", "--untracked-files=no")
     if dirty.returncode == 0 and dirty.stdout.strip():
         status.blocked_reason = (
             "이 폴더에 저장하지 않은 변경이 있어 자동 적용을 멈췄습니다. "

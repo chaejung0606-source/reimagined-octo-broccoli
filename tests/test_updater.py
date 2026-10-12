@@ -164,3 +164,53 @@ def test_fetch_failure_suggests_zip(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", run)
     assert "zip" in updater.check().error
+
+
+# ── 윈도우에서 실제로 막혔던 것들 ───────────────────────────────────────
+
+def test_git_disables_line_ending_conversion(monkeypatch):
+    """autocrlf 가 켜진 윈도우 git 은 CRLF 배치 파일을 늘 '수정됨' 으로 봐 업데이트를 막았다."""
+    seen = {}
+
+    def run(args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(updater.subprocess, "run", run)
+    updater._git("status", "--porcelain")
+    assert "core.autocrlf=false" in seen["args"]
+    assert seen["args"][0] == "git" and seen["args"][-2:] == ["status", "--porcelain"]
+
+
+def test_git_hides_console_window_on_windows(monkeypatch):
+    """pythonw 아래서 git 이 호출마다 검은 창을 띄웠다 닫았다."""
+    seen = {}
+
+    def run(args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(updater.subprocess, "run", run)
+    monkeypatch.setattr(updater.os, "name", "nt")
+    monkeypatch.setattr(updater.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    updater._git("status")
+    assert seen.get("creationflags") == 0x08000000
+
+
+def test_untracked_files_do_not_block_update(monkeypatch):
+    """담당자가 폴더에 메모 파일을 두어도 빨리감기 갱신은 막히지 않아야 한다."""
+    calls = []
+
+    def git(*args):
+        calls.append(args)
+        if args[:2] == ("remote", "get-url"):
+            return subprocess.CompletedProcess(args, 0, "https://github.com/" + updater.EXPECTED_REPO, "")
+        if args[0] == "rev-list":
+            return subprocess.CompletedProcess(args, 0, "2\n", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(updater, "_git", git)
+    status = updater.check()
+    assert status.available and not status.blocked_reason
+    assert ("status", "--porcelain", "--untracked-files=no") in calls

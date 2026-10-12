@@ -13,6 +13,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+# 창 없는 실행(pythonw) 아래서 powershell 이 검은 창을 띄우지 않게
+_HIDDEN = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform.startswith("win") else {}
+
 APP_NAME = "업무 도구함"
 # 이 저장소가 이전 이름이던 시절의 바로가기들. 남겨 두면 아이콘이 여럿이 돼
 # 어느 쪽을 눌러야 할지 헷갈린다. 새 바로가기를 만들 때 함께 치운다.
@@ -42,7 +45,7 @@ def make_windows() -> Path:
     )
     desktop = Path(subprocess.check_output(
         ["powershell", "-NoProfile", "-Command", desktop_probe],
-        text=True).strip())
+        text=True, **_HIDDEN).strip())
     link = desktop / f"{APP_NAME}.lnk"
     script = f"""
 $shell = New-Object -ComObject WScript.Shell
@@ -54,7 +57,7 @@ $sc.IconLocation = '{ASSETS / "icon.ico"}'
 $sc.Description = '청구서 받기 등 업무를 한곳에서 시작합니다'
 $sc.Save()
 """
-    subprocess.run(["powershell", "-NoProfile", "-Command", script], check=True)
+    subprocess.run(["powershell", "-NoProfile", "-Command", script], check=True, **_HIDDEN)
     for old in OLD_APP_NAMES:
         (desktop / f"{old}.lnk").unlink(missing_ok=True)
     return link
