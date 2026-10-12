@@ -8,8 +8,8 @@
     python tools/make_icon.py
 
 생성 파일:
-    src/expense_review/ui/assets/icon.png   (256px, 창 아이콘용)
-    src/expense_review/ui/assets/icon.ico   (16~256px, 윈도우 바로가기용)
+    src/claim_downloader/ui/assets/icon.png   (256px, 창 아이콘용)
+    src/claim_downloader/ui/assets/icon.ico   (16~256px, 윈도우 바로가기용)
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter
 
-# src/expense_review/ui/theme.py 의 primary / accent 와 맞춘다
+# src/claim_downloader/ui/theme.py 의 primary / accent 와 맞춘다
 BG_TOP = (61, 214, 196)      # 민트
 BG_BOTTOM = (42, 159, 224)   # 아쿠아
 NEBULA = (190, 245, 240)
@@ -148,7 +148,7 @@ def draw_icon(size: int = SIZE) -> Image.Image:
 
 
 def main() -> None:
-    assets = Path(__file__).resolve().parents[1] / "src" / "expense_review" / "ui" / "assets"
+    assets = Path(__file__).resolve().parents[1] / "src" / "claim_downloader" / "ui" / "assets"
     assets.mkdir(parents=True, exist_ok=True)
 
     icon = draw_icon()

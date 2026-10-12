@@ -1,4 +1,4 @@
-' 지출 서류 검토 - 검은 창 없이 실행
+' ERP 청구서 다운로더 - 검은 창 없이 실행
 '
 ' .bat 는 콘솔에서 돌기 때문에 아무리 빨라도 검은 창이 한 번 스칩니다.
 ' 이 파일은 같은 폴더의 준비 상태를 보고,
@@ -16,8 +16,8 @@ shell.CurrentDirectory = here
 venvw = here & "\.venv\Scripts\pythonw.exe"
 bat = here & "\앱 실행.bat"
 
-If fso.FileExists(here & "\.venv\setup-done.txt") And fso.FileExists(venvw) Then
-    shell.Run """" & venvw & """ -m expense_review.ui.app", 0, False
+If fso.FileExists(here & "\.venv\setup-claim-v1.txt") And fso.FileExists(venvw) Then
+    shell.Run """" & venvw & """ -m claim_downloader.ui.app", 0, False
 Else
     shell.Run """" & bat & """", 1, False
 End If

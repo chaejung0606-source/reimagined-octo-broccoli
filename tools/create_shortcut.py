@@ -1,7 +1,7 @@
 """바탕화면 바로가기 만들기.
 
 이 저장소 폴더에서 한 번 실행하면, 바탕화면에 아이콘이 붙은
-'지출 서류 검토' 바로가기가 생긴다. 더블클릭하면 앱이 뜬다.
+'ERP 청구서 다운로더' 바로가기가 생긴다. 더블클릭하면 앱이 뜬다.
 
     python tools/create_shortcut.py
 
@@ -13,9 +13,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-APP_NAME = "지출 서류 검토"
+APP_NAME = "ERP 청구서 다운로더"
+# 이 저장소가 지출 서류 검토 앱이던 시절의 바로가기. 남겨 두면 아이콘이 두 개가 돼
+# 어느 쪽을 눌러야 할지 헷갈린다. 새 바로가기를 만들 때 함께 치운다.
+OLD_APP_NAME = "지출 서류 검토"
+MODULE = "claim_downloader.ui.app"
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ASSETS = REPO_ROOT / "src" / "expense_review" / "ui" / "assets"
+ASSETS = REPO_ROOT / "src" / "claim_downloader" / "ui" / "assets"
 
 
 def _pythonw() -> Path:
@@ -44,13 +48,14 @@ def make_windows() -> Path:
 $shell = New-Object -ComObject WScript.Shell
 $sc = $shell.CreateShortcut('{link}')
 $sc.TargetPath = '{_pythonw()}'
-$sc.Arguments = '-m expense_review.ui.app'
+$sc.Arguments = '-m {MODULE}'
 $sc.WorkingDirectory = '{REPO_ROOT}'
 $sc.IconLocation = '{ASSETS / "icon.ico"}'
-$sc.Description = '지출 서류를 기준에 따라 자동 검토합니다'
+$sc.Description = 'ERP 에서 승인된 청구서 PDF 를 받아 비목 폴더에 넣습니다'
 $sc.Save()
 """
     subprocess.run(["powershell", "-NoProfile", "-Command", script], check=True)
+    (desktop / f"{OLD_APP_NAME}.lnk").unlink(missing_ok=True)
     return link
 
 
@@ -58,18 +63,19 @@ def make_linux() -> Path:
     desktop_dir = Path.home() / "Desktop"
     if not desktop_dir.exists():
         desktop_dir = Path.home()
-    entry = desktop_dir / "expense-review.desktop"
+    entry = desktop_dir / "claim-downloader.desktop"
     entry.write_text(
         "[Desktop Entry]\n"
         "Type=Application\n"
         f"Name={APP_NAME}\n"
-        f"Exec={_pythonw()} -m expense_review.ui.app\n"
+        f"Exec={_pythonw()} -m {MODULE}\n"
         f"Path={REPO_ROOT}\n"
         f"Icon={ASSETS / 'icon.png'}\n"
         "Terminal=false\n",
         encoding="utf-8",
     )
     entry.chmod(0o755)
+    (desktop_dir / "expense-review.desktop").unlink(missing_ok=True)
     return entry
 
 
@@ -82,7 +88,7 @@ def main() -> None:
         print("macOS 는 자동 생성을 지원하지 않습니다.\n"
               "Automator 로 '응용 프로그램'을 만들어 아래 명령을 넣고,\n"
               f"아이콘은 {ASSETS / 'icon.png'} 를 지정하세요:\n"
-              f"  cd {REPO_ROOT} && {sys.executable} -m expense_review.ui.app")
+              f"  cd {REPO_ROOT} && {sys.executable} -m {MODULE}")
         return
     print(f"바로가기를 만들었습니다: {link}")
 

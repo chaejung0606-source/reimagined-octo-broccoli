@@ -1,18 +1,21 @@
 @echo off
 cd /d "%~dp0"
-title 지출 서류 검토
+title ERP 청구서 다운로더
 
 rem 이 파일은 CP949(한글 윈도우 기본)로 저장한다. chcp 는 쓰지 않는다.
 rem 명령과 경로는 모두 영문으로 둔다. 한글은 화면에 찍는 글자에만 쓴다.
 
 rem 준비가 끝났으면 아무 검사도 하지 않고 곧장 띄운다.
-rem 검은 창이 오래 떠 있으면 깜빡이는 것처럼 보여 불편하다. 예전에는 여기서
-rem 파이썬을 한 번 불러 확인했는데, 그것만으로 1~2초가 걸렸다.
+rem 검은 창이 오래 떠 있으면 깜빡이는 것처럼 보여 불편하다.
 
-if not exist ".venv\setup-done.txt" goto setup
+rem 준비 표시 파일 이름에 판을 붙인다. 지출 서류 검토 앱에서 업데이트로 넘어온
+rem PC 는 setup-done.txt 만 있으므로, 새 의존성(Playwright·브라우저)을 받으러
+rem 준비 단계로 한 번 더 들어간다.
+
+if not exist ".venv\setup-claim-v1.txt" goto setup
 if not exist ".venv\Scripts\pythonw.exe" goto setup
 
-start "" ".venv\Scripts\pythonw.exe" -m expense_review.ui.app
+start "" ".venv\Scripts\pythonw.exe" -m claim_downloader.ui.app
 exit /b 0
 
 :setup
@@ -35,10 +38,10 @@ if not defined PY (
 )
 
 echo.
-echo   처음 실행이라 필요한 것들을 받습니다.
+echo   필요한 것들을 받습니다.
 echo.
-echo   화면 그리기 라이브러리만 100MB가 넘어서
-echo   보통 3~7분, 인터넷이 느리면 그 이상 걸립니다.
+echo   화면 라이브러리와 자동 조작용 브라우저를 함께 받아서
+echo   처음에는 보통 5~10분, 인터넷이 느리면 그 이상 걸립니다.
 echo.
 echo   아래에 Downloading 진행 막대가 움직이면 정상입니다.
 echo   이 창을 닫지 마세요. 앱이 뜨면 저절로 사라집니다.
@@ -50,25 +53,39 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 ".venv\Scripts\python.exe" -m pip install -q --upgrade pip --disable-pip-version-check
-".venv\Scripts\python.exe" -m pip install -e ".[gui]" --disable-pip-version-check
+
+rem 예전 지출 서류 검토 앱의 설치 정보가 남아 있으면 지운다. 없으면 조용히 지나간다.
+".venv\Scripts\python.exe" -m pip uninstall -y -q expense-review >nul 2>&1
+
+".venv\Scripts\python.exe" -m pip install -e ".[gui,excel]" --disable-pip-version-check
 if errorlevel 1 goto failed
 
+rem 자동 조작용 크로미움. 학교망에서 막혀도 멈추지 않는다 - 앱이 Edge 로 대신 연다.
+echo.
+echo   자동 조작용 브라우저를 받습니다...
+".venv\Scripts\python.exe" -m playwright install chromium
+if errorlevel 1 (
+    echo.
+    echo   브라우저를 받지 못했습니다. 괜찮습니다 - 앱은 Microsoft Edge 로 대신 엽니다.
+    echo.
+)
+
 rem 준비 직후 한 번만 확인한다. 창이 이미 떠 있으므로 여기서는 시간이 들어도 된다.
-".venv\Scripts\python.exe" -c "import expense_review.ui.app" 2>"%TEMP%\expense-review-error.txt"
+".venv\Scripts\python.exe" -c "import claim_downloader.ui.app" 2>"%TEMP%\claim-downloader-error.txt"
 if errorlevel 1 goto broken
 
-echo done > ".venv\setup-done.txt"
+echo done > ".venv\setup-claim-v1.txt"
 
 rem 앞으로 검은 창 없이 쓰실 수 있도록 바탕화면 바로가기를 만들어 둔다.
 ".venv\Scripts\python.exe" tools\create_shortcut.py
 
 echo.
 echo   준비를 마쳤습니다. 앱을 띄웁니다.
-echo   다음부터는 바탕화면의 [ 지출 서류 검토 ] 아이콘을 쓰시면
+echo   다음부터는 바탕화면의 [ ERP 청구서 다운로더 ] 아이콘을 쓰시면
 echo   검은 창 없이 바로 열립니다.
 echo.
 
-start "" ".venv\Scripts\pythonw.exe" -m expense_review.ui.app
+start "" ".venv\Scripts\pythonw.exe" -m claim_downloader.ui.app
 exit /b 0
 
 :failed
@@ -84,7 +101,7 @@ exit /b 1
 echo.
 echo   앱을 띄우지 못했습니다. 준비가 덜 된 것 같습니다.
 echo.
-type "%TEMP%\expense-review-error.txt"
+type "%TEMP%\claim-downloader-error.txt"
 echo.
 echo   .venv 폴더를 통째로 지우고 이 파일을 다시 실행해 보세요.
 echo.

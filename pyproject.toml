@@ -1,21 +1,21 @@
 [project]
-name = "expense-review"
-version = "0.1.0"
-description = "지출 서류 자동 검토 데스크톱 앱"
+name = "claim-downloader"
+version = "0.2.0"
+description = "강원대 ERP 청구서 PDF 자동 다운로드 · 명명 · 비목 분류 데스크톱 앱"
 requires-python = ">=3.11"
 dependencies = [
+    "playwright>=1.45",
     "pypdf>=5.0",
-    "pdfplumber>=0.11",
-    "pypdfium2>=4.0",
-    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
 gui = ["PySide6>=6.6"]
+# 누락 검토(ERP 청구내역 엑셀 대조)에만 쓴다. 없으면 그 단계만 건너뛴다.
+excel = ["pandas>=2.0", "xlrd>=2.0", "openpyxl>=3.1"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-expense-review = "expense_review.cli:main"
+claim-downloader = "claim_downloader.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -25,7 +25,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-expense_review = ["py.typed", "ui/assets/*"]
+claim_downloader = ["ui/assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

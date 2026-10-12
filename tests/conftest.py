@@ -1,53 +1,28 @@
-"""실제 서류 없이 규칙을 검증하기 위한 도우미.
+"""공용 준비물.
 
-검토 대상 PDF에는 주민등록번호·계좌번호가 들어 있어 저장소에 넣을 수 없다.
-그래서 추출 결과(필드)를 직접 만들어 규칙만 시험한다.
+테스트는 실제 ERP·브라우저·청구서 PDF 없이 돈다. 목록 행은 ERP 그리드에서
+읽어 오는 dict 와 같은 모양으로 직접 만든다. **실제 청구서를 커밋해서 테스트를
+짜지 않는다** — 계좌번호와 이체자 이름이 들어 있다.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from expense_review import checks  # noqa: F401  (규칙 판정 함수 등록)
-from expense_review.engine import evaluate, load_ruleset
-from expense_review.models import CONFIDENCE, Document, DocumentSet, Value
+
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path, monkeypatch):
+    """설정·기록이 사용자 홈(~/.claim-downloader)을 건드리지 않게 한다."""
+    home = tmp_path / "home"
+    monkeypatch.setenv("CLAIM_DOWNLOADER_HOME", str(home))
+    return home
 
 
-def make_document(doc_type: str, filename: str | None = None, **fields) -> Document:
-    document = Document(
-        path=Path(filename or f"{doc_type}.pdf"),
-        doc_type=doc_type,
-        contains={doc_type},
-        pages=["(테스트)"],
-        page_types=[doc_type],
-    )
-    document.fields = {
-        key: value if isinstance(value, Value) else Value(value, CONFIDENCE["pdf_text"], document.source(1))
-        for key, value in fields.items()
+def make_row(**overrides) -> dict:
+    """결의서내역 그리드 한 행 (erp.parse_rows 가 돌려주는 모양)."""
+    row = {
+        "r": "0", "no": "1", "seq": "101", "gubun": "일반청구",
+        "cont": "09_2026년 사업단 정수기 임차료(9월)", "amt": "51900",
+        "state": "승인", "docNo": "산학-20261008-0001", "expDt": "2026-10-08",
     }
-    return document
-
-
-def run(expense_type: str, documents: list[Document], owner: str | None = None,
-        subtype: str | None = None):
-    document_set = DocumentSet(
-        expense_type=expense_type, documents=documents, owner=owner, subtype=subtype
-    )
-    return evaluate(document_set, load_ruleset(expense_type, subtype))
-
-
-def ids(result) -> set[str]:
-    """ERROR/WARN 로 확정된 규칙 ID만. REVIEW(판독 보류)는 제외한다."""
-    from expense_review.models import Severity
-
-    return {
-        finding.rule_id for finding in result.findings
-        if finding.severity in (Severity.ERROR, Severity.WARN)
-    }
-
-
-@pytest.fixture
-def helpers():
-    return type("Helpers", (), {"make_document": staticmethod(make_document),
-                                "run": staticmethod(run), "ids": staticmethod(ids)})
+    row.update(overrides)
+    return row

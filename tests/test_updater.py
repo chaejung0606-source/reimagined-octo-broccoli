@@ -10,7 +10,7 @@ import subprocess
 
 import pytest
 
-from expense_review import updater
+from claim_downloader import updater
 
 
 def _fake_run(returncode: int = 0, stdout: str = "", stderr: str = ""):

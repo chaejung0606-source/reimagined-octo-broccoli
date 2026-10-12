@@ -1,10 +1,20 @@
-# 검토 대상 서류에는 주민등록번호·계좌번호·신분증 사본이 들어 있다.
+# 청구서에는 계좌번호·이체자 이름이 들어 있다. 받은 PDF 와 청구내역 엑셀은
 # 샘플이라도 저장소에 올리지 않는다.
 samples/
 서류/
 *.pdf
 *.hwp
 *.hwpx
+*.xls
+*.xlsx
+
+# 받은 기록·로그·사용자 설정. 앱은 ~/.claim-downloader/ 에 두지만,
+# 단일 파일 시절처럼 앱 폴더에 생겨도 올라가지 않게 막는다.
+_받은기록.json
+_보관목록.json
+_실행로그.txt
+_화면구조.txt
+config.json
 
 __pycache__/
 *.py[cod]
@@ -19,7 +29,5 @@ Thumbs.db
 .idea/
 .vscode/
 
-# 검토용 임시 산출물
 *.egg-info/
 .pytest_cache/
-수정요청서*.md

@@ -1,0 +1,368 @@
+"""ERP 화면 조작 (Playwright).
+
+2026-09-17 ~ 10-12 실제 ERP 화면에서 검증한 동작을 옮긴 것이다. 화면 구조는
+CLAUDE.md 'ERP 화면 구조' 절에 있다. 추측으로 바꾸지 않는다.
+
+  - 전부 한 창 안의 iframe 이다. 프레임은 URL 이 아니라 **내용으로** 찾는다.
+  - 목록은 가상 스크롤이라 화면에 보이는 30여 행만 DOM 에 있다.
+    그래서 행은 r 속성으로 바로 찾지 않고 문서번호로 스크롤하며 찾는다.
+
+이 모듈은 다운로드만 한다. ERP 에 값을 넣거나 저장·신청·제출을 누르지 않는다.
+"""
+from __future__ import annotations
+
+import time
+from collections.abc import Callable
+from pathlib import Path
+
+from . import naming
+
+_GRID_PROBE = "()=>!!document.querySelector('.k_REQ_DOC_NO')||!!document.querySelector('#btnDetail')"
+_DETAIL_PROBE = ("()=>{const E=document.querySelectorAll('a,span,button,input');"
+                 "for(const e of E){const s=(e.textContent||e.value||'').trim();"
+                 "if(s==='청구서출력')return true;}return false;}")
+
+# 상세화면 멈춤 계열 오류. 이 문구가 들어간 실패만 새로고침 후 재시도한다.
+FREEZE_HINTS = ("안 뜸", "찾지 못", "Timeout", "timeout")
+
+
+def is_freeze_error(message: str) -> bool:
+    return any(hint in message for hint in FREEZE_HINTS)
+
+
+def _frame_matches(fr, probe) -> bool:
+    try:
+        return fr.evaluate(probe) is True
+    except Exception:          # noqa: BLE001 — 로딩 중인 프레임은 evaluate 가 실패한다
+        return False
+
+
+def grid_frame(page):
+    """이 창의 프레임 중 결의서내역 그리드가 있는 프레임."""
+    for fr in page.frames:
+        if _frame_matches(fr, _GRID_PROBE):
+            return fr
+    return None
+
+
+def detail_frame(page):
+    """이 창의 프레임 중 '청구서출력' 이 있는 상세 프레임."""
+    for fr in page.frames:
+        if _frame_matches(fr, _DETAIL_PROBE):
+            return fr
+    return None
+
+
+def find_grid(context):
+    """열린 모든 창을 뒤져 결의서내역 그리드가 있는 (창, 프레임)."""
+    for pg in context.pages:
+        for fr in pg.frames:
+            if _frame_matches(fr, _GRID_PROBE):
+                return pg, fr
+    return None, None
+
+
+def wait_for_grid(context, tries: int = 40, interval_ms: int = 500):
+    """목록이 눈에 보여도 첫 evaluate 는 실패할 수 있다. 한 번 보고 포기하지 않는다."""
+    for _ in range(tries):
+        page, fr = find_grid(context)
+        if fr:
+            return page, fr
+        if context.pages:
+            context.pages[0].wait_for_timeout(interval_ms)
+        else:
+            time.sleep(interval_ms / 1000)
+    return None, None
+
+
+def dump_context(context) -> str:
+    """진단용: 열린 모든 창과 프레임 주소."""
+    out = []
+    for pi, pg in enumerate(context.pages):
+        try:
+            u = pg.url
+        except Exception:      # noqa: BLE001
+            u = "?"
+        try:
+            t = pg.title()
+        except Exception:      # noqa: BLE001
+            t = "?"
+        out.append("[창 %d] %s | %s" % (pi, t, u))
+        for fi, fr in enumerate(pg.frames):
+            mark = ""
+            if _frame_matches(fr, _GRID_PROBE):
+                mark = "  <== 결의서 목록!"
+            elif _frame_matches(fr, _DETAIL_PROBE):
+                mark = "  <== 상세(청구서출력)"
+            out.append("    프레임 %d: %s%s" % (fi, (fr.url or ""), mark))
+    return "\n".join(out) if out else "(열린 창이 없음)"
+
+
+# ── 목록 ───────────────────────────────────────────────────────────────
+_PARSE_ROWS_JS = r"""
+() => {
+  const rows = [];
+  document.querySelectorAll('.jgrid-row').forEach(el => {
+    const c = k => {
+      const d = el.querySelector('.k_'+k);
+      if(!d) return '';
+      const t = d.getAttribute('title');
+      return (t && t.trim()) ? t.trim() : (d.textContent||'').trim();
+    };
+    if(!el.querySelector('.k_REQ_DOC_NO')) return;
+    rows.push({
+      r: el.getAttribute('r'),
+      no: c('ROW_NO').replace(/[^0-9]/g,''),
+      seq: c('REQ_DOC_NO').replace(/[^0-9]/g,''),
+      gubun: c('PROC_TYP_NM'),
+      cont: c('APPL_CONT'),
+      amt: c('REQ_AMT').replace(/[^0-9\-]/g,''),
+      state: c('APPR_DIV_NM'),
+      docNo: c('DOC_NO'),
+      expDt: c('SLIP_DT')||c('APPR_DT')||c('APPL_DT')
+    });
+  });
+  return rows;
+}"""
+
+_SCROLL_TOP_JS = "() => { const v=document.querySelector('.jgrid-viewport'); if(v) v.scrollTop=0; }"
+_SCROLL_INFO_JS = """() => { const v=document.querySelector('.jgrid-viewport');
+    return v ? {top:v.scrollTop, h:v.clientHeight, sh:v.scrollHeight} : null; }"""
+_SCROLL_NEXT_JS = """() => { const v=document.querySelector('.jgrid-viewport');
+    if(v) v.scrollTop = Math.min(v.scrollHeight, v.scrollTop + v.clientHeight - 60); }"""
+
+
+def parse_rows(fr) -> list[dict]:
+    try:
+        return fr.evaluate(_PARSE_ROWS_JS)
+    except Exception:          # noqa: BLE001
+        return []
+
+
+def collect_all(fr) -> list[dict]:
+    """가상 스크롤 목록을 끝까지 내리며 전 행 수집(문서번호/결의번호 기준 중복 제거)."""
+    seen, out = set(), []
+
+    def grab():
+        for r in parse_rows(fr):
+            key = r["docNo"] or (r["gubun"] + "#" + r["seq"])
+            if r["seq"] and key not in seen:
+                seen.add(key)
+                out.append(r)
+
+    try:
+        fr.evaluate(_SCROLL_TOP_JS)
+    except Exception:          # noqa: BLE001
+        pass
+    grab()
+    last = -1
+    for _ in range(400):
+        try:
+            info = fr.evaluate(_SCROLL_INFO_JS)
+        except Exception:      # noqa: BLE001
+            info = None
+        if not info:
+            break
+        if info["top"] + info["h"] >= info["sh"] - 5 and info["top"] == last:
+            break
+        last = info["top"]
+        fr.evaluate(_SCROLL_NEXT_JS)
+        fr.page.wait_for_timeout(250)
+        grab()
+    return out
+
+
+# ── 상세화면: 이체자(입금처>예금주) + 비목명 ─────────────────────────────
+_OWNERS_JS = r"""
+() => {
+  const txt = el => (el ? (el.textContent||'').replace(/\s+/g,' ').trim() : '');
+  const trs = document.querySelectorAll('tr');
+  let head=null, col={};
+  for(const tr of trs){
+    const cs=tr.cells; if(!cs||cs.length<4) continue;
+    let m={},a=false,b=false;
+    for(let j=0;j<cs.length;j++){ const k=txt(cs[j]).replace(/\s/g,''); if(!k)continue;
+      if(m[k]===undefined)m[k]=j; if(k==='비목')a=true; if(k==='예금주'||k==='입금처')b=true; }
+    if(a&&b){head=tr;col=m;break;}
+  }
+  const out={owners:[], bimok:'', full: (document.body.innerText||'')};
+  if(!head) return out;
+  let tbl=head.parentNode; while(tbl&&tbl.tagName!=='TABLE') tbl=tbl.parentNode;
+  if(!tbl) return out;
+  const p=col['입금처'], q=col['예금주'], bcol=col['비목'];
+  for(let i=head.rowIndex+1;i<tbl.rows.length;i++){
+    const c=tbl.rows[i].cells; if(!c)continue;
+    if(!out.bimok && bcol!==undefined && c[bcol]){ const bv=txt(c[bcol]);
+      if(bv&&bv!=='비목'&&!/^합\s*계/.test(bv)) out.bimok=bv; }
+    let v=(p!==undefined&&c[p])?txt(c[p]):''; if(!v&&q!==undefined&&c[q]) v=txt(c[q]);
+    if(!v||v==='입금처'||v==='예금주'||/^합\s*계/.test(v)) continue;
+    if(out.owners.indexOf(v)<0) out.owners.push(v);
+  }
+  return out;
+}"""
+
+
+def read_owners_and_bimok(dfr) -> dict:
+    try:
+        return dfr.evaluate(_OWNERS_JS)
+    except Exception:          # noqa: BLE001
+        return {"owners": [], "bimok": "", "full": ""}
+
+
+# ── OZ 보고서 팝업에서 PDF 저장 ───────────────────────────────────────────
+def save_oz_pdf(popup, dest_path: Path) -> bool:
+    """OZ 가 다운로드 훅을 우회하므로 Playwright 의 다운로드 캡처로 받아
+    원하는 이름으로 직접 저장한다. 이것이 매크로에서 앱으로 옮긴 핵심 이유다."""
+    popup.wait_for_load_state("domcontentloaded")
+    popup.wait_for_selector("input.btnSAVEAS", timeout=360000)   # 보고서 생성 대기
+    popup.wait_for_timeout(2500)                                  # 생성 완료 안정화
+    with popup.expect_download(timeout=600000) as dl_info:
+        popup.click("input.btnSAVEAS")
+        # 저장 형식 대화상자: select 에서 Adobe PDF(value=3) 선택 후 '확인'
+        try:
+            popup.wait_for_selector(".ozbasedlg select", timeout=20000)
+            popup.eval_on_selector(
+                ".ozbasedlg select",
+                "el => { el.value='3'; el.dispatchEvent(new Event('change',{bubbles:true})); }",
+            )
+            popup.evaluate(
+                """() => { const dlg=document.querySelector('.ozbasedlg');
+                    if(!dlg) return; const bs=dlg.querySelectorAll('button');
+                    for(const b of bs){ if((b.textContent||'').trim()==='확인'){ b.click(); return; } } }"""
+            )
+        except Exception:      # noqa: BLE001 — 대화상자 없이 바로 받아지는 경우도 있다
+            pass
+    dl = dl_info.value
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dl.save_as(str(dest_path))
+    return dest_path.exists() and dest_path.stat().st_size > 0
+
+
+# ── 대상 행을 스크롤로 찾아 선택 ─────────────────────────────────────────
+_FIND_ROW_JS = r"""
+(t) => {
+  const cell = (el,k) => { const d=el.querySelector('.k_'+k); if(!d) return '';
+    const a=d.getAttribute('title'); return (a&&a.trim())?a.trim():(d.textContent||'').trim(); };
+  const rows=document.querySelectorAll('.jgrid-row');
+  for(const el of rows){
+    if(!el.querySelector('.k_REQ_DOC_NO')) continue;
+    const dn=cell(el,'DOC_NO');
+    const sq=cell(el,'REQ_DOC_NO').replace(/[^0-9]/g,'');
+    const rn=cell(el,'ROW_NO').replace(/[^0-9]/g,'');
+    const hit = (t.docNo && dn===t.docNo) ||
+                (!t.docNo && t.seq && sq===t.seq) ||
+                (!t.docNo && !t.seq && t.no && rn===t.no);
+    if(hit){
+      document.querySelectorAll('.jgrid-row input[type=checkbox]').forEach(c=>{ if(c.checked) c.click(); });
+      const cb=el.querySelector('input[type=checkbox]');
+      if(cb && !cb.checked) cb.click();
+      el.scrollIntoView({block:'center'});
+      return true;
+    }
+  }
+  return false;
+}"""
+
+
+def select_row(page, gfr, target: dict) -> bool:
+    """문서번호(없으면 결의번호/No)로 목록을 위에서부터 스크롤하며 찾아 체크한다."""
+    arg = {"docNo": target.get("docNo") or "", "seq": target.get("seq") or "",
+           "no": target.get("no") or ""}
+    try:
+        gfr.evaluate(_SCROLL_TOP_JS)
+    except Exception:          # noqa: BLE001
+        pass
+    page.wait_for_timeout(200)
+    last = -1
+    for _ in range(400):
+        try:
+            if gfr.evaluate(_FIND_ROW_JS, arg) is True:
+                page.wait_for_timeout(200)
+                return True
+        except Exception:      # noqa: BLE001
+            pass
+        try:
+            info = gfr.evaluate(_SCROLL_INFO_JS)
+        except Exception:      # noqa: BLE001
+            info = None
+        if not info:
+            break
+        if info["top"] + info["h"] >= info["sh"] - 5 and info["top"] == last:
+            break
+        last = info["top"]
+        gfr.evaluate(_SCROLL_NEXT_JS)
+        page.wait_for_timeout(200)
+    return False
+
+
+_DETAIL_READY_JS = """(doc) => {
+  const t=document.body?document.body.innerText:''; if(t.length<200) return null;
+  if(doc && t.indexOf(doc)<0) return null;
+  const els=document.querySelectorAll('a,span,button,input');
+  for(const e of els){ const s=(e.textContent||e.value||'').trim(); if(s==='청구서출력') return true; }
+  return false;
+}"""
+_CLICK_PRINT_JS = """() => { const els=document.querySelectorAll('a,span,button,input');
+  for(const e of els){ const s=(e.textContent||e.value||'').trim(); if(s==='청구서출력'){ e.click(); return; } } }"""
+_CLICK_LIST_JS = """() => { const els=document.querySelectorAll('a,span');
+  for(const e of els){ if((e.textContent||'').trim()==='목록'){ e.click(); return; } } }"""
+
+
+def process_one(page, row: dict, out_root: str, name_date_first: bool, wait_sec: float,
+                log: Callable[[str], None]) -> tuple[str, Path]:
+    """한 건: 행 선택 → 상세조회 → 청구서출력 → PDF 저장 → 목록 복귀. (비목 코드, 저장 경로)."""
+    gfr = grid_frame(page)
+    if not gfr:
+        raise RuntimeError("목록 프레임을 찾지 못함")
+    if not select_row(page, gfr, row):
+        raise RuntimeError("목록에서 해당 행을 찾지 못함(스크롤/선택 실패)")
+    page.wait_for_timeout(500)
+    gfr.evaluate("() => { const b=document.querySelector('#btnDetail'); if(b) b.click(); }")
+
+    # 상세 프레임에 이 건의 문서번호와 '청구서출력' 이 함께 보일 때까지 기다린다.
+    # 문서번호를 안 보면 직전 건의 상세화면을 이 건으로 착각해 이름이 뒤바뀐다.
+    deadline = time.time() + 60
+    dfr = None
+    while time.time() < deadline:
+        dfr = detail_frame(page)
+        if dfr:
+            try:
+                if dfr.evaluate(_DETAIL_READY_JS, row.get("docNo") or "") is True:
+                    break
+            except Exception:  # noqa: BLE001
+                pass
+        page.wait_for_timeout(500)
+    else:
+        raise TimeoutError("상세화면(청구서출력)이 안 뜸")
+
+    page.wait_for_timeout(800)
+    info = read_owners_and_bimok(dfr)
+    code, fname = naming.build_name(row, info, name_date_first)
+    dest = naming.destination(out_root, code, fname)
+    log("      → %s / %s" % (naming.folder_name(code), dest.name))
+
+    with page.context.expect_page(timeout=60000) as pop_info:
+        dfr.evaluate(_CLICK_PRINT_JS)
+    popup = pop_info.value
+    try:
+        ok = save_oz_pdf(popup, dest)
+    finally:
+        try:
+            popup.close()
+        except Exception:      # noqa: BLE001
+            pass
+    if not ok:
+        raise RuntimeError("PDF 저장 실패")
+
+    try:
+        dfr2 = detail_frame(page)
+        if dfr2:
+            dfr2.evaluate(_CLICK_LIST_JS)
+    except Exception:          # noqa: BLE001
+        pass
+    for _ in range(50):
+        if grid_frame(page):
+            break
+        page.wait_for_timeout(400)
+    page.wait_for_timeout(int(wait_sec * 1000))
+    return code, dest

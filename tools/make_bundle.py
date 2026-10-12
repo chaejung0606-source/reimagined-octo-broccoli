@@ -22,11 +22,14 @@ import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-TOP_NAME = "expense-review"          # 압축 안 최상위 폴더 — 반드시 영문
+TOP_NAME = "claim-downloader"          # 압축 안 최상위 폴더 — 반드시 영문
 SKIP_DIRS = {"__pycache__", ".pytest_cache", ".venv", "venv", "node_modules", "build", "dist"}
 SKIP_SUFFIXES = {".pyc", ".pyo"}
-# 서류·개인정보가 실수로 섞이지 않도록 확장자 단위로 한 번 더 막는다.
-NEVER_PACK = {".pdf", ".hwp", ".hwpx", ".jpg", ".jpeg"}
+# 청구서·청구내역에는 계좌번호와 이체자 이름이 들어 있다. 확장자 단위로 한 번 더 막는다.
+NEVER_PACK = {".pdf", ".hwp", ".hwpx", ".jpg", ".jpeg", ".xls", ".xlsx"}
+# 받은 기록·로그. 지금은 ~/.claim-downloader/ 에 있지만, 옛 단일 파일 시절처럼 앱
+# 폴더에 남아 있을 수 있다.
+NEVER_PACK_NAMES = {"_받은기록.json", "_보관목록.json", "_실행로그.txt", "_화면구조.txt", "config.json"}
 
 
 def check_batch_files(root: Path) -> None:
@@ -63,6 +66,8 @@ def collect(root: Path) -> list[Path]:
             continue
         if path.suffix.lower() in SKIP_SUFFIXES:
             continue
+        if path.name in NEVER_PACK_NAMES:
+            continue
         if path.suffix.lower() in NEVER_PACK:
             raise SystemExit(f"중단: 서류로 보이는 파일이 있습니다 — {path}")
         if path.name.endswith(".egg-info") or ".egg-info" in str(path):
@@ -94,7 +99,7 @@ def build(target: Path) -> Path:
 
 
 def main() -> None:
-    target = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO_ROOT.parent / "expense-review.zip"
+    target = Path(sys.argv[1]) if len(sys.argv) > 1 else REPO_ROOT.parent / "claim-downloader.zip"
     build(target)
 
 

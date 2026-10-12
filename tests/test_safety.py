@@ -1,0 +1,50 @@
+"""안전 원칙을 코드로 지킨다.
+
+  - ERP 에서는 받기만 한다. 누르는 것은 목록 선택·상세조회·청구서출력·OZ 저장·목록 복귀뿐.
+    저장·신청·제출 버튼을 누르는 코드가 들어오면 여기서 깨진다.
+  - 로그인 정보를 저장하지 않는다.
+  - 브라우저를 띄우는 곳은 session.py 하나뿐이다.
+
+새 기능(일반청구 작성 등)을 넣느라 이 테스트를 고쳐야 한다면, 고치기 전에
+CLAUDE.md '안전 원칙' 을 다시 읽는다.
+"""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+SRC = Path(__file__).resolve().parents[1] / "src" / "claim_downloader"
+ERP = (SRC / "erp.py").read_text(encoding="utf-8")
+
+# JS 안에서 글자로 찾아 누르거나 비교하는 대상
+ALLOWED_TEXT = {"청구서출력", "목록", "확인", "비목", "예금주", "입금처"}
+ALLOWED_IDS = {"#btnDetail"}
+ALLOWED_PY_CLICKS = {'popup.click("input.btnSAVEAS")'}
+
+
+def test_erp_only_touches_known_targets():
+    texts = set(re.findall(r"===\s*'([^']+)'", ERP))
+    assert texts <= ALLOWED_TEXT, texts - ALLOWED_TEXT
+    ids = set(re.findall(r"'(#[A-Za-z_][\w-]*)'", ERP))
+    assert ids <= ALLOWED_IDS, ids - ALLOWED_IDS
+    py_clicks = set(re.findall(r"\w+\.click\([^)]*\)", ERP)) - {"b.click()", "e.click()", "c.click()", "cb.click()"}
+    assert py_clicks <= ALLOWED_PY_CLICKS, py_clicks - ALLOWED_PY_CLICKS
+
+
+def test_no_typing_into_erp():
+    for name in ("fill(", "type(", "press(", "set_input_files(", "keyboard."):
+        assert name not in ERP, name
+
+
+def test_no_credentials_anywhere():
+    for path in SRC.rglob("*.py"):
+        text = path.read_text(encoding="utf-8").lower()
+        # storage_state · user_data_dir 는 로그인 쿠키를 디스크에 남긴다
+        for word in ("password", "passwd", "storage_state", "user_data_dir"):
+            assert word not in text, f"{path.name}: {word}"
+
+
+def test_browser_is_launched_in_one_place():
+    pattern = re.compile(r"^\s*(from|import)\s+playwright", re.M)
+    users = sorted(p.name for p in SRC.rglob("*.py") if pattern.search(p.read_text(encoding="utf-8")))
+    assert users == ["session.py"], users
