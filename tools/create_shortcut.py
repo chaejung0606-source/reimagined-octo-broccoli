@@ -16,10 +16,10 @@ from pathlib import Path
 # 창 없는 실행(pythonw) 아래서 powershell 이 검은 창을 띄우지 않게
 _HIDDEN = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform.startswith("win") else {}
 
-APP_NAME = "업무 도구함"
+APP_NAME = "COSS 업무데스크"
 # 이 저장소가 이전 이름이던 시절의 바로가기들. 남겨 두면 아이콘이 여럿이 돼
 # 어느 쪽을 눌러야 할지 헷갈린다. 새 바로가기를 만들 때 함께 치운다.
-OLD_APP_NAMES = ("지출 서류 검토", "ERP 청구서 다운로더")
+OLD_APP_NAMES = ("지출 서류 검토", "ERP 청구서 다운로더", "업무 도구함")
 MODULE = "claim_downloader.ui.app"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ASSETS = REPO_ROOT / "src" / "claim_downloader" / "ui" / "assets"

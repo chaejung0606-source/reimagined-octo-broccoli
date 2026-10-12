@@ -1,4 +1,4 @@
-"""업무 도구함 데스크톱 앱 — 홈 + 하단 독 + 탐색기형 작업 탭.
+"""COSS 업무데스크 데스크톱 앱 — 홈 + 하단 독 + 탐색기형 작업 탭.
 
     상단 바     로고 · 이름 | 검색 · 설정(설정·업데이트) · 사용자
     작업 탭     열려 있는 화면만. 홈 탭은 늘 있고 닫히지 않는다. [+] 로 새 업무
@@ -37,7 +37,7 @@ from .shell import Dock, DockArea, TopBar, WorkTabs
 from .tasks import HOME_ICON, HOME_ID, TASKS, UTILITIES, Task, find
 from .theme import stylesheet
 
-APP_NAME = "업무 도구함"
+APP_NAME = "COSS 업무데스크"
 WORKSPACE = "강원대 산학협력단 ERP"
 
 # 창이 이보다 낮으면 독과 여백을 줄인다

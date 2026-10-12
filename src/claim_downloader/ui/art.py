@@ -30,7 +30,7 @@ ART = {
     "register":  "tray-pen",        # 트레이와 펜 — 받아서 폴더에 등록
     "journal":   "book-pen",        # 책과 펜 — 진행 기록
     "settings":  "dial",            # 원형 다이얼 — 설정
-    # 업무 도구함
+    # 업무 데스크
     "meeting":   "book-pen",        # 펼쳐진 책과 펜 — 회의록 생성
     "claim":     "signed-doc",      # 서명 문서 — 일반청구(결재)
     "card":      "card-receipt",    # 카드와 영수증 — 카드청구 (tools/make_card_art.py 로 새로 그림)
