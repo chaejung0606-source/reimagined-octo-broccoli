@@ -1,10 +1,19 @@
-"""청구서 받기 화면 — 요약 → 할 일(단계) → 받을 목록 · 진행 기록.
+"""청구서 받기 화면 — 요약 → 단계 → 받을 목록 · 진행 기록.
 
     ① ERP 열기 → [사람: 로그인 · 결의서내역 목록 띄우기]
     → ② 목록 읽기 → 대상 확인 → ③ 받기
 
 로그인과 '받을까요?' 확인은 언제나 사람이 한다. 이 화면은 그 차례가 왔을 때
 무엇을 해야 하는지 알려 주고 기다린다.
+
+높이 배분: 요약 카드와 단계 띠는 낮게 고정하고, 남는 높이는 전부 받을 목록 표가 쓴다.
+화면 전체를 스크롤하지 않는다 — 표가 스스로 스크롤하고 머리글은 고정된다.
+
+건수의 뜻(모두 같은 목록을 기준으로 센다):
+  목록 대상   = 승인 + 문서번호 + 지출예정일 조건을 만족한 행 전부 (받을 건 + 보관으로 제외한 건)
+  보관 제외   = 그중 문서번호가 받은 기록·보관 폴더에 이미 있는 건
+  이번 완료   = 이번 실행에서 저장에 성공한 건
+  남은 대상   = 목록 대상 − 보관 제외 − 이번 완료 (실패한 건은 남은 대상에 남는다)
 """
 from __future__ import annotations
 
@@ -12,7 +21,6 @@ from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QScrollArea,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -31,15 +39,14 @@ from PySide6.QtWidgets import (
 from ... import archive, settings
 from ...targets import volume_warning
 from ..art import Art
-from ..widgets import Card, EmptyState, KpiCard, PageHeader, Pill, PillDelegate, StepCard
+from ..widgets import Card, EmptyState, KpiCard, Pill, PillDelegate, Step, WrapLabel, muted_label
 from ..worker import SessionWorker
 
 # (머리글, 너비). 너비가 None 이면 남는 폭을 채운다. 창이 좁으면 표 안에서 가로로 스크롤한다.
 COLUMNS = [("상태", 128), ("No", 60), ("지출예정일", 112), ("내용", 320),
-           ("금액", 128), ("결의서구분", 112), ("저장한 파일", None)]
+           ("금액", 120), ("결의서구분", 104), ("저장한 파일", None)]
 COL_STATUS, COL_CONT, COL_AMT, COL_FILE = 0, 3, 4, 6
 
-# 표의 상태: (글자, 배지 색)
 ROW_STATUS = {
     "waiting": ("대기", "neutral"),
     "running": ("받는 중", "info"),
@@ -48,11 +55,18 @@ ROW_STATUS = {
     "failed": ("실패", "danger"),
 }
 
-GUIDE_START = ("① 을 누르면 ERP 창이 열립니다. 그 창에서 로그인하고 "
-               "[과제관리 → 과제정보 → 청구서] 의 '결의서내역' 목록을 띄우세요.")
-GUIDE_BROWSER = ("열린 브라우저 창에서 로그인 → [과제관리 → 과제정보 → 청구서] → '결의서내역' 목록을 "
-                 "띄운 뒤 ② 를 누르세요. 평소 쓰는 Edge/크롬이 아니라 앱이 연 창이어야 합니다.")
-GUIDE_LISTED = "받을 건을 확인하고 ③ 을 누르세요. 처음이라면 '앞 1건만 시험' 으로 흐름부터 확인하세요."
+GUIDE_START = "① 브라우저 열기를 누르면 ERP 창이 열립니다. 그 창에서 로그인하고 결의서내역 목록을 띄우세요."
+GUIDE_BROWSER = "열린 브라우저에서 로그인 → [과제관리 → 과제정보 → 청구서] → '결의서내역' 목록을 띄운 뒤 ② 목록 읽기를 누르세요."
+GUIDE_LISTED = "받을 건을 확인하고 ③ 받기를 누르세요. 처음이라면 '앞 1건만 시험'으로 흐름부터 확인하세요."
+GUIDE_DETAIL = (
+    "• ① ERP 열기 — 앱이 새 브라우저 창을 엽니다. 평소 쓰는 Edge/크롬이 아니라 이 창에서 로그인해야 합니다. "
+    "아이디·비밀번호는 어디에도 저장하지 않습니다.\n"
+    "• ② 목록 읽기 — 결의서내역 목록을 끝까지 읽어 승인 + 문서번호 + 지출예정일 조건의 건만 고르고, "
+    "문서번호가 보관 폴더에 이미 있는 건은 제외합니다.\n"
+    "• ③ 받기 — 건마다 상세조회 → 청구서출력 → PDF 저장. 비목을 판정해 '0N_(지출예정일) 적요_이체자_(금액).pdf' "
+    "이름으로 비목 폴더 바로 아래에 둡니다. 플랫폼에 올린 파일은 직접 '업로드' 폴더로 옮기세요.\n"
+    "• 상세화면이 멈추면 ERP 를 새로 열고 다시 로그인한 뒤 같은 건부터 이어받습니다(건당 최대 2번)."
+)
 
 
 def _money(amt: str) -> str:
@@ -73,8 +87,8 @@ def _tabular(font: QFont) -> QFont:
 
 class DownloadPage(QWidget):
     need_settings = Signal()
-    busy_changed = Signal(bool)      # 받는 중인지 — 작업 탭의 점과 '이어서 작업하기'가 본다
-    counts_changed = Signal()        # 보관·대기 숫자가 바뀜 — 홈의 최근 작업이 본다
+    busy_changed = Signal(bool)      # 받는 중인지 — 작업 탭의 점이 본다
+    counts_changed = Signal()        # 보관·대기 숫자나 받기 상태가 바뀜 — 홈이 본다
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -89,55 +103,54 @@ class DownloadPage(QWidget):
         self._selection = None
         self._listed = False
         self._run_ok = 0
+        self._run_failed = 0
+        self._attempted = False               # 한 번이라도 받기를 시작했는지 (이어서 작업하기 판단)
 
-        # 창이 낮으면(최소 720) 표가 한두 줄만 남는다. 그럴 때는 화면 전체를 스크롤하고
-        # 표 자리는 일정 높이를 지킨다.
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        body = QWidget()
-        body.setObjectName("pageBody")
-        scroll.setWidget(body)
-        outer.addWidget(scroll)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 18, 24, 16)
+        layout.setSpacing(12)
 
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(28, 24, 28, 20)
-        layout.setSpacing(16)
-
-        header = PageHeader(
-            "업무  ›  청구서 받기", "청구서 받기",
-            "승인된 청구서를 ERP 에서 받아 비목 폴더에 둡니다. ERP 에 입력·제출하지 않습니다.")
-        header.add_action(Art("receive", 48))
+        # 머리 — 한 줄
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        head.addWidget(Art("receive", 44), 0, Qt.AlignVCenter)
+        texts = QVBoxLayout()
+        texts.setSpacing(1)
+        title = QLabel("청구서 받기")
+        title.setObjectName("pageTitle")
+        texts.addWidget(title)
+        self.page_desc = muted_label("승인된 청구서를 ERP 에서 받아 비목 폴더에 둡니다. ERP 에 입력·제출하지 않습니다.")
+        texts.addWidget(self.page_desc)
+        head.addLayout(texts, 1)
         self.folder_button = QPushButton()
         self.folder_button.setObjectName("ghost")
         self.folder_button.setToolTip("저장 폴더를 바꾸려면 누르세요")
         self.folder_button.clicked.connect(self.need_settings.emit)
-        header.add_action(self.folder_button)
-        layout.addWidget(header)
+        head.addWidget(self.folder_button, 0, Qt.AlignVCenter)
+        layout.addLayout(head)
 
-        # 1) 요약
+        # 1) 요약 — 낮게
         kpis = QHBoxLayout()
-        kpis.setSpacing(16)
-        self.kpi_done = KpiCard("보관된 청구서", "archive", "받은 기록 · 문서번호 기준")
+        kpis.setSpacing(12)
+        self.kpi_total = KpiCard("목록 대상", "overview", "목록을 읽으면 표시")
+        self.kpi_remaining = KpiCard("남은 대상", "receive", "대상 − 보관 제외 − 완료")
+        self.kpi_ok = KpiCard("이번 완료", "approved", "이번 실행에서 저장한 건")
         self.kpi_waiting = KpiCard("업로드 대기", "upload", "비목 폴더 바로 아래의 PDF")
-        self.kpi_targets = KpiCard("이번 목록의 대상", "receive", "목록을 읽으면 표시")
-        self.kpi_ok = KpiCard("이번에 받은 건", "approved", "남은 건은 대상 − 받은 건")
-        self.kpi_ok.set_value("0")
-        for card in (self.kpi_done, self.kpi_waiting, self.kpi_targets, self.kpi_ok):
+        for card in (self.kpi_total, self.kpi_remaining, self.kpi_ok, self.kpi_waiting):
             kpis.addWidget(card, 1)
         layout.addLayout(kpis)
 
-        # 2) 할 일
+        # 2) 단계 — 가로 띠
         layout.addLayout(self._build_steps())
+        self.detail = WrapLabel(GUIDE_DETAIL)
+        self.detail.setObjectName("muted")
+        self.detail.hide()
+        layout.addWidget(self.detail)
         layout.addLayout(self._build_status_row())
         layout.addWidget(self._build_banner())
 
-        # 3) 받을 목록 · 진행 기록
-        work = self._build_work_card()
-        work.setMinimumHeight(380)
-        layout.addWidget(work, 1)
+        # 3) 받을 목록 · 진행 기록 — 남는 높이 전부
+        layout.addWidget(self._build_work_card(), 1)
 
         w = self.worker
         w.log.connect(self._append_log)
@@ -158,34 +171,27 @@ class DownloadPage(QWidget):
     # ── 구성 ────────────────────────────────────────────────────────────
     def _build_steps(self) -> QHBoxLayout:
         row = QHBoxLayout()
-        row.setSpacing(16)
-
-        step1 = StepCard("1", "ERP 열기", "앱이 연 창에서 직접 로그인합니다. 아이디·비밀번호는 저장하지 않습니다.",
-                         "login")
+        row.setSpacing(12)
+        self.step1 = Step("1", "ERP 열기", "앱이 연 창에서 직접 로그인합니다.", "login")
         self.open_button = QPushButton("브라우저 열기")
         self.open_button.clicked.connect(self._open)
-        step1.add_action(self.open_button)
-        step1.finish_actions()
+        self.step1.add_action(self.open_button)
 
-        step2 = StepCard("2", "목록 읽기", "결의서내역 목록을 띄운 뒤 누르면 받을 건만 골라 냅니다.", "overview")
+        self.step2 = Step("2", "목록 읽기", "결의서내역 목록에서 받을 건만 골라 냅니다.", "overview")
         self.list_button = QPushButton("목록 읽기")
         self.list_button.clicked.connect(self._read_list)
-        step2.add_action(self.list_button)
-        step2.finish_actions()
+        self.step2.add_action(self.list_button)
 
-        step3 = StepCard("3", "받기", "이름을 붙여 비목 폴더 바로 아래에 저장합니다. 이미 받은 건은 건너뜁니다.",
-                         "register")
-        self.all_button = QPushButton("모두 받기")
+        self.step3 = Step("3", "받기", "이름을 붙여 비목 폴더 바로 아래에 저장합니다.", "register")
+        self.all_button = QPushButton("받기")
         self.all_button.setObjectName("primary")
         self.all_button.clicked.connect(lambda: self._download(limit=0))
         self.test_button = QPushButton("앞 1건만 시험")
         self.test_button.clicked.connect(lambda: self._download(limit=1))
-        step3.add_action(self.all_button)
-        step3.add_action(self.test_button)
-        step3.finish_actions()
-
-        for card in (step1, step2, step3):
-            row.addWidget(card, 1)
+        self.step3.add_action(self.all_button)
+        self.step3.add_action(self.test_button)
+        for step in (self.step1, self.step2, self.step3):
+            row.addWidget(step, 1)
         return row
 
     def _build_status_row(self) -> QHBoxLayout:
@@ -197,20 +203,27 @@ class DownloadPage(QWidget):
         self.guide.setObjectName("body")
         self.guide.setWordWrap(True)
         row.addWidget(self.guide, 1)
+        self.detail_button = QPushButton("자세한 안내")
+        self.detail_button.setObjectName("disclosure")
+        self.detail_button.setCheckable(True)
+        self.detail_button.toggled.connect(self._toggle_detail)
+        row.addWidget(self.detail_button)
         self.stop_button = QPushButton("멈추기")
         self.stop_button.setObjectName("danger")
         self.stop_button.setToolTip("지금 받는 건을 마치고 멈춥니다")
         self.stop_button.clicked.connect(self._stop)
         row.addWidget(self.stop_button)
-        # [멈추기] 가 나타났다 사라질 때 아래 표가 들썩이지 않게 높이를 미리 잡아 둔다
-        self.stop_button.setMinimumHeight(36)
         spacer = QWidget()
         spacer.setFixedSize(0, 36)
         row.addWidget(spacer)
         return row
 
+    def _toggle_detail(self, on: bool) -> None:
+        self.detail.setVisible(on)
+        self.detail_button.setText("안내 접기" if on else "자세한 안내")
+
     def _build_banner(self) -> QFrame:
-        """사람 차례 알림 — 다시 로그인해야 할 때만 보인다."""
+        """사람 차례 알림 — 다시 로그인해야 할 때만 보인다. 안내는 여기 한 곳에만 쓴다."""
         self.banner = QFrame()
         self.banner.setObjectName("banner")
         banner_layout = QHBoxLayout(self.banner)
@@ -231,12 +244,11 @@ class DownloadPage(QWidget):
         return self.banner
 
     def _build_work_card(self) -> QWidget:
-        card = Card(margins=(20, 12, 20, 16))
+        card = Card(margins=(16, 8, 16, 12))
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.tabBar().setDrawBase(False)
 
-        # 받을 목록 — 아직 없으면 빈 상태 안내, 있으면 표
         self.list_stack = QStackedWidget()
         self.empty = EmptyState("receive", "", "")
         self.empty_settings_button = QPushButton("설정으로 이동")
@@ -249,8 +261,7 @@ class DownloadPage(QWidget):
 
         log_page = QWidget()
         log_layout = QVBoxLayout(log_page)
-        log_layout.setContentsMargins(0, 12, 0, 0)
-        log_layout.setSpacing(8)
+        log_layout.setContentsMargins(0, 10, 0, 0)
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("logView")
         self.log_view.setReadOnly(True)
@@ -269,11 +280,11 @@ class DownloadPage(QWidget):
     def _build_table(self) -> QWidget:
         holder = QWidget()
         layout = QVBoxLayout(holder)
-        layout.setContentsMargins(0, 12, 0, 0)
+        layout.setContentsMargins(0, 10, 0, 0)
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels([name for name, _ in COLUMNS])
         self.table.verticalHeader().hide()
-        self.table.verticalHeader().setDefaultSectionSize(42)
+        self.table.verticalHeader().setDefaultSectionSize(40)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -297,14 +308,10 @@ class DownloadPage(QWidget):
 
     # ── 상태 ────────────────────────────────────────────────────────────
     def refresh_counts(self) -> None:
-        self.counts_changed.emit()
         cfg = settings.load()
         folders = archive.folder_status(cfg.out_root)
         self.kpi_waiting.set_value(str(sum(f.waiting for f in folders)) if folders else "—")
-        done = archive.load_done(settings.done_path())
-        self.kpi_done.set_value(str(len(done)))
         if cfg.out_root:
-            # 전체 경로는 길어 제목 줄을 밀어낸다. 마지막 폴더 이름만 보이고 전체는 말풍선으로.
             name = cfg.out_root.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
             self.folder_button.setText(f"저장 폴더 · {name}")
             self.folder_button.setToolTip(f"{cfg.out_root}\n누르면 설정에서 바꿀 수 있습니다")
@@ -312,14 +319,27 @@ class DownloadPage(QWidget):
             self.folder_button.setText("저장 폴더 지정하기")
             self.folder_button.setToolTip("")
         self._sync_empty()
+        self.counts_changed.emit()
+
+    def _sync_counts(self) -> None:
+        """요약 카드 넷을 같은 목록 기준으로 다시 센다."""
+        skipped = self._selection.skipped if self._selection else 0
+        total = len(self._targets) + skipped
+        remaining = len(self._remaining())
+        if self._listed:
+            self.kpi_total.set_value(str(total), f"보관으로 제외 {skipped}건")
+            self.kpi_remaining.set_value(str(remaining), f"실패 {self._run_failed}건 포함" if self._run_failed else "대상 − 보관 제외 − 완료")
+        else:
+            self.kpi_total.set_value("—", "목록을 읽으면 표시")
+            self.kpi_remaining.set_value("—", "대상 − 보관 제외 − 완료")
+        self.kpi_ok.set_value(str(self._run_ok), f"실패 {self._run_failed}건" if self._run_failed else "이번 실행에서 저장한 건")
 
     def _sync_empty(self) -> None:
         """받을 목록 자리에 무엇을 보일지 — 처음 안내 · 받을 것 없음 · 표."""
         if not settings.load().out_root:
             self.empty.set_content(
                 "archive", "저장 폴더를 먼저 지정하세요",
-                "받은 청구서를 넣을 폴더입니다. 비목 폴더(01. 인건비 · 02. 장학금 …)가 "
-                "바로 아래 있는 폴더를 고르면 됩니다.")
+                "받은 청구서를 넣을 폴더입니다. 비목 폴더(01. 인건비 · 02. 장학금 …)가 바로 아래 있는 폴더를 고르면 됩니다.")
             self.empty_settings_button.show()
             self.list_stack.setCurrentIndex(0)
             return
@@ -330,8 +350,7 @@ class DownloadPage(QWidget):
             skipped = self._selection.skipped if self._selection else 0
             self.empty.set_content(
                 "approved", "새로 받을 청구서가 없습니다",
-                f"승인된 건은 모두 보관되어 있습니다(건너뛴 건 {skipped}건). "
-                "목록이 바뀌면 ② 목록 읽기를 다시 누르세요.")
+                f"승인된 건은 모두 보관되어 있습니다(보관으로 제외 {skipped}건). 목록이 바뀌면 ② 목록 읽기를 다시 누르세요.")
             self.list_stack.setCurrentIndex(0)
         else:
             self.empty.set_content(
@@ -354,21 +373,47 @@ class DownloadPage(QWidget):
         remaining = len(self._remaining())
         can_run = not busy and self._browser_open and remaining > 0
         self.all_button.setEnabled(can_run)
-        self.all_button.setText(f"{remaining}건 모두 받기" if remaining else "모두 받기")
+        self.all_button.setText(f"남은 {remaining}건 받기" if remaining else "받기")
         self.test_button.setEnabled(can_run)
         running = busy and bool(self._running_rows)
         self.stop_button.setVisible(running)
         self.stop_button.setEnabled(running)
-        count = f"받을 목록 ({len(self._targets)})" if self._listed else "받을 목록"
-        self.tabs.setTabText(0, count)
+        self.tabs.setTabText(0, f"받을 목록 ({len(self._targets)})" if self._listed else "받을 목록")
+        # 현재 단계만 강조
+        if not self._browser_open:
+            states = ("current", "todo", "todo")
+        elif not self._listed:
+            states = ("done", "current", "todo")
+        elif remaining:
+            states = ("done", "done", "current")
+        else:
+            states = ("done", "done", "done")
+        for step, state in zip((self.step1, self.step2, self.step3), states):
+            step.set_state(state)
+        self._sync_counts()
+
+    # ── 다른 화면이 묻는 것 ────────────────────────────────────────────
+    def is_running(self) -> bool:
+        return self._busy and bool(self._running_rows)
+
+    def resumable(self) -> tuple[bool, str]:
+        """홈 '이어서 작업하기' — 받다가 멈췄거나 실패해 남은 건이 있을 때만 참.
+
+        목록만 읽어 둔 상태는 '이어서 할 일' 이 아니라 '아직 시작 안 함' 이다.
+        """
+        remaining = len(self._remaining())
+        if self.is_running():
+            return True, f"받는 중 · 남은 {remaining}건"
+        if self._attempted and remaining > 0 and self._browser_open:
+            return True, f"받다가 멈춤 · 남은 {remaining}건"
+        return False, ""
 
     # ── 동작 ────────────────────────────────────────────────────────────
     def _open(self) -> None:
         if not settings.load().out_root:
             QMessageBox.information(
                 self, "저장 폴더",
-                "받은 청구서를 넣을 폴더를 먼저 지정해 주세요.\n"
-                "비목 폴더(01. 인건비 …)가 바로 아래 있는 폴더입니다.")
+                "받은 청구서를 넣을 폴더를 먼저 지정해 주세요.\n비목 폴더(01. 인건비 …)가 바로 아래 있는 폴더입니다.")
             self.need_settings.emit()
             return
         self.worker.open_browser()
@@ -409,8 +454,7 @@ class DownloadPage(QWidget):
             if answer != QMessageBox.Yes:
                 return
         self._running_rows = rows
-        self._run_ok = 0
-        self.kpi_ok.set_value("0", "")
+        self._attempted = True
         for row in rows:
             self._set_status(row, "waiting")
         self._set_state("받는 중", "info", f"{len(rows)}건을 받고 있습니다. 브라우저 창은 닫지 마세요.")
@@ -428,13 +472,6 @@ class DownloadPage(QWidget):
     # ── 작업 스레드 신호 ─────────────────────────────────────────────────
     def _append_log(self, text: str) -> None:
         self.log_view.appendPlainText(text)
-
-    def is_running(self) -> bool:
-        return self._busy and bool(self._running_rows)
-
-    def status_text(self) -> str:
-        """홈의 '이어서 작업하기' 에 보일 한 줄."""
-        return f"{self.state_pill.text()} · {self.guide.text()}"[:80]
 
     def _on_busy(self, busy: bool, message: str) -> None:
         self._busy = busy
@@ -462,10 +499,13 @@ class DownloadPage(QWidget):
             self._browser_open = False
             self._set_state("브라우저 닫힘", "neutral", "브라우저 창이 닫혔습니다. " + GUIDE_START)
         self._sync_buttons()
+        self.counts_changed.emit()
 
     def _on_listed(self, selection) -> None:
         self._selection = selection
         self._listed = True
+        self._attempted = False
+        self._run_ok = self._run_failed = 0
         self._targets = list(selection.targets)
         self._status = ["waiting"] * len(self._targets)
         self.table.setRowCount(len(self._targets))
@@ -482,8 +522,6 @@ class DownloadPage(QWidget):
                     item.setToolTip(str(value))   # 말줄임된 내용 전체 보기
                 self.table.setItem(row, col, item)
             self._set_status(row, "waiting")
-        self.kpi_targets.set_value(str(len(self._targets)), f"보관되어 건너뛴 건 {selection.skipped}건")
-        self.kpi_ok.set_value("0", f"남은 건 {len(self._targets)}건")
         if self._targets:
             self._set_state("확인 대기", "info", GUIDE_LISTED)
         else:
@@ -491,14 +529,14 @@ class DownloadPage(QWidget):
         self.tabs.setCurrentIndex(0)
         self._sync_empty()
         self._sync_buttons()
+        self.counts_changed.emit()
 
     def _on_list_failed(self, message: str) -> None:
         self._set_state("목록 못 찾음", "danger", GUIDE_BROWSER)
         QMessageBox.warning(
             self, "목록을 찾지 못했습니다",
             f"{message}\n\n앱이 연 브라우저 창에서 로그인하고 [과제관리 → 과제정보 → 청구서] 의 "
-            "'결의서내역' 목록을 띄웠는지 확인한 뒤 ② 를 다시 누르세요.\n"
-            "열린 창 구조는 [진행 기록] 탭에 남겼습니다.")
+            "'결의서내역' 목록을 띄웠는지 확인한 뒤 ② 를 다시 누르세요.\n열린 창 구조는 [진행 기록] 탭에 남겼습니다.")
         self._sync_buttons()
 
     def _set_status(self, row: int, status: str, detail: str = "") -> None:
@@ -522,14 +560,17 @@ class DownloadPage(QWidget):
         self.table.scrollToItem(self.table.item(row, COL_STATUS))
         if status == "done":
             self._run_ok += 1
-            self.kpi_ok.set_value(str(self._run_ok), f"남은 건 {len(self._remaining())}건")
             self.refresh_counts()
+        elif status == "failed":
+            self._run_failed += 1
+        self._sync_counts()
 
     def _on_finished(self, summary) -> None:
         self.banner.hide()
         self._running_rows = []
         failed = len(summary.failed)
-        text = f"성공 {summary.ok}건 · 실패 {failed}건"
+        remaining = len(self._remaining())
+        text = f"성공 {summary.ok}건 · 실패 {failed}건 · 남은 대상 {remaining}건"
         if summary.stopped:
             text += " — 중간에 멈췄습니다"
         if summary.missing:
@@ -541,15 +582,13 @@ class DownloadPage(QWidget):
             self._set_state("멈춤", "warning", text)
         else:
             self._set_state("완료", "success", text)
-        remaining = len(self._remaining())
-        self.kpi_ok.set_value(str(summary.ok), f"남은 건 {remaining}건" + (f" · 실패 {failed}건" if failed else ""))
         self.refresh_counts()
         self._sync_buttons()
 
     def _on_relogin(self, message: str) -> None:
         self.banner_text.setText(message)
         self.banner.show()
-        self._set_state("다시 로그인", "warning", "아래 안내를 따른 뒤 [계속] 을 누르세요.")
+        self._set_state("다시 로그인", "warning", "아래 띠의 안내를 따른 뒤 [계속] 을 누르세요.")
         self.window().raise_()
         self.window().activateWindow()
 
@@ -559,9 +598,19 @@ class DownloadPage(QWidget):
             message = ("브라우저를 띄우지 못했습니다. [앱 실행.bat] 을 다시 실행해 준비를 마치거나, "
                        "Microsoft Edge 가 설치되어 있는지 확인하세요.\n\n" + message)
         self._set_state("오류", "danger")
-        QMessageBox.warning(self, "문제가 생겼습니다",
-                            f"{message}\n\n자세한 내용은 [진행 기록] 탭과 로그 파일에 있습니다.")
+        QMessageBox.warning(self, "문제가 생겼습니다", f"{message}\n\n자세한 내용은 [진행 기록] 탭과 로그 파일에 있습니다.")
         self._sync_buttons()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        """창이 낮거나 좁으면 위쪽을 접어 표에 자리를 준다. 글씨는 줄이지 않는다."""
+        super().resizeEvent(event)
+        low = self.height() < 600
+        narrow = self.width() < 1300
+        for step in (self.step1, self.step2, self.step3):
+            step.set_compact(low or narrow)
+        for card in (self.kpi_total, self.kpi_remaining, self.kpi_ok, self.kpi_waiting):
+            card.set_compact(low)
+        self.page_desc.setVisible(not low)
 
     def shutdown(self) -> None:
         self.worker.shutdown()

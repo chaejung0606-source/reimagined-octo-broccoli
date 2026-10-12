@@ -48,6 +48,7 @@ class UpdateWorker(QObject):
 
 class UpdatesPage(QWidget):
     version_changed = Signal(str)
+    status_checked = Signal(object)   # updater.UpdateStatus — 홈의 업데이트 띠가 본다
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -160,6 +161,7 @@ class UpdatesPage(QWidget):
     def _on_checked(self, status) -> None:
         self._stop()
         self._status = status
+        self.status_checked.emit(status)
         self.status_label.setText(status.describe())
         if status.error:
             self.status_pill.set_status("확인 실패", "danger")

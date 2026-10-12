@@ -1,4 +1,4 @@
-"""업무 목록 — 홈 카드 · 하단 독 · 작업 탭이 모두 이 표 하나를 읽는다.
+"""업무 목록 — 홈 카드 · 하단 독 · 작업 탭 · [+] 메뉴가 모두 이 표 하나를 읽는다.
 
 새 업무를 더할 때는 여기에 한 줄 넣고 화면 클래스를 연결하면 된다. 탐색 구조를
 따로 손대지 않는다.
@@ -16,33 +16,35 @@ class Task:
     id: str
     name: str
     description: str        # 홈 카드 한두 줄
-    art: str                # ui/art.py 의 업무 의미 이름
-    accent: str             # 아이콘 주변 장식 색 (tokens.COLORS 의 키)
+    art: str                # ui/art.py 의 업무 의미 이름 (큰 입체 그림)
+    icon: str               # ui/icons.py 의 선 아이콘 (탭처럼 작은 곳)
+    accent: str             # 아이콘 둘레 장식 색 (tokens.COLORS 의 키)
     page: str               # 'module:Class' — ui/pages/ 아래
-    ready: bool             # False 면 준비 중 — 실행 버튼을 두지 않는다
+    ready: bool             # False 면 준비 중 — 기능 미리보기만. 실행 버튼을 두지 않는다
     dock: bool = True       # 하단 독에 두는지 (설정·업데이트는 상단 메뉴에서)
 
 
 TASKS: tuple[Task, ...] = (
     Task("download", "청구서 받기", "ERP 청구서를 확인하고 파일로 보관합니다.",
-         "receive", "mint", "download:DownloadPage", ready=True),
+         "receive", "download", "mint", "download:DownloadPage", ready=True),
     Task("meeting", "회의록 생성", "회의 내용을 정리해 회의록을 작성합니다.",
-         "meeting", "lavender", "pending:MeetingPage", ready=False),
+         "meeting", "book", "lavender", "pending:MeetingPage", ready=False),
     Task("claim", "일반청구", "일반 지출 청구를 작성하고 관리합니다.",
-         "claim", "peach", "pending:ClaimPage", ready=False),
+         "claim", "document-check", "peach", "pending:ClaimPage", ready=False),
     Task("card", "카드청구", "카드 사용 내역과 증빙을 정리합니다.",
-         "card", "sky", "pending:CardPage", ready=False),
+         "card", "card", "sky", "pending:CardPage", ready=False),
 )
 
-# 상단 메뉴에서 여는 화면. 독·홈 카드에는 두지 않는다.
+# 상단 메뉴에서 여는 화면. 독·홈 카드·[+] 메뉴에는 두지 않는다.
 UTILITIES: tuple[Task, ...] = (
-    Task("settings", "설정", "저장 폴더 · 파일 이름 형식", "settings", "lavender",
+    Task("settings", "설정", "저장 폴더 · 파일 이름 형식", "settings", "sliders", "lavender",
          "settings:SettingsPage", ready=True, dock=False),
-    Task("updates", "업데이트", "기능 갱신 확인·적용", "upload", "sky",
+    Task("updates", "업데이트", "기능 갱신 확인·적용", "upload", "gear", "sky",
          "updates:UpdatesPage", ready=True, dock=False),
 )
 
 HOME_ID = "home"
+HOME_ICON = "home"
 
 
 def find(task_id: str) -> Task:

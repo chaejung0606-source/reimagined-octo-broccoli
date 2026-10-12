@@ -1,49 +1,49 @@
 """디자인 토큰.
 
-따뜻한 화이트 바탕 위에 흰 카드, 라벤더 강조색 하나, 장식용 파스텔 넷.
+맑은 화이트 바탕 위에 흰 표면, 라벤더 강조색 하나, 장식용 파스텔 넷.
 색·모서리·그림자·글자 크기는 전부 여기 한 곳에 있다. 화면 코드에는 값을 직접
 적지 않는다.
 
 Qt 를 들여오지 않는다. 그래야 PySide6 가 없는 CI 에서도 대비 검사
-(tests/test_tokens.py)를 돌릴 수 있다.
+(tests/test_design.py)를 돌릴 수 있다.
 """
 from __future__ import annotations
 
 COLORS: dict[str, str] = {
     # 면
-    "bg":            "#F4F5F3",   # 앱 바탕 — 따뜻한 화이트
-    "surface":       "#FFFFFF",   # 카드 · 입력창
-    "surface_alt":   "#F8F9F7",   # 표 머리 · 읽기 전용 · 비활성
-    "hover":         "#F3F4F1",   # 메뉴·행에 마우스가 올라갔을 때
+    "bg":            "#FAFBFF",   # 앱 바탕 — 맑은 화이트
+    "surface":       "#FFFFFF",   # 작업 표면 · 카드 · 입력창
+    "surface_alt":   "#F5F7FF",   # 표 머리 · 읽기 전용 · 비활성
+    "tabbar":        "#F1F4FB",   # 작업 탭 줄 바탕
+    "hover":         "#F3F5FC",   # 메뉴·행에 마우스가 올라갔을 때
 
     # 글자
-    "text":          "#242831",
-    "text_muted":    "#59616E",
-    # 원래 #6C7480 이었으나 앱 바탕(#F4F5F3) 위에서 4.32:1 로 AA(4.5) 미달이라 한 단계 낮췄다.
-    "text_faint":    "#656D79",
+    "text":          "#202638",
+    "text_muted":    "#4D5870",
+    # 제안값 #66718A 는 탭 줄(#F1F4FB)·선택 바탕 위에서 4.5:1 에 못 미쳐 한 단계 진하게
+    "text_faint":    "#5E6981",
     "on_primary":    "#FFFFFF",
 
     # 선
-    "border":        "#DCE1E6",
-    "border_strong": "#C5CCD4",   # 입력창 호버
-    "divider":       "#E9ECEF",
+    "border":        "#DFE5F1",
+    "border_strong": "#C9D2E3",   # 입력창 호버
+    "divider":       "#EDF1F8",
 
-    # 강조 — 버튼·선택·포커스에만
-    "primary":       "#6D5BD0",
-    "primary_hover": "#5B49BA",
-    "selection":     "#F0ECFC",
+    # 강조 — 버튼·선택·포커스에만. 옅은 바탕 위 글자로는 primary_hover 를 쓴다(대비)
+    "primary":       "#7058E8",
+    "primary_hover": "#6048D3",
+    "selection":     "#F0EBFF",
 
-    # 장식용 파스텔 — 배경·그래픽에만. 글자색으로 쓰지 않는다
+    # 장식용 파스텔 — 테두리·배지·그래픽에만. 글자색으로 쓰지 않는다
     "lavender":      "#C9B8EF",
     "mint":          "#BCE5CF",
     "cyan":          "#A9DFEC",
     "peach":         "#F4C7AD",
-    "sky":           "#C4D4F8",   # 옅은 블루 — 카드청구
-    # 아이콘 둘레의 아주 옅은 바탕(업무 카드 · 독). 위 파스텔을 흰색 쪽으로 더 푼 값
-    "lavender_bg":   "#F1ECFB",
-    "mint_bg":       "#EAF7F0",
-    "cyan_bg":       "#E9F5F9",
-    "peach_bg":      "#FCF0E9",
+    "sky":           "#C4D4F8",
+    "lavender_bg":   "#F0EBFF",
+    "mint_bg":       "#EAFBF5",
+    "cyan_bg":       "#EBF8FF",
+    "peach_bg":      "#FFF2EB",
     "sky_bg":        "#EEF2FC",
 
     # 상태 — 글자색(진하게)과 배지 바탕(옅게)을 짝으로. 색만으로 알리지 않고 글자를 함께 쓴다
@@ -51,28 +51,33 @@ COLORS: dict[str, str] = {
     "warning":       "#9A5B00", "warning_bg": "#FDF1E2",
     "danger":        "#B42339", "danger_bg":  "#FCEBEE",
     "info":          "#1E6FB8", "info_bg":    "#E7F1FA",
-    "neutral":       "#59616E", "neutral_bg": "#F1F2F0",
+    "neutral":       "#4D5870", "neutral_bg": "#EEF1F7",
 }
 
-RADIUS = {"control": 8, "card": 18, "hero": 20, "dock": 24}
+RADIUS = {"control": 8, "card": 16, "hero": 18, "tab": 10, "dock": 22}
 
-# 카드 그림자: 0 2px 5px rgba(35,42,52,.025), 0 10px 28px rgba(35,42,52,.045)
-# Qt 의 QGraphicsDropShadowEffect 는 한 겹만 그릴 수 있어 두 겹을 한 겹으로 합쳐 근사한다.
-SHADOW_RGB = (35, 42, 52)
+# 그림자: 0 3px 12px rgba(49,65,110,.035). 카드는 테두리가 기본이고 그림자는 홈 대표 카드·독에만.
+SHADOW_RGB = (49, 65, 110)
 SHADOW = {
-    "card":  {"blur": 28, "dy": 8, "alpha": 0.06},
+    "card":  {"blur": 12, "dy": 3, "alpha": 0.035},
+    "hero":  {"blur": 18, "dy": 4, "alpha": 0.06},
     "modal": {"blur": 32, "dy": 8, "alpha": 0.12},
 }
 
-FONT_FAMILY = '"Pretendard", "Pretendard Variable", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif'
+# 폰트는 앱에 묶어 둔다(assets/fonts, app.py 가 시작할 때 등록). 설치 안 된 PC 에서도 같은 글씨.
+FONT_FAMILY = '"Pretendard", "Noto Sans KR", "Malgun Gothic", sans-serif'
 FONT_SIZE = {
-    "title": 26,      # 페이지 제목
-    "section": 16,    # 카드 제목
-    "body": 14,
-    "small": 13,      # 보조 문구
-    "caption": 12,    # 표 머리 · 배지
-    "kpi": 28,
+    "title": 25,      # 페이지 제목 700
+    "section": 16,    # 영역 제목 600
+    "card": 15,       # 카드 제목 600
+    "body": 14,       # 본문·입력창·버튼 400~500
+    "table": 13,
+    "nav": 13,        # 탭·독 500
+    "small": 13,      # 보조 설명
+    "caption": 12,
+    "kpi": 27,        # 요약 숫자 600
 }
+LINE_HEIGHT = 1.55
 
 
 def _luminance(hex_color: str) -> float:

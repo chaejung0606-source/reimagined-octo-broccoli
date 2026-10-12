@@ -14,7 +14,7 @@ from claim_downloader.ui.tokens import COLORS, contrast
 
 UI = Path(__file__).resolve().parents[1] / "src" / "claim_downloader" / "ui"
 
-SURFACES = ["bg", "surface", "surface_alt", "selection", "hover"]
+SURFACES = ["bg", "surface", "surface_alt", "selection", "hover", "tabbar"]
 TEXTS = ["text", "text_muted", "text_faint"]
 
 
@@ -49,10 +49,16 @@ def test_every_art_meaning_has_an_asset():
         assert (UI / "assets" / "art" / f"{name}.png").exists(), meaning
 
 
+def test_fonts_are_bundled():
+    """글꼴 선언만 있고 파일이 없으면 동료 PC 에서 대체 글꼴이 나온다."""
+    fonts = sorted(p.name for p in (UI / "assets" / "fonts").glob("Pretendard-*.otf"))
+    assert fonts == ["Pretendard-Bold.otf", "Pretendard-Medium.otf", "Pretendard-Regular.otf", "Pretendard-SemiBold.otf"]
+
+
 def test_pages_use_art_by_meaning_only():
     """화면 코드는 파일 이름이 아니라 업무 의미로 그림을 부른다."""
     meanings = set(_art_map())
-    files = list((UI / "pages").glob("*.py")) + [UI / "app.py", UI / "widgets.py"]
+    files = list((UI / "pages").glob("*.py")) + [UI / "app.py", UI / "widgets.py", UI / "shell.py"]
     for path in files:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -62,4 +68,5 @@ def test_pages_use_art_by_meaning_only():
                             "envelope", "signed-doc", "folder-papers", "send-tray", "monitor-lock",
                             "panels", "tray-pen", "book-pen", "dial"}:
                         raise AssertionError(f"{path.name}: 파일 이름 '{arg.value}' 대신 의미 이름을 쓰세요")
-    assert {"receive", "approved", "archive", "upload", "login", "overview", "register", "journal"} <= meanings
+    assert {"receive", "approved", "archive", "upload", "login", "overview", "register", "journal",
+            "meeting", "claim", "card", "recent", "done"} <= meanings

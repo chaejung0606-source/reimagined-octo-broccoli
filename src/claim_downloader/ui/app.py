@@ -1,23 +1,27 @@
-"""업무 도구함 데스크톱 앱 — 홈 + 하단 독 + 상단 작업 탭.
+"""업무 도구함 데스크톱 앱 — 홈 + 하단 독 + 탐색기형 작업 탭.
 
     상단 바     로고 · 이름 | 검색 · 설정(설정·업데이트) · 사용자
-    작업 탭     열려 있는 작업만. 홈 탭은 늘 있고 닫히지 않는다
-    본문        홈(업무 도구함) 또는 열린 업무 화면
+    작업 탭     열려 있는 화면만. 홈 탭은 늘 있고 닫히지 않는다. [+] 로 새 업무
+    작업 표면   흰 면 — 선택한 탭과 이어진다
     하단 독     홈 · 청구서 받기 · 회의록 생성 · 일반청구 · 카드청구
 
+높이는 위에서부터 상단 바(고정) · 탭 줄(고정) · 작업 표면(남는 높이 전부) · 독 영역
+(독 높이 + 여백만) 순으로 나눈다. 독은 작업 표면 위에 겹치지 않는다.
+
 업무 화면은 처음 열 때 한 번 만들고 그 뒤로는 숨겼다 보이기만 한다. 그래서 탭을
-오가도 입력값·스크롤·진행 중인 받기가 그대로다. 청구서 받기는 별도 스레드에서
-돌므로(ui/worker.py) 다른 탭으로 가도 멈추지 않는다.
+오가거나 닫았다 열어도 입력값·스크롤·진행 중인 받기가 그대로다. 청구서 받기는 별도
+스레드에서 돌므로(ui/worker.py) 다른 탭으로 가도 멈추지 않는다.
 """
 from __future__ import annotations
 
 import getpass
 import importlib
+import logging
 import sys
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -30,7 +34,7 @@ from PySide6.QtWidgets import (
 from .. import updater
 from .pages.home import HomePage
 from .shell import Dock, DockArea, TopBar, WorkTabs
-from .tasks import HOME_ID, TASKS, UTILITIES, Task, find
+from .tasks import HOME_ICON, HOME_ID, TASKS, UTILITIES, Task, find
 from .theme import stylesheet
 
 APP_NAME = "업무 도구함"
@@ -38,6 +42,9 @@ WORKSPACE = "강원대 산학협력단 ERP"
 
 # 창이 이보다 낮으면 독과 여백을 줄인다
 COMPACT_BELOW = 800
+
+ASSETS = Path(__file__).parent / "assets"
+log = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -62,10 +69,18 @@ class MainWindow(QMainWindow):
         self.tabs = WorkTabs()
         self.tabs.activated.connect(self.show_task)
         self.tabs.close_requested.connect(self.close_task)
+        self.tabs.new_task_requested.connect(self.open)
         column.addWidget(self.tabs)
 
+        # 작업 표면 — 탭 줄 바탕 위에 흰 면. 좌우 10px 띄워 탭 줄과 같은 테두리 안에 놓인다
+        surface_wrap = QWidget()
+        surface_wrap.setObjectName("root")
+        wrap_layout = QVBoxLayout(surface_wrap)
+        wrap_layout.setContentsMargins(10, 0, 10, 0)
         self.stack = QStackedWidget()
-        column.addWidget(self.stack, 1)
+        self.stack.setObjectName("work")
+        wrap_layout.addWidget(self.stack)
+        column.addWidget(surface_wrap, 1)
 
         self.dock = Dock()
         self.dock.activated.connect(self.open)
@@ -75,9 +90,10 @@ class MainWindow(QMainWindow):
 
         self.home = HomePage()
         self.home.open_task.connect(self.open)
+        self.home.apply_update.connect(self._apply_update)
         self._pages[HOME_ID] = self.home
         self.stack.addWidget(self.home)
-        self.tabs.add(HOME_ID, "홈", closable=False)
+        self.tabs.add(HOME_ID, "홈", HOME_ICON, closable=False)
         self.show_task(HOME_ID)
 
         self.statusBar().showMessage("")
@@ -104,21 +120,22 @@ class MainWindow(QMainWindow):
         if task.id == "download":
             page.need_settings.connect(lambda: self.open("settings"))
             page.busy_changed.connect(lambda busy: self._on_busy(task.id, busy))
-            page.counts_changed.connect(self.home.refresh_recent)
+            page.counts_changed.connect(self._sync_home)
         elif task.id == "settings":
             page.changed.connect(self._on_settings_changed)
         elif task.id == "updates":
             page.version_changed.connect(lambda _v: self._sync_user_menu())
+            page.status_checked.connect(self._on_update_status)
 
     def open(self, task_id: str) -> None:
-        """독·홈 카드·메뉴에서 부른다. 이미 열려 있으면 그 탭으로 간다."""
+        """독·홈 카드·[+]·메뉴에서 부른다. 이미 열려 있으면 그 탭으로 간다."""
         if task_id == HOME_ID:
             self.show_task(HOME_ID)
             return
         task = find(task_id)
         self.page(task_id)
         if not self.tabs.has(task_id):
-            self.tabs.add(task_id, task.name)
+            self.tabs.add(task_id, task.name, task.icon)
         self.show_task(task_id)
 
     def show_task(self, task_id: str) -> None:
@@ -129,8 +146,7 @@ class MainWindow(QMainWindow):
         self.tabs.set_current(task_id)
         self.dock.set_current(task_id if task_id in {t.id for t in TASKS} or task_id == HOME_ID else "")
         if task_id == HOME_ID:
-            self.home.refresh_recent()
-            self._sync_continue()
+            self._sync_home()
 
     def close_task(self, task_id: str) -> None:
         page = self._pages.get(task_id)
@@ -139,38 +155,47 @@ class MainWindow(QMainWindow):
         if task_id == "download" and page.is_running():
             answer = QMessageBox.question(
                 self, APP_NAME,
-                "청구서를 받는 중입니다. 탭을 닫아도 받기는 이어지지만 진행 상황을 볼 수 없습니다.\n"
-                "그래도 닫을까요?",
+                "청구서를 받는 중입니다. 탭을 닫아도 받기는 이어지지만 진행 상황을 볼 수 없습니다.\n그래도 닫을까요?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if answer != QMessageBox.Yes:
                 return
+        was_current = self.stack.currentWidget() is page
+        target = self.tabs.neighbour(task_id)
         self.tabs.remove(task_id)
         # 화면은 없애지 않는다 — 입력값과 진행 상태가 남아 있어야 다시 열었을 때 이어진다
-        if self.stack.currentWidget() is page:
-            self.show_task(HOME_ID)
+        if was_current:
+            self.show_task(target)
         else:
-            self._sync_continue()
+            self._sync_home()
 
     # ── 상태 ────────────────────────────────────────────────────────
     def _on_busy(self, task_id: str, busy: bool) -> None:
         self.tabs.set_busy(task_id, busy)
-        self._sync_continue()
+        self._sync_home()
 
     def _on_settings_changed(self) -> None:
         if "download" in self._pages:
             self._pages["download"].refresh_counts()
+        self._sync_home()
+
+    def _sync_home(self) -> None:
+        """홈의 '이어서 작업하기'(실제 재개 가능한 일만)와 최근 기록을 새로 읽는다."""
+        items = []
+        download = self._pages.get("download")
+        if download is not None:
+            ok, text = download.resumable()
+            if ok:
+                task = find("download")
+                items.append((task.id, task.art, task.name, text))
+        self.home.set_resumable(items)
         self.home.refresh_recent()
 
-    def _sync_continue(self) -> None:
-        opened = []
-        for task_id in self.tabs.ids():
-            if task_id == HOME_ID:
-                continue
-            task = find(task_id)
-            page = self._pages[task_id]
-            status = page.status_text() if hasattr(page, "status_text") else ("준비 중" if not task.ready else "")
-            opened.append((task, status))
-        self.home.set_open_tasks(opened)
+    def _on_update_status(self, status) -> None:
+        self.home.show_update(status.behind if status.can_apply else 0, status.messages)
+
+    def _apply_update(self) -> None:
+        self.open("updates")
+        self.page("updates")._confirm_apply()
 
     def _sync_user_menu(self) -> None:
         menu = self.topbar.user_menu
@@ -217,28 +242,45 @@ def _user_name() -> str:
         return "사용자"
 
 
-ICON_PATH = Path(__file__).parent / "assets" / "icon.png"
-ICON_DIR = Path(__file__).parent / "assets" / "icons"
+def load_fonts() -> str:
+    """앱에 묶어 둔 Pretendard 를 등록하고 실제로 쓰이는 글꼴 이름을 돌려준다.
+
+    설치된 글꼴에 기대지 않는다 — 동료 PC 에 Pretendard 가 없으면 맑은 고딕으로 바뀌어
+    같은 화면이 다르게 보인다. 등록에 실패하면 대체 목록(tokens.FONT_FAMILY)이 쓰인다.
+    """
+    loaded = []
+    for path in sorted((ASSETS / "fonts").glob("Pretendard-*.otf")):
+        index = QFontDatabase.addApplicationFont(str(path))
+        if index >= 0:
+            loaded.extend(QFontDatabase.applicationFontFamilies(index))
+    family = "Pretendard" if "Pretendard" in loaded else ""
+    if not family:
+        log.warning("Pretendard 를 등록하지 못해 대체 글꼴을 씁니다")
+    return family
 
 
 def _app_icon() -> QIcon:
-    """크기별 그림을 모두 넣는다. 작은 크기는 입체 그림 대신 평면 그림이다(tools/make_icon.py)."""
+    """크기별 그림을 모두 넣는다(tools/make_icon.py)."""
     icon = QIcon()
-    for path in sorted(ICON_DIR.glob("icon-*.png")):
+    for path in sorted((ASSETS / "icons").glob("icon-*.png")):
         icon.addFile(str(path))
-    if icon.isNull() and ICON_PATH.exists():
-        icon.addFile(str(ICON_PATH))
+    fallback = ASSETS / "icon.png"
+    if icon.isNull() and fallback.exists():
+        icon.addFile(str(fallback))
     return icon
 
 
 def main() -> int:
-    import logging
-
     # 깨진 보관 PDF 를 읽을 때 pypdf 가 경고를 쏟아낸다. 스캔은 그런 파일을 건너뛴다.
     logging.getLogger("pypdf").setLevel(logging.CRITICAL)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setWindowIcon(_app_icon())
+    family = load_fonts()
+    if family:
+        base = QFont(family)
+        base.setPixelSize(14)
+        app.setFont(base)
     app.setStyleSheet(stylesheet())
     window = MainWindow()
     window.show()

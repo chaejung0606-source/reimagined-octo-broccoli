@@ -119,7 +119,87 @@ def _download(painter: QPainter) -> None:
     painter.drawLine(QPointF(4.5, 19.5), QPointF(19.5, 19.5))
 
 
+def _home(painter: QPainter) -> None:
+    """홈 — 지붕 있는 집."""
+    path = QPainterPath()
+    path.moveTo(4, 11.5)
+    path.lineTo(12, 4.5)
+    path.lineTo(20, 11.5)
+    painter.drawPath(path)
+    body = QPainterPath()
+    body.moveTo(6.3, 10)
+    body.lineTo(6.3, 19.5)
+    body.lineTo(17.7, 19.5)
+    body.lineTo(17.7, 10)
+    painter.drawPath(body)
+    painter.drawLine(QPointF(10.2, 19.5), QPointF(10.2, 14.5))
+    painter.drawLine(QPointF(10.2, 14.5), QPointF(13.8, 14.5))
+    painter.drawLine(QPointF(13.8, 14.5), QPointF(13.8, 19.5))
+
+
+def _book(painter: QPainter) -> None:
+    """회의록 — 펼친 책."""
+    left = QPainterPath()
+    left.moveTo(12, 7)
+    left.quadTo(9.5, 5, 4, 5.5)
+    left.lineTo(4, 18.5)
+    left.quadTo(9.5, 18, 12, 20)
+    left.closeSubpath()
+    painter.drawPath(left)
+    right = QPainterPath()
+    right.moveTo(12, 7)
+    right.quadTo(14.5, 5, 20, 5.5)
+    right.lineTo(20, 18.5)
+    right.quadTo(14.5, 18, 12, 20)
+    right.closeSubpath()
+    painter.drawPath(right)
+    painter.drawLine(QPointF(14.6, 10), QPointF(17.6, 9.7))
+    painter.drawLine(QPointF(14.6, 13), QPointF(17.6, 12.7))
+
+
+def _card(painter: QPainter) -> None:
+    """카드청구 — 카드."""
+    path = QPainterPath()
+    path.addRoundedRect(3.5, 6, 17, 12, 2.2, 2.2)
+    painter.drawPath(path)
+    painter.drawLine(QPointF(3.5, 10), QPointF(20.5, 10))
+    painter.drawLine(QPointF(7, 14.5), QPointF(10.5, 14.5))
+
+
+def _plus(painter: QPainter) -> None:
+    painter.drawLine(QPointF(12, 5.5), QPointF(12, 18.5))
+    painter.drawLine(QPointF(5.5, 12), QPointF(18.5, 12))
+
+
+def _close(painter: QPainter) -> None:
+    painter.drawLine(QPointF(7, 7), QPointF(17, 17))
+    painter.drawLine(QPointF(17, 7), QPointF(7, 17))
+
+
+def _chevron_down(painter: QPainter) -> None:
+    path = QPainterPath()
+    path.moveTo(7, 10)
+    path.lineTo(12, 15)
+    path.lineTo(17, 10)
+    painter.drawPath(path)
+
+
+def _check(painter: QPainter) -> None:
+    path = QPainterPath()
+    path.moveTo(5.5, 12.5)
+    path.lineTo(10, 17)
+    path.lineTo(18.5, 8)
+    painter.drawPath(path)
+
+
 _ICONS = {
+    "home": _home,
+    "book": _book,
+    "card": _card,
+    "plus": _plus,
+    "close": _close,
+    "chevron-down": _chevron_down,
+    "check": _check,
     "document-check": _document_check,
     "folder": _folder,
     "sliders": _sliders,

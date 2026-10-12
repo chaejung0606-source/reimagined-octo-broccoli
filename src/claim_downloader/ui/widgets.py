@@ -1,6 +1,7 @@
-"""화면 구성 요소 — 페이지 머리 · 카드 · 요약 카드 · 단계 카드 · 빈 상태 · 배지 · 입력 칸.
+"""화면 구성 요소 — 페이지 머리 · 카드 · 요약 카드 · 단계 · 빈 상태 · 배지 · 입력 칸.
 
-입체 그림(Art)은 요약 카드·단계 카드·빈 상태에만 놓는다. 모두 흰 면이다.
+카드는 얇은 테두리가 기본이고 그림자는 주지 않는다(그림자는 홈 업무 카드와 독에만).
+입체 그림(Art)은 요약 카드·단계·빈 상태에만 놓는다. 모두 흰 면이다.
 """
 from __future__ import annotations
 
@@ -8,17 +9,17 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFontMetrics, QPainter
 from PySide6.QtWidgets import (
     QFrame,
-    QStyle,
-    QStyledItemDelegate,
     QHBoxLayout,
     QLabel,
     QSizePolicy,
+    QStyle,
+    QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
 )
 
 from .art import Art
-from .theme import STATUS, card_shadow
+from .theme import STATUS
 
 
 class WrapLabel(QLabel):
@@ -32,7 +33,6 @@ class WrapLabel(QLabel):
     def __init__(self, text: str = "", parent: QWidget | None = None):
         super().__init__(text, parent)
         self.setWordWrap(True)
-        # 높이가 글자보다 커져도 위에 붙인다. 가운데 정렬이면 제목과 사이가 벌어져 보인다.
         self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
 
@@ -92,7 +92,7 @@ class PageHeader(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(16)
         texts = QVBoxLayout()
-        texts.setSpacing(4)
+        texts.setSpacing(3)
         texts.addWidget(_label(path, "breadcrumb"))
         self.title = _label(title, "pageTitle")
         texts.addWidget(self.title)
@@ -104,22 +104,20 @@ class PageHeader(QWidget):
         row.addLayout(self.actions)
 
     def add_action(self, widget: QWidget) -> None:
-        self.actions.addWidget(widget, 0, Qt.AlignBottom)
+        self.actions.addWidget(widget, 0, Qt.AlignVCenter)
 
 
 class Card(QFrame):
-    """흰 카드. 제목 왼쪽에 작은 입체 그림, 오른쪽에 보조 위젯을 얹을 수 있다."""
+    """흰 카드(얇은 테두리). 제목 왼쪽에 작은 입체 그림, 오른쪽에 보조 위젯을 얹을 수 있다."""
 
     def __init__(self, title: str = "", hint: str = "", art: str = "", variant: str = "card",
-                 shadow: bool = True, margins: tuple[int, int, int, int] = (24, 20, 24, 22),
+                 margins: tuple[int, int, int, int] = (20, 18, 20, 18),
                  parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName(variant)
-        if shadow:
-            card_shadow(self)
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(*margins)
-        self._layout.setSpacing(14)
+        self._layout.setSpacing(12)
         self._header = None
         if title:
             header = QHBoxLayout()
@@ -149,82 +147,99 @@ class Card(QFrame):
 
 
 class KpiCard(QFrame):
-    """요약 카드 — 숫자가 먼저 읽히고, 그림은 옆에서 무엇의 숫자인지 알려 준다."""
+    """요약 카드 — 낮게. 숫자가 먼저 읽히고, 그림은 옆에서 무엇의 숫자인지 알려 준다."""
 
     def __init__(self, label: str, art: str, caption: str = "", parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("card")
-        card_shadow(self)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        self.setFixedHeight(104)
+        self.setFixedHeight(88)
         row = QHBoxLayout(self)
-        row.setContentsMargins(20, 14, 14, 14)
-        row.setSpacing(10)
+        row.setContentsMargins(16, 10, 12, 10)
+        row.setSpacing(8)
         texts = QVBoxLayout()
-        texts.setSpacing(2)
+        texts.setSpacing(0)
         self.label = _label(label, "kpiLabel")
         self.value = _label("—", "kpiValue")
-        # 보조 문구는 한 줄. 넘치면 '…' 으로 줄이고 전체는 말풍선으로 보여 준다
         self.caption = ElideLabel(caption)
         self.caption.setObjectName("kpiCaption")
         texts.addWidget(self.label)
         texts.addWidget(self.value)
         texts.addWidget(self.caption)
         row.addLayout(texts, 1)
-        row.addWidget(Art(art, 56), 0, Qt.AlignTop)
+        row.addWidget(Art(art, 48), 0, Qt.AlignVCenter)
 
     def set_value(self, value: str, caption: str | None = None) -> None:
         self.value.setText(value)
         if caption is not None:
             self.caption.setText(caption)
 
+    def set_compact(self, compact: bool) -> None:
+        """낮은 창 — 보조 문구를 숨기고 높이를 줄인다. 숫자와 이름은 그대로."""
+        self.caption.setVisible(not compact)
+        self.setFixedHeight(68 if compact else 88)
 
-class StepCard(QFrame):
-    """업무 단계 바로가기 — 번호 · 입체 그림 · 무엇을 하는지 · 실행 버튼."""
+
+class Step(QFrame):
+    """업무 단계 하나 — 번호 · 그림 · 제목 · 한 줄 설명 · 버튼. 가로로 나란히 놓인다.
+
+    현재 단계만 강조(라벤더 테두리)하고, 끝난 단계는 옅게 가라앉힌다.
+    """
 
     def __init__(self, number: str, title: str, description: str, art: str,
                  parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("card")
-        card_shadow(self)
-        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-        outer = QHBoxLayout(self)
-        outer.setContentsMargins(16, 16, 18, 16)
-        outer.setSpacing(12)
-        outer.addWidget(Art(art, 60), 0, Qt.AlignTop)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(14, 12, 14, 12)
+        row.setSpacing(10)
+        row.addWidget(Art(art, 44), 0, Qt.AlignVCenter)
         body = QVBoxLayout()
-        body.setSpacing(4)
-        top = QHBoxLayout()
-        top.setSpacing(8)
-        top.addWidget(_label(number, "stepNo"))
-        top.addWidget(_label(title, "cardTitle"), 1)
-        body.addLayout(top)
-        self.description = _label(description, "muted", wrap=True)
+        body.setSpacing(3)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.number = _label(number, "stepNo")
+        self.number.setAlignment(Qt.AlignCenter)
+        head.addWidget(self.number)
+        head.addWidget(_label(title, "cardTitle"), 1)
+        body.addLayout(head)
+        self.description = ElideLabel(description)
+        self.description.setObjectName("muted")
         body.addWidget(self.description)
-        body.addStretch(1)
+        row.addLayout(body, 1)
         self.actions = QHBoxLayout()
-        self.actions.setSpacing(8)
-        body.addLayout(self.actions)
-        outer.addLayout(body, 1)
+        self.actions.setSpacing(6)
+        row.addLayout(self.actions)
 
     def add_action(self, widget: QWidget) -> None:
         self.actions.addWidget(widget)
 
-    def finish_actions(self) -> None:
-        self.actions.addStretch(1)
+    def set_compact(self, compact: bool) -> None:
+        """좁거나 낮은 창 — 설명 줄을 숨겨 번호·제목·버튼만 남긴다. 글씨를 줄이지 않는다."""
+        self.description.setVisible(not compact)
+        self.layout().setContentsMargins(14, 8 if compact else 12, 14, 8 if compact else 12)
+
+    def set_state(self, state: str) -> None:
+        """'current' | 'done' | 'todo'"""
+        self.setObjectName({"current": "cardCurrent", "done": "cardDone"}.get(state, "card"))
+        self.number.setObjectName("stepNoDone" if state == "done" else "stepNo")
+        for widget in (self, self.number):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
 
 
 class EmptyState(QWidget):
-    """보여 줄 것이 없을 때 — 큰 입체 그림 + 무엇을 하면 되는지."""
+    """보여 줄 것이 없을 때 — 입체 그림 + 무엇을 하면 되는지."""
 
     def __init__(self, art: str, title: str, message: str = "", parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("emptyState")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(8)
+        layout.setContentsMargins(24, 16, 24, 16)
+        layout.setSpacing(6)
         layout.addStretch(1)
-        self.art = Art(art, 128)
+        self.art = Art(art, 112)
         layout.addWidget(self.art, 0, Qt.AlignHCenter)
         self.title = _label(title, "cardTitle")
         self.title.setAlignment(Qt.AlignCenter)
@@ -242,7 +257,7 @@ class EmptyState(QWidget):
         """자리가 좁으면 그림을 줄이고, 더 좁으면 숨긴다. 글자와 버튼이 먼저다."""
         super().resizeEvent(event)
         height = self.height()
-        side = 128 if height >= 360 else 88 if height >= 230 else 64 if height >= 170 else 0
+        side = 112 if height >= 330 else 80 if height >= 220 else 56 if height >= 160 else 0
         self.art.setVisible(side > 0)
         if side:
             self.art.set_size(side)
@@ -311,7 +326,6 @@ class PillDelegate(QStyledItemDelegate):
     ROLE = Qt.UserRole + 1
 
     def paint(self, painter: QPainter, option, index) -> None:
-        # 선택·호버 바탕은 기본 그리기에 맡기고 글자만 지운다
         option.text = ""
         style = option.widget.style() if option.widget else None
         if style is not None:
@@ -323,7 +337,7 @@ class PillDelegate(QStyledItemDelegate):
         painter.setRenderHint(QPainter.Antialiasing)
         font = option.font
         font.setPixelSize(12)
-        font.setWeight(font.Weight.DemiBold)
+        font.setWeight(font.Weight.Medium)
         painter.setFont(font)
         metrics = QFontMetrics(font)
         width = metrics.horizontalAdvance(text) + 18

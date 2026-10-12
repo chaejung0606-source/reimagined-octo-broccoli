@@ -37,6 +37,13 @@ def test_every_task_has_art_and_page():
         assert re.search(rf"^class {cls}\(", source, re.M), task.page
 
 
+def test_every_task_has_a_line_icon():
+    icons = (UI / "icons.py").read_text(encoding="utf-8")
+    for task in tasks.TASKS + tasks.UTILITIES:
+        assert f'"{task.icon}":' in icons, task.id
+    assert f'"{tasks.HOME_ICON}":' in icons
+
+
 def test_dock_holds_only_tasks_not_utilities():
     assert all(t.dock for t in tasks.TASKS)
     assert not any(t.dock for t in tasks.UTILITIES)
