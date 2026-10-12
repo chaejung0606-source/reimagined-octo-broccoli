@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 ASSETS = Path(__file__).resolve().parents[1] / "src" / "claim_downloader" / "ui" / "assets"
 SOURCE = ASSETS / "icon-source.png"      # 원본 PNG 가 있으면 이것을 쓴다
@@ -35,12 +35,13 @@ PLATE = (248, 247, 245)
 PLATE_EDGE = (224, 222, 218)
 SHADOW = (35, 42, 52)
 TILES = {                      # (윗면, 아래쪽 두께 면)
-    "lavender": ((196, 178, 236), (168, 148, 218)),
-    "mint":     ((160, 220, 190), (126, 194, 162)),
-    "peach":    ((246, 190, 158), (230, 160, 124)),
-    "sky":      ((118, 200, 230), (86, 170, 208)),
+    "lavender": ((190, 168, 238), (160, 138, 220)),
+    "mint":     ((150, 222, 186), (116, 192, 156)),
+    "peach":    ((248, 178, 140), (230, 150, 112)),
+    "sky":      ((116, 196, 236), (82, 166, 212)),
 }
 GLYPH = (255, 255, 255)
+GLYPH_SHADE = (120, 110, 150)   # 선 아래 옅은 그늘 — 타일마다 색이 달라 중간 보라회색으로
 
 
 def _plate(canvas: Image.Image) -> None:
@@ -48,15 +49,35 @@ def _plate(canvas: Image.Image) -> None:
     inset = round(big * 0.07)
     box = (inset, inset, big - inset, big - inset)
     radius = round(big * 0.23)
+    # 바닥 그림자
     shadow = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     ImageDraw.Draw(shadow).rounded_rectangle(
         (box[0], box[1] + round(big * 0.035), box[2], box[3] + round(big * 0.035)), radius,
-        fill=SHADOW + (46,))
+        fill=SHADOW + (44,))
     canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(big * 0.03)))
+    # 둘레 반사광 — 왼쪽 라벤더, 위 민트·노랑, 오른쪽 피치 (판보다 조금 크게 깔고 판으로 덮는다)
+    rim = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    rd = ImageDraw.Draw(rim)
+    grow = round(big * 0.012)
+    rbox = (box[0] - grow, box[1] - grow, box[2] + grow, box[3] + grow)
+    rd.rounded_rectangle(rbox, radius + grow, fill=(255, 220, 200, 255))          # 피치 (바탕)
+    rd.rounded_rectangle((rbox[0], rbox[1], (rbox[0] + rbox[2]) / 2, rbox[3]), radius + grow,
+                         fill=(214, 200, 250, 255))                                 # 왼쪽 라벤더
+    rd.rounded_rectangle((rbox[0] + big * 0.3, rbox[1], rbox[2] - big * 0.25, rbox[1] + big * 0.3),
+                         radius + grow, fill=(200, 242, 216, 255))                  # 위 민트
+    rim = rim.filter(ImageFilter.GaussianBlur(big * 0.008))
+    rim.putalpha(ImageChops.darker(rim.getchannel("A"), _mask(big, rbox, radius + grow)))
+    canvas.alpha_composite(rim)
     draw = ImageDraw.Draw(canvas)
     draw.rounded_rectangle(box, radius, fill=PLATE_EDGE + (255,))
     # 윗면: 아래 가장자리에 두께가 살짝 보이게 2% 덜 내려 그린다
     draw.rounded_rectangle((box[0], box[1], box[2], box[3] - round(big * 0.02)), radius, fill=PLATE + (255,))
+
+
+def _mask(size: int, box, radius: int) -> Image.Image:
+    mask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(box, radius, fill=255)
+    return mask
 
 
 def _tile(canvas: Image.Image, box, color) -> None:
@@ -65,19 +86,34 @@ def _tile(canvas: Image.Image, box, color) -> None:
     top, side = color
     shadow = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     ImageDraw.Draw(shadow).rounded_rectangle(
-        (box[0], box[1] + big * 0.015, box[2], box[3] + big * 0.015), radius, fill=SHADOW + (40,))
+        (box[0], box[1] + big * 0.015, box[2], box[3] + big * 0.015), radius, fill=SHADOW + (44,))
     canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(big * 0.012)))
     draw = ImageDraw.Draw(canvas)
     draw.rounded_rectangle(box, radius, fill=side + (255,))
     draw.rounded_rectangle((box[0], box[1], box[2], box[3] - big * 0.012), radius, fill=top + (255,))
+    # 왼쪽 위 하이라이트 — 흰색을 옅게 흐려 얹는다 (무광 클레이의 둥근 느낌)
+    glow = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    w = box[2] - box[0]
+    gd.ellipse((box[0] + w * 0.08, box[1] + w * 0.06, box[0] + w * 0.62, box[1] + w * 0.42), fill=(255, 255, 255, 110))
+    glow = glow.filter(ImageFilter.GaussianBlur(w * 0.12))
+    glow.putalpha(ImageChops.darker(glow.getchannel("A"), _mask(big, box, radius)))
+    canvas.alpha_composite(glow)
+    # 아래쪽 살짝 어두운 면
+    shade = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    ImageDraw.Draw(shade).ellipse((box[0] + w * 0.1, box[3] - w * 0.3, box[2] - w * 0.05, box[3] + w * 0.1),
+                                  fill=side + (70,))
+    shade = shade.filter(ImageFilter.GaussianBlur(w * 0.12))
+    shade.putalpha(ImageChops.darker(shade.getchannel("A"), _mask(big, box, radius)))
+    canvas.alpha_composite(shade)
 
 
 def _glyphs(canvas: Image.Image, tiles: dict) -> None:
-    """타일 안 흰 선 그림. 선 굵기는 타일 폭의 7%, 끝은 둥글게."""
+    """타일 안 흰 선 그림. 선 굵기는 타일 폭의 8.5%, 끝은 둥글게. 선 아래 옅은 그늘로 도톰하게."""
     draw = ImageDraw.Draw(canvas)
 
     def pen(box):
-        return max(2, round((box[2] - box[0]) * 0.07))
+        return max(2, round((box[2] - box[0]) * 0.085))
 
     def u(box, x, y):
         w = box[2] - box[0]
@@ -86,9 +122,12 @@ def _glyphs(canvas: Image.Image, tiles: dict) -> None:
     def stroke(box, points, close=False):
         w = pen(box)
         pts = list(points) + ([points[0]] if close else [])
-        draw.line(pts, fill=GLYPH, width=w, joint="curve")
-        for p in pts:                       # 둥근 끝
-            draw.ellipse((p[0] - w / 2, p[1] - w / 2, p[0] + w / 2, p[1] + w / 2), fill=GLYPH)
+        dy = w * 0.22
+        for color, off in ((GLYPH_SHADE, dy), (GLYPH, 0)):
+            moved = [(x, y + off) for x, y in pts]
+            draw.line(moved, fill=color, width=w, joint="curve")
+            for p in moved:                 # 둥근 끝
+                draw.ellipse((p[0] - w / 2, p[1] - w / 2, p[0] + w / 2, p[1] + w / 2), fill=color)
 
     # 내려받기
     b = tiles["lavender"]
@@ -113,8 +152,9 @@ def _glyphs(canvas: Image.Image, tiles: dict) -> None:
     b = tiles["sky"]
     w = pen(b)
     cw = b[2] - b[0]
-    draw.rounded_rectangle((b[0] + cw * .22, b[1] + cw * .32, b[0] + cw * .78, b[1] + cw * .68),
-                           round(cw * .07), outline=GLYPH, width=w)
+    for color, off in ((GLYPH_SHADE, w * 0.22), (GLYPH, 0)):
+        draw.rounded_rectangle((b[0] + cw * .22, b[1] + cw * .32 + off, b[0] + cw * .78, b[1] + cw * .68 + off),
+                               round(cw * .07), outline=color, width=w)
     stroke(b, [u(b, .22, .44), u(b, .78, .44)])
     stroke(b, [u(b, .32, .58), u(b, .44, .58)])
 
