@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import settings, updater
+from .. import settings, shortcuts, updater
 from .pages.home import HomePage
 from .shell import Dock, DockOverlay, TopBar, WorkTabs
 from .tasks import HOME_ICON, HOME_ID, TASKS, UTILITIES, Task, find
@@ -331,10 +331,6 @@ def load_fonts() -> str:
     return family
 
 
-# 바로가기 규격이 바뀌면 판을 올린다 — 설치된 PC 가 앱을 켤 때 한 번 새로 만든다 (tools/create_shortcut.py)
-SHORTCUT_MARK = "shortcut-v2.txt"
-
-
 def _claim_taskbar_identity() -> None:
     """작업 표시줄에서 파이썬이 아니라 이 앱의 아이콘이 보이게 한다. 창을 만들기 전에 불러야 한다.
 
@@ -348,35 +344,6 @@ def _claim_taskbar_identity() -> None:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(settings.APP_USER_MODEL_ID)
     except Exception:  # noqa: BLE001 — 안 되면 아이콘만 파이썬으로 보일 뿐 앱은 돈다
         log.warning("작업 표시줄 이름을 정하지 못했습니다")
-
-
-def _refresh_shortcuts_once() -> None:
-    """바로가기 규격(작업 표시줄 이름 포함)이 바뀐 뒤 처음 켤 때 한 번, 뒤에서 조용히 다시 만든다.
-
-    담당자가 '앱 실행.bat' 을 다시 돌리지 않아도 되게 한다. 실패해도 앱에는 영향이 없다.
-    """
-    if os.name != "nt":
-        return
-    mark = updater.REPO_ROOT / ".venv" / SHORTCUT_MARK
-    script = updater.REPO_ROOT / "tools" / "create_shortcut.py"
-    if mark.exists() or not script.exists():
-        return
-
-    def work() -> None:
-        import subprocess
-        try:
-            done = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=120,
-                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            if done.returncode == 0:
-                mark.parent.mkdir(parents=True, exist_ok=True)
-                mark.write_text("done", encoding="utf-8")
-            else:
-                log.warning("바로가기 갱신 실패: %s", (done.stderr or done.stdout or "")[-400:])
-        except Exception:  # noqa: BLE001
-            log.warning("바로가기 갱신 중 오류", exc_info=True)
-
-    import threading
-    threading.Thread(target=work, name="shortcut", daemon=True).start()
 
 
 def _app_icon() -> QIcon:
@@ -408,7 +375,7 @@ def main() -> int:
     app.setStyleSheet(stylesheet())
     window = MainWindow()
     window.show()
-    _refresh_shortcuts_once()
+    shortcuts.refresh_once_in_background()     # 업데이트로 바로가기 규격이 바뀌었으면 한 번 새로 만든다
     return app.exec()
 
 

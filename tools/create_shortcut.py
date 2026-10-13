@@ -105,10 +105,13 @@ def _tag_links(links: list[Path]) -> bool:
     paths = ", ".join(f"'{p}'" for p in links)
     script = "$code = @'\n" + _TAG_CODE.strip() + "\n'@\nAdd-Type -TypeDefinition $code\n" \
              f"foreach ($p in @({paths})) {{ [CossShortcut.Tagger]::SetAppId($p, '{APP_ID}') }}\n"
-    done = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True, **_HIDDEN)
-    if done.returncode != 0:
-        print("작업 표시줄 이름을 바로가기에 적지 못했습니다 (바로가기는 만들어짐):", (done.stderr or done.stdout)[-600:])
+    done = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", **_HIDDEN)
+    if done.returncode != 0 or (done.stderr or "").strip():
+        print("작업 표시줄 이름을 바로가기에 적지 못했습니다 (바로가기 자체는 만들어짐):")
+        print((done.stderr or done.stdout or "(출력 없음)")[-1200:])
         return False
+    print("작업 표시줄 이름을 적었습니다:", ", ".join(p.name for p in links))
     return True
 
 
@@ -134,13 +137,19 @@ Get-ChildItem -LiteralPath '{pinned}' -Filter *.lnk | ForEach-Object {{
   Write-Output ($_.FullName + "`t" + $sc.TargetPath + "`t" + $sc.Arguments + "`t" + $sc.WorkingDirectory)
 }}
 """
-    out = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True, **_HIDDEN)
+    out = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True,
+                         encoding="utf-8", errors="replace", **_HIDDEN)
     root = str(REPO_ROOT).lower()
     found = []
+    seen = 0
     for line in (out.stdout or "").splitlines():
         parts = line.split("\t")
-        if len(parts) == 4 and any(root in part.lower() for part in parts[1:]):
+        if len(parts) != 4:
+            continue
+        seen += 1
+        if any(root in part.lower() for part in parts[1:]):
             found.append(Path(parts[0]))
+    print(f"고정된 바로가기 {seen}개 중 이 앱 것 {len(found)}개: " + (", ".join(p.name for p in found) or "(없음)"))
     return found
 
 
@@ -155,13 +164,15 @@ def make_windows() -> Path:
     for link in links:
         link.parent.mkdir(parents=True, exist_ok=True)
         _create_link(link)
+    print("만든 바로가기:", ", ".join(str(p) for p in links))
     pinned = _pinned_links()
-    if pinned:
-        print("고정된 바로가기에도 이름을 적습니다:", ", ".join(p.name for p in pinned))
-    _tag_links(links + pinned)
+    tagged = _tag_links(links + pinned)
     for folder in (desktop, programs):
         for old in OLD_APP_NAMES:
             (folder / f"{old}.lnk").unlink(missing_ok=True)
+    if not tagged:
+        # 이름 없는 바로가기는 단추가 둘로 갈라진다 — 앱이 다음에 켤 때 다시 해 보도록 실패로 알린다
+        raise SystemExit(2)
     return links[0]
 
 

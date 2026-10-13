@@ -10,11 +10,13 @@ import os
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -156,7 +158,33 @@ class SettingsPage(QWidget):
         records.add(records_field)
         column.addWidget(records)
 
+        # 바로가기 · 작업 표시줄 — 고정한 단추와 실행 중인 창이 둘로 보일 때 여기서 다시 만든다
+        shortcut_card = Card("바로가기 · 작업 표시줄", "바탕화면 · 시작 메뉴 바로가기와 고정한 단추를 앱과 같은 이름으로 맞춥니다")
+        shortcut_card.add(muted_label(
+            "작업 표시줄에 고정한 단추 옆에 실행 중인 창이 따로 뜨면 누르세요. 그래도 둘이면 고정을 풀고, "
+            "앱이 떠 있는 상태에서 작업 표시줄의 앱 단추를 우클릭 → '작업 표시줄에 고정' 을 다시 하세요."))
+        self.shortcut_button = QPushButton("바로가기 다시 만들기")
+        self.shortcut_button.clicked.connect(self._rebuild_shortcuts)
+        row = QHBoxLayout()
+        row.addWidget(self.shortcut_button)
+        row.addStretch(1)
+        shortcut_card.add_layout(row)
+        column.addWidget(shortcut_card)
+
         self._refresh()
+
+    def _rebuild_shortcuts(self) -> None:
+        from ... import shortcuts
+        self.shortcut_button.setEnabled(False)
+        self.shortcut_button.setText("만드는 중…")
+        QApplication.processEvents()
+        try:
+            ok, text = shortcuts.refresh()
+        finally:
+            self.shortcut_button.setEnabled(True)
+            self.shortcut_button.setText("바로가기 다시 만들기")
+        box = QMessageBox.information if ok else QMessageBox.warning
+        box(self, "바로가기", ("바로가기를 다시 만들었습니다.\n\n" if ok else "바로가기를 다 만들지 못했습니다. 아래 내용을 담당자에게 보내 주세요.\n\n") + text)
 
     def _save(self, **changes) -> None:
         settings.update(**changes)
