@@ -166,9 +166,9 @@ class ErpSession:
             return report
         # 칸을 다 넣었으면 팝업을 차례로 — 고르기·[확인] 은 사람(1차). 세금계산서 팝업을 사람이 닫을 때까지(최대 3분)
         # 기다렸다가 입금처 팝업을 연다. 두 팝업을 한꺼번에 띄우면 어느 쪽부터 할지 헷갈리고, 같은 창 이름이면 서로 덮는다.
-        auto_pick = bool(getattr(self._load_settings(), "claim_auto_pick", True))
-        if claim_taxbill.wanted(data) and claim_taxbill.query_for(data):
-            report.taxbill = claim_taxbill.search(page, frame, data, self.log, wait=wait, auto_pick=auto_pick)
+        auto_pick, email = self._popup_options()
+        if claim_taxbill.wanted(data) and (claim_taxbill.query_for(data) or email):
+            report.taxbill = claim_taxbill.search(page, frame, data, self.log, wait=wait, auto_pick=auto_pick, email=email)
             if report.taxbill.ok and not report.taxbill.picked:
                 popup = claim_payee.find_popup(page.context, claim_taxbill.POPUP_PROBE_JS)
                 if popup is not None and not claim_payee.wait_closed(popup, wait):
@@ -187,8 +187,9 @@ class ErpSession:
             report = claim_taxbill.TaxbillReport(ok=False, note="일반청구 작성 화면을 찾지 못했습니다")
             self.log(report.note)
             return report
+        auto_pick, email = self._popup_options()
         return claim_taxbill.search(page, frame, data, self.log, wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)),
-                                    auto_pick=bool(getattr(self._load_settings(), "claim_auto_pick", True)))
+                                    auto_pick=auto_pick, email=email)
 
     def search_payee(self, data: dict) -> claim_payee.PayeeReport:
         """입금처 팝업만 다시 — 돋보기를 눌러 열고 거래처를 검색한다(claims/payee.py). 고르기·[확인] 은 사람."""
@@ -200,7 +201,12 @@ class ErpSession:
             self.log(report.note)
             return report
         return claim_payee.search(page, frame, data, self.log, wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)),
-                                  auto_pick=bool(getattr(self._load_settings(), "claim_auto_pick", True)))
+                                  auto_pick=self._popup_options()[0])
+
+    def _popup_options(self) -> tuple[bool, str]:
+        """팝업 설정 — (결과가 확실하면 앱이 고르나, 세금계산서 조회에 넣을 계산서수신메일)."""
+        cfg = self._load_settings()
+        return bool(getattr(cfg, "claim_auto_pick", True)), str(getattr(cfg, "taxbill_email", "") or "").strip()
 
     def save_claim_draft(self) -> claim_form.SaveReport:
         """일반청구 [저장](임시저장)을 누른다. ERP 가 띄우는 알림·확인 창은 글을 모으고 넘긴다. 신청은 누르지 않는다."""

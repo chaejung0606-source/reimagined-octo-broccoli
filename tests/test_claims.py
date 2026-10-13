@@ -304,10 +304,18 @@ from claim_downloader.claims import payee, taxbill  # noqa: E402
 class FakePopup:
     """팝업 창 — 실측된 요소(입금처: 구분 라디오·검색 칸·[검색] / 세금계산서: 구분 select·사업자번호·기간·[조회])만 안다."""
 
-    def __init__(self, kind="payee", checked="거래처", rows=3, closes_after=None, listing=None, form=None):
+    def __init__(self, kind="payee", checked="거래처", rows=3, closes_after=None, listing=None, form=None,
+                 values=None, rows_for=None, child_rows=None):
         self.kind = kind
         self.checked = checked
         self.rows = rows
+        self.values = dict(values or {})        # 팝업 칸의 현재 값 (START_DATE 기본 기간 등)
+        self.rows_for = rows_for                # {조회 조건 값: 행 수} — 조건에 따라 결과가 달라지는 흉내. None 이면 늘 rows
+        self.inquiries = []                     # [조회] 때마다 (CORP_TXT, TAX_RCV_EMAIL_V) 값
+        self.checked_boxes = []
+        if child_rows is not None:              # 결과가 자식 iframe 에 뜨는 팝업(입금처 팝업의 빈 iframe) 흉내 — 창 자체에는 행이 없다
+            self.frames = [self, _ChildView(self, child_rows)]
+            self.rows, listing = 0, None
         self.sets = []
         self.clicks = []
         self.listeners = []
@@ -333,9 +341,20 @@ class FakePopup:
             return {"ok": True}
         if js is form.SET_TEXT_JS or js is form.SET_SELECT_JS:
             self.sets.append(tuple(arg))
+            self.values[arg[0]] = arg[1]
             return {"ok": True, "now": arg[1]}
+        if js is form.STATE_JS:
+            return {i: {"value": self.values.get(i, "")} for i in arg}
+        if js is taxbill.CHECK_BOX_JS:
+            self.checked_boxes.append(arg)
+            self.clicks.append("check:" + arg)
+            return {"ok": True, "checked": True}
         if js is payee.CLICK_ID_JS:
             self.clicks.append(arg)
+            if arg == taxbill.INQUIRY_BUTTON_ID:
+                self.inquiries.append((self.values.get(taxbill.BIZNO_TEXT_ID, ""), self.values.get(taxbill.EMAIL_TEXT_ID, "")))
+                if self.rows_for is not None:
+                    self.rows = self.rows_for.get(self.values.get(taxbill.BIZNO_TEXT_ID, ""), 0)
             if arg in (payee.CONFIRM_BUTTON_ID, taxbill.CONFIRM_BUTTON_ID) and self.picked is not None and self.form is not None:
                 self.form.apply(self.listing[self.picked])   # ERP 의 callback 흉내 — 작성 화면에 들어간다
                 self.closed = True
@@ -361,6 +380,25 @@ class FakePopup:
         if self.closes_after is not None and self.asked > self.closes_after:
             self.closed = True
         return self.closed
+
+
+class _ChildView:
+    """팝업 안의 자식 프레임 — 결과 목록만 들고 있다."""
+
+    def __init__(self, popup, listing):
+        self.popup, self.listing = popup, listing
+
+    def evaluate(self, js, arg=None):
+        if js is payee.RESULT_COUNT_JS:
+            return {"rows": len(self.listing), "kind": "grid" if self.listing else "unknown"}
+        if js is payee.ROWS_JS:
+            return {"kind": "grid", "rows": self.listing}
+        if js is payee.PICK_ROW_JS:
+            self.popup.picked = arg
+            self.popup.listing = self.listing
+            self.popup.clicks.append(f"row:{arg}")
+            return {"ok": True, "how": "선택 칸"}
+        raise AssertionError("자식 프레임이 모르는 JS")
 
 
 class FakeContext:
@@ -462,6 +500,9 @@ def test_taxbill_search_uses_bizno_and_period_and_only_select_inquiry():
     data = {"evidence": "세금계산서", "payeeBizNo": "123-45-67890", "payeeName": "코웨이", "expenseDate": "2026-09-30"}
     assert taxbill.wanted(data) and taxbill.query_for(data) == "1234567890"
     assert taxbill.start_date_for(data) == "2026-08-30"
+    assert taxbill.start_date_for(data, "2026-07-13") == "2026-07-13"        # 팝업 기본 기간이 더 넓으면 좁히지 않는다
+    assert taxbill.start_date_for(data, "2026-09-15") == "2026-08-30"        # 기본이 더 좁으면 31일 전으로 넓힌다
+    assert taxbill.bizno_forms("123-45-67890") == ["1234567890", "123-45-67890"] and taxbill.bizno_forms("12") == []
     report = taxbill.search(page, frame, data, lambda m: None, wait=lambda s: None, auto_pick=False)
     assert report.ok and report.rows == 1 and not report.picked
     assert frame.clicks == [taxbill.SELECT_LINK_ID] and popup.clicks == [taxbill.INQUIRY_BUTTON_ID]
@@ -572,3 +613,76 @@ def test_taxbill_search_auto_picks_and_confirms_when_sure():
     popup = FakePopup(kind="taxbill", listing=_rows("2026-09-30 코웨이 30,000"), form=FakeFormFrame())
     report = taxbill.search(FakePage(popup), FakeFormFrame(), data, lambda m: None, wait=lambda s: None)
     assert report.ok and not report.picked and taxbill.CONFIRM_BUTTON_ID not in popup.clicks
+
+
+def _grid_rows(*cells_list):
+    """실측(2026-10-13) 세금계산서 그리드처럼 열 값(k_*)이 있는 행."""
+    return [{"index": i, "text": " ".join(str(v) for v in c.values()), "titles": "", "pick": True, "cells": c,
+             "bill": f"TB{i}", "date": c.get(taxbill.COL_DATE, "")} for i, c in enumerate(cells_list)]
+
+
+def _bill(no="578-86-00021", total=51900, supply=47182, date="2026-09-30", bal=None, mail="me@kangwon.ac.kr"):
+    return {taxbill.COL_SELLER_NO: no, taxbill.COL_SELLER_NM: "코웨이", taxbill.COL_TOTAL: str(total), taxbill.COL_SUPPLY: str(supply),
+            taxbill.COL_DATE: date, taxbill.COL_BALANCE: str(total if bal is None else bal), taxbill.COL_EMAIL: mail}
+
+
+def test_taxbill_match_uses_grid_columns_when_present():
+    """열 값이 있으면 공급자 사업자번호 → 잔액 0 제외 → 합계/공급가액 → 수신메일 → 작성일자 순으로 좁힌다 (실측 그리드 기준)."""
+    data = {"amount": 51900, "supplyAmount": 47182, "expenseDate": "2026-09-30", "payeeBizNo": "578-86-00021"}
+    rows = _grid_rows(_bill(no="111-11-11111"), _bill(), _bill(total=30000, supply=27273))
+    assert taxbill.match(rows, data) == (1, "사업자번호·금액 일치")
+    # 사업자번호가 맞는 행이 없으면 금액이 맞아도 고르지 않는다
+    assert taxbill.match(_grid_rows(_bill(no="111-11-11111")), data)[0] is None
+    # 이미 다 청구된 계산서(잔액 0)는 뺀다 — 남는 하나를 고른다. 전부 청구됐으면 사람에게
+    assert taxbill.match(_grid_rows(_bill(bal=0), _bill()), data) == (1, "사업자번호·금액 일치")
+    index, why = taxbill.match(_grid_rows(_bill(bal=0)), data)
+    assert index is None and "이미 모두 청구" in why
+    # 같은 금액이 둘이면 수신메일이 내 것인 행 → 그래도 둘이면 작성일자
+    rows = _grid_rows(_bill(mail="other@kangwon.ac.kr"), _bill(mail="me@kangwon.ac.kr"))
+    assert taxbill.match(rows, data, email="me@kangwon.ac.kr") == (1, "사업자번호·금액·수신메일 일치")
+    rows = _grid_rows(_bill(date="2026-08-30"), _bill(date="2026-09-30"))
+    assert taxbill.match(rows, data, email="me@kangwon.ac.kr") == (1, "사업자번호·금액·일자 일치")
+    index, why = taxbill.match(_grid_rows(_bill(), _bill()), data, email="me@kangwon.ac.kr")
+    assert index is None and "2개" in why
+    # 공급가액만 맞아도(세액 계산이 달라도) 고른다. 사업자번호를 모르면 금액만으로
+    assert taxbill.match(_grid_rows(_bill(total=51910)), data) == (0, "사업자번호·금액 일치")
+    assert taxbill.match(_grid_rows(_bill()), {"amount": 51900}) == (0, "금액 일치")
+    # 25행 이상인데 못 찾으면 가상 스크롤 때문일 수 있다고 알린다
+    many = _grid_rows(*[_bill(total=1, supply=1) for _ in range(26)])
+    assert "다 읽지 못했을 수 있음" in taxbill.match(many, data)[1]
+
+
+def test_taxbill_search_filters_by_my_email_and_retries_bizno_format():
+    """계산서수신메일을 켜고 내 메일을 넣은 뒤 조회한다. 숫자만 넣어 0행이면 하이픈 형식으로, 그래도 0행이면 메일로만 다시 조회한다."""
+    data = {"evidence": "세금계산서", "payeeBizNo": "578-86-00021", "amount": 51900, "expenseDate": "2026-09-30"}
+    frame = FakeFormFrame()
+    popup = FakePopup(kind="taxbill", values={"START_DATE": "2026-07-13"}, rows_for={"578-86-00021": 1}, listing=_grid_rows(_bill()), form=frame)
+    logs = []
+    report = taxbill.search(FakePage(popup), frame, data, logs.append, wait=lambda s: None, email="me@kangwon.ac.kr")
+    assert popup.checked_boxes == [taxbill.EMAIL_CHECK_ID] and (taxbill.EMAIL_TEXT_ID, "me@kangwon.ac.kr") in popup.sets
+    assert popup.inquiries == [("5788600021", "me@kangwon.ac.kr"), ("578-86-00021", "me@kangwon.ac.kr")]
+    assert report.ok and report.rows == 1 and report.query == "578-86-00021" and report.picked
+    assert not any(i == taxbill.START_DATE_ID for i, _ in popup.sets)      # 기본 3개월이 31일보다 넓으니 그대로
+    # 두 형식 다 0행이면 번호를 비우고 메일로만 — 사람이 볼 목록을 남긴다
+    popup = FakePopup(kind="taxbill", rows_for={"": 7}, form=FakeFormFrame())
+    report = taxbill.search(FakePage(popup), FakeFormFrame(), data, lambda m: None, wait=lambda s: None, email="me@kangwon.ac.kr")
+    assert [q for q, _ in popup.inquiries] == ["5788600021", "578-86-00021", ""] and report.ok and report.rows == 7 and not report.picked
+    # 메일이 없으면 체크를 건드리지 않고 번호로만 (형식 재시도까지만)
+    popup = FakePopup(kind="taxbill", rows_for={}, form=FakeFormFrame())
+    report = taxbill.search(FakePage(popup), FakeFormFrame(), data, lambda m: None, wait=lambda s: None)
+    assert popup.checked_boxes == [] and [q for q, _ in popup.inquiries] == ["5788600021", "578-86-00021"] and report.ok and report.rows == 0
+    # 번호도 이름도 없지만 메일은 있으면 메일로만 조회한다
+    popup = FakePopup(kind="taxbill", rows=4, form=FakeFormFrame())
+    report = taxbill.search(FakePage(popup), FakeFormFrame(), {"evidence": "세금계산서"}, lambda m: None, wait=lambda s: None,
+                            email="me@kangwon.ac.kr", auto_pick=False)
+    assert report.ok and report.rows == 4 and popup.inquiries == [("", "me@kangwon.ac.kr")]
+
+
+def test_payee_pick_reads_rows_from_a_child_frame():
+    """입금처 팝업에는 빈 iframe 이 하나 더 있다(실측) — 결과가 그 안에 뜨더라도 읽고 고른다."""
+    frame = FakeFormFrame()
+    listing = [{"index": 0, "text": "코웨이(주) 123-45-67890", "titles": "", "pick": True, "rcv": "코웨이(주)"}]
+    popup = FakePopup(child_rows=listing, form=frame)
+    report = payee.search(FakePage(popup), frame, {"payeeName": "코웨이(주)", "payeeBizNo": "123-45-67890"}, lambda m: None, wait=lambda s: None)
+    assert report.ok and report.rows == 1 and report.picked and report.chosen == "코웨이(주)"
+    assert popup.clicks == [payee.SEARCH_BUTTON_ID, "row:0", payee.CONFIRM_BUTTON_ID]

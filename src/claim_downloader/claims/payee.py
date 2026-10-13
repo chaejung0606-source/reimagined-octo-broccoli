@@ -59,9 +59,18 @@ _ROWS_SNIPPET = """
   }
 """
 ROWS_JS = "() => {" + _ROWS_SNIPPET + """
+  // 열 값 — JGM 셀의 class 가 k_열이름 (실측: 세금계산서 팝업 k_SELR_CORP_NO · k_TOTL_AMT …). title 이 원본 값(콤마 없는 숫자)이다
+  const cells = r => {
+    const out = {};
+    r.querySelectorAll('[class*="k_"]').forEach(c => {
+      const key = (c.className.match(/(?:^|\\s)(k_[A-Za-z0-9_]+)/) || [])[1];
+      if (key && !(key in out)) out[key] = (c.getAttribute('title') || txt(c)).slice(0, 120);
+    });
+    return out;
+  };
   return {kind, rows: rows.map((r, i) => ({index: i, text: txt(r).slice(0, 300),
     titles: Array.from(r.querySelectorAll('[title]')).map(e => e.getAttribute('title') || '').join(' ').slice(0, 300),
-    pick: !!r.querySelector('input[type=radio], input[type=checkbox]')}))};
+    pick: !!r.querySelector('input[type=radio], input[type=checkbox]'), cells: cells(r)}))};
 }"""
 # 행 하나 고르기 — 행 안의 선택 칸(라디오·체크)을 누르고, 없으면 첫 셀을 누른다(JGM 은 행 클릭으로도 고른다).
 PICK_ROW_JS = "(index) => {" + _ROWS_SNIPPET + """
@@ -109,7 +118,10 @@ RESULT_COUNT_JS = """() => {
     const body = Array.from(t.querySelectorAll('tbody tr, tr')).filter(tr => vis(tr) && !tr.querySelector('th') && tr.children.length >= 2);
     best = Math.max(best, body.length);
   });
-  return {rows: best, kind: best ? 'table' : 'unknown'};
+  if (best) return {rows: best, kind: 'table'};
+  // 머리글(k_열이름 셀)만 있고 행이 없는 JGM 그리드 — 조회 결과 0행 (실측: 세금계산서 팝업은 조회 전엔 그리드 자체가 없다)
+  if (document.querySelector('[class*="k_"]')) return {rows: 0, kind: 'grid'};
+  return {rows: 0, kind: 'unknown'};
 }"""
 
 
@@ -175,8 +187,9 @@ def match(rows: list[dict], data: dict) -> tuple[int | None, str]:
 
 def pick(popup, frame, data: dict, log: Callable[[str], None], wait: Callable[[float], None] = time.sleep) -> tuple[bool, str, str]:
     """검색 결과에서 확실한 행을 골라 [확인] 을 누르고 작성 화면의 입금처가 채워졌는지 본다. (골랐나, 근거/이유, 들어간 이름)."""
+    _, where = count_rows(popup)
     try:
-        listing = popup.evaluate(ROWS_JS)
+        listing = where.evaluate(ROWS_JS)
     except Exception as error:  # noqa: BLE001
         return False, "결과 목록을 읽지 못함: " + (str(error).splitlines()[0][:80] if str(error) else ""), ""
     index, why = match(list(listing.get("rows") or []), data)
@@ -184,7 +197,7 @@ def pick(popup, frame, data: dict, log: Callable[[str], None], wait: Callable[[f
         log("입금처 자동 선택 안 함: " + why)
         return False, why, ""
     before = (read_state(frame, ["RCV_NM"]).get("RCV_NM") or {}).get("value", "")
-    chosen = popup.evaluate(PICK_ROW_JS, index)
+    chosen = where.evaluate(PICK_ROW_JS, index)
     if not chosen.get("ok"):
         return False, "행을 고르지 못함: " + str(chosen.get("why", "")), ""
     wait(0.3)
@@ -245,6 +258,44 @@ def open_popup(page, frame, button_id: str, probe_js: str, log: Callable[[str], 
         return None, (str(error).splitlines()[0][:120] if str(error) else "팝업이 열리지 않았습니다")
 
 
+def _frames(popup) -> list:
+    """팝업 창의 프레임들 — 첫째가 창 자체. 입금처 팝업에는 빈 iframe 이 하나 더 있어(실측 2026-10-13) 결과가 거기 뜰 수도 있다."""
+    try:
+        frames = list(popup.frames)
+    except Exception:  # noqa: BLE001 — 가짜 객체나 닫힌 창
+        frames = []
+    main = getattr(popup, "main_frame", None)       # Playwright 의 page.frames[0] 는 창 자체(main_frame)와 같은 문서
+    return [popup] + [f for f in frames if f is not popup and f is not main]
+
+
+def count_rows(popup) -> tuple[int | None, object]:
+    """결과 행 수와 그 행이 있는 프레임. 어느 프레임에도 목록이 없으면 (None, 창)."""
+    best, where = None, popup
+    for fr in _frames(popup):
+        try:
+            counted = fr.evaluate(RESULT_COUNT_JS)
+        except Exception:  # noqa: BLE001 — 아직 로딩 중인 프레임
+            continue
+        if counted.get("kind") == "unknown":
+            continue
+        rows = int(counted.get("rows") or 0)
+        if best is None or rows > best:
+            best, where = rows, fr
+    return best, where
+
+
+def wait_rows(popup, wait: Callable[[float], None], seconds: float = 6.0) -> tuple[int | None, object]:
+    """[검색]/[조회] 뒤 결과가 올 때까지(행이 하나라도 보일 때까지) 기다린다. 끝까지 안 오면 그때의 수(0 또는 None)."""
+    found: dict = {}
+
+    def check() -> bool:
+        found["rows"], found["frame"] = count_rows(popup)
+        return bool(found["rows"])
+
+    wait_until(check, wait, tries=max(1, int(seconds / 0.5)), step=0.5)
+    return found.get("rows"), found.get("frame", popup)
+
+
 def wait_closed(popup, wait: Callable[[float], None], seconds: float = 180.0) -> bool:
     """사람이 팝업에서 고르고 [확인] 을 눌러 창이 닫힐 때까지 기다린다. 시간이 다 되면 False."""
     return wait_until(lambda: popup.is_closed(), wait, tries=max(1, int(seconds / 0.5)), step=0.5)
@@ -296,12 +347,7 @@ def search(page, frame, data: dict, log: Callable[[str], None],
         if not clicked.get("ok"):
             report.note = "[검색] 을 누르지 못했습니다: " + str(clicked.get("why", ""))
             return report
-        wait(1.5)                                   # 결과가 서버에서 온다
-        try:
-            counted = popup.evaluate(RESULT_COUNT_JS)
-            report.rows = int(counted.get("rows")) if counted.get("kind") != "unknown" else None
-        except Exception:  # noqa: BLE001 — 세지 못해도 검색은 됐다
-            report.rows = None
+        report.rows, _ = wait_rows(popup, wait)     # 결과가 서버에서 온다 — 행이 보일 때까지(최대 6초)
         report.ok = True
         log("입금처 검색: '%s' → %s" % (query, f"{report.rows}행" if report.rows is not None else "결과 수 모름"))
         if auto_pick:

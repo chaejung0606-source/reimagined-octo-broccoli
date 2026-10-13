@@ -121,6 +121,18 @@ class SettingsPage(QWidget):
         excel_card.add(self.excel_field)
         column.addWidget(excel_card)
 
+        # 일반청구 — 세금계산서 조회 팝업에는 산학협력단 전체 계산서가 다 떠서, 내 계산서수신메일로 걸러야 내 건만 보인다
+        # (담당자 설명 2026-10-13). 사람마다 다른 값이라 코드에 두지 않고 여기서 받는다.
+        claim_card = Card("일반청구", "세금계산서 건을 ERP 에 채울 때 씁니다")
+        self.taxbill_email = QLineEdit(getattr(cfg, "taxbill_email", "") or "")
+        self.taxbill_email.setPlaceholderText("예: 홍길동@kangwon.ac.kr")
+        self.taxbill_email.editingFinished.connect(
+            lambda: self._save(taxbill_email=self.taxbill_email.text().strip()))
+        claim_card.add(Field(
+            "계산서수신메일", self.taxbill_email,
+            "세금계산서 조회 팝업의 '계산서수신메일' 에 넣을 내 메일. 비우면 메일 없이 거래처 사업자번호로만 조회합니다."))
+        column.addWidget(claim_card)
+
         # 동작
         behave = Card("동작", "받는 방식을 조절합니다", art="settings")
         self.freeze = QCheckBox("상세화면이 멈추면 ERP 를 새로 열고, 다시 로그인한 뒤 같은 건부터 이어받기 (건당 최대 2번)")

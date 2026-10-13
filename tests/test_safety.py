@@ -103,7 +103,10 @@ def test_payee_popup_presses_only_search_pick_and_confirm():
 def test_taxbill_popup_presses_only_select_inquiry_pick_and_confirm():
     """세금계산서 조회 팝업(claims/taxbill.py)은 [선택] · [조회] · 고른 행 · [확인] 만 누른다 — [등록] · XML 등록은 아니다."""
     text = (SRC / "claims" / "taxbill.py").read_text(encoding="utf-8")
-    assert ".click(" not in text                                         # 누르는 JS 는 payee 의 것을 빌려 쓴다
+    # 누르는 JS 는 payee 의 것을 빌려 쓴다. 이 파일의 .click( 은 '계산서수신메일' 체크 하나뿐(CHECK_BOX_JS) 이고 EMAIL_CHECK_ID 로만 부른다
+    assert text.count(".click(") == 1 and ".click(" in text.split("CHECK_BOX_JS = ", 1)[1].split('"""', 2)[1]
+    assert set(re.findall(r"evaluate\(CHECK_BOX_JS,\s*([A-Za-z_]+)\)", text)) == {"EMAIL_CHECK_ID"}
+    assert 'EMAIL_CHECK_ID = "self_enter"' in text
     assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", text)) == {"INQUIRY_BUTTON_ID", "CONFIRM_BUTTON_ID"}
     assert re.findall(r"open_popup\(page, frame, ([A-Z_]+),", text) == ["SELECT_LINK_ID"]
     assert 'SELECT_LINK_ID = "onlyEvdiDivList"' in text and 'INQUIRY_BUTTON_ID = "btn_inquiry"' in text and 'CONFIRM_BUTTON_ID = "btn_out"' in text
