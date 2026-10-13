@@ -23,6 +23,9 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 APP_DIR_NAME = ".claim-downloader"
+# 윈도우 작업 표시줄이 창과 바로가기를 한 단추로 묶는 이름. 앱(ui/app.py)과 바로가기(tools/create_shortcut.py)가
+# 같은 값을 써야 고정한 바로가기와 실행 중인 창이 하나로 보인다. 바꾸면 담당자가 다시 고정해야 한다.
+APP_USER_MODEL_ID = "Kangwon.COSS.WorkDesk"
 ERP_URL = "https://knu-icf.kangwon.ac.kr/rderp_layoutMain.act"
 
 

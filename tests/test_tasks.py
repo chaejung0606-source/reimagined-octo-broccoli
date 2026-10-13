@@ -62,3 +62,13 @@ def test_dock_overlay_is_raised_whenever_the_page_changes():
     """
     source = (UI / "app.py").read_text(encoding="utf-8")
     assert re.search(r"currentChanged\.connect\(.*dock_overlay\.raise_\(\)", source)
+
+
+def test_taskbar_identity_is_shared_by_app_and_shortcut():
+    """창(app.py)과 바로가기(create_shortcut.py)가 같은 작업 표시줄 이름을 써야 한 단추로 묶인다."""
+    from claim_downloader import settings
+    app_source = (UI / "app.py").read_text(encoding="utf-8")
+    tool_source = (UI.parents[2] / "tools" / "create_shortcut.py").read_text(encoding="utf-8")
+    assert "settings.APP_USER_MODEL_ID" in app_source and "SetCurrentProcessExplicitAppUserModelID" in app_source
+    assert "APP_USER_MODEL_ID as APP_ID" in tool_source and settings.APP_USER_MODEL_ID in tool_source
+    assert "9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3" in tool_source      # PKEY_AppUserModel_ID
