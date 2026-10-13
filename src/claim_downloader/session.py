@@ -166,15 +166,16 @@ class ErpSession:
             return report
         # 칸을 다 넣었으면 팝업을 차례로 — 고르기·[확인] 은 사람(1차). 세금계산서 팝업을 사람이 닫을 때까지(최대 3분)
         # 기다렸다가 입금처 팝업을 연다. 두 팝업을 한꺼번에 띄우면 어느 쪽부터 할지 헷갈리고, 같은 창 이름이면 서로 덮는다.
+        auto_pick = bool(getattr(self._load_settings(), "claim_auto_pick", True))
         if claim_taxbill.wanted(data) and claim_taxbill.query_for(data):
-            report.taxbill = claim_taxbill.search(page, frame, data, self.log, wait=wait)
-            if report.taxbill.ok:
+            report.taxbill = claim_taxbill.search(page, frame, data, self.log, wait=wait, auto_pick=auto_pick)
+            if report.taxbill.ok and not report.taxbill.picked:
                 popup = claim_payee.find_popup(page.context, claim_taxbill.POPUP_PROBE_JS)
                 if popup is not None and not claim_payee.wait_closed(popup, wait):
                     self.log("세금계산서 팝업이 아직 열려 있어 입금처 검색은 건너뜁니다 — 고른 뒤 [입금처 찾기] 를 누르세요")
                     return report
         if claim_payee.query_for(data):
-            report.payee = claim_payee.search(page, frame, data, self.log, wait=wait)
+            report.payee = claim_payee.search(page, frame, data, self.log, wait=wait, auto_pick=auto_pick)
         return report
 
     def search_taxbill(self, data: dict) -> claim_taxbill.TaxbillReport:
@@ -186,8 +187,8 @@ class ErpSession:
             report = claim_taxbill.TaxbillReport(ok=False, note="일반청구 작성 화면을 찾지 못했습니다")
             self.log(report.note)
             return report
-        return claim_taxbill.search(page, frame, data, self.log,
-                                    wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)))
+        return claim_taxbill.search(page, frame, data, self.log, wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)),
+                                    auto_pick=bool(getattr(self._load_settings(), "claim_auto_pick", True)))
 
     def search_payee(self, data: dict) -> claim_payee.PayeeReport:
         """입금처 팝업만 다시 — 돋보기를 눌러 열고 거래처를 검색한다(claims/payee.py). 고르기·[확인] 은 사람."""
@@ -198,8 +199,8 @@ class ErpSession:
             report = claim_payee.PayeeReport(ok=False, note="일반청구 작성 화면을 찾지 못했습니다")
             self.log(report.note)
             return report
-        return claim_payee.search(page, frame, data, self.log,
-                                  wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)))
+        return claim_payee.search(page, frame, data, self.log, wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)),
+                                  auto_pick=bool(getattr(self._load_settings(), "claim_auto_pick", True)))
 
     def save_claim_draft(self) -> claim_form.SaveReport:
         """일반청구 [저장](임시저장)을 누른다. ERP 가 띄우는 알림·확인 창은 글을 모으고 넘긴다. 신청은 누르지 않는다."""

@@ -375,6 +375,13 @@ class ClaimPage(QWidget):
         self.dry_run.setToolTip("체크돼 있으면 ERP 에 넣지 않고 무엇을 넣을지만 보여 줍니다. 풀면 실제로 채웁니다 (저장·신청은 그래도 직접).")
         self.dry_run.toggled.connect(lambda _c: self._sync_buttons())
         row.addWidget(self.dry_run)
+        # 팝업(세금계산서·입금처)에서 결과가 하나로 확실하면 앱이 골라 [확인] 까지 — 애매하면 사람 (담당자 결정 2026-10-13)
+        self.auto_pick = QCheckBox("팝업 자동 선택")
+        self.auto_pick.setChecked(bool(settings.load().claim_auto_pick))
+        self.auto_pick.setToolTip("세금계산서·입금처 팝업에서 사업자번호·금액이 맞는 결과가 하나뿐이면 앱이 고르고 [확인] 까지 누릅니다.\n"
+                                  "여러 개이거나 정보가 모자라면 고르지 않고 두므로 직접 고르세요.")
+        self.auto_pick.toggled.connect(lambda on: settings.update(claim_auto_pick=bool(on)))
+        row.addWidget(self.auto_pick)
         self.fill_button = QPushButton("ERP 에 채우기")
         self.fill_button.setObjectName("primary")
         self.fill_button.clicked.connect(self._fill)
@@ -747,10 +754,13 @@ class ClaimPage(QWidget):
             record.remember(self._dirs[row], self._data[row])
             self._set_status(row, "filled")
             payee_ok = report.payee is not None and report.payee.ok
+            payee_done = payee_ok and report.payee.picked
             taxbill_ok = report.taxbill is not None and report.taxbill.ok
-            if payee_ok:
+            if payee_done:
+                guide = "입금처까지 들어갔습니다. 첨부를 넣고 값을 확인한 뒤 앱의 [임시저장] 을 누르세요."
+            elif payee_ok:
                 guide = "입금처 팝업에서 거래처를 고르고 [확인] 을 누른 뒤, 첨부를 넣고 앱의 [임시저장] 을 누르세요."
-            elif taxbill_ok:
+            elif taxbill_ok and not report.taxbill.picked:
                 guide = "세금계산서 팝업에서 계산서를 고르고 [확인] 을 누른 뒤 [입금처 찾기] 를 누르세요."
             else:
                 guide = "ERP 화면에서 입금처(돋보기)·첨부를 넣고 값을 확인한 뒤 앱의 [임시저장] 을 누르세요."
@@ -801,7 +811,9 @@ class ClaimPage(QWidget):
         text = "\n".join(report.lines())
         self._append_log(text)
         if report.ok:
-            self._set_state("세금계산서 조회", "success", "팝업 목록에서 계산서를 고르고 [확인] 을 누른 뒤 [입금처 찾기] 를 누르세요.")
+            self._set_state("세금계산서 조회", "success",
+                            "계산서가 들어갔습니다. 이어서 [입금처 찾기] 를 누르세요." if report.picked
+                            else "팝업 목록에서 계산서를 고르고 [확인] 을 누른 뒤 [입금처 찾기] 를 누르세요.")
             QMessageBox.information(self, "세금계산서 찾기", text)
         else:
             self._set_state("세금계산서 못 찾음", "warning", report.note or "증빙 [선택] 을 직접 눌러 골라 주세요.")
@@ -812,7 +824,9 @@ class ClaimPage(QWidget):
         text = "\n".join(report.lines())
         self._append_log(text)
         if report.ok:
-            self._set_state("입금처 검색", "success", "팝업 목록에서 거래처를 고르고 [확인] 을 누른 뒤 [임시저장] 을 누르세요.")
+            self._set_state("입금처 검색", "success",
+                            "입금처가 들어갔습니다. 첨부를 넣고 [임시저장] 을 누르세요." if report.picked
+                            else "팝업 목록에서 거래처를 고르고 [확인] 을 누른 뒤 [임시저장] 을 누르세요.")
             QMessageBox.information(self, "입금처 찾기", text)
         else:
             self._set_state("입금처 못 찾음", "warning", report.note or "돋보기를 직접 눌러 입금처를 골라 주세요.")

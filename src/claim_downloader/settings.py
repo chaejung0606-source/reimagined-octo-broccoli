@@ -43,6 +43,8 @@ class Settings:
     claude_email: str = ""
     minutes_backend: str = "claude-cli"   # minutes/backends 의 key
     minutes_model: str = ""               # 비우면 백엔드의 기본 모델
+    # 일반청구 팝업(입금처·세금계산서)에서 결과가 하나로 확실하면 앱이 골라 [확인]까지 누른다. 애매하면 사람(담당자 결정 2026-10-13).
+    claim_auto_pick: bool = True
 
 
 def data_dir() -> Path:

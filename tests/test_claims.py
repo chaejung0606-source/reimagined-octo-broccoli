@@ -304,7 +304,7 @@ from claim_downloader.claims import payee, taxbill  # noqa: E402
 class FakePopup:
     """팝업 창 — 실측된 요소(입금처: 구분 라디오·검색 칸·[검색] / 세금계산서: 구분 select·사업자번호·기간·[조회])만 안다."""
 
-    def __init__(self, kind="payee", checked="거래처", rows=3, closes_after=None):
+    def __init__(self, kind="payee", checked="거래처", rows=3, closes_after=None, listing=None, form=None):
         self.kind = kind
         self.checked = checked
         self.rows = rows
@@ -314,6 +314,9 @@ class FakePopup:
         self.closed = False
         self.closes_after = closes_after        # wait_closed 가 이만큼 물어본 뒤 닫힌 것으로
         self.asked = 0
+        self.listing = listing or []            # 결과 목록 행 [{index, text, titles, pick}]
+        self.form = form                        # FakeFormFrame — [확인] 을 누르면 작성 화면에 반영한다
+        self.picked = None
 
     def evaluate(self, js, arg=None):
         if js is payee.POPUP_PROBE_JS:
@@ -333,9 +336,18 @@ class FakePopup:
             return {"ok": True, "now": arg[1]}
         if js is payee.CLICK_ID_JS:
             self.clicks.append(arg)
+            if arg in (payee.CONFIRM_BUTTON_ID, taxbill.CONFIRM_BUTTON_ID) and self.picked is not None and self.form is not None:
+                self.form.apply(self.listing[self.picked])   # ERP 의 callback 흉내 — 작성 화면에 들어간다
+                self.closed = True
             return {"ok": True}
         if js is payee.RESULT_COUNT_JS:
             return {"rows": self.rows, "kind": "grid"}
+        if js is payee.ROWS_JS:
+            return {"kind": "grid", "rows": self.listing}
+        if js is payee.PICK_ROW_JS:
+            self.picked = arg
+            self.clicks.append(f"row:{arg}")
+            return {"ok": True, "how": "선택 칸"}
         raise AssertionError("모르는 JS")
 
     def on(self, event, handler):
@@ -390,6 +402,15 @@ class FakeFormFrame:
     def __init__(self, link_visible=True):
         self.clicks = []
         self.link_visible = link_visible
+        self.values = {"RCV_NM": "", "TAXBILL_SEQ_NO": "", "EXP_DT": "2026-10-13", "BUY_WHERE": ""}
+
+    def apply(self, row):
+        """팝업 [확인] 의 callback 흉내."""
+        if "rcv" in row:
+            self.values["RCV_NM"] = row["rcv"]
+        if "bill" in row:
+            self.values["TAXBILL_SEQ_NO"] = row["bill"]
+            self.values["EXP_DT"] = row.get("date", self.values["EXP_DT"])
 
     def evaluate(self, js, arg=None):
         if js is payee.CLICK_ID_JS:
@@ -397,6 +418,8 @@ class FakeFormFrame:
             return {"ok": True}
         if js is taxbill.LINK_VISIBLE_JS:
             return self.link_visible
+        if js is form.STATE_JS:
+            return {i: {"tag": "input", "value": self.values.get(i, "")} for i in arg}
         raise AssertionError("모르는 JS")
 
 
@@ -404,8 +427,8 @@ def test_payee_search_opens_popup_and_searches_only_with_allowed_buttons():
     popup = FakePopup(checked="참여인력")
     page, frame = FakePage(popup), FakeFormFrame()
     logs = []
-    report = payee.search(page, frame, {"payeeName": "코웨이(주)"}, logs.append, wait=lambda s: None)
-    assert report.ok and report.query == "코웨이(주)" and report.rows == 3
+    report = payee.search(page, frame, {"payeeName": "코웨이(주)"}, logs.append, wait=lambda s: None, auto_pick=False)
+    assert report.ok and report.query == "코웨이(주)" and report.rows == 3 and not report.picked
     assert frame.clicks == [payee.OPEN_BUTTON_ID] and page.opened == 1
     assert popup.clicks == ["radio:거래처", payee.SEARCH_BUTTON_ID]
     assert popup.sets == [(payee.SEARCH_TEXT_ID, "코웨이(주)")]
@@ -417,7 +440,7 @@ def test_payee_search_opens_popup_and_searches_only_with_allowed_buttons():
 def test_payee_search_reuses_open_popup_and_reports_failures():
     popup = FakePopup()
     page, frame = FakePage(popup, already_open=True), FakeFormFrame()
-    report = payee.search(page, frame, {"payeeName": "", "payeeBizNo": "123-45-67890"}, lambda m: None, wait=lambda s: None)
+    report = payee.search(page, frame, {"payeeName": "", "payeeBizNo": "123-45-67890"}, lambda m: None, wait=lambda s: None, auto_pick=False)
     assert report.ok and report.query == "1234567890" and frame.clicks == [] and page.opened == 0
 
     page, frame = FakePage(FakePopup(), opens=False), FakeFormFrame()
@@ -439,8 +462,8 @@ def test_taxbill_search_uses_bizno_and_period_and_only_select_inquiry():
     data = {"evidence": "세금계산서", "payeeBizNo": "123-45-67890", "payeeName": "코웨이", "expenseDate": "2026-09-30"}
     assert taxbill.wanted(data) and taxbill.query_for(data) == "1234567890"
     assert taxbill.start_date_for(data) == "2026-08-30"
-    report = taxbill.search(page, frame, data, lambda m: None, wait=lambda s: None)
-    assert report.ok and report.rows == 1
+    report = taxbill.search(page, frame, data, lambda m: None, wait=lambda s: None, auto_pick=False)
+    assert report.ok and report.rows == 1 and not report.picked
     assert frame.clicks == [taxbill.SELECT_LINK_ID] and popup.clicks == [taxbill.INQUIRY_BUTTON_ID]
     assert (taxbill.SELLER_SELECT_ID, "공급자") in popup.sets
     assert (taxbill.BIZNO_TEXT_ID, "1234567890") in popup.sets and (taxbill.START_DATE_ID, "2026-08-30") in popup.sets
@@ -449,7 +472,7 @@ def test_taxbill_search_uses_bizno_and_period_and_only_select_inquiry():
 
     # 사업자번호가 없으면 거래처 이름으로, [선택] 이 안 보이면(증빙구분이 다름) 열지 않는다
     popup = FakePopup(kind="taxbill")
-    report = taxbill.search(FakePage(popup), FakeFormFrame(), {"evidence": "세금계산서", "payeeName": "코웨이"}, lambda m: None, wait=lambda s: None)
+    report = taxbill.search(FakePage(popup), FakeFormFrame(), {"evidence": "세금계산서", "payeeName": "코웨이"}, lambda m: None, wait=lambda s: None, auto_pick=False)
     assert report.ok and (taxbill.NAME_TEXT_ID, "코웨이") in popup.sets and not any(i == taxbill.SELLER_SELECT_ID for i, _ in popup.sets)
     frame = FakeFormFrame(link_visible=False)
     report = taxbill.search(FakePage(FakePopup(kind="taxbill")), frame, data, lambda m: None, wait=lambda s: None)
@@ -487,3 +510,65 @@ def test_taxbill_locks_expense_date_so_fill_skips_it():
     assert date.ok and "세금계산서" in date.note and report.ok
     report = form.fill(LockedDate(), schema.normalize(sample(evidence="기타")), lambda m: None, dry_run=False, wait=lambda s: None)
     assert not next(s for s in report.steps if s.label == "지출일자").ok
+
+
+# ── 자동 선택 (담당자 결정 2026-10-13: 확실하면 앱이, 애매하면 사람) ──────────
+def _rows(*texts, **extra):
+    return [{"index": i, "text": t, "titles": "", "pick": True, **extra} for i, t in enumerate(texts)]
+
+
+def test_payee_match_picks_only_an_unambiguous_row():
+    data = {"payeeName": "코웨이(주)", "payeeBizNo": "123-45-67890"}
+    assert payee.match(_rows("1 코웨이(주) 123-45-67890 활동", "2 코웨이엔텍 987-65-43210 활동"), data) == (0, "사업자번호 일치")
+    assert payee.match(_rows("1 ㈜코웨이 111-11-11111", "2 코웨이산업 222-22-22222"), {"payeeName": "코웨이"}) == (None, "상호를 담은 행이 2개 — 어느 것인지 애매함")
+    assert payee.match(_rows("1 ㈜코웨이 111-11-11111"), {"payeeName": "코웨이 주식회사"}) == (0, "상호 일치")
+    assert payee.match([], data)[0] is None
+    assert payee.match(_rows("1 다른회사 333-33-33333"), {"payeeName": "코웨이"})[0] is None
+    assert payee.match(_rows("1 코"), {"payeeName": "코"})[0] is None                   # 너무 짧은 상호
+    index, why = payee.match(_rows("1 코웨이 123-45-67890", "2 코웨이 123-45-67890"), data)
+    assert index is None and "2개" in why
+
+
+def test_taxbill_match_uses_amount_then_date():
+    data = {"amount": 51900, "supplyAmount": 47182, "expenseDate": "2026-09-30"}
+    assert taxbill.match(_rows("2026-09-30 코웨이(주) 47,182 4,718 51,900", "2026-08-31 코웨이(주) 30,000"), data) == (0, "금액 일치")
+    assert taxbill.match(_rows("2026-09-30 코웨이 51,900", "2026-08-30 코웨이 51,900"), data) == (0, "금액·일자 일치")
+    index, why = taxbill.match(_rows("20260930 코웨이 51900", "20260930 코웨이 51900"), data)
+    assert index is None and "애매" in why
+    assert taxbill.match(_rows("2026-09-30 코웨이 30,000"), data)[0] is None
+    assert taxbill.match(_rows("x"), {"amount": ""})[0] is None
+    assert taxbill.match([], data)[0] is None
+
+
+def test_payee_search_auto_picks_and_confirms_when_sure():
+    frame = FakeFormFrame()
+    listing = [{"index": 0, "text": "코웨이(주) 123-45-67890", "titles": "", "pick": True, "rcv": "코웨이(주)"},
+               {"index": 1, "text": "코웨이엔텍 987-65-43210", "titles": "", "pick": True, "rcv": "코웨이엔텍"}]
+    popup = FakePopup(listing=listing, form=frame)
+    logs = []
+    report = payee.search(FakePage(popup), frame, {"payeeName": "코웨이(주)", "payeeBizNo": "123-45-67890"}, logs.append, wait=lambda s: None)
+    assert report.ok and report.picked and report.chosen == "코웨이(주)" and report.pick_note == "사업자번호 일치"
+    assert popup.clicks == [payee.SEARCH_BUTTON_ID, "row:0", payee.CONFIRM_BUTTON_ID] and popup.closed
+    assert "골라 [확인] 까지" in report.lines()[0]
+    # 애매하면 [확인] 을 누르지 않는다
+    popup = FakePopup(listing=listing, form=FakeFormFrame())
+    report = payee.search(FakePage(popup), FakeFormFrame(), {"payeeName": "코웨이"}, lambda m: None, wait=lambda s: None)
+    assert report.ok and not report.picked and payee.CONFIRM_BUTTON_ID not in popup.clicks and "2개" in report.pick_note
+    assert "직접" not in report.lines()[0] and "고르고 [확인]" in report.lines()[0]
+    # 골랐는데 작성 화면에 안 들어오면(callback 없음) 사람에게 넘긴다
+    popup = FakePopup(listing=[{"index": 0, "text": "코웨이 123-45-67890", "titles": "", "pick": True}], form=None)
+    report = payee.search(FakePage(popup), FakeFormFrame(), {"payeeName": "코웨이", "payeeBizNo": "123-45-67890"}, lambda m: None, wait=lambda s: None)
+    assert report.ok and not report.picked and "채워지지 않음" in report.pick_note
+
+
+def test_taxbill_search_auto_picks_and_confirms_when_sure():
+    frame = FakeFormFrame()
+    listing = [{"index": 0, "text": "2026-09-30 코웨이(주) 47,182 4,718 51,900", "titles": "", "pick": True, "bill": "TB1", "date": "2026-09-30"}]
+    popup = FakePopup(kind="taxbill", listing=listing, form=frame)
+    data = {"evidence": "세금계산서", "payeeBizNo": "123-45-67890", "amount": 51900, "supplyAmount": 47182, "expenseDate": "2026-09-30"}
+    report = taxbill.search(FakePage(popup), frame, data, lambda m: None, wait=lambda s: None)
+    assert report.ok and report.picked and report.pick_note == "금액 일치"
+    assert popup.clicks == [taxbill.INQUIRY_BUTTON_ID, "row:0", taxbill.CONFIRM_BUTTON_ID] and frame.values["EXP_DT"] == "2026-09-30"
+    popup = FakePopup(kind="taxbill", listing=_rows("2026-09-30 코웨이 30,000"), form=FakeFormFrame())
+    report = taxbill.search(FakePage(popup), FakeFormFrame(), data, lambda m: None, wait=lambda s: None)
+    assert report.ok and not report.picked and taxbill.CONFIRM_BUTTON_ID not in popup.clicks
