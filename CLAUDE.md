@@ -403,6 +403,56 @@ src/expense_review/  옛 바로가기 넘겨주기 전용 (3절)
 (신청 등)를 누르는 코드는 없다. 받기 코드(erp.py)에는 끝까지 값 넣기가 없다 — `tests/test_safety.py` 와
 `tests/test_claims.py` 가 본다. 구현은 15절.
 
+### 팝업 (실측 2026-10-13 오후) — 전부 **별도 창**(iframe 이 아니다). 결과 목록에서 행을 고르는 방법은 아직 미실측
+
+실측에서 더 알게 된 것 둘: ① 비목을 골라도 세목 `#DTL_EXP_CD` 는 숨은 채 보기가 비어 있다 — 이 과제는 세목이 없다
+(`form._wait_for_options` 가 ~1초 보고 건너뛴다). ② 증빙구분을 **세금계산서**로 고르면 `#onlyEvdiDivList` '[선택]' 이
+나타나고 `#EXP_DT` 가 **비활성·읽기전용**이 된다 — 날짜·금액·구매처(`#BUY_WHERE`, 읽기전용)는 고른 계산서에서 온다
+(`#TAXBILL_SEQ_NO` `#TAXBILL_REQ_AMT` `#EVDI_ORG_AMT/SUP/TAX`). 그래서 `form.fill` 은 세금계산서 건의 잠긴 지출일자를 ✓ 건너뜀으로 둔다.
+
+- **입금처조회** `rexpe_0084_rcv_pop.act` — 작성 화면 `#btnRcvCd`(input button) 로 연다. 구분 라디오 `name=RCV_DIV_CD`
+  (거래처[기본] · 참여인력 · 인적정보), `#CUST_TYPE`(전체·일반·금융·신용) · `#USE_YN`(전체·활동[기본]·비활동) ·
+  `#SEARCH_GB_NM1`(거래처명·사업자번호·대표자명) · `#btn_search`. 고른 뒤 `#btn_s_confirm1` '확인' → opener 의
+  `ctl.callback_rexpe_0084_rcv_pop` 이 `RCV_*` 를 채운다. 다른 탭(참여인력·인적정보)은 `#USER_GB` `#WORK_STS` `#SEARCH_NM` · `#btn_s_confirm2~5`.
+  **누르지 않는다**: `#btnReg` 계좌등록 · `#btnUpd` 계좌수정 · `#rbaseRegg` 거래처등록 · `#rbaseUpt` 거래처수정 · '외부인 등록' · '선택없음'.
+  → `claims/payee.py` 가 돋보기 → '거래처' → 검색어 → [검색] 까지 한다.
+- **매입(세금)계산서 조회** `rcomm_0033_01.act` — '[선택]'(`#onlyEvdiDivList`) 으로 연다. `#CORP_NM`(거래처명/승인번호) ·
+  `#btnSupOrgCd`(거래처 돋보기 — 또 다른 팝업, 미실측) · `#START_DATE`/`#END_DATE`(기본 3개월) · `#SELR_CORP`(공급자(거래처)사업자등록번호 |
+  (공급받는자)사업자번호) · `#CORP_TXT` · `#btn_inquiry` 조회 · 체크 `#c1~c7`(발행수단·종류, 모두 켜짐) · `#c8` 해당과제 관련 증빙만 ·
+  `#btn_out` '확인' · `#RTN_FUNC`=`ctl.uf_rcomm_0033_01Params` · `#PRE_SCREEN`=rexpe_0084_01.
+  **누르지 않는다**: `#btn_insert` 등록 · `#btn_reg_xml` 세금계산서 XML 등록 · `#btn_detail` 상세조회.
+  → `claims/taxbill.py` 가 [선택] → 공급자 사업자번호 + 조회 시작일(지출일 31일 전) → [조회] 까지 한다.
+- **첨부** — '첨부' 를 누른 뒤의 실측에는 창이 닫힌 채로만 잡혔다(파일 선택 대화상자일 가능성). 미실측. 사람이 한다.
+- 진단 모드가 **목록(그리드·표)의 열 이름·행 수·첫 행(긴 숫자는 가림)** 도 적게 했다 — 두 팝업에서 검색한 뒤 [화면 구조 저장] 을 하면
+  행을 고르는 방법이 보인다. 그때 `payee.pick` · `taxbill.pick`([확인] 포함)을 더한다. 닫히는 중인 창은 건너뛴다.
+
+### 청구구분별 증빙 팝업 (실측만, 구현 전 · 2026-10-13)
+
+청구구분 라디오(`name=REQ_DIV_CD`)를 고르면 `(*)증빙 [신규등록]`(`#btn_addEvid2`) · `[불러오기]`(`#btn_addEvid3`) 가 보이고, 증빙이
+붙으면 라디오가 잠기고 `#REQ_DIV_LNK`(붙은 증빙 요약 링크)가 생긴다. 모두 `#RTN_FUNC`=`ctl.fn_evidCallback` 으로 작성 화면에 돌아온다.
+담당자가 자주 하는 것은 **여비(출장비)** 다 — 세금계산서 건이 돌아간 뒤 다음 후보.
+
+- **(17) 회의비 → 회의록등록** `rcomm_0071_01.act`: `#CALL_PRE_SFRC` [불러오기](회의사전신청) · `#CFRC_DT` 회의일자 · `#CFRC_ST_DTM`/`#CFRC_END_DTM` ·
+  `#CFRC_PLCE` 장소 · `#CFRC_PURS` 목적(textarea) · `#CFRC_CONT` 내용(20자 이상) · `#COST_PTCL` 경비내역 · `#CARD_USE_SITE` 거래처 · `#RMK` 휴일사유 ·
+  참석자 표 셋 — 참여인력(`#btnRowAdd`) · 내부참석자(`#btnRowAdd1`, 행마다 `#btnEmpInfo` 돋보기 → `rcomm_0071_02.act` 미실측) ·
+  외부참석자(`#btnRowAdd2`, 행마다 `#CFRC_OUT_EMP_NM` 성명 · `#DEPT_NM` 소속 text, '엑셀등록' → `rcomm_0008_04.act` 미실측) · `#OUT_COUNT` —
+  `#MEAL_REQ_YN` 라디오 · `#MEAL_COST` 식비 · `#SNACK_COST` 다과 · `#ETC_COST` 기타 · `#MC_USER` 진행자 · `#save` 저장 · `#oz_report` 회의록 출력.
+  회의록 생성(13절)의 dict 와 항목이 거의 같다 — 회의비 청구는 그 dict 를 그대로 넣는 길이 보인다.
+- **(33) 여비(국내)** — 작성 화면에 여비 블록이 열린다(`#BUY_WHERE`=여비): `#SUM_TRAF_AMT` `#TOT_TRAF_AMT` `#TRAF_RMK` · `#DAILY_*` · `#FOOD_*`(`#CUT_FOOD_CNT` 감액) ·
+  `#LODG_*`(`#CUT_LODG_CNT`) · `#TOT_ETC_AMT` `#ETC_RMK` · `#V_TOT_AMT` `#SUM_AMT` `#TOT_AMT` · `#btn_in_sumAmtList` 청구내역 조회. 증빙 [신규등록] →
+  **출장명령부등록(국내)** `rcomm_0027_03.act`: `#callPop` 기등록건불러오기 · `#Load_btn` 학교출장내역가져오기 · `#ORG_DOC_NO` 출장명령번호(학교) ·
+  `#TRIP_DIV_CD`(국내(관내)|국내(관외)) · `#TRIP_INSIDE_ST_TIME`/`#TRIP_INSIDE_END_TIME` · `#ST_LOCT_NM` 출발지 · `#TRIP_DIR_NM` 목적지 · `#TRIP_PLACE` 출장장소 ·
+  `#TRIP_TRANSPTT_CD`(대중교통|철도|선박|항공|육로) · `#TRIP_PURS` 목적 · `#BIZ_NM` · `#TRIPTRM_ST_DT`/`#TRIPTRM_END_DT` + `#TRIPTRM_ST_TIME`/`#TRIPTRM_END_TIME` ·
+  `#btnCalcDate` 날짜계산 · `#TRIP_TERM` `#TRIP_DAYS` · `#HOLI_TRIP_REASON` · 출장자 표(`#btnRowAdd`, 행마다 `#btnEmpNm` 돋보기 · `#DEPT_NM` · `#GRAD_STD_CD` 등급 ·
+  `#popPartHmInfo`) · `#DIF_PRJ_REQ_YN` 타과제청구 · `#save` 저장 · `#save2` 저장후추가. **누르지 않는다**: `#saveAppr` 승인건저장 · `#saveRslt`/`#trip_rslt_save`
+  출장결과저장 · `#btn_cancelInfo` 취소. 증빙이 붙으면 여비 블록의 일비·식비·숙박비가 등급 기준으로 채워지고(`#DAILY_AMT` 등 읽기전용) `#REQ_PTCL` 에
+  '출장기간:… / 출장지:…' 가 자동으로 들어간다.
+  교통비 `#HAN_TRAF3` '교통비입력' → **출장명령부(국내)교통비** `rcomm_0027_07.act`: `#TRIP_CHANGE` 라디오(자차 | 대중교통(개인카드) | 대중교통(법인카드)) ·
+  `#TRIP_FUEL` 연비 · `#TRIP_OIL_AMT` 유가(기준일자 자동) · `#CAR_USE` 자차사용사유(select) · `#FLY_SHIP_USE` · 행 추가 `#btnSupOrgRowAdd`, 행마다 `#TRIP_DAY_DT` 일자 ·
+  `#TRIP_TRAFFIC`(자동차|톨비|주차료) · `#TRIP_PUT_LOCATE` 출발 · `#TRIP_GET_LOCATE` 도착 · `#TRIP_LOCT_GRAD_CD` 등급 · `#TRIP_DISTANCE` km(자동차는 유가·연비로
+  `#TRIP_AMT` 자동 계산) · 톨비·주차료는 `#TRIP_AMT` 직접 · `#TotalSum` · `#btnSave` 저장 · '교통비내역삭제'(누르지 않는다).
+
+
 ## 15. 일반청구 작성 (`claims/`) — 2026-10-13 1차
 
 담당자가 정한 흐름(2026-10-13): **지출 1건 = 폴더 1개**(회의록과 같은 방식) → AI 가 값을 뽑음 → 앱에서 고침 → ERP 작성
@@ -424,7 +474,11 @@ src/expense_review/  옛 바로가기 넘겨주기 전용 (3절)
 - 브라우저는 청구서 받기와 **같은 스레드**(`MainWindow.session_worker()`) — ERP 로그인은 한 번. `open_browser(scan=False)`
   로 보관 폴더 스캔 없이 연다. 작성 프레임은 `form.PROBE_JS`(`#PROC_TYP_CD`=`P10` + `#REQ_PTCL` + `#PAY_EXP_CD`)로 찾는다.
 - 규칙 `~/.claim-downloader/일반청구규칙.txt`(기본값 쌍 포함, 회의록과 같은 방식). 적요 `NN_내용` 규칙이 여기 있다.
-- 미실측이라 아직 사람이 하는 것: 입금처 돋보기 팝업(`#btnRcvCd`) · 첨부 팝업 · 비목별로 열리는 블록(여비·회의비). 팝업
-  실측이 오면 `form.py` 에 `pick_payee` 를 더한다. 담당자는 팝업 자동화를 원했다(2026-10-13).
+- **팝업(2026-10-13 오후)** — 채운 뒤 `session.fill_claim` 이 이어서 ① 세금계산서 건이면 `claims/taxbill.py` 로 '[선택]' 팝업을 열어 공급자
+  사업자번호·기간으로 [조회]까지, 사람이 고르고 [확인] 을 눌러 창이 닫히길(최대 3분) 기다렸다가 ② `claims/payee.py` 로 입금처 돋보기 팝업을 열어
+  '거래처' 구분 + 상호로 [검색]까지 한다. 두 팝업을 한꺼번에 띄우지 않는다. 결과 목록에서 **고르는 것과 [확인] 은 사람**(목록 미실측).
+  팝업을 닫아 버렸으면 화면의 [세금계산서 찾기] · [입금처 찾기] 로 다시 연다. 팝업이 안 뜨면(차단 등) 보고에 ✗ 로 남고 사람이 연다.
+  누르는 단추는 payee: 돋보기·구분 라디오·[검색], taxbill: [선택]·[조회] 뿐 — 계좌등록·거래처등록·[등록]·XML 등록·[확인] 은 안전 테스트가 막는다.
+- 미실측이라 아직 사람이 하는 것: 팝업 결과 목록에서 고르기 · 첨부 팝업 · 청구구분별 증빙(회의록등록·출장명령부, 14절 끝). 담당자는 팝업 자동화를 원했다(2026-10-13).
 - 검증: 모의 작성 화면(`/tmp/claude-0/mockerp/claim.html`, 실측 id 그대로)에 실제로 채워 세목 대기·금액 포맷·저장/신청
   미클릭을 확인했다. **실제 ERP 에서는 담당자가 '미리 보기' → 체크 해제 → 1건으로 확인한다.**

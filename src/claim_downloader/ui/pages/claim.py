@@ -121,6 +121,8 @@ class ClaimPage(QWidget):
         b.browser_state.connect(self._on_browser_state)
         b.claim_filled.connect(self._on_claim_filled)
         b.claim_saved.connect(self._on_claim_saved)
+        b.payee_searched.connect(self._on_payee_searched)
+        b.taxbill_searched.connect(self._on_taxbill_searched)
         b.error.connect(self._on_error)
 
         self._sync_buttons()
@@ -377,6 +379,16 @@ class ClaimPage(QWidget):
         self.fill_button.setObjectName("primary")
         self.fill_button.clicked.connect(self._fill)
         row.addWidget(self.fill_button)
+        # 채운 뒤 팝업을 닫아 버렸을 때 — 증빙 [선택] 팝업을 다시 열어 사업자번호로 조회해 둔다(고르기는 사람)
+        self.taxbill_button = QPushButton("세금계산서 찾기")
+        self.taxbill_button.setToolTip("증빙 [선택] 팝업을 열어 거래처 사업자번호로 조회해 둡니다. 계산서를 고르고 [확인] 은 직접 누르세요.")
+        self.taxbill_button.clicked.connect(self._search_taxbill)
+        row.addWidget(self.taxbill_button)
+        # 채운 뒤 입금처 팝업을 닫아 버렸을 때 — 돋보기를 다시 눌러 거래처를 검색해 둔다(고르기는 사람)
+        self.payee_button = QPushButton("입금처 찾기")
+        self.payee_button.setToolTip("입금처 돋보기 팝업을 열어 거래처 이름으로 검색해 둡니다. 목록에서 고르고 [확인] 은 직접 누르세요.")
+        self.payee_button.clicked.connect(self._search_payee)
+        row.addWidget(self.payee_button)
         # 채운 뒤 사람이 입금처·첨부를 넣으면 — 앱이 ERP 의 [저장](임시저장)을 누른다. [신청] 은 끝까지 사람.
         self.save_button = QPushButton("임시저장")
         self.save_button.setObjectName("primary")
@@ -407,6 +419,12 @@ class ClaimPage(QWidget):
         filled = 0 <= self._current < len(self._dirs) and self._status[self._current] in ("filled", "saved")
         self.save_button.setVisible(filled)
         self.save_button.setEnabled(filled and self._browser_open and not self._browser_busy and not running)
+        self.payee_button.setVisible(filled)
+        self.payee_button.setEnabled(filled and self._browser_open and not self._browser_busy and not running)
+        from ...claims import taxbill
+        is_taxbill = filled and taxbill.wanted(self._data[self._current])
+        self.taxbill_button.setVisible(is_taxbill)
+        self.taxbill_button.setEnabled(is_taxbill and self._browser_open and not self._browser_busy and not running)
         self.tabs.setTabText(0, f"지출 목록 ({len(self._dirs)})" if self._dirs else "지출 목록")
         self.list_stack.setCurrentIndex(1 if self._dirs else 0)
 
@@ -728,7 +746,15 @@ class ClaimPage(QWidget):
         if 0 <= row < len(self._dirs) and report.ok:
             record.remember(self._dirs[row], self._data[row])
             self._set_status(row, "filled")
-            self._set_state("채움", "success", "ERP 화면에서 입금처(돋보기)·첨부를 넣고 값을 확인한 뒤 앱의 [임시저장] 을 누르세요.")
+            payee_ok = report.payee is not None and report.payee.ok
+            taxbill_ok = report.taxbill is not None and report.taxbill.ok
+            if payee_ok:
+                guide = "입금처 팝업에서 거래처를 고르고 [확인] 을 누른 뒤, 첨부를 넣고 앱의 [임시저장] 을 누르세요."
+            elif taxbill_ok:
+                guide = "세금계산서 팝업에서 계산서를 고르고 [확인] 을 누른 뒤 [입금처 찾기] 를 누르세요."
+            else:
+                guide = "ERP 화면에서 입금처(돋보기)·첨부를 넣고 값을 확인한 뒤 앱의 [임시저장] 을 누르세요."
+            self._set_state("채움", "success", guide)
         else:
             if 0 <= row < len(self._dirs):
                 self._set_status(row, "filled")
@@ -749,6 +775,49 @@ class ClaimPage(QWidget):
             return
         self._save_row = row
         self.browser.save_claim_draft()
+
+    def _search_payee(self) -> None:
+        row = self._current
+        if not (0 <= row < len(self._dirs)) or not self._browser_open or self._browser_busy:
+            return
+        from ...claims import payee
+        query = payee.query_for(self._data[row])
+        if not query:
+            QMessageBox.warning(self, "입금처 찾기", "오른쪽 칸의 입금처(거래처 이름)가 비어 있습니다.")
+            return
+        self.browser.search_payee(dict(self._data[row]))
+
+    def _search_taxbill(self) -> None:
+        row = self._current
+        if not (0 <= row < len(self._dirs)) or not self._browser_open or self._browser_busy:
+            return
+        from ...claims import taxbill
+        if not taxbill.query_for(self._data[row]):
+            QMessageBox.warning(self, "세금계산서 찾기", "오른쪽 칸의 사업자등록번호(또는 입금처 이름)가 비어 있습니다.")
+            return
+        self.browser.search_taxbill(dict(self._data[row]))
+
+    def _on_taxbill_searched(self, report) -> None:
+        text = "\n".join(report.lines())
+        self._append_log(text)
+        if report.ok:
+            self._set_state("세금계산서 조회", "success", "팝업 목록에서 계산서를 고르고 [확인] 을 누른 뒤 [입금처 찾기] 를 누르세요.")
+            QMessageBox.information(self, "세금계산서 찾기", text)
+        else:
+            self._set_state("세금계산서 못 찾음", "warning", report.note or "증빙 [선택] 을 직접 눌러 골라 주세요.")
+            QMessageBox.warning(self, "세금계산서 찾기", text)
+        self._sync_buttons()
+
+    def _on_payee_searched(self, report) -> None:
+        text = "\n".join(report.lines())
+        self._append_log(text)
+        if report.ok:
+            self._set_state("입금처 검색", "success", "팝업 목록에서 거래처를 고르고 [확인] 을 누른 뒤 [임시저장] 을 누르세요.")
+            QMessageBox.information(self, "입금처 찾기", text)
+        else:
+            self._set_state("입금처 못 찾음", "warning", report.note or "돋보기를 직접 눌러 입금처를 골라 주세요.")
+            QMessageBox.warning(self, "입금처 찾기", text)
+        self._sync_buttons()
 
     def _on_claim_saved(self, report) -> None:
         text = "\n".join(report.lines())

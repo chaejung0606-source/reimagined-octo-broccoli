@@ -76,3 +76,37 @@ def test_claim_fill_lives_outside_erp_and_cannot_press_money_buttons():
         for word in ("신청')", '"신청"', "evaluate(CLICK_SAVE_JS, \"신청"):
             # 글자로 '신청' 단추를 찾아 누르는 코드가 들어오면 여기서 걸린다 (금지 목록 상수는 제외)
             assert word not in body, f"{path.name}: {word}"
+
+
+def _click_lines(text: str) -> list[str]:
+    return [line for line in text.splitlines() if "CLICK_ID_JS" in line and "evaluate(" in line]
+
+
+def test_payee_popup_presses_only_search_buttons():
+    """입금처 팝업(claims/payee.py)은 돋보기 · 구분 라디오 · [검색] 만 누른다.
+
+    계좌등록 · 거래처등록 같은 기준 정보 단추와, 결과 목록 실측 전인 [확인](btn_s_confirm1)을 누르는 코드가 들어오면 깨진다.
+    """
+    text = (SRC / "claims" / "payee.py").read_text(encoding="utf-8")
+    assert text.count(".click(") == 2                                   # 단추 id 하나 · 구분 라디오 하나
+    # 단추를 누르는 곳: open_popup 안(넘겨받은 button_id) 과 [검색] 뿐. 여는 단추로 넘기는 것은 돋보기 하나.
+    assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", text)) == {"button_id", "SEARCH_BUTTON_ID"}
+    assert re.findall(r"open_popup\(page, frame, ([A-Z_]+),", text) == ["OPEN_BUTTON_ID"]
+    assert 'OPEN_BUTTON_ID = "btnRcvCd"' in text and 'SEARCH_BUTTON_ID = "btn_search"' in text
+    for line in _click_lines(text):
+        for word in ("btnReg", "btnUpd", "rbaseRegg", "rbaseUpt", "btn_s_confirm", "계좌등록", "거래처등록"):
+            assert word not in line, line
+    assert "btn_s_confirm" not in text.split("POPUP_PROBE_JS", 1)[1].split('"""', 2)[2]   # 알아보기용 선택자에만
+
+
+def test_taxbill_popup_presses_only_select_and_inquiry():
+    """세금계산서 조회 팝업(claims/taxbill.py)은 [선택] 과 [조회] 만 누른다 — [등록] · XML 등록 · [확인](btn_out) 은 아니다."""
+    text = (SRC / "claims" / "taxbill.py").read_text(encoding="utf-8")
+    assert ".click(" not in text                                         # 누르는 JS 는 payee.CLICK_ID_JS 를 빌려 쓴다
+    assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", text)) == {"INQUIRY_BUTTON_ID"}
+    assert re.findall(r"open_popup\(page, frame, ([A-Z_]+),", text) == ["SELECT_LINK_ID"]
+    assert 'SELECT_LINK_ID = "onlyEvdiDivList"' in text and 'INQUIRY_BUTTON_ID = "btn_inquiry"' in text
+    for line in _click_lines(text):
+        for word in ("btn_insert", "btn_reg_xml", "btnSupOrgCd", "btn_detail", "btn_out"):
+            assert word not in line, line
+    assert "btn_out" not in text.split("POPUP_PROBE_JS", 1)[1].split('"""', 2)[2]

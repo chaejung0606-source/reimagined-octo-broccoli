@@ -8,8 +8,11 @@
 
 담당자 결정(2026-10-13): 내역 작성 후 **임시저장까지** 앱이 하고, 그 뒤 사람이 검토해 [신청] 을 누른다.
 그래서 누르는 단추는 '저장' 하나뿐이다(SAVE_TEXT · save_draft). '신청' 을 비롯한 FORBIDDEN_TEXTS 를
-누르는 코드가 들어오면 안전 테스트가 깨진다. 사람이 하는 것: 입금처 돋보기 팝업 · [예금주조회] · 첨부 · [신청].
-팝업 실측이 오면 pick_payee 를 채운다.
+누르는 코드가 들어오면 안전 테스트가 깨진다. 사람이 하는 것: 입금처 팝업에서 고르기 · [예금주조회] · 첨부 · [신청].
+입금처 팝업을 열어 검색까지 하는 것은 payee.py(session.fill_claim 이 채운 뒤 이어서 부른다).
+
+세목(DTL_EXP_CD)은 과제에 따라 없다 — 실측(2026-10-13)에서 비목을 골라도 세목 select 가 숨은 채 보기가 비어 있었다.
+그래서 세목 보기가 안 오면(숨어 있거나 1초 안에 비어 있으면) 그 칸은 건너뛰고 나머지를 계속 넣는다.
 """
 from __future__ import annotations
 
@@ -42,7 +45,8 @@ FIELDS = (
 )
 ALLOWED_IDS = frozenset(f[1] for f in FIELDS) | {"PROC_TYP_CD", "MOD_YN", "REQ_SEQ_NO", "RCV_NM", "RCV_CD", "BAL_AMT"}
 MANUAL_STEPS = (
-    "입금처 — 돋보기(🔍)로 거래처를 골라 주세요 (팝업은 아직 자동화 전)",
+    "세금계산서 건은 앱이 증빙 [선택] 팝업을 열고 사업자번호로 조회해 둡니다. 계산서를 고르고 [확인] 을 눌러 주세요",
+    "입금처 — 앱이 돋보기 팝업을 열고 거래처를 검색해 둡니다. 목록에서 골라 [확인] 을 눌러 주세요 (고르기 자동화는 결과 목록 실측 뒤)",
     "[예금주조회] 를 눌러 계좌를 확인해 주세요",
     "첨부 — 세금계산서·품의서 등을 '첨부' 로 올려 주세요",
     "그다음 앱의 [임시저장] 을 누르면 앱이 ERP 의 [저장] 을 누릅니다. [신청] 은 검토 후 직접 누르세요",
@@ -106,7 +110,13 @@ SET_SELECT_JS = """([id, wanted]) => {
   return {ok: true, now: (hit.textContent || '').trim()};
 }"""
 
-OPTION_COUNT_JS = "(id) => { const el = document.getElementById(id); return el ? el.options.length : -1; }"
+# 세목 select 의 상태 — 보기 수와 보이는지. 숨은 채 비어 있으면 이 과제는 세목을 쓰지 않는 것이다.
+SELECT_STATE_JS = """(id) => {
+  const el = document.getElementById(id);
+  if (!el) return {count: -1, visible: false};
+  const r = el.getBoundingClientRect(), s = getComputedStyle(el);
+  return {count: el.options.length, visible: r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden'};
+}"""
 
 # 글자가 정확히 같은 단추가 딱 하나일 때만 누른다 — '청구서출력' · '신청' 같은 다른 단추와 섞이지 않게
 CLICK_SAVE_JS = """(text) => {
@@ -155,6 +165,8 @@ class FillReport:
     steps: list[Step] = field(default_factory=list)
     manual: tuple[str, ...] = MANUAL_STEPS
     blocked: str = ""                  # 채우지 못한 이유 (작성 화면이 아님 등)
+    taxbill: object | None = None      # taxbill.TaxbillReport — 세금계산서 조회 팝업 결과 (채운 뒤 session 이 붙인다)
+    payee: object | None = None        # payee.PayeeReport — 입금처 팝업 검색 결과
 
     @property
     def ok(self) -> bool:
@@ -168,6 +180,10 @@ class FillReport:
         for s in self.steps:
             mark = "✓" if s.ok else "✗"
             out.append(f"{mark} {s.label}: {s.value}" + (f"  — {s.note}" if s.note else ""))
+        if self.taxbill is not None:
+            out.extend(self.taxbill.lines())
+        if self.payee is not None:
+            out.extend(self.payee.lines())
         out.append("사람이 할 것:")
         out.extend("  · " + m for m in self.manual)
         return out
@@ -227,9 +243,15 @@ def fill(frame, data: dict, log: Callable[[str], None], dry_run: bool = True,
         report.steps = plan(data)
         return report
 
+    detail_ready = True
     for key, element_id, kind, label in FIELDS:
         value = _value_for(key, data)
         if not value:
+            continue
+        if key == "expDetail" and not detail_ready:
+            # 이 과제는 세목이 없다 — 틀린 게 아니므로 ✓ 로 두고 넘어간다
+            report.steps.append(Step(label, value, True, "이 과제는 세목이 없음 — 건너뜀"))
+            log("  - %s: %s — 세목 보기가 없어 건너뜀" % (label, value))
             continue
         try:
             if kind == "select":
@@ -240,25 +262,42 @@ def fill(frame, data: dict, log: Callable[[str], None], dry_run: bool = True,
             result = {"ok": False, "why": str(error).splitlines()[0][:80] if str(error) else "오류"}
         ok = bool(result.get("ok"))
         note = "" if ok else result.get("why", "")
+        if not ok and key == "expenseDate" and note == "읽기전용" and _is_taxbill(data):
+            # 실측(2026-10-13): 증빙구분이 세금계산서면 지출일자 칸이 잠기고, [선택] 팝업에서 고른 계산서의 날짜가 들어간다
+            ok, note = True, "세금계산서를 고르면 채워짐 — 건너뜀"
         if not ok and result.get("options"):
             note += " (보기: " + " | ".join(result["options"][:8]) + ")"
         report.steps.append(Step(label, value, ok, note))
         log("  %s %s: %s%s" % ("✓" if ok else "✗", label, value, (" — " + note) if note else ""))
         if key == "expCategory" and ok:
-            _wait_for_options(frame, "DTL_EXP_CD", wait)
-    log("채우기 끝 — 입금처·첨부·예금주조회·저장·신청은 사람이 합니다")
+            detail_ready = _wait_for_options(frame, "DTL_EXP_CD", wait)
+    log("채우기 끝 — 입금처 고르기·첨부·예금주조회·저장·신청은 사람이 합니다")
     return report
 
 
-def _wait_for_options(frame, element_id: str, wait: Callable[[float], None], tries: int = 20) -> None:
-    """비목을 고르면 세목 보기가 서버에서 온다. 2개 이상(선택 + 실제 보기)이 될 때까지 최대 ~5초."""
+def _is_taxbill(data: dict) -> bool:
+    return "세금계산서" in str(data.get("evidence") or "").replace(" ", "")
+
+
+def _wait_for_options(frame, element_id: str, wait: Callable[[float], None], tries: int = 20,
+                      hidden_tries: int = 4) -> bool:
+    """비목을 고르면 세목 보기가 서버에서 온다. 2개 이상(선택 + 실제 보기)이 되면 True.
+
+    최대 ~5초 기다리되, select 가 숨은 채 비어 있는 상태가 ~1초 이어지면 이 과제는 세목이 없는 것으로 보고 False.
+    """
+    hidden_seen = 0
     for _ in range(tries):
         try:
-            if frame.evaluate(OPTION_COUNT_JS, element_id) >= 2:
-                return
+            state = frame.evaluate(SELECT_STATE_JS, element_id)
+            if int(state.get("count", -1)) >= 2:
+                return True
+            hidden_seen = hidden_seen + 1 if not state.get("visible") else 0
+            if hidden_seen >= hidden_tries:
+                return False
         except Exception:  # noqa: BLE001
             pass
         wait(0.25)
+    return False
 
 
 _STATUS_IDS = ("REQ_SEQ_NO", "MOD_YN", "APPR_DIV_CD", "RCV_NM", "REQ_PTCL", "REQ_AMT")

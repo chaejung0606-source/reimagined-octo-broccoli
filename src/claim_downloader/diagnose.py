@@ -9,6 +9,10 @@
 결과 파일은 .gitignore 와 배포 zip(make_bundle.NEVER_PACK_NAMES)에서 제외된다 — 계좌번호 같은 값이
 들어 있을 수 있다. 담당자에게는 **빈 작성 화면**에서 돌리라고 안내한다.
 
+목록(그리드)도 적는다(2026-10-13 입금처 팝업 실측 뒤 추가) — 입력 요소만 적으면 검색 결과 목록의 열과 행을 고르는
+방법을 알 수 없어서다. JGM 그리드(`.jgrid-row` · `k_열이름` 셀)와 머리글(th)이 있는 표의 열 이름 · 행 수 · 첫 행 값을
+적되, 첫 행 값에서 6자리 이상 숫자(계좌번호 · 사업자번호)는 가린다.
+
 Playwright 를 들여오지 않는다(브라우저를 띄우는 곳은 session.py 하나). 프레임 객체의 evaluate 만 쓴다.
 """
 from __future__ import annotations
@@ -78,6 +82,49 @@ _PROBE_JS = r"""() => {
   return {title: document.title || '', elements: out};
 }"""
 
+# 프레임 안의 목록(그리드·표). 읽기만 한다. 첫 행 값은 짧게 자르고 긴 숫자는 가린다.
+_GRID_JS = r"""() => {
+  const txt = e => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim();
+  const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const mask = s => s.replace(/\d{6,}/g, m => m.slice(0, 2) + '…').slice(0, 24);
+  const out = [];
+  // JGM 그리드 — 셀 class 가 k_열이름. 머리글은 그리드 안에서 행(.jgrid-row) 밖에 있는 같은 class 의 셀
+  const grids = new Map();
+  document.querySelectorAll('[class*="k_"]').forEach(cell => {
+    const key = (cell.className.match(/(?:^|\s)(k_[A-Za-z0-9_]+)/) || [])[1];
+    if (!key) return;
+    // 그리드의 맨 바깥 상자로 묶는다 — 머리글(.jgrid-hdr)과 행(.jgrid-row)이 따로 묶이지 않게
+    let root = document.body;
+    for (let cur = cell.parentElement; cur && cur !== document.body; cur = cur.parentElement) {
+      if (/jgrid/.test(String(cur.className || '')) || cur.tagName === 'TABLE') root = cur;
+    }
+    if (!grids.has(root)) grids.set(root, {cols: new Map(), rows: 0});
+    const g = grids.get(root);
+    const inRow = !!cell.closest('.jgrid-row, tbody tr');
+    if (!g.cols.has(key)) g.cols.set(key, {head: '', sample: ''});
+    const col = g.cols.get(key);
+    if (!inRow && !col.head) col.head = txt(cell).slice(0, 16);
+    else if (inRow && !col.sample) col.sample = mask(cell.getAttribute('title') || txt(cell));
+  });
+  grids.forEach((g, root) => {
+    const rows = root.querySelectorAll('.jgrid-row').length || root.querySelectorAll('tbody tr').length;
+    out.push({kind: 'grid', visible: vis(root), rows,
+              cols: Array.from(g.cols, ([key, c]) => ({key, head: c.head, sample: c.sample}))});
+  });
+  // 머리글(th)이 있는 표 — 그리드가 아닌 결과 목록. 배치용 표는 th 가 없어 걸러진다
+  document.querySelectorAll('table').forEach(t => {
+    if (grids.has(t) || !t.querySelector('th')) return;
+    const heads = Array.from(t.querySelectorAll('th')).map(th => txt(th).slice(0, 16)).filter(Boolean);
+    const body = Array.from(t.querySelectorAll('tr')).filter(tr => !tr.querySelector('th') && tr.children.length >= 2);
+    if (heads.length < 2 || !body.length) return;
+    const first = Array.from(body[0].children).map(td => mask(td.getAttribute('title') || txt(td)));
+    const picks = Array.from(body[0].querySelectorAll('input[type=radio],input[type=checkbox]')).length;
+    out.push({kind: 'table', visible: vis(t), rows: body.length, heads, first, picks,
+              onclick: (body[0].getAttribute('onclick') || '').slice(0, 60)});
+  });
+  return out.slice(0, 12);
+}"""
+
 VALUE_LIMIT = 40        # 값은 여기서 자른다 — 계좌번호·긴 적요가 통째로 남지 않게
 # 값을 적는 input 종류의 허용 목록. 비밀번호·파일 칸은 여기 없으므로 값이 남지 않는다(JS 와 같은 목록).
 SAFE_VALUE_TYPES = {"", "text", "number", "tel", "search", "email", "url", "date", "datetime-local",
@@ -92,6 +139,10 @@ def _frame_report(fr) -> dict:
     except Exception as error:  # noqa: BLE001 — 진단은 어떤 프레임에서도 멈추면 안 된다
         data = {"title": "", "elements": [], "error": str(error).splitlines()[0] if str(error) else "읽기 실패"}
     try:
+        data["grids"] = fr.evaluate(_GRID_JS) if not data.get("error") else []
+    except Exception:  # noqa: BLE001 — 목록은 못 읽어도 요소 목록은 남긴다
+        data["grids"] = []
+    try:
         url = fr.url or ""
     except Exception:  # noqa: BLE001
         url = "?"
@@ -103,6 +154,11 @@ def capture(context, frame_kind: Callable[[object], str] | None = None) -> list[
     """열린 모든 창의 모든 프레임을 읽는다. frame_kind 는 프레임을 알아본 이름('결의서 목록' 등)."""
     windows = []
     for pg in context.pages:
+        try:
+            if pg.is_closed():          # 닫히는 중인 팝업이 목록에 남아 있을 수 있다(실측 2026-10-13)
+                continue
+        except Exception:  # noqa: BLE001
+            pass
         try:
             title = pg.title()
         except Exception:  # noqa: BLE001
@@ -157,6 +213,30 @@ def _element_line(el: dict) -> str:
     return "  ".join(parts)
 
 
+def _grid_lines(grids: list[dict]) -> list[str]:
+    """목록(그리드·표) 한 줄씩 — 열 이름과 행 수, 첫 행의 값(가린 것)."""
+    out = []
+    for g in grids or []:
+        hidden = "" if g.get("visible", True) else "[숨김] "
+        if g.get("kind") == "grid":
+            cols = " | ".join(f"{c['key']}({c['head']})" if c.get("head") else c["key"] for c in g.get("cols", []))
+            out.append(f"{hidden}그리드: 행 {g.get('rows', 0)} · 열: {cols}")
+            sample = " | ".join(f"{c['key']}={c['sample']}" for c in g.get("cols", []) if c.get("sample"))
+            if sample:
+                out.append(f"{hidden}  첫 행: {sample}")
+        else:
+            out.append(f"{hidden}표: 행 {g.get('rows', 0)} · 머리글: " + " | ".join(g.get("heads", [])))
+            extra = []
+            if g.get("picks"):
+                extra.append(f"행마다 선택 칸 {g['picks']}개")
+            if g.get("onclick"):
+                extra.append("행 onclick=" + g["onclick"])
+            first = " | ".join(v for v in g.get("first", []) if v)
+            if first or extra:
+                out.append(f"{hidden}  첫 행: {first}" + (("  (" + " · ".join(extra) + ")") if extra else ""))
+    return out
+
+
 def _collapsed(elements: list[dict]) -> list[str]:
     """똑같이 생긴 요소가 잇달아 나오면(목록 행마다 있는 체크박스 등) 한 줄로 접고 개수를 적는다."""
     lines: list[str] = []
@@ -195,6 +275,8 @@ def format_report(windows: list[dict], when: str | None = None) -> str:
             shown = [e for e in elements if e.get("visible")]
             hidden = [e for e in elements if not e.get("visible")]
             out.append(f"    요소 {len(elements)}개 (보임 {len(shown)} · 숨김 {len(hidden)})")
+            for line in _grid_lines(fr.get("grids", [])):
+                out.append("    " + line)
             for line in _collapsed(shown)[:PER_FRAME_LIMIT]:
                 out.append("    " + line)
             if len(shown) > PER_FRAME_LIMIT:

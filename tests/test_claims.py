@@ -168,12 +168,13 @@ def test_process_skips_after_fatal_and_continues_after_transient(tmp_path):
 class FakeFrame:
     """evaluate 가 form.py 의 JS 상수를 알아보고 ERP 화면처럼 반응한다."""
 
-    def __init__(self, mod_yn="N", options=None, screen=None, save_works=True):
+    def __init__(self, mod_yn="N", options=None, screen=None, save_works=True, hidden=()):
         self.values = dict(screen or {})
         self.sets = []
         self.clicks = []
         self.mod_yn = mod_yn
         self.save_works = save_works
+        self.hidden = set(hidden)              # 숨은 select (세목이 없는 과제)
         self.options = options or {
             "PAY_EXP_CD": ["선택", "인건비", "기타운영경비"], "DTL_EXP_CD": ["선택", "임차료"],
             "EVDI_DIV_CD": ["선택", "세금계산서", "계산서"], "SETTLE_METH_CD": ["계좌이체", "현금/지로"],
@@ -191,8 +192,8 @@ class FakeFrame:
                 self.values["REQ_SEQ_NO"] = "REQ-2026-0001"
                 self.values["MOD_YN"] = "Y"
             return {"ok": True}
-        if js is form.OPTION_COUNT_JS:
-            return len(self.options.get(arg, []))
+        if js is form.SELECT_STATE_JS:
+            return {"count": len(self.options.get(arg, [])), "visible": arg not in self.hidden}
         if js is form.SET_SELECT_JS:
             element_id, wanted = arg
             hit = next((o for o in self.options.get(element_id, []) if o.replace(" ", "") == wanted.replace(" ", "")), None)
@@ -276,3 +277,213 @@ def test_save_draft_waits_for_payee_and_reports_change():
     assert form.save_draft(frame, lambda m: None, ["저장하시겠습니까?", "저장되었습니다."], wait=lambda s: None, tries=2).ok
     frame = FakeFrame(screen={"REQ_PTCL": "x", "REQ_AMT": "1", "RCV_NM": "y"}, save_works=False)
     assert not form.save_draft(frame, lambda m: None, ["저장하시겠습니까?"], wait=lambda s: None, tries=2).ok
+
+
+def test_missing_detail_select_is_skipped_quickly():
+    """세목이 없는 과제(실측 2026-10-13: 비목을 골라도 세목 select 가 숨은 채 비어 있음) — 5초 기다리지 않고 건너뛴다."""
+    options = {"PAY_EXP_CD": ["선택", "기타운영경비"], "DTL_EXP_CD": [], "EVDI_DIV_CD": ["선택", "세금계산서"],
+               "SETTLE_METH_CD": ["계좌이체"], "BNK_CD": ["해당없음", "국민은행"]}
+    frame = FakeFrame(options=options, hidden=("DTL_EXP_CD",))
+    waits = []
+    report = form.fill(frame, schema.normalize(sample()), lambda m: None, dry_run=False, wait=waits.append)
+    assert report.ok
+    detail = next(s for s in report.steps if s.label == "세목")
+    assert detail.ok and "세목이 없음" in detail.note
+    assert "DTL_EXP_CD" not in [i for i, _ in frame.sets]           # 보기 없는 select 에 넣으려 하지 않는다
+    assert len(waits) <= 4                                          # 숨은 채 비어 있으면 ~1초만 기다린다
+    # 보기가 오면 넣는다
+    frame = FakeFrame()
+    report = form.fill(frame, schema.normalize(sample()), lambda m: None, dry_run=False, wait=lambda s: None)
+    assert ("DTL_EXP_CD", "임차료") in frame.sets or any(i == "DTL_EXP_CD" for i, _ in frame.sets)
+
+
+# ── 입금처 · 세금계산서 팝업 ──────────────────────────────────────────────
+from claim_downloader.claims import payee, taxbill  # noqa: E402
+
+
+class FakePopup:
+    """팝업 창 — 실측된 요소(입금처: 구분 라디오·검색 칸·[검색] / 세금계산서: 구분 select·사업자번호·기간·[조회])만 안다."""
+
+    def __init__(self, kind="payee", checked="거래처", rows=3, closes_after=None):
+        self.kind = kind
+        self.checked = checked
+        self.rows = rows
+        self.sets = []
+        self.clicks = []
+        self.listeners = []
+        self.closed = False
+        self.closes_after = closes_after        # wait_closed 가 이만큼 물어본 뒤 닫힌 것으로
+        self.asked = 0
+
+    def evaluate(self, js, arg=None):
+        if js is payee.POPUP_PROBE_JS:
+            return self.kind == "payee"
+        if js is taxbill.POPUP_PROBE_JS:
+            return self.kind == "taxbill"
+        if js is payee.CHECK_DIV_JS:
+            name, label = arg
+            assert name == "RCV_DIV_CD"
+            if self.checked == label:
+                return {"ok": True, "same": True}
+            self.checked = label
+            self.clicks.append("radio:" + label)
+            return {"ok": True}
+        if js is form.SET_TEXT_JS or js is form.SET_SELECT_JS:
+            self.sets.append(tuple(arg))
+            return {"ok": True, "now": arg[1]}
+        if js is payee.CLICK_ID_JS:
+            self.clicks.append(arg)
+            return {"ok": True}
+        if js is payee.RESULT_COUNT_JS:
+            return {"rows": self.rows, "kind": "grid"}
+        raise AssertionError("모르는 JS")
+
+    def on(self, event, handler):
+        self.listeners.append((event, handler))
+
+    def remove_listener(self, event, handler):
+        self.listeners.remove((event, handler))
+
+    def is_closed(self):
+        self.asked += 1
+        if self.closes_after is not None and self.asked > self.closes_after:
+            self.closed = True
+        return self.closed
+
+
+class FakeContext:
+    def __init__(self, pages):
+        self.pages = pages
+
+
+class FakePage:
+    """작성 화면이 있는 창. 단추를 누르면 팝업이 '뜬다'."""
+
+    def __init__(self, popup, opens=True, already_open=False):
+        self.popup = popup
+        self.opens = opens
+        self.context = FakeContext([self] + ([popup] if already_open else []))
+        self.opened = 0
+
+    def evaluate(self, js, arg=None):
+        return False                      # 이 창 자체는 팝업이 아니다
+
+    def expect_popup(self, timeout=0):
+        page = self
+
+        class Waiter:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, kind, value, tb):
+                if kind:
+                    return False
+                if not page.opens:
+                    raise TimeoutError("Timeout 8000ms exceeded while waiting for event \"popup\"")
+                page.opened += 1
+                self_inner.value = page.popup
+                return False
+        return Waiter()
+
+
+class FakeFormFrame:
+    def __init__(self, link_visible=True):
+        self.clicks = []
+        self.link_visible = link_visible
+
+    def evaluate(self, js, arg=None):
+        if js is payee.CLICK_ID_JS:
+            self.clicks.append(arg)
+            return {"ok": True}
+        if js is taxbill.LINK_VISIBLE_JS:
+            return self.link_visible
+        raise AssertionError("모르는 JS")
+
+
+def test_payee_search_opens_popup_and_searches_only_with_allowed_buttons():
+    popup = FakePopup(checked="참여인력")
+    page, frame = FakePage(popup), FakeFormFrame()
+    logs = []
+    report = payee.search(page, frame, {"payeeName": "코웨이(주)"}, logs.append, wait=lambda s: None)
+    assert report.ok and report.query == "코웨이(주)" and report.rows == 3
+    assert frame.clicks == [payee.OPEN_BUTTON_ID] and page.opened == 1
+    assert popup.clicks == ["radio:거래처", payee.SEARCH_BUTTON_ID]
+    assert popup.sets == [(payee.SEARCH_TEXT_ID, "코웨이(주)")]
+    assert popup.listeners == []                                    # 알림 듣기는 끝나면 거둔다
+    assert set(c for c in popup.clicks + frame.clicks if not c.startswith("radio:")) <= payee.ALLOWED_CLICK_IDS
+    assert "확인" in report.lines()[0] and "고르고" in report.lines()[0]
+
+
+def test_payee_search_reuses_open_popup_and_reports_failures():
+    popup = FakePopup()
+    page, frame = FakePage(popup, already_open=True), FakeFormFrame()
+    report = payee.search(page, frame, {"payeeName": "", "payeeBizNo": "123-45-67890"}, lambda m: None, wait=lambda s: None)
+    assert report.ok and report.query == "1234567890" and frame.clicks == [] and page.opened == 0
+
+    page, frame = FakePage(FakePopup(), opens=False), FakeFormFrame()
+    report = payee.search(page, frame, {"payeeName": "코웨이"}, lambda m: None, wait=lambda s: None)
+    assert not report.ok and "Timeout" in report.note and frame.clicks == [payee.OPEN_BUTTON_ID]
+    assert "직접" in report.lines()[0]
+
+    report = payee.search(FakePage(FakePopup()), FakeFormFrame(), {"payeeName": ""}, lambda m: None, wait=lambda s: None)
+    assert not report.ok and "이름이 없습니다" in report.note
+
+    page, frame = FakePage(FakePopup(kind="other")), FakeFormFrame()
+    report = payee.search(page, frame, {"payeeName": "코웨이"}, lambda m: None, wait=lambda s: None)
+    assert not report.ok and "입금처조회 화면이 아닙니다" in report.note
+
+
+def test_taxbill_search_uses_bizno_and_period_and_only_select_inquiry():
+    popup = FakePopup(kind="taxbill", rows=1)
+    page, frame = FakePage(popup), FakeFormFrame()
+    data = {"evidence": "세금계산서", "payeeBizNo": "123-45-67890", "payeeName": "코웨이", "expenseDate": "2026-09-30"}
+    assert taxbill.wanted(data) and taxbill.query_for(data) == "1234567890"
+    assert taxbill.start_date_for(data) == "2026-08-30"
+    report = taxbill.search(page, frame, data, lambda m: None, wait=lambda s: None)
+    assert report.ok and report.rows == 1
+    assert frame.clicks == [taxbill.SELECT_LINK_ID] and popup.clicks == [taxbill.INQUIRY_BUTTON_ID]
+    assert (taxbill.SELLER_SELECT_ID, "공급자") in popup.sets
+    assert (taxbill.BIZNO_TEXT_ID, "1234567890") in popup.sets and (taxbill.START_DATE_ID, "2026-08-30") in popup.sets
+    assert popup.listeners == []
+    assert "계산서를 고르고 [확인]" in report.lines()[0]
+
+    # 사업자번호가 없으면 거래처 이름으로, [선택] 이 안 보이면(증빙구분이 다름) 열지 않는다
+    popup = FakePopup(kind="taxbill")
+    report = taxbill.search(FakePage(popup), FakeFormFrame(), {"evidence": "세금계산서", "payeeName": "코웨이"}, lambda m: None, wait=lambda s: None)
+    assert report.ok and (taxbill.NAME_TEXT_ID, "코웨이") in popup.sets and not any(i == taxbill.SELLER_SELECT_ID for i, _ in popup.sets)
+    frame = FakeFormFrame(link_visible=False)
+    report = taxbill.search(FakePage(FakePopup(kind="taxbill")), frame, data, lambda m: None, wait=lambda s: None)
+    assert not report.ok and "[선택] 이 보이지 않습니다" in report.note and frame.clicks == []
+    assert not taxbill.wanted({"evidence": "기타"})
+
+
+def test_wait_closed_polls_until_popup_closes():
+    popup = FakePopup(closes_after=3)
+    waits = []
+    assert payee.wait_closed(popup, waits.append, seconds=10)
+    assert 3 <= popup.asked <= 5 and all(w == 0.5 for w in waits)
+    popup = FakePopup()
+    assert not payee.wait_closed(popup, lambda s: None, seconds=1)
+
+
+def test_fill_report_shows_popup_results():
+    report = form.FillReport(dry_run=False, steps=[form.Step("적요", "09_정수기", True)])
+    report.taxbill = taxbill.TaxbillReport(ok=True, query="1234567890", rows=2)
+    report.payee = payee.PayeeReport(ok=True, query="코웨이", rows=1)
+    text = "\n".join(report.lines())
+    assert "1234567890" in text and "코웨이" in text and "결과 1행" in text
+    assert text.index("1234567890") < text.index("코웨이") < text.index("사람이 할 것")
+
+
+def test_taxbill_locks_expense_date_so_fill_skips_it():
+    """실측(2026-10-13): 증빙구분이 세금계산서면 지출일자 칸이 잠긴다 — 못 넣은 게 아니라 팝업에서 채워지는 것."""
+    class LockedDate(FakeFrame):
+        def evaluate(self, js, arg=None):
+            if js is form.SET_TEXT_JS and arg[0] == "EXP_DT":
+                return {"ok": False, "why": "읽기전용"}
+            return super().evaluate(js, arg)
+    report = form.fill(LockedDate(), schema.normalize(sample()), lambda m: None, dry_run=False, wait=lambda s: None)
+    date = next(s for s in report.steps if s.label == "지출일자")
+    assert date.ok and "세금계산서" in date.note and report.ok
+    report = form.fill(LockedDate(), schema.normalize(sample(evidence="기타")), lambda m: None, dry_run=False, wait=lambda s: None)
+    assert not next(s for s in report.steps if s.label == "지출일자").ok
