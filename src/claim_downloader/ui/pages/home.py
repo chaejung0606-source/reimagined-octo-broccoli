@@ -52,6 +52,7 @@ def _recent_files(out_root: str) -> list[tuple[Path, float]]:
 class HomePage(QWidget):
     open_task = Signal(str)
     apply_update = Signal()
+    restart_requested = Signal()     # 업데이트를 받은 뒤 [새로고침]
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -76,14 +77,22 @@ class HomePage(QWidget):
         banner = QHBoxLayout(self.update_banner)
         banner.setContentsMargins(16, 10, 12, 10)
         banner.setSpacing(10)
-        banner.addWidget(Pill("새 버전", "info"), 0, Qt.AlignVCenter)
+        self.update_pill = Pill("새 버전", "info")
+        banner.addWidget(self.update_pill, 0, Qt.AlignVCenter)
         self.update_text = WrapLabel("")
         self.update_text.setObjectName("body")
         banner.addWidget(self.update_text, 1)
-        apply = QPushButton("지금 적용")
-        apply.setObjectName("primary")
-        apply.clicked.connect(self.apply_update.emit)
-        banner.addWidget(apply)
+        self.apply_button = QPushButton("지금 적용")
+        self.apply_button.setObjectName("primary")
+        self.apply_button.clicked.connect(self.apply_update.emit)
+        banner.addWidget(self.apply_button)
+        # 적용이 끝난 뒤 — 껐다 켤 필요 없이 새 앱이 뜨고 이 창은 닫힌다
+        self.restart_button = QPushButton("새로고침")
+        self.restart_button.setObjectName("primary")
+        self.restart_button.setToolTip("창이 닫혔다가 새 버전으로 다시 열립니다 (2~3초)")
+        self.restart_button.clicked.connect(self.restart_requested.emit)
+        self.restart_button.hide()
+        banner.addWidget(self.restart_button)
         self.update_banner.hide()
         layout.addWidget(self.update_banner)
 
@@ -119,8 +128,19 @@ class HomePage(QWidget):
             self.update_banner.hide()
             return
         head = messages[0] if messages else ""
+        self.update_pill.set_status("새 버전", "info")
         self.update_text.setText(f"업데이트 {count}건을 받을 수 있습니다." + (f"  — {head}" if head else "")
-                                 + "  적용 후 앱을 다시 시작하면 반영됩니다.")
+                                 + "  적용한 뒤 새로고침하면 바로 반영됩니다.")
+        self.apply_button.show()
+        self.restart_button.hide()
+        self.update_banner.show()
+
+    def show_restart(self) -> None:
+        """업데이트를 받았다 — 이제 할 일은 새로고침뿐."""
+        self.update_pill.set_status("받음", "success")
+        self.update_text.setText("업데이트를 받았습니다. 새로고침하면 바로 반영됩니다 (창이 닫혔다가 다시 열립니다).")
+        self.apply_button.hide()
+        self.restart_button.show()
         self.update_banner.show()
 
     # ── 업무 카드 배열 ───────────────────────────────────────────────

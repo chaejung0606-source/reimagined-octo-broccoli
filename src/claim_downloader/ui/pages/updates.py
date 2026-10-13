@@ -49,6 +49,8 @@ class UpdateWorker(QObject):
 class UpdatesPage(QWidget):
     version_changed = Signal(str)
     status_checked = Signal(object)   # updater.UpdateStatus — 홈의 업데이트 띠가 본다
+    applied = Signal(bool)            # 적용이 끝남 — 홈 띠가 [새로고침] 으로 바뀐다
+    restart_requested = Signal()      # [새로고침] — 앱이 새로 떠서 받은 것을 반영
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -102,8 +104,15 @@ class UpdatesPage(QWidget):
         self.apply_button.setObjectName("primary")
         self.apply_button.setEnabled(False)
         self.apply_button.clicked.connect(self._confirm_apply)
+        # 적용이 끝나면 보인다. 껐다 켤 필요 없이 새 앱이 뜨고 이 창은 닫힌다(담당자 요청 2026-10-13)
+        self.restart_button = QPushButton("새로고침")
+        self.restart_button.setObjectName("primary")
+        self.restart_button.setToolTip("창이 닫혔다가 새 버전으로 다시 열립니다 (2~3초)")
+        self.restart_button.clicked.connect(self.restart_requested.emit)
+        self.restart_button.hide()
         buttons.addWidget(self.check_button)
         buttons.addWidget(self.apply_button)
+        buttons.addWidget(self.restart_button)
         buttons.addStretch(1)
         status_card.add_layout(buttons)
         column.addWidget(status_card)
@@ -191,7 +200,7 @@ class UpdatesPage(QWidget):
         answer = QMessageBox.question(
             self, "업데이트 적용",
             f"변경 {self._status.behind}건을 적용합니다.\n"
-            "앱 파일이 갱신되며, 반영하려면 앱을 다시 시작해야 합니다.\n\n계속할까요?",
+            "앱 파일이 갱신되고, 그다음 [새로고침] 을 누르면 바로 반영됩니다.\n\n계속할까요?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
         )
         if answer == QMessageBox.Yes:
@@ -204,10 +213,17 @@ class UpdatesPage(QWidget):
         self.version_label.setText(updater.current_version())
         self.version_changed.emit(updater.current_version())
         self.apply_button.setEnabled(False)
-        if ok:
-            QMessageBox.information(self, "업데이트", message)
-        else:
+        self.restart_button.setVisible(ok)
+        self.applied.emit(ok)
+        if not ok:
             QMessageBox.warning(self, "업데이트", message)
+            return
+        answer = QMessageBox.question(
+            self, "업데이트",
+            f"{message}\n\n지금 새로고침해서 반영할까요? 창이 닫혔다가 새 버전으로 다시 열립니다.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer == QMessageBox.Yes:
+            self.restart_requested.emit()
 
     def _on_failed(self, message: str) -> None:
         """예상 못 한 예외. 마지막 줄이라도 화면에 띄워야 원인을 알 수 있다."""

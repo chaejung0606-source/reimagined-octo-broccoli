@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -98,6 +99,32 @@ def _git(*args: str) -> subprocess.CompletedProcess:
     # 실제로 사용자 PC에서 이 지점이 터졌다.
     return subprocess.CompletedProcess(
         done.args, done.returncode, done.stdout or "", done.stderr or "")
+
+
+def relaunch_command() -> list[str]:
+    """앱을 새로 띄우는 명령. 화면의 [새로고침] 이 쓴다.
+
+    윈도우에서는 '앱 실행 (창 없이).vbs' 를 우선 쓴다 — 준비 표시(setup-claim-vN)를 보고, 의존성이
+    바뀐 업데이트면 준비 단계까지 다시 돌아 주기 때문이다. 없으면 지금 파이썬으로 모듈을 띄운다
+    (pythonw 로 떴으면 pythonw 라 창이 없다).
+    """
+    vbs = REPO_ROOT / "앱 실행 (창 없이).vbs"
+    if os.name == "nt" and vbs.exists():
+        return ["wscript.exe", str(vbs)]
+    return [sys.executable, "-m", "claim_downloader.ui.app"]
+
+
+def relaunch() -> None:
+    """새 앱을 띄운다. 부르는 쪽이 곧 자기 창을 닫는다 — 둘이 겹치는 순간은 2~3초뿐이다."""
+    extra = {}
+    if os.name == "nt":
+        # 지금 프로세스가 끝나도 새 앱이 따라 죽지 않게 떼어 낸다
+        extra["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        extra["start_new_session"] = True
+    # 입출력도 떼어 낸다 — 물려받으면 새 앱이 이 프로세스의 파이프를 붙들고 있어 부모가 못 끝날 수 있다
+    subprocess.Popen(relaunch_command(), cwd=str(REPO_ROOT), close_fds=True,
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **extra)
 
 
 def _git_executable() -> str:

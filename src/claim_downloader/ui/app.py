@@ -109,6 +109,8 @@ class MainWindow(QMainWindow):
         self.home = HomePage()
         self.home.open_task.connect(self.open)
         self.home.apply_update.connect(self._apply_update)
+        self.home.restart_requested.connect(self.restart)
+        self._closing_for_restart = False
         self._pages[HOME_ID] = self.home
         self.stack.addWidget(self.home)
         self.dock_overlay.raise_()
@@ -148,6 +150,8 @@ class MainWindow(QMainWindow):
         elif task.id == "updates":
             page.version_changed.connect(lambda _v: self._sync_user_menu())
             page.status_checked.connect(self._on_update_status)
+            page.applied.connect(self._on_update_applied)
+            page.restart_requested.connect(self.restart)
 
     def open(self, task_id: str) -> None:
         """독·홈 카드·[+]·메뉴에서 부른다. 이미 열려 있으면 그 탭으로 간다."""
@@ -221,6 +225,37 @@ class MainWindow(QMainWindow):
         self.open("updates")
         self.page("updates")._confirm_apply()
 
+    def _on_update_applied(self, ok: bool) -> None:
+        if ok:
+            self.home.show_restart()
+
+    # ── 새로고침 ─────────────────────────────────────────────────────
+    def _running_work(self) -> tuple[list, list[str]]:
+        """별도 스레드에서 도는 화면들과, 그중 지금 작업 중인 것의 이름."""
+        workers = [(tid, self._pages[tid]) for tid in RUNNING_WORDS if tid in self._pages]
+        running = [RUNNING_WORDS[tid] for _tid, page in workers if page.is_running()]
+        return workers, running
+
+    def _confirm_leave(self, running: list[str], what: str) -> bool:
+        answer = QMessageBox.question(
+            self, APP_NAME,
+            f"아직 {' · '.join(running)} 중입니다. 지금 {what} 하던 건이 끝나지 않습니다.\n그래도 할까요?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        return answer == QMessageBox.Yes
+
+    def restart(self) -> None:
+        """[새로고침] — 새 앱을 띄우고 이 창을 닫는다. 업데이트를 받은 뒤 껐다 켤 필요가 없다(담당자 요청)."""
+        _workers, running = self._running_work()
+        if running and not self._confirm_leave(running, "새로고침하면"):
+            return
+        try:
+            updater.relaunch()
+        except OSError as error:
+            QMessageBox.warning(self, APP_NAME, f"앱을 새로 띄우지 못했습니다.\n{error}\n\n앱을 직접 닫고 다시 여세요.")
+            return
+        self._closing_for_restart = True      # closeEvent 가 한 번 더 묻지 않게
+        self.close()
+
     def _sync_user_menu(self) -> None:
         menu = self.topbar.user_menu
         menu.clear()
@@ -228,6 +263,8 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         for task in UTILITIES:
             menu.addAction(task.name, lambda t=task.id: self.open(t))
+        menu.addSeparator()
+        menu.addAction("앱 새로고침", self.restart)
 
     def _search(self, text: str) -> None:
         """업무 이름으로 찾아 연다. 못 찾으면 상태줄에 알린다."""
@@ -245,16 +282,10 @@ class MainWindow(QMainWindow):
         self.dock_overlay.set_compact(self.height() < COMPACT_BELOW)
 
     def closeEvent(self, event) -> None:  # noqa: N802
-        workers = [(tid, self._pages[tid]) for tid in RUNNING_WORDS if tid in self._pages]
-        running = [RUNNING_WORDS[tid] for tid, page in workers if page.is_running()]
-        if running:
-            answer = QMessageBox.question(
-                self, APP_NAME,
-                f"아직 {' · '.join(running)} 중입니다. 지금 닫으면 하던 건이 끝나지 않습니다.\n그래도 닫을까요?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if answer != QMessageBox.Yes:
-                event.ignore()
-                return
+        workers, running = self._running_work()
+        if running and not self._closing_for_restart and not self._confirm_leave(running, "닫으면"):
+            event.ignore()
+            return
         for _tid, page in workers:
             page.shutdown()
         super().closeEvent(event)

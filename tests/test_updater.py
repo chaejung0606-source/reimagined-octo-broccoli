@@ -236,3 +236,32 @@ def test_git_is_found_next_to_app_when_not_on_path(monkeypatch, tmp_path):
     monkeypatch.setattr(updater.subprocess, "run", run)
     updater._git("status")
     assert seen["exe"] == str(exe)
+
+
+def test_relaunch_prefers_windowless_launcher_on_windows(monkeypatch, tmp_path):
+    """[새로고침] — 윈도우에선 .vbs(준비 단계까지 챙긴다), 아니면 지금 파이썬으로 모듈을."""
+    monkeypatch.setattr(updater, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(updater.os, "name", "nt")
+    assert updater.relaunch_command() == [updater.sys.executable, "-m", "claim_downloader.ui.app"]
+    vbs = tmp_path / "앱 실행 (창 없이).vbs"
+    vbs.write_text("' launcher", encoding="utf-8")
+    assert updater.relaunch_command() == ["wscript.exe", str(vbs)]
+    monkeypatch.setattr(updater.os, "name", "posix")
+    assert updater.relaunch_command()[1:] == ["-m", "claim_downloader.ui.app"]
+
+
+def test_relaunch_detaches_new_process(monkeypatch, tmp_path):
+    seen = {}
+
+    def popen(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+
+    monkeypatch.setattr(updater.subprocess, "Popen", popen)
+    monkeypatch.setattr(updater, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(updater.os, "name", "posix")
+    updater.relaunch()
+    assert seen["command"][1:] == ["-m", "claim_downloader.ui.app"]
+    assert seen["kwargs"]["cwd"] == str(tmp_path) and seen["kwargs"]["start_new_session"] is True
+    # 부모의 입출력을 물려받으면 부모가 끝나지 못한다(파이프를 붙든 채 남는다)
+    assert all(seen["kwargs"][k] == subprocess.DEVNULL for k in ("stdin", "stdout", "stderr"))
