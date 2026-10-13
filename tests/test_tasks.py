@@ -70,5 +70,6 @@ def test_taskbar_identity_is_shared_by_app_and_shortcut():
     app_source = (UI / "app.py").read_text(encoding="utf-8")
     tool_source = (UI.parents[2] / "tools" / "create_shortcut.py").read_text(encoding="utf-8")
     assert "settings.APP_USER_MODEL_ID" in app_source and "SetCurrentProcessExplicitAppUserModelID" in app_source
-    assert "APP_USER_MODEL_ID as APP_ID" in tool_source and settings.APP_USER_MODEL_ID in tool_source
+    # 이름은 settings 한 곳에만 — 도구는 그것을 읽을 뿐, 글자를 따로 적어 두지 않는다
+    assert "APP_USER_MODEL_ID as APP_ID" in tool_source and settings.APP_USER_MODEL_ID not in tool_source
     assert "9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3" in tool_source      # PKEY_AppUserModel_ID
