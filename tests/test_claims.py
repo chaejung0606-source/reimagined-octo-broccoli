@@ -168,10 +168,12 @@ def test_process_skips_after_fatal_and_continues_after_transient(tmp_path):
 class FakeFrame:
     """evaluate 가 form.py 의 JS 상수를 알아보고 ERP 화면처럼 반응한다."""
 
-    def __init__(self, mod_yn="N", options=None):
-        self.values = {}
+    def __init__(self, mod_yn="N", options=None, screen=None, save_works=True):
+        self.values = dict(screen or {})
         self.sets = []
+        self.clicks = []
         self.mod_yn = mod_yn
+        self.save_works = save_works
         self.options = options or {
             "PAY_EXP_CD": ["선택", "인건비", "기타운영경비"], "DTL_EXP_CD": ["선택", "임차료"],
             "EVDI_DIV_CD": ["선택", "세금계산서", "계산서"], "SETTLE_METH_CD": ["계좌이체", "현금/지로"],
@@ -182,8 +184,13 @@ class FakeFrame:
         if js is form.PROBE_JS:
             return True
         if js is form.STATE_JS:
-            return {i: {"tag": "input", "value": self.mod_yn if i == "MOD_YN" else ("P10" if i == "PROC_TYP_CD" else "")}
-                    for i in arg}
+            return {i: {"tag": "input", "value": self._value(i)} for i in arg}
+        if js is form.CLICK_SAVE_JS:
+            self.clicks.append(arg)
+            if arg == form.SAVE_TEXT and self.save_works:
+                self.values["REQ_SEQ_NO"] = "REQ-2026-0001"
+                self.values["MOD_YN"] = "Y"
+            return {"ok": True}
         if js is form.OPTION_COUNT_JS:
             return len(self.options.get(arg, []))
         if js is form.SET_SELECT_JS:
@@ -196,6 +203,15 @@ class FakeFrame:
             self.sets.append((element_id, value))
             return {"ok": True, "now": value}
         raise AssertionError("모르는 JS")
+
+    def _value(self, element_id):
+        if element_id in self.values:
+            return self.values[element_id]
+        if element_id == "MOD_YN":
+            return self.mod_yn
+        if element_id == "PROC_TYP_CD":
+            return "P10"
+        return ""
 
 
 def test_fill_sets_fields_in_order_and_never_touches_buttons():
@@ -229,11 +245,34 @@ def test_unknown_option_is_reported_not_fatal():
     assert not report.ok and any(s.label == "적요" and s.ok for s in report.steps)   # 나머지는 계속 넣는다
 
 
-def test_form_module_only_fills_allowed_fields_and_never_clicks():
+def test_form_module_only_fills_allowed_fields_and_clicks_only_save():
     text = (CLAIMS / "form.py").read_text(encoding="utf-8")
-    assert ".click(" not in text and "submit" not in text.lower()
+    assert text.count(".click(") == 1 and ".click(" in form.CLICK_SAVE_JS      # 누르는 곳은 임시저장 하나
+    assert "submit" not in text.lower()
     assert "import playwright" not in text and "from playwright" not in text
-    for forbidden in form.FORBIDDEN_TEXTS:
-        assert forbidden in ("저장", "신청", "삭제", "초기화", "새 청구서", "일괄예금주조회", "[예금주조회]", "청구서복사")
+    assert "신청" in form.FORBIDDEN_TEXTS and form.SAVE_TEXT not in form.FORBIDDEN_TEXTS
     assert {f[1] for f in form.FIELDS} <= form.ALLOWED_IDS
     assert "RCV_CD" not in {f[1] for f in form.FIELDS}      # 입금처는 팝업 — 직접 쓰지 않는다
+
+
+def test_save_draft_waits_for_payee_and_reports_change():
+    """입금처가 비어 있으면 누르지 않고, 다 있으면 [저장] 하나만 눌러 결의번호가 생기는 것을 확인한다."""
+    frame = FakeFrame(screen={"REQ_PTCL": "09_정수기", "REQ_AMT": "51,900", "RCV_NM": ""})
+    report = form.save_draft(frame, lambda m: None, [], wait=lambda s: None)
+    assert not report.ok and "입금처" in report.note and frame.clicks == []
+
+    frame = FakeFrame(screen={"REQ_PTCL": "09_정수기", "REQ_AMT": "51,900", "RCV_NM": "코웨이(주)"})
+    messages = []
+    report = form.save_draft(frame, lambda m: None, messages, wait=lambda s: None)
+    assert report.ok and frame.clicks == [form.SAVE_TEXT]
+    assert report.after["REQ_SEQ_NO"] == "REQ-2026-0001" and report.after["MOD_YN"] == "Y"
+    assert "[신청] 은 직접 누르세요" in " ".join(report.lines())
+
+    frame = FakeFrame(screen={"REQ_PTCL": "x", "REQ_AMT": "1", "RCV_NM": "y"}, save_works=False)
+    report = form.save_draft(frame, lambda m: None, ["필수 항목이 비어 있습니다"], wait=lambda s: None, tries=2)
+    assert not report.ok and report.messages == ["필수 항목이 비어 있습니다"]
+    # 화면은 안 바뀌어도 '저장되었습니다' 가 뜨면 됨으로, '저장하시겠습니까?' 만 떴으면 아직 아님
+    frame = FakeFrame(screen={"REQ_PTCL": "x", "REQ_AMT": "1", "RCV_NM": "y"}, save_works=False)
+    assert form.save_draft(frame, lambda m: None, ["저장하시겠습니까?", "저장되었습니다."], wait=lambda s: None, tries=2).ok
+    frame = FakeFrame(screen={"REQ_PTCL": "x", "REQ_AMT": "1", "RCV_NM": "y"}, save_works=False)
+    assert not form.save_draft(frame, lambda m: None, ["저장하시겠습니까?"], wait=lambda s: None, tries=2).ok

@@ -161,6 +161,33 @@ class ErpSession:
         return claim_form.fill(frame, data, self.log, dry_run=dry_run,
                                wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)))
 
+    def save_claim_draft(self) -> claim_form.SaveReport:
+        """일반청구 [저장](임시저장)을 누른다. ERP 가 띄우는 알림·확인 창은 글을 모으고 넘긴다. 신청은 누르지 않는다."""
+        if not self.browser_open:
+            raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
+        page, frame = claim_form.find_form(self.page.context)
+        if frame is None:
+            report = claim_form.SaveReport(ok=False)
+            report.note = "일반청구 작성 화면을 찾지 못했습니다. 채운 화면이 그대로 열려 있는지 확인하세요."
+            self.log(report.note)
+            return report
+        messages: list[str] = []
+
+        def on_dialog(dialog) -> None:
+            messages.append(dialog.message.strip())
+            self.log("ERP 알림: %s" % dialog.message.strip())
+            try:
+                dialog.accept()
+            except Exception:  # noqa: BLE001 — 이미 닫힌 창
+                pass
+
+        page.on("dialog", on_dialog)
+        try:
+            return claim_form.save_draft(frame, self.log, messages,
+                                         wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)))
+        finally:
+            page.remove_listener("dialog", on_dialog)
+
     # ── 목록 ─────────────────────────────────────────────────────────────
     def read_list(self) -> Selection:
         if not self.browser_open:

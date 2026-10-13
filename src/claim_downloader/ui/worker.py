@@ -34,6 +34,7 @@ class SessionWorker(QObject):
     browser_state = Signal(bool)        # 명령을 마칠 때마다 브라우저가 살아 있는지
     structure_saved = Signal(str)       # 진단: 화면 구조를 저장한 파일 경로
     claim_filled = Signal(object)       # 일반청구: claims.form.FillReport
+    claim_saved = Signal(object)        # 일반청구: claims.form.SaveReport (임시저장)
     claim_form_state = Signal(bool)     # 일반청구 작성 화면이 브라우저에 떠 있는지
 
     def __init__(self) -> None:
@@ -56,6 +57,9 @@ class SessionWorker(QObject):
 
     def check_claim_form(self) -> None:
         self._queue.put(("check_claim_form", ()))
+
+    def save_claim_draft(self) -> None:
+        self._queue.put(("save_claim_draft", ()))
 
     def read_list(self) -> None:
         self._queue.put(("read_list", ()))
@@ -125,6 +129,10 @@ class SessionWorker(QObject):
     def _do_fill_claim(self, session: ErpSession, data: dict, dry_run: bool) -> None:
         self.busy.emit(True, "일반청구 화면을 확인하는 중…" if dry_run else "일반청구 화면에 채우는 중…")
         self.claim_filled.emit(session.fill_claim(data, dry_run))
+
+    def _do_save_claim_draft(self, session: ErpSession) -> None:
+        self.busy.emit(True, "ERP 에 임시저장하는 중…")
+        self.claim_saved.emit(session.save_claim_draft())
 
     def _do_check_claim_form(self, session: ErpSession) -> None:
         self.claim_form_state.emit(session.claim_form_open())

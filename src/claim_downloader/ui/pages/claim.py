@@ -1,10 +1,12 @@
-"""일반청구 화면 — 지출 폴더를 넣고 [내용 읽기] → 값을 고치고 → [ERP 에 채우기] → 사람이 저장·신청.
+"""일반청구 화면 — 지출 폴더를 넣고 [내용 읽기] → 값을 고치고 → [ERP 에 채우기] → 사람이 입금처·첨부 → [임시저장] → 사람이 검토·신청.
 
     AI 플랫폼 고르기 → 지출 폴더 추가(끌어다 놓기 · 버튼) → 내용 읽기(AI) → 오른쪽 칸에서 값 확인·수정
-    → 브라우저에 일반청구 작성 화면을 띄움 → [ERP 에 채우기] → 요약 확인 → ERP 에서 사람이 입금처·첨부·저장·신청
+    → 브라우저에 일반청구 작성 화면을 띄움 → [ERP 에 채우기] → ERP 에서 사람이 입금처·첨부 → [임시저장]
+    → ERP 에서 사람이 검토하고 [신청]
 
-기본은 '미리 보기만'(dry-run) — 체크를 풀어야 실제로 넣는다. 저장·신청·삭제·초기화는 코드가 절대 누르지
-않는다(claims/form.py). 같은 폴더를 두 번 채우려 하면 묻는다(claims/record.py).
+담당자 결정(2026-10-13): 내역 작성 후 임시저장까지 앱이, 그 뒤는 사람이. 기본은 '미리 보기만'(dry-run) — 체크를
+풀어야 실제로 넣는다. 신청·삭제·초기화는 코드가 절대 누르지 않는다(claims/form.py). 같은 폴더를 두 번 채우려
+하면 묻는다(claims/record.py).
 
 브라우저는 청구서 받기와 같은 스레드(app.session_worker)를 쓴다 — ERP 로그인은 한 번이면 된다.
 """
@@ -56,6 +58,7 @@ ROW_STATUS = {
     "skipped": ("건너뜀", "warning"),
     "stopped": ("안 함", "neutral"),
     "filled": ("채움", "success"),
+    "saved": ("임시저장", "success"),
 }
 
 GUIDE_START = "지출 폴더를 추가하고 [내용 읽기] 를 누르세요. 읽은 값은 오른쪽에서 고칠 수 있습니다."
@@ -117,6 +120,7 @@ class ClaimPage(QWidget):
         b.browser_opened.connect(self._on_browser_opened)
         b.browser_state.connect(self._on_browser_state)
         b.claim_filled.connect(self._on_claim_filled)
+        b.claim_saved.connect(self._on_claim_saved)
         b.error.connect(self._on_error)
 
         self._sync_buttons()
@@ -373,6 +377,12 @@ class ClaimPage(QWidget):
         self.fill_button.setObjectName("primary")
         self.fill_button.clicked.connect(self._fill)
         row.addWidget(self.fill_button)
+        # 채운 뒤 사람이 입금처·첨부를 넣으면 — 앱이 ERP 의 [저장](임시저장)을 누른다. [신청] 은 끝까지 사람.
+        self.save_button = QPushButton("임시저장")
+        self.save_button.setObjectName("primary")
+        self.save_button.setToolTip("ERP 의 [저장] 을 눌러 임시저장합니다. [신청] 은 검토 후 직접 누르세요.")
+        self.save_button.clicked.connect(self._save_draft)
+        row.addWidget(self.save_button)
         return row
 
     # ── 상태 ────────────────────────────────────────────────────────────
@@ -391,9 +401,12 @@ class ClaimPage(QWidget):
         self.stop_button.setVisible(running)
         self.open_button.setVisible(not self._browser_open)
         self.open_button.setEnabled(not self._browser_busy)
-        has_row = 0 <= self._current < len(self._dirs) and self._status[self._current] in ("read", "filled")
+        has_row = 0 <= self._current < len(self._dirs) and self._status[self._current] in ("read", "filled", "saved")
         self.fill_button.setEnabled(has_row and self._browser_open and not self._browser_busy and not running)
         self.fill_button.setText("미리 보기" if self.dry_run.isChecked() else "ERP 에 채우기")
+        filled = 0 <= self._current < len(self._dirs) and self._status[self._current] in ("filled", "saved")
+        self.save_button.setVisible(filled)
+        self.save_button.setEnabled(filled and self._browser_open and not self._browser_busy and not running)
         self.tabs.setTabText(0, f"지출 목록 ({len(self._dirs)})" if self._dirs else "지출 목록")
         self.list_stack.setCurrentIndex(1 if self._dirs else 0)
 
@@ -715,10 +728,40 @@ class ClaimPage(QWidget):
         if 0 <= row < len(self._dirs) and report.ok:
             record.remember(self._dirs[row], self._data[row])
             self._set_status(row, "filled")
-            self._set_state("채움", "success", "ERP 화면에서 값을 확인하고 입금처·첨부를 넣은 뒤 [저장] → [신청] 을 직접 누르세요.")
+            self._set_state("채움", "success", "ERP 화면에서 입금처(돋보기)·첨부를 넣고 값을 확인한 뒤 앱의 [임시저장] 을 누르세요.")
         else:
-            self._set_state("일부 못 채움", "warning", "채우지 못한 칸은 ERP 에서 직접 넣으세요. 자세한 내용은 [진행 기록].")
+            if 0 <= row < len(self._dirs):
+                self._set_status(row, "filled")
+            self._set_state("일부 못 채움", "warning", "채우지 못한 칸은 ERP 에서 직접 넣은 뒤 [임시저장] 을 누르세요. 자세한 내용은 [진행 기록].")
         QMessageBox.information(self, "ERP 에 채움", text)
+        self._sync_buttons()
+
+    def _save_draft(self) -> None:
+        row = self._current
+        if not (0 <= row < len(self._dirs)) or not self._browser_open or self._browser_busy:
+            return
+        answer = QMessageBox.question(
+            self, "임시저장",
+            "ERP 화면에 입금처·첨부를 넣으셨나요?\n\n앱이 ERP 의 [저장] 을 눌러 임시저장합니다. "
+            "[신청] 은 누르지 않습니다 — 검토한 뒤 직접 누르세요.\n\n진행할까요?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer != QMessageBox.Yes:
+            return
+        self._save_row = row
+        self.browser.save_claim_draft()
+
+    def _on_claim_saved(self, report) -> None:
+        text = "\n".join(report.lines())
+        self._append_log(text)
+        row = getattr(self, "_save_row", -1)
+        if report.ok:
+            if 0 <= row < len(self._dirs):
+                self._set_status(row, "saved")
+            self._set_state("임시저장", "success", "ERP 에서 임시저장된 청구서를 검토한 뒤 [신청] 을 직접 누르세요.")
+            QMessageBox.information(self, "임시저장", text)
+        else:
+            self._set_state("임시저장 안 됨", "warning", report.note or "ERP 알림을 확인하세요.")
+            QMessageBox.warning(self, "임시저장 안 됨", text)
         self._sync_buttons()
 
     # ── 신호 ────────────────────────────────────────────────────────────
