@@ -1,20 +1,22 @@
 """바탕화면 바로가기 만들기.
 
-이 저장소 폴더에서 한 번 실행하면, 바탕화면에 아이콘이 붙은
-'ERP 청구서 다운로더' 바로가기가 생긴다. 더블클릭하면 앱이 뜬다.
+이 저장소 폴더에서 한 번 실행하면, 바탕화면과 시작 메뉴에 아이콘이 붙은
+'COSS 업무데스크' 바로가기가 생긴다. 더블클릭하면 앱이 뜬다.
 
     python tools/create_shortcut.py
 
 윈도우는 .lnk, 리눅스는 .desktop 을 만든다. macOS 는 안내만 출력한다.
+
+윈도우에서는 PowerShell 을 쓰지 않고 ctypes 로 셸 링크(COM)를 직접 다룬다. 전에는 PowerShell 에 C# 을
+컴파일시켜(Add-Type) 작업 표시줄 이름을 적었는데, 담당자 PC 에서 그 단계가 조용히 실패해 바로가기에
+이름이 안 붙은 채 단추가 둘로 남았다(2026-10-13). ctypes 는 파이썬에 들어 있어 컴파일·따옴표·
+인코딩 문제가 없고, 적은 뒤 다시 읽어 확인까지 한다.
 """
 from __future__ import annotations
 
-import subprocess
+import ctypes
 import sys
 from pathlib import Path
-
-# 창 없는 실행(pythonw) 아래서 powershell 이 검은 창을 띄우지 않게
-_HIDDEN = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform.startswith("win") else {}
 
 APP_NAME = "COSS 업무데스크"
 # 작업 표시줄이 바로가기와 실행 중인 창을 한 단추로 묶는 이름. 앱과 같은 값을 써야 하므로 한 곳(settings)에서만
@@ -43,112 +45,225 @@ def _pythonw() -> Path:
     return Path(sys.executable)
 
 
-# 바로가기에 작업 표시줄 이름(System.AppUserModel.ID)을 적는다. WScript.Shell 로는 못 적어 셸 링크의
-# 속성 저장소(IPropertyStore)를 직접 쓴다. 실패해도 바로가기 자체는 이미 만들어진 뒤다.
-_TAG_CODE = r"""
-using System;
-using System.Runtime.InteropServices;
-using System.Runtime.InteropServices.ComTypes;
-namespace CossShortcut {
-  [StructLayout(LayoutKind.Sequential, Pack = 4)]
-  public struct PropertyKey { public Guid fmtid; public uint pid; public PropertyKey(Guid f, uint p) { fmtid = f; pid = p; } }
-  [StructLayout(LayoutKind.Explicit)]
-  public struct PropVariant {
-    [FieldOffset(0)] public ushort vt;
-    [FieldOffset(8)] public IntPtr pointerValue;
-    [FieldOffset(16)] public IntPtr padding;
-  }
-  [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-  public interface IPropertyStore {
-    void GetCount(out uint cProps);
-    void GetAt(uint iProp, out PropertyKey pkey);
-    void GetValue(ref PropertyKey key, out PropVariant pv);
-    void SetValue(ref PropertyKey key, ref PropVariant pv);
-    void Commit();
-  }
-  [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
-  public class ShellLink { }
-  public static class Tagger {
-    public static void SetAppId(string lnkPath, string appId) {
-      object link = new ShellLink();
-      IPersistFile file = (IPersistFile)link;
-      file.Load(lnkPath, 0);
-      IPropertyStore store = (IPropertyStore)link;
-      PropertyKey key = new PropertyKey(new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5);
-      PropVariant pv = new PropVariant();
-      pv.vt = 31;
-      pv.pointerValue = Marshal.StringToCoTaskMemUni(appId);
-      try { store.SetValue(ref key, ref pv); store.Commit(); }
-      finally { Marshal.FreeCoTaskMem(pv.pointerValue); }
-      file.Save(lnkPath, true);
-    }
-  }
+# ── 윈도우 셸 링크(COM) ───────────────────────────────────────────────────────
+# 인터페이스 번호(가상 함수 표 순서)와 GUID 는 shobjidl.h · propkey.h 의 것. 윈도우 밖에서는 아래 클래스들을
+# 만들 수만 있고(테스트가 구조체 크기를 본다) 부르지는 못한다.
+
+_CLSID_SHELL_LINK = "{00021401-0000-0000-C000-000000000046}"
+_IID_SHELL_LINK_W = "{000214F9-0000-0000-C000-000000000046}"
+_IID_PERSIST_FILE = "{0000010B-0000-0000-C000-000000000046}"
+_IID_PROPERTY_STORE = "{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}"
+PKEY_APP_ID_FMTID = "{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}"      # PKEY_AppUserModel_ID (System.AppUserModel.ID)
+PKEY_APP_ID_PID = 5
+_KNOWN_FOLDERS = {
+    "Desktop": "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}",
+    "Programs": "{A77F5D77-2E2B-44C3-A6A2-ABA601054A51}",         # 시작 메뉴 > 프로그램 (사용자)
+    "RoamingAppData": "{3EB685DB-65F9-4CF6-A03A-E3EF65729F3D}",
 }
-"""
+_VT_LPWSTR = 31
+_CLSCTX_INPROC_SERVER = 1
+_TEXT_BUFFER = 2048
 
 
-def _create_link(link: Path) -> None:
-    script = f"""
-$shell = New-Object -ComObject WScript.Shell
-$sc = $shell.CreateShortcut('{link}')
-$sc.TargetPath = '{_pythonw()}'
-$sc.Arguments = '-m {MODULE}'
-$sc.WorkingDirectory = '{REPO_ROOT}'
-$sc.IconLocation = '{ASSETS / "icon.ico"}'
-$sc.Description = '청구서 받기 등 업무를 한곳에서 시작합니다'
-$sc.Save()
-"""
-    subprocess.run(["powershell", "-NoProfile", "-Command", script], check=True, **_HIDDEN)
+class _Guid(ctypes.Structure):
+    _fields_ = [("data1", ctypes.c_uint32), ("data2", ctypes.c_uint16), ("data3", ctypes.c_uint16),
+                ("data4", ctypes.c_ubyte * 8)]
+
+    @classmethod
+    def parse(cls, text: str) -> "_Guid":
+        guid = cls()
+        ctypes.oledll.ole32.CLSIDFromString(text, ctypes.byref(guid))
+        return guid
 
 
-def _tag_links(links: list[Path]) -> bool:
-    paths = ", ".join(f"'{p}'" for p in links)
-    script = "$code = @'\n" + _TAG_CODE.strip() + "\n'@\nAdd-Type -TypeDefinition $code\n" \
-             f"foreach ($p in @({paths})) {{ [CossShortcut.Tagger]::SetAppId($p, '{APP_ID}') }}\n"
-    done = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", **_HIDDEN)
-    if done.returncode != 0 or (done.stderr or "").strip():
-        print("작업 표시줄 이름을 바로가기에 적지 못했습니다 (바로가기 자체는 만들어짐):")
-        print((done.stderr or done.stdout or "(출력 없음)")[-1200:])
-        return False
-    print("작업 표시줄 이름을 적었습니다:", ", ".join(p.name for p in links))
-    return True
+class _PropertyKey(ctypes.Structure):
+    _fields_ = [("fmtid", _Guid), ("pid", ctypes.c_uint32)]
 
 
-def _folder(name: str) -> Path:
-    return Path(subprocess.check_output(
-        ["powershell", "-NoProfile", "-Command", f"[Environment]::GetFolderPath('{name}')"],
-        text=True, **_HIDDEN).strip())
+class _PropVariant(ctypes.Structure):
+    # PROPVARIANT: vt(2) + 예약 3×2 = 8바이트, 그 뒤 값(여기서는 문자열 포인터). 전체는 64비트 24 / 32비트 16바이트.
+    _fields_ = [("vt", ctypes.c_uint16), ("reserved1", ctypes.c_uint16), ("reserved2", ctypes.c_uint16),
+                ("reserved3", ctypes.c_uint16), ("pointer", ctypes.c_void_p), ("padding", ctypes.c_void_p)]
+
+
+class _Com:
+    """COM 인터페이스 포인터 하나. 가상 함수 표에서 번호로 메서드를 꺼내 부른다. 실패(HRESULT<0)는 OSError."""
+
+    def __init__(self, pointer: ctypes.c_void_p) -> None:
+        self.pointer = pointer
+
+    def call(self, index: int, argtypes: tuple, *args, restype=None):
+        vtable = ctypes.cast(self.pointer, ctypes.POINTER(ctypes.c_void_p))[0]
+        function = ctypes.cast(ctypes.c_void_p(vtable), ctypes.POINTER(ctypes.c_void_p))[index]
+        prototype = ctypes.WINFUNCTYPE(restype or ctypes.HRESULT, ctypes.c_void_p, *argtypes)
+        return prototype(function)(self.pointer, *args)
+
+    def query(self, iid: str) -> "_Com":
+        out = ctypes.c_void_p()
+        self.call(0, (ctypes.POINTER(_Guid), ctypes.POINTER(ctypes.c_void_p)),
+                  ctypes.byref(_Guid.parse(iid)), ctypes.byref(out))
+        return _Com(out)
+
+    def release(self) -> None:
+        self.call(2, (), restype=ctypes.c_ulong)
+
+
+class _ShellLink:
+    """.lnk 하나 — IShellLinkW · IPersistFile · IPropertyStore 를 같은 객체에서 꺼내 쓴다."""
+
+    def __init__(self) -> None:
+        ctypes.windll.ole32.CoInitialize(None)
+        pointer = ctypes.c_void_p()
+        ctypes.oledll.ole32.CoCreateInstance(ctypes.byref(_Guid.parse(_CLSID_SHELL_LINK)), None, _CLSCTX_INPROC_SERVER,
+                                             ctypes.byref(_Guid.parse(_IID_SHELL_LINK_W)), ctypes.byref(pointer))
+        self._link = _Com(pointer)
+        self._file = self._link.query(_IID_PERSIST_FILE)
+        self._store = self._link.query(_IID_PROPERTY_STORE)
+
+    def close(self) -> None:
+        for com in (self._store, self._file, self._link):
+            com.release()
+
+    # IPersistFile
+    def load(self, path: Path) -> None:
+        self._file.call(5, (ctypes.c_wchar_p, ctypes.c_uint32), str(path), 0)
+
+    def save(self, path: Path) -> None:
+        self._file.call(6, (ctypes.c_wchar_p, ctypes.c_int), str(path), 1)
+
+    # IShellLinkW
+    def _text(self, index: int, *extra) -> str:
+        buffer = ctypes.create_unicode_buffer(_TEXT_BUFFER)
+        argtypes = (ctypes.c_wchar_p, ctypes.c_int) + tuple(type(value) for value in extra)
+        self._link.call(index, argtypes, buffer, _TEXT_BUFFER, *extra)
+        return buffer.value
+
+    def target(self) -> str:
+        return self._text(3, ctypes.c_void_p(None), ctypes.c_uint32(0))    # GetPath(…, pfd=NULL, flags=0)
+
+    def working_dir(self) -> str:
+        return self._text(8)
+
+    def arguments(self) -> str:
+        return self._text(10)
+
+    def set_target(self, path: Path) -> None:
+        self._link.call(20, (ctypes.c_wchar_p,), str(path))
+
+    def set_description(self, text: str) -> None:
+        self._link.call(7, (ctypes.c_wchar_p,), text)
+
+    def set_working_dir(self, path: Path) -> None:
+        self._link.call(9, (ctypes.c_wchar_p,), str(path))
+
+    def set_arguments(self, text: str) -> None:
+        self._link.call(11, (ctypes.c_wchar_p,), text)
+
+    def set_icon(self, path: Path) -> None:
+        self._link.call(17, (ctypes.c_wchar_p, ctypes.c_int), str(path), 0)
+
+    # IPropertyStore — 작업 표시줄 이름
+    @staticmethod
+    def _key() -> _PropertyKey:
+        return _PropertyKey(_Guid.parse(PKEY_APP_ID_FMTID), PKEY_APP_ID_PID)
+
+    def app_id(self) -> str:
+        key = self._key()
+        value = _PropVariant()
+        self._store.call(5, (ctypes.POINTER(_PropertyKey), ctypes.POINTER(_PropVariant)),
+                         ctypes.byref(key), ctypes.byref(value))
+        try:
+            if value.vt != _VT_LPWSTR or not value.pointer:
+                return ""
+            return ctypes.wstring_at(value.pointer)
+        finally:
+            ctypes.windll.ole32.PropVariantClear(ctypes.byref(value))
+
+    def set_app_id(self, app_id: str) -> None:
+        key = self._key()
+        text = ctypes.create_unicode_buffer(app_id)      # SetValue 가 복사해 가므로 호출 동안만 살아 있으면 된다
+        value = _PropVariant(vt=_VT_LPWSTR, pointer=ctypes.addressof(text))
+        self._store.call(6, (ctypes.POINTER(_PropertyKey), ctypes.POINTER(_PropVariant)),
+                         ctypes.byref(key), ctypes.byref(value))
+        self._store.call(7, ())                           # Commit
+
+
+def _known_folder(name: str) -> Path:
+    """바탕화면·시작 메뉴 위치. OneDrive 로 옮겨진 바탕화면도 이 API 가 맞게 준다."""
+    out = ctypes.c_wchar_p()
+    ctypes.oledll.shell32.SHGetKnownFolderPath(ctypes.byref(_Guid.parse(_KNOWN_FOLDERS[name])), 0, None, ctypes.byref(out))
+    try:
+        return Path(out.value)
+    finally:
+        ctypes.windll.ole32.CoTaskMemFree(out)
+
+
+def _write_link(link: Path) -> None:
+    """바로가기를 새로 만들면서 작업 표시줄 이름까지 함께 적는다."""
+    shortcut = _ShellLink()
+    try:
+        shortcut.set_target(_pythonw())
+        shortcut.set_arguments(f"-m {MODULE}")
+        shortcut.set_working_dir(REPO_ROOT)
+        shortcut.set_icon(ASSETS / "icon.ico")
+        shortcut.set_description("청구서 받기 등 업무를 한곳에서 시작합니다")
+        shortcut.set_app_id(APP_ID)
+        shortcut.save(link)
+    finally:
+        shortcut.close()
+
+
+def _tag_link(link: Path) -> None:
+    """이미 있는 바로가기(고정된 복사본)에 작업 표시줄 이름을 적는다."""
+    shortcut = _ShellLink()
+    try:
+        shortcut.load(link)
+        shortcut.set_app_id(APP_ID)
+        shortcut.save(link)
+    finally:
+        shortcut.close()
+
+
+def _read_app_id(link: Path) -> str:
+    shortcut = _ShellLink()
+    try:
+        shortcut.load(link)
+        return shortcut.app_id()
+    finally:
+        shortcut.close()
+
+
+def points_here(target: str, arguments: str, working_dir: str, root: Path = REPO_ROOT) -> bool:
+    """바로가기가 이 저장소의 앱을 가리키는지 — 대상·인수·작업 폴더 어디든 저장소 경로가 들어 있으면."""
+    needle = str(root).lower()
+    return any(needle in (part or "").lower() for part in (target, arguments, working_dir))
 
 
 def _pinned_links() -> list[Path]:
-    """작업 표시줄에 고정해 둔 이 앱의 바로가기 — 대상이나 작업 폴더가 이 저장소를 가리키는 것.
+    """작업 표시줄에 고정해 둔 이 앱의 바로가기.
 
     고정할 때 윈도우가 .lnk 를 복사해 두므로, 새로 만든 바로가기에 이름을 적어도 고정된 복사본은 옛것이다.
     그 복사본에도 같은 이름을 적어야 단추가 하나로 합쳐진다. 못 찾으면 담당자가 고정을 풀고 다시 고정한다.
     """
-    pinned = Path(_folder("ApplicationData")) / "Microsoft" / "Internet Explorer" / "Quick Launch" / "User Pinned" / "TaskBar"
+    pinned = _known_folder("RoamingAppData") / "Microsoft" / "Internet Explorer" / "Quick Launch" / "User Pinned" / "TaskBar"
     if not pinned.is_dir():
+        print("고정된 바로가기 폴더가 없습니다:", pinned)
         return []
-    script = f"""
-$shell = New-Object -ComObject WScript.Shell
-Get-ChildItem -LiteralPath '{pinned}' -Filter *.lnk | ForEach-Object {{
-  $sc = $shell.CreateShortcut($_.FullName)
-  Write-Output ($_.FullName + "`t" + $sc.TargetPath + "`t" + $sc.Arguments + "`t" + $sc.WorkingDirectory)
-}}
-"""
-    out = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True,
-                         encoding="utf-8", errors="replace", **_HIDDEN)
-    root = str(REPO_ROOT).lower()
-    found = []
+    found: list[Path] = []
     seen = 0
-    for line in (out.stdout or "").splitlines():
-        parts = line.split("\t")
-        if len(parts) != 4:
+    for path in sorted(pinned.glob("*.lnk")):
+        shortcut = _ShellLink()
+        try:
+            shortcut.load(path)
+            fields = (shortcut.target(), shortcut.arguments(), shortcut.working_dir())
+        except OSError as error:
+            print(f"고정된 바로가기를 읽지 못했습니다: {path.name} ({error})")
             continue
+        finally:
+            shortcut.close()
         seen += 1
-        if any(root in part.lower() for part in parts[1:]):
-            found.append(Path(parts[0]))
+        if points_here(*fields):
+            found.append(path)
     print(f"고정된 바로가기 {seen}개 중 이 앱 것 {len(found)}개: " + (", ".join(p.name for p in found) or "(없음)"))
     return found
 
@@ -158,21 +273,36 @@ def make_windows() -> Path:
 
     시작 메뉴 것이 있어야 실행 중인 창을 작업 표시줄에 고정할 때 윈도우가 알아본다.
     """
-    desktop = _folder("Desktop")
-    programs = _folder("Programs")
+    desktop = _known_folder("Desktop")
+    programs = _known_folder("Programs")
     links = [desktop / f"{APP_NAME}.lnk", programs / f"{APP_NAME}.lnk"]
     for link in links:
         link.parent.mkdir(parents=True, exist_ok=True)
-        _create_link(link)
+        _write_link(link)
     print("만든 바로가기:", ", ".join(str(p) for p in links))
     pinned = _pinned_links()
-    tagged = _tag_links(links + pinned)
+    for link in pinned:
+        try:
+            _tag_link(link)
+        except OSError as error:
+            print(f"고정된 바로가기에 이름을 적지 못했습니다: {link.name} ({error})")
     for folder in (desktop, programs):
         for old in OLD_APP_NAMES:
             (folder / f"{old}.lnk").unlink(missing_ok=True)
-    if not tagged:
-        # 이름 없는 바로가기는 단추가 둘로 갈라진다 — 앱이 다음에 켤 때 다시 해 보도록 실패로 알린다
+    # 적은 이름을 다시 읽어 확인한다. 이름 없는 바로가기는 단추가 둘로 갈라지므로 하나라도 빠지면 실패로 알린다 —
+    # 앱(shortcuts.refresh)은 실패면 표시를 남기지 않아 다음에 켤 때 다시 해 본다.
+    wrong = []
+    for link in links + pinned:
+        try:
+            got = _read_app_id(link)
+        except OSError as error:
+            got = f"읽기 실패 ({error})"
+        if got != APP_ID:
+            wrong.append(f"{link.name}: {got or '(비어 있음)'}")
+    if wrong:
+        print("작업 표시줄 이름이 적히지 않은 바로가기:", "; ".join(wrong))
         raise SystemExit(2)
+    print(f"작업 표시줄 이름 확인: {APP_ID} — " + ", ".join(p.name for p in links + pinned))
     return links[0]
 
 

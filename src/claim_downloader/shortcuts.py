@@ -13,7 +13,7 @@ from . import settings, updater
 from .minutes.logbook import log
 
 # 바로가기 규격이 바뀌면 판을 올린다 — 설치된 PC 가 앱을 켤 때 한 번 새로 만든다
-MARK = "shortcut-v2.txt"
+MARK = "shortcut-v3.txt"
 SCRIPT = updater.REPO_ROOT / "tools" / "create_shortcut.py"
 
 
@@ -30,9 +30,11 @@ def refresh() -> tuple[bool, str]:
     if not SCRIPT.exists():
         return False, "tools/create_shortcut.py 가 없습니다"
     hidden = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if os.name == "nt" else {}
+    # 자식 파이썬이 파이프에 쓸 때 윈도우는 CP949 를 쓴다 — 여기서 UTF-8 로 읽으므로 자식도 UTF-8 로 쓰게 한다
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     try:
         done = subprocess.run([sys.executable, str(SCRIPT)], capture_output=True, text=True, timeout=180,
-                              encoding="utf-8", errors="replace", cwd=str(updater.REPO_ROOT), **hidden)
+                              encoding="utf-8", errors="replace", cwd=str(updater.REPO_ROOT), env=env, **hidden)
     except Exception as error:  # noqa: BLE001
         text = f"바로가기 도구를 돌리지 못했습니다: {error}"
         log(text)
