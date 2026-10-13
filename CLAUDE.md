@@ -106,6 +106,7 @@ src/claim_downloader/
   cli.py        콘솔 실행 (--structure 진단 모드)
   diagnose.py   진단 모드 — 열린 화면의 창·프레임·입력 요소를 읽기만 해서 _화면구조.txt 로 (4절)
   updater.py    자동 업데이트 (git pull --ff-only · PATH 밖의 MinGit 도 찾는다)
+  claims/       일반청구 작성 (15절) — 폴더 → dict(schema) → ERP 작성 화면 채우기(form). 저장·신청은 사람
   minutes/      회의록 생성 (13절) — 청구서 쪽 모듈을 읽지 않는다
     rules.py    RULES_DEFAULT · load_rules (~/.claim-downloader/회의록규칙.txt)
     schema.py   백엔드가 돌려줄 dict 의 모양 · 양식 고정값 · 참석자 행
@@ -123,7 +124,8 @@ src/claim_downloader/
     theme.py    토큰 → Qt 스타일시트
     art.py      입체 그림 — 업무 의미 이름 → assets/art/*.png
     widgets.py  페이지 머리 · 카드 · 요약 카드 · 단계 카드 · 빈 상태 · 배지 · 입력 칸
-    pages/      home(업무 데스크) · download(청구서 받기) · minutes(회의록 생성) · pending(일반청구·카드청구 준비 중) · settings · updates
+    claim_worker.py    일반청구 추출 스레드 (AI 읽기). ERP 에 채우는 쪽은 worker.py 의 브라우저 스레드
+    pages/      home(업무 데스크) · download(청구서 받기) · minutes(회의록 생성) · claim(일반청구) · pending(카드청구 준비 중) · settings · updates
 src/expense_review/  옛 바로가기 넘겨주기 전용 (3절)
 
 ### 탐색 구조 (2026-10-12 개편)
@@ -381,6 +383,27 @@ src/expense_review/  옛 바로가기 넘겨주기 전용 (3절)
 - 자동화가 눌러도 되는 것(설계에서 확정): 비목·세목·증빙구분·결제방법·은행 select, 날짜·금액·적요·계좌 text.
   입금처 돋보기(`#btnRcvCd`)·첨부 팝업은 미실측이라 1차에서는 사람이 한다.
 
-구현 전에 `tests/test_safety.py` 의 허용 목록에 위 입력 요소를 더하고, 금지 글자('저장' '신청' '삭제' '초기화')를
-누르는 코드가 들어오면 깨지게 한다. 값 넣기(fill)는 지금 `erp.py` 에서 금지돼 있으므로 **별도 모듈**(`claim_form.py`)
-에 두고 그 모듈만 허용한다 — 받기 코드(erp.py)에는 끝까지 값 넣기가 없어야 한다.
+값 넣기는 `claims/form.py` 에만 있다(`FIELDS` 의 id 만, `FORBIDDEN_TEXTS` 는 누르는 코드 없음). 받기 코드(erp.py)에는
+끝까지 값 넣기가 없다 — `tests/test_safety.py` 와 `tests/test_claims.py` 가 본다. 구현은 15절.
+
+## 15. 일반청구 작성 (`claims/`) — 2026-10-13 1차
+
+담당자가 정한 흐름(2026-10-13): **지출 1건 = 폴더 1개**(회의록과 같은 방식) → AI 가 값을 뽑음 → 앱에서 고침 → ERP 작성
+화면에 채움 → **입금처 돋보기 · 예금주조회 · 첨부 · 저장 · 신청은 사람**. 첫 대상은 세금계산서 물품·용역.
+
+- 흐름: `claims/extract.py`(Claude Code CLI, 회의록과 같은 규약·실행 함수 재사용, 프롬프트만 다름) → `schema.normalize()`
+  (금액 정수 · 날짜 YYYY-MM-DD · 비목을 ERP 보기 글자로) → `schema.problems()`(빠진 값·합계 불일치) → 화면
+  `pages/claim.py` 의 오른쪽 칸(고칠 수 있음) → `form.fill()`.
+- `form.fill()` 은 실측 id(14절) 만 만진다 — `FIELDS` 순서: 비목 → (세목 보기가 올 때까지 대기) 세목 → 증빙구분 → 일자 →
+  결제방법 → 은행 → 계좌 → 예금주 → 청구액·공급가액·부가세 → 적요. select 는 보기 글자를 정규화해 맞추고(`국민` → `국민은행`),
+  text 는 값을 넣고 input·keyup·change 를 일으킨다(ERP 의 콤마 포맷·처리기가 돌게). `MOD_YN` 이 `N` 이 아니면(기존 청구서)
+  거부한다. 못 넣은 칸은 보고에 남기고 나머지는 계속 넣는다.
+- **기본은 미리 보기(dry-run)** — 체크를 풀어야 넣는다. 넣기 전 확인 창에 요약 전부. 채운 값·금액은 `_실행로그.txt` 에.
+  채운 폴더는 `_청구입력기록.json` 에 남겨 같은 폴더를 다시 채우려 하면 묻는다(막지는 않는다 — 저장·신청 여부는 모른다).
+- 브라우저는 청구서 받기와 **같은 스레드**(`MainWindow.session_worker()`) — ERP 로그인은 한 번. `open_browser(scan=False)`
+  로 보관 폴더 스캔 없이 연다. 작성 프레임은 `form.PROBE_JS`(`#PROC_TYP_CD`=`P10` + `#REQ_PTCL` + `#PAY_EXP_CD`)로 찾는다.
+- 규칙 `~/.claim-downloader/일반청구규칙.txt`(기본값 쌍 포함, 회의록과 같은 방식). 적요 `NN_내용` 규칙이 여기 있다.
+- 미실측이라 아직 사람이 하는 것: 입금처 돋보기 팝업(`#btnRcvCd`) · 첨부 팝업 · 비목별로 열리는 블록(여비·회의비). 팝업
+  실측이 오면 `form.py` 에 `pick_payee` 를 더한다. 담당자는 팝업 자동화를 원했다(2026-10-13).
+- 검증: 모의 작성 화면(`/tmp/claude-0/mockerp/claim.html`, 실측 id 그대로)에 실제로 채워 세목 대기·금액 포맷·저장/신청
+  미클릭을 확인했다. **실제 ERP 에서는 담당자가 '미리 보기' → 체크 해제 → 1건으로 확인한다.**

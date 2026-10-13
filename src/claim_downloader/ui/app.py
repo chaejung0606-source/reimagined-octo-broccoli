@@ -45,7 +45,7 @@ WORKSPACE = ""     # 이름 아래 기관 문구는 두지 않는다(담당자 �
 COMPACT_BELOW = 800
 
 # 별도 스레드에서 오래 도는 업무 — 탭·앱을 닫기 전에 묻고, 홈의 '이어서 작업하기' 에 보인다
-RUNNING_WORDS = {"download": "청구서를 받는", "meeting": "회의록을 만드는"}
+RUNNING_WORDS = {"download": "청구서를 받는", "meeting": "회의록을 만드는", "claim": "일반청구 내용을 읽는"}
 
 ASSETS = Path(__file__).parent / "assets"
 log = logging.getLogger(__name__)
@@ -68,6 +68,7 @@ class MainWindow(QMainWindow):
         self.resize(1320, 860)
         self.setMinimumSize(1120, 720)
         self._pages: dict[str, QWidget] = {}
+        self._session_worker = None       # 브라우저 스레드 — 청구서 받기와 일반청구가 함께 쓴다
 
         central = QWidget()
         central.setObjectName("root")
@@ -132,19 +133,31 @@ class MainWindow(QMainWindow):
         module_name, class_name = task.page.split(":")
         module = importlib.import_module(f".pages.{module_name}", __package__)
         cls = getattr(module, class_name)
-        page = cls(task) if module_name == "pending" else cls()
+        if module_name == "pending":
+            page = cls(task)
+        elif task_id in ("download", "claim"):
+            page = cls(worker=self.session_worker())
+        else:
+            page = cls()
         self._wire(task, page)
         self._pages[task_id] = page
         self.stack.addWidget(page)
         self.dock_overlay.raise_()      # 새 화면이 독 위로 올라오지 않게
         return page
 
+    def session_worker(self):
+        """브라우저 작업 스레드 하나 — ERP 로그인은 한 번이면 되므로 받기와 일반청구가 같은 창을 쓴다."""
+        if self._session_worker is None:
+            from .worker import SessionWorker
+            self._session_worker = SessionWorker()
+        return self._session_worker
+
     def _wire(self, task: Task, page: QWidget) -> None:
         if task.id == "download":
             page.need_settings.connect(lambda: self.open("settings"))
             page.busy_changed.connect(lambda busy: self._on_busy(task.id, busy))
             page.counts_changed.connect(self._sync_home)
-        elif task.id == "meeting":
+        elif task.id in ("meeting", "claim"):
             page.busy_changed.connect(lambda busy: self._on_busy(task.id, busy))
         elif task.id == "settings":
             page.changed.connect(self._on_settings_changed)
@@ -289,6 +302,8 @@ class MainWindow(QMainWindow):
             return
         for _tid, page in workers:
             page.shutdown()
+        if self._session_worker is not None:
+            self._session_worker.shutdown()
         super().closeEvent(event)
 
 

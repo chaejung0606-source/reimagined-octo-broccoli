@@ -57,3 +57,17 @@ def test_diagnose_only_reads():
         assert forbidden not in text, forbidden
     assert not re.search(r"\.(value|checked|selectedIndex|innerHTML)\s*=[^=]", text)
     assert "import playwright" not in text and "from playwright" not in text
+
+
+def test_claim_fill_lives_outside_erp_and_cannot_press_money_buttons():
+    """값 넣기는 claims/form.py 에만 — 받기 코드(erp.py)에는 끝까지 없다. 저장·신청을 누르는 코드는 어디에도 없다."""
+    form = (SRC / "claims" / "form.py").read_text(encoding="utf-8")
+    assert "FORBIDDEN_TEXTS" in form and ".click(" not in form
+    for name in ("fill(", "type(", "press(", "set_input_files(", "keyboard."):
+        assert name not in ERP, name
+    for path in (SRC / "claims").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        assert "playwright" not in text, path.name
+        for word in ("저장')", "신청')", '"저장"', '"신청"'):
+            # 글자로 단추를 찾아 누르는 코드가 들어오면 여기서 걸린다 (금지 목록 상수는 제외)
+            assert word not in text.replace("FORBIDDEN_TEXTS = (\"저장\", \"신청\",", ""), f"{path.name}: {word}"

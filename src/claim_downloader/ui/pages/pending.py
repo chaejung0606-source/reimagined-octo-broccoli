@@ -1,6 +1,6 @@
-"""아직 기능이 없는 업무의 미리보기 화면 — 일반청구 · 카드청구.
+"""아직 기능이 없는 업무의 미리보기 화면 — 카드청구.
 
-회의록 생성은 2026-10-12 실제 기능(pages/minutes.py)으로 바뀌어 여기서 빠졌다.
+회의록 생성(pages/minutes.py, 2026-10-12)과 일반청구(pages/claim.py, 2026-10-13)는 실제 기능이 되어 여기서 빠졌다.
 
 준비 중 안내는 위에 한 번만. 입력 칸은 비활성(점선 테두리·연한 글자)으로 두어 쓸 수
 있는 것처럼 보이지 않게 한다. 생성·저장·제출 버튼은 없다.
@@ -97,15 +97,6 @@ class PendingPage(QWidget):
 
     def build(self, layout: QVBoxLayout) -> None:
         raise NotImplementedError
-
-
-class ClaimPage(PendingPage):
-    notice = ("일반청구 작성은 준비 중인 기능의 미리보기입니다. 먼저 ERP 의 일반청구 화면 구조를 실측한 뒤 "
-              "'자동 입력 → 화면에 요약 → 사람이 확인하고 제출' 구조로 만듭니다. 제출은 언제나 사람이 합니다.")
-
-    def build(self, layout: QVBoxLayout) -> None:
-        self._three_parts(layout, "claim", ("청구 내용", "적요 · 금액 · 비목 · 입금처", "작성한 청구가 여기에 표시됩니다"),
-                          ("증빙", "증빙 파일 목록"), ("진행 상태", "작성 → 확인 → 제출(사람)"))
 
 
 class CardPage(PendingPage):

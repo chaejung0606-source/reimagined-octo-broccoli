@@ -16,6 +16,7 @@ from pathlib import Path
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from .claims import form as claim_form
 from . import archive, diagnose, erp, settings as settings_mod
 from .reconcile import reconcile
 from .targets import Selection, select_targets
@@ -137,6 +138,28 @@ class ErpSession:
         count = sum(len(fr.get("elements", [])) for win in windows for fr in win["frames"])
         self.log("화면 구조 저장: 창 %d · 요소 %d개 → %s" % (len(windows), count, path))
         return path
+
+    # ── 일반청구 ─────────────────────────────────────────────────────────
+    def claim_form_open(self) -> bool:
+        """지금 브라우저에 일반청구 작성 화면이 떠 있는지."""
+        if not self.browser_open:
+            return False
+        _page, frame = claim_form.find_form(self.page.context)
+        return frame is not None
+
+    def fill_claim(self, data: dict, dry_run: bool = True) -> claim_form.FillReport:
+        """일반청구 작성 화면에 값을 채운다(claims/form.py). 저장·신청은 사람이."""
+        if not self.browser_open:
+            raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
+        page, frame = claim_form.find_form(self.page.context)
+        if frame is None:
+            report = claim_form.FillReport(dry_run=dry_run)
+            report.blocked = ("일반청구 작성 화면을 찾지 못했습니다. 앱이 연 브라우저에서 결의서내역 → [일반청구] 를 눌러 "
+                              "새 청구서 화면을 띄운 뒤 다시 누르세요.")
+            self.log(report.blocked)
+            return report
+        return claim_form.fill(frame, data, self.log, dry_run=dry_run,
+                               wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)))
 
     # ── 목록 ─────────────────────────────────────────────────────────────
     def read_list(self) -> Selection:

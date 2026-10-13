@@ -51,8 +51,8 @@ def test_dock_holds_only_tasks_not_utilities():
 
 def test_four_tasks_in_requested_order():
     assert [t.name for t in tasks.TASKS] == ["청구서 받기", "회의록 생성", "일반청구", "카드청구"]
-    assert tasks.find("download").ready and tasks.find("meeting").ready
-    assert not any(tasks.find(i).ready for i in ("claim", "card"))
+    assert all(tasks.find(i).ready for i in ("download", "meeting", "claim"))
+    assert not tasks.find("card").ready
 
 
 def test_dock_overlay_is_raised_whenever_the_page_changes():

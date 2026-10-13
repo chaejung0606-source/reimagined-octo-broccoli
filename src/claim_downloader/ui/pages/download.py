@@ -90,10 +90,12 @@ class DownloadPage(QWidget):
     busy_changed = Signal(bool)      # 받는 중인지 — 작업 탭의 점이 본다
     counts_changed = Signal()        # 보관·대기 숫자나 받기 상태가 바뀜 — 홈이 본다
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None, worker: SessionWorker | None = None):
         super().__init__(parent)
         self.setObjectName("page")
-        self.worker = SessionWorker()
+        # 브라우저 스레드는 앱이 하나만 만들어 일반청구와 함께 쓴다(ERP 로그인은 한 번). 없이 만들면 스스로 갖는다.
+        self.worker = worker if worker is not None else SessionWorker()
+        self._owns_worker = worker is None
         self._busy = False
         self._browser_open = False
         self._targets: list[dict] = []
@@ -638,4 +640,5 @@ class DownloadPage(QWidget):
         self.page_desc.setVisible(not low)
 
     def shutdown(self) -> None:
-        self.worker.shutdown()
+        if self._owns_worker:
+            self.worker.shutdown()
