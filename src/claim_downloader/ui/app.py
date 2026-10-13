@@ -17,6 +17,7 @@ from __future__ import annotations
 import getpass
 import importlib
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -315,9 +316,27 @@ def load_fonts() -> str:
     return family
 
 
+# 윈도우 작업 표시줄이 창을 묶는 이름. 이것이 없으면 창이 'pythonw.exe' 의 것으로 묶여 파이썬 아이콘이 뜬다.
+APP_USER_MODEL_ID = "Kangwon.COSS.WorkDesk"
+
+
+def _claim_taskbar_identity() -> None:
+    """작업 표시줄에서 파이썬이 아니라 이 앱의 아이콘이 보이게 한다. 창을 만들기 전에 불러야 한다."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except Exception:  # noqa: BLE001 — 안 되면 아이콘만 파이썬으로 보일 뿐 앱은 돈다
+        log.warning("작업 표시줄 이름을 정하지 못했습니다")
+
+
 def _app_icon() -> QIcon:
-    """크기별 그림을 모두 넣는다(tools/make_icon.py)."""
+    """크기별 그림을 모두 넣는다(tools/make_icon.py). 윈도우 작업 표시줄은 .ico 를 가장 잘 쓴다."""
     icon = QIcon()
+    ico = ASSETS / "icon.ico"
+    if ico.exists():
+        icon.addFile(str(ico))
     for path in sorted((ASSETS / "icons").glob("icon-*.png")):
         icon.addFile(str(path))
     fallback = ASSETS / "icon.png"
@@ -329,6 +348,7 @@ def _app_icon() -> QIcon:
 def main() -> int:
     # 깨진 보관 PDF 를 읽을 때 pypdf 가 경고를 쏟아낸다. 스캔은 그런 파일을 건너뛴다.
     logging.getLogger("pypdf").setLevel(logging.CRITICAL)
+    _claim_taskbar_identity()
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setWindowIcon(_app_icon())
