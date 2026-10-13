@@ -101,6 +101,10 @@ class MainWindow(QMainWindow):
         self.dock.activated.connect(self.open)
         self.dock_overlay = DockOverlay(self.dock, self.stack)
         self.stack.resized.connect(self.dock_overlay.relayout)
+        # QStackedWidget 은 화면을 바꿀 때마다 새 화면을 맨 위로 올린다(QStackedLayout::setCurrentIndex 의
+        # raise). 그러면 독이 화면 아래에 깔려 — 바탕이 투명해 선은 보이는데 — 마우스가 닿지 않는다.
+        # 홈에서는 되고 설정·회의록 탭에 들어가면 안 되던 것이 이것이다(2026-10-13). 바꿀 때마다 다시 올린다.
+        self.stack.currentChanged.connect(lambda _index: self.dock_overlay.raise_())
 
         self.home = HomePage()
         self.home.open_task.connect(self.open)

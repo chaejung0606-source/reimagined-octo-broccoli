@@ -53,3 +53,12 @@ def test_four_tasks_in_requested_order():
     assert [t.name for t in tasks.TASKS] == ["청구서 받기", "회의록 생성", "일반청구", "카드청구"]
     assert tasks.find("download").ready and tasks.find("meeting").ready
     assert not any(tasks.find(i).ready for i in ("claim", "card"))
+
+
+def test_dock_overlay_is_raised_whenever_the_page_changes():
+    """QStackedWidget 이 화면을 바꿀 때 새 화면을 맨 위로 올리므로, 독을 그때마다 다시 올려야 마우스가 닿는다.
+
+    홈에서는 펼쳐지는데 설정·회의록 탭에서는 안 펼쳐지던 문제(2026-10-13). PySide6 없이 연결만 확인한다.
+    """
+    source = (UI / "app.py").read_text(encoding="utf-8")
+    assert re.search(r"currentChanged\.connect\(.*dock_overlay\.raise_\(\)", source)
