@@ -164,6 +164,7 @@ class DownloadPage(QWidget):
         w.relogin.connect(self._on_relogin)
         w.error.connect(self._on_error)
         w.browser_state.connect(self._on_browser_state)
+        w.structure_saved.connect(self._on_structure_saved)
 
         self.refresh_counts()
         self._sync_buttons()
@@ -269,11 +270,24 @@ class DownloadPage(QWidget):
         log_layout.addWidget(self.log_view, 1)
         self.tabs.addTab(log_page, "진행 기록")
 
+        corner = QWidget()
+        corner_row = QHBoxLayout(corner)
+        corner_row.setContentsMargins(0, 0, 0, 0)
+        corner_row.setSpacing(4)
+        # 진단 모드 — 새 화면(일반청구 등)을 자동화하기 전에 담당자가 그 화면을 띄우고 눌러 실측한다
+        self.structure_button = QPushButton("화면 구조 저장")
+        self.structure_button.setObjectName("ghost")
+        self.structure_button.setToolTip(
+            "지금 브라우저에 열린 ERP 화면의 창·프레임·입력 요소를 _화면구조.txt 로 저장합니다. "
+            "읽기만 하고 아무것도 누르거나 넣지 않습니다. 새 화면을 자동화하기 전 실측용입니다.")
+        self.structure_button.clicked.connect(self.worker.capture_structure)
+        corner_row.addWidget(self.structure_button)
         open_log = QPushButton("로그 파일 열기")
         open_log.setObjectName("ghost")
         open_log.clicked.connect(
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(settings.log_path()))))
-        self.tabs.setCornerWidget(open_log, Qt.TopRightCorner)
+        corner_row.addWidget(open_log)
+        self.tabs.setCornerWidget(corner, Qt.TopRightCorner)
         card.add(self.tabs, 1)
         return card
 
@@ -375,6 +389,7 @@ class DownloadPage(QWidget):
         self.all_button.setEnabled(can_run)
         self.all_button.setText(f"남은 {remaining}건 받기" if remaining else "받기")
         self.test_button.setEnabled(can_run)
+        self.structure_button.setEnabled(not busy and self._browser_open)
         running = busy and bool(self._running_rows)
         self.stop_button.setVisible(running)
         self.stop_button.setEnabled(running)
@@ -591,6 +606,16 @@ class DownloadPage(QWidget):
         self._set_state("다시 로그인", "warning", "아래 띠의 안내를 따른 뒤 [계속] 을 누르세요.")
         self.window().raise_()
         self.window().activateWindow()
+
+    def _on_structure_saved(self, path: str) -> None:
+        answer = QMessageBox.question(
+            self, "화면 구조 저장",
+            f"지금 열린 화면의 구조를 저장했습니다.\n{path}\n\n"
+            "이 파일을 담당자(Claude)에게 보내면 그 화면의 자동화를 설계할 수 있습니다. "
+            "계좌번호 같은 값이 섞일 수 있으니 빈 작성 화면에서 저장한 것인지 확인하세요.\n\n지금 열어 볼까요?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer == QMessageBox.Yes:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def _on_error(self, message: str) -> None:
         self.banner.hide()

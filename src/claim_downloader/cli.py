@@ -1,7 +1,8 @@
 """명령줄 실행 — 데스크톱 앱과 같은 흐름을 콘솔에서.
 
-    python -m claim_downloader            전체 (받기 전에 y/N 확인)
-    python -m claim_downloader --limit 1  앞 1건만 시험
+    python -m claim_downloader              전체 (받기 전에 y/N 확인)
+    python -m claim_downloader --limit 1    앞 1건만 시험
+    python -m claim_downloader --structure  진단 모드: 원하는 ERP 화면을 띄운 뒤 구조를 _화면구조.txt 로 (읽기만)
 
 앱이 뜨지 않는 PC 에서 쓰거나, 문제를 재현할 때 쓴다.
 """
@@ -18,10 +19,14 @@ from .targets import volume_warning
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="claim-downloader", description="ERP 청구서 PDF 자동 다운로드")
     parser.add_argument("--limit", type=int, default=0, help="앞 N건만 받기 (흐름 시험용). 0 이면 전체")
+    parser.add_argument("--structure", action="store_true",
+                        help="진단 모드: 브라우저를 열어 두고 원하는 화면을 띄운 뒤 구조를 파일로 저장 (읽기만)")
     args = parser.parse_args(argv)
 
     log = file_logger(print)
     log("════ %s 명령줄 실행 ════" % time.strftime("%Y-%m-%d"))
+    if args.structure:
+        return _capture_structure(log)
     cfg = settings.load()
     if not cfg.out_root:
         log("저장 폴더가 지정되지 않았습니다. 앱의 [설정] 에서 지정하거나 %s 에 out_root 를 적으세요."
@@ -78,6 +83,28 @@ def main(argv: list[str] | None = None) -> int:
 
         session.download(targets)
         print("\n완료. 로그: %s" % settings.log_path())
+        input("Enter로 브라우저를 닫습니다… ")
+        return 0
+    finally:
+        session.close()
+
+
+def _capture_structure(log) -> int:
+    """진단 모드 — 받기 흐름과 무관하게 화면 구조만 남긴다. 저장 폴더 설정이 없어도 된다."""
+    session = ErpSession(log, lambda _m: True)
+    try:
+        session.open_browser()
+        print("\n" + "=" * 60)
+        print(" 브라우저에서 로그인한 뒤, 구조를 남기고 싶은 화면(예: 일반청구 작성)을 띄우세요.")
+        print(" 값은 넣지 않은 빈 화면이 좋습니다. 화면이 보이면 이 창으로 돌아와 Enter 를 누르세요.")
+        print("=" * 60)
+        input(" 준비되면 Enter… ")
+        try:
+            path = session.capture_structure()
+        except BrowserClosed as error:
+            log(str(error))
+            return 1
+        print("\n저장했습니다: %s" % path)
         input("Enter로 브라우저를 닫습니다… ")
         return 0
     finally:

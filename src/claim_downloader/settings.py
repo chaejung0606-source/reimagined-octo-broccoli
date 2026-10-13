@@ -10,6 +10,7 @@
       _보관목록.json    보관 PDF 경로 → 문서번호 캐시 (지우면 다시 전체 스캔)
       _실행로그.txt     실행 로그. 문제가 생기면 여기부터 본다. 회의록 생성 기록도 여기에.
       회의록규칙.txt    회의록 작성 규칙 (minutes/rules.py). 기본값 파일과 쌍으로.
+      _화면구조.txt     진단 모드 결과 — 열린 ERP 화면의 입력 요소 (새 화면 실측용)
 
 개인 경로를 기본값으로 넣지 않는다. 동료에게 그대로 공유할 수 있어야 한다.
 """
@@ -62,6 +63,11 @@ def archive_cache_path() -> Path:
 
 def log_path() -> Path:
     return data_dir() / "_실행로그.txt"
+
+
+def structure_path() -> Path:
+    """진단 모드(diagnose.py)가 남기는 화면 구조. 계좌번호 같은 값이 섞일 수 있어 저장소·배포에서 뺀다."""
+    return data_dir() / "_화면구조.txt"
 
 
 def minutes_rules_path() -> Path:

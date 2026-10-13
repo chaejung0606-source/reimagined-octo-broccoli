@@ -81,6 +81,13 @@ UI 코드를 건드렸으면 실제로 앱을 띄워 확인한다. 리눅스 컨
 Claude 가 실제 ERP 를 직접 돌릴 수는 없다(로그인은 사람). 사용자가 실행하고 Claude 는
 `~/.claim-downloader/_실행로그.txt` 를 받아 진단한다.
 
+**새 화면을 자동화하기 전에는 실측부터 한다 — 진단 모드(`diagnose.py`, 2026-10-13).** 담당자가 그 화면을
+띄우고 받기 화면 [진행 기록] 구석의 [화면 구조 저장] 을 누르면(콘솔: `--structure`) 열린 창·프레임·입력 요소가
+`~/.claim-downloader/_화면구조.txt` 에 남는다. 읽기만 한다 — 누르거나 값을 넣지 않는다(`test_safety`).
+비밀번호·파일 칸의 값은 적지 않지만 계좌번호 같은 값은 섞일 수 있으니 **빈 작성 화면**에서 돌리게 한다.
+그 파일을 받아 이 문서에 그 화면의 구조 절(프레임 · 필드 · **절대 누르지 않을 저장·신청·제출 버튼 id**)을 쓴
+뒤에야 설계·구현으로 간다(docs/roadmap.md 2절).
+
 ## 5. 코드 구조
 
 ```
@@ -92,7 +99,8 @@ src/claim_downloader/
   erp.py        ERP 화면 조작 (Playwright) — 검증된 JS 를 그대로 옮긴 곳
   session.py    한 번의 받기 흐름 · 멈춤 재시도 · 로그
   reconcile.py  청구내역 엑셀 대조 (선택)
-  cli.py        콘솔 실행
+  cli.py        콘솔 실행 (--structure 진단 모드)
+  diagnose.py   진단 모드 — 열린 화면의 창·프레임·입력 요소를 읽기만 해서 _화면구조.txt 로 (4절)
   updater.py    자동 업데이트 (git pull --ff-only · PATH 밖의 MinGit 도 찾는다)
   minutes/      회의록 생성 (13절) — 청구서 쪽 모듈을 읽지 않는다
     rules.py    RULES_DEFAULT · load_rules (~/.claim-downloader/회의록규칙.txt)

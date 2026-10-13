@@ -12,10 +12,11 @@ Playwright 동기 API 는 시작한 스레드에서만 써야 한다. 그래서 
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from . import archive, erp, settings as settings_mod
+from . import archive, diagnose, erp, settings as settings_mod
 from .reconcile import reconcile
 from .targets import Selection, select_targets
 
@@ -124,6 +125,18 @@ class ErpSession:
         except Exception:      # noqa: BLE001
             pass
         self.browser = self._pw = self.page = None
+
+    # ── 진단 ─────────────────────────────────────────────────────────────
+    def capture_structure(self) -> Path:
+        """지금 열린 ERP 화면의 창·프레임·입력 요소를 _화면구조.txt 로. 읽기만 한다(diagnose.py)."""
+        if not self.browser_open:
+            raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
+        windows = diagnose.capture(self.page.context, frame_kind=erp.frame_kind)
+        path = settings_mod.structure_path()
+        path.write_text(diagnose.format_report(windows), encoding="utf-8")
+        count = sum(len(fr.get("elements", [])) for win in windows for fr in win["frames"])
+        self.log("화면 구조 저장: 창 %d · 요소 %d개 → %s" % (len(windows), count, path))
+        return path
 
     # ── 목록 ─────────────────────────────────────────────────────────────
     def read_list(self) -> Selection:

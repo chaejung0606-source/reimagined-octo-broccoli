@@ -105,4 +105,9 @@ pip install -e ".[gui,excel,dev]"
 python -m pytest -q
 python -m claim_downloader.ui.app      # 데스크톱 앱
 python -m claim_downloader --limit 1   # 콘솔에서 1건 시험
+python -m claim_downloader --structure # 진단 모드: 열린 ERP 화면의 입력 요소를 _화면구조.txt 로 (읽기만)
 ```
+
+새 화면(일반청구 · 카드청구)을 자동화하려면 먼저 그 화면의 구조가 필요합니다. 앱의 청구서 받기 →
+[진행 기록] 탭 구석 **[화면 구조 저장]** 을 그 화면이 열린 상태에서 누르고, 생긴 `_화면구조.txt` 를
+담당자에게 보내 주세요. 값은 넣지 않은 빈 작성 화면에서 누르는 것이 좋습니다.

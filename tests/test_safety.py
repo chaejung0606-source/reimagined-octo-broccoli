@@ -48,3 +48,12 @@ def test_browser_is_launched_in_one_place():
     pattern = re.compile(r"^\s*(from|import)\s+playwright", re.M)
     users = sorted(p.name for p in SRC.rglob("*.py") if pattern.search(p.read_text(encoding="utf-8")))
     assert users == ["session.py"], users
+
+
+def test_diagnose_only_reads():
+    """진단 모드는 화면을 읽기만 한다 — 누르거나 값을 넣거나 이벤트를 일으키는 코드가 들어오면 깨진다."""
+    text = (SRC / "diagnose.py").read_text(encoding="utf-8")
+    for forbidden in (".click(", ".submit(", "dispatchEvent", ".focus(", "setAttribute(", "fill(", "type(", "press("):
+        assert forbidden not in text, forbidden
+    assert not re.search(r"\.(value|checked|selectedIndex|innerHTML)\s*=[^=]", text)
+    assert "import playwright" not in text and "from playwright" not in text

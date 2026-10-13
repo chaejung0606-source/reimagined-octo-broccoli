@@ -75,6 +75,15 @@ def wait_for_grid(context, tries: int = 40, interval_ms: int = 500):
     return None, None
 
 
+def frame_kind(fr) -> str:
+    """진단용: 이 프레임이 무엇인지 알아본 이름. 모르면 빈 문자열."""
+    if _frame_matches(fr, _GRID_PROBE):
+        return "결의서 목록"
+    if _frame_matches(fr, _DETAIL_PROBE):
+        return "상세(청구서출력)"
+    return ""
+
+
 def dump_context(context) -> str:
     """진단용: 열린 모든 창과 프레임 주소."""
     out = []
@@ -89,11 +98,8 @@ def dump_context(context) -> str:
             t = "?"
         out.append("[창 %d] %s | %s" % (pi, t, u))
         for fi, fr in enumerate(pg.frames):
-            mark = ""
-            if _frame_matches(fr, _GRID_PROBE):
-                mark = "  <== 결의서 목록!"
-            elif _frame_matches(fr, _DETAIL_PROBE):
-                mark = "  <== 상세(청구서출력)"
+            kind = frame_kind(fr)
+            mark = ("  <== " + kind + "!") if kind else ""
             out.append("    프레임 %d: %s%s" % (fi, (fr.url or ""), mark))
     return "\n".join(out) if out else "(열린 창이 없음)"
 

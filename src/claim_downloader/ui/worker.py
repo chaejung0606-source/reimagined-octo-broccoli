@@ -32,6 +32,7 @@ class SessionWorker(QObject):
     relogin = Signal(str)               # 사람이 다시 로그인해야 함
     error = Signal(str)
     browser_state = Signal(bool)        # 명령을 마칠 때마다 브라우저가 살아 있는지
+    structure_saved = Signal(str)       # 진단: 화면 구조를 저장한 파일 경로
 
     def __init__(self) -> None:
         super().__init__()
@@ -53,6 +54,10 @@ class SessionWorker(QObject):
     def download(self, targets: list[dict]) -> None:
         self._stop.clear()
         self._queue.put(("download", (targets,)))
+
+    def capture_structure(self) -> None:
+        """진단 모드 — 지금 열린 화면의 구조를 파일로. 읽기만 한다."""
+        self._queue.put(("capture", ()))
 
     def request_stop(self) -> None:
         """지금 받는 건을 마치고 멈춘다. 받는 도중 끊으면 반쪽짜리 파일이 남는다."""
@@ -106,6 +111,10 @@ class SessionWorker(QObject):
         self.busy.emit(True, "브라우저를 여는 중…")
         session.open_browser()
         self.browser_opened.emit()
+
+    def _do_capture(self, session: ErpSession) -> None:
+        self.busy.emit(True, "화면 구조를 읽는 중…")
+        self.structure_saved.emit(str(session.capture_structure()))
 
     def _do_read_list(self, session: ErpSession) -> None:
         self.busy.emit(True, "결의서 목록을 읽는 중…")
