@@ -36,7 +36,10 @@ POPUP_PROBE_JS = """() => !!(document.querySelector('input[name=RCV_DIV_CD]') &&
 
 # id 로 단추 하나를 누른다. 허용 목록(ALLOWED_CLICK_IDS)의 id 로만 부른다.
 CLICK_ID_JS = """(id) => {
-  const el = document.getElementById(id);
+  // 같은 id 가 두 탭에 하나씩 있을 수 있다(작성 화면 btnRcvCd, 실측 ①) — 보이는 쪽을 누른다
+  const all = Array.from(document.querySelectorAll('[id="' + String(id).replace(/"/g, '\\"') + '"]'));
+  const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const el = all.find(vis) || all[0];
   if (!el) return {ok: false, why: '단추가 없음'};
   if (el.disabled) return {ok: false, why: '비활성'};
   el.click();

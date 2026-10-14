@@ -43,7 +43,7 @@ FIELDS = (
     ("taxAmount", "TAX_AMT", "text", "부가세"),
     ("summary", "REQ_PTCL", "text", "적요"),
 )
-ALLOWED_IDS = frozenset(f[1] for f in FIELDS) | {"PROC_TYP_CD", "MOD_YN", "REQ_SEQ_NO", "RCV_NM", "RCV_CD", "BAL_AMT"}
+ALLOWED_IDS = frozenset(f[1] for f in FIELDS) | {"PROC_TYP_CD", "MOD_YN", "REQ_SEQ_NO", "REQ_CNT", "RCV_NM", "RCV_CD", "BAL_AMT"}
 MANUAL_STEPS = (
     "세금계산서 건은 앱이 증빙 [선택] 팝업을 열고 사업자번호로 조회해, 금액이 맞는 계산서가 하나뿐이면 골라 [확인] 까지 누릅니다. 애매하면 직접 고르세요",
     "입금처 — 앱이 돋보기 팝업을 열고 거래처를 검색해, 사업자번호·상호가 맞는 행이 하나뿐이면 골라 [확인] 까지 누릅니다. 애매하면 직접 고르세요",
@@ -62,10 +62,20 @@ PROBE_JS = """() => {
   return !!(p && p.value === 'P10' && document.querySelector('#REQ_PTCL') && document.querySelector('#PAY_EXP_CD'));
 }"""
 
+# 같은 id 중 보이는 요소를 고르는 JS 조각 — 아래 JS 들이 공유한다
+PICK_EL_JS = """// 같은 id 가 두 탭(일반청구 · 인건비)에 하나씩 있다(실측 2026-10-13 ①). 보이는 쪽을 고르고, 다 숨었으면 첫째.
+  const pickEl = id => {
+    const all = Array.from(document.querySelectorAll('[id="' + String(id).replace(/"/g, '\\"') + '"]'));
+    if (!all.length) return null;
+    const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    return all.find(vis) || all[0];
+  };"""
+
 STATE_JS = """(ids) => {
+  """ + PICK_EL_JS + """
   const out = {};
   for (const id of ids) {
-    const el = document.getElementById(id);
+    const el = pickEl(id);
     if (!el) { out[id] = null; continue; }
     const tag = el.tagName.toLowerCase();
     const info = {tag, value: String(el.value || ''), disabled: !!el.disabled, readonly: !!el.readOnly};
@@ -81,7 +91,8 @@ STATE_JS = """(ids) => {
 
 # 값 넣기. 처리기(jQuery change 등)가 돌도록 이벤트를 일으킨다. 읽기전용·비활성 칸은 건드리지 않는다.
 SET_TEXT_JS = """([id, value]) => {
-  const el = document.getElementById(id);
+  """ + PICK_EL_JS + """
+  const el = pickEl(id);
   if (!el) return {ok: false, why: '칸이 없음'};
   if (el.readOnly || el.disabled) return {ok: false, why: '읽기전용'};
   el.focus();
@@ -92,7 +103,8 @@ SET_TEXT_JS = """([id, value]) => {
 }"""
 
 SET_SELECT_JS = """([id, wanted]) => {
-  const el = document.getElementById(id);
+  """ + PICK_EL_JS + """
+  const el = pickEl(id);
   if (!el) return {ok: false, why: '칸이 없음'};
   if (el.disabled) return {ok: false, why: '비활성'};
   const norm = s => (s || '').replace(/[\\s·ㆍ・.,\\-()\\[\\]{}_/\\\\]/g, '');
@@ -112,7 +124,8 @@ SET_SELECT_JS = """([id, wanted]) => {
 
 # 세목 select 의 상태 — 보기 수와 보이는지. 숨은 채 비어 있으면 이 과제는 세목을 쓰지 않는 것이다.
 SELECT_STATE_JS = """(id) => {
-  const el = document.getElementById(id);
+  """ + PICK_EL_JS + """
+  const el = pickEl(id);
   if (!el) return {count: -1, visible: false};
   const r = el.getBoundingClientRect(), s = getComputedStyle(el);
   return {count: el.options.length, visible: r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden'};
@@ -144,8 +157,9 @@ class SaveReport:
         for message in self.messages:
             out.append("· ERP 알림: " + message)
         if self.after:
-            out.append("· 결의번호 %s · 변경모드 %s · 진행 %s" % (
-                self.after.get("REQ_SEQ_NO") or "—", self.after.get("MOD_YN") or "—", self.after.get("APPR_DIV_CD") or "—"))
+            out.append("· 결의번호 %s · 진행 %s" % (
+                self.after.get("REQ_CNT") or self.after.get("REQ_SEQ_NO") or "—",
+                "임시저장" if self.after.get("APPR_DIV_CD") == "40" else (self.after.get("APPR_DIV_CD") or "—")))
         out.append("사람이 할 것:")
         out.extend("  · " + m for m in AFTER_SAVE_STEPS)
         return out
@@ -300,7 +314,7 @@ def _wait_for_options(frame, element_id: str, wait: Callable[[float], None], tri
     return False
 
 
-_STATUS_IDS = ("REQ_SEQ_NO", "MOD_YN", "APPR_DIV_CD", "RCV_NM", "REQ_PTCL", "REQ_AMT")
+_STATUS_IDS = ("REQ_SEQ_NO", "MOD_YN", "APPR_DIV_CD", "REQ_CNT", "RCV_NM", "REQ_PTCL", "REQ_AMT")
 
 
 def _status(frame) -> dict:
@@ -352,6 +366,12 @@ def save_draft(frame, log: Callable[[str], None], messages: list[str],
 
 
 def _changed(before: dict, after: dict) -> bool:
+    """저장되면 작성 프레임이 다시 열린다(실측 ⑤ 2026-10-14): 숨은 REQ_CNT(결의번호)가 생기고 APPR_DIV_CD 가 40(임시저장).
+    REQ_SEQ_NO 도 새 TMP_ 값으로 바뀌지만 MOD_YN 은 N 그대로다. 둘째 사람부터는 REQ_CNT 가 이미 있으므로 REQ_SEQ_NO 변화도 본다."""
+    if after.get("REQ_CNT") and after.get("REQ_CNT") != before.get("REQ_CNT"):
+        return True
+    if after.get("APPR_DIV_CD") == "40" and before.get("APPR_DIV_CD") != "40":
+        return True
     return any(after.get(k) != before.get(k) for k in ("REQ_SEQ_NO", "MOD_YN", "APPR_DIV_CD"))
 
 

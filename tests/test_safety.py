@@ -115,3 +115,37 @@ def test_taxbill_popup_presses_only_select_inquiry_pick_and_confirm():
             assert word not in line, line
     body = text.split("def pick(", 1)[1]
     assert body.index("if index is None:") < body.index("CONFIRM_BUTTON_ID")
+
+
+def test_scholarship_presses_only_tab_save_person_and_attach_buttons():
+    """장학금 청구(claims/scholarship.py · person.py · attach.py) — 담당자 결정 2026-10-14: 학생마다 [저장](임시저장)까지, [신청] 은 사람.
+
+    scholarship.py 가 직접 누르는 것은 인건비 탭(#20) 하나. 소득자 팝업은 돋보기 · 구분 라디오 · [검색] · 고른 행 · [확인](인적정보 3 · 참여인력 4),
+    첨부 팝업은 '첨부' 링크 · [업로드] 뿐 — '외부인 등록' · 파일 '삭제'(btn_del) · 전체 체크는 누르지 않는다.
+    """
+    claims = SRC / "claims"
+    sch = (claims / "scholarship.py").read_text(encoding="utf-8")
+    assert ".click(" not in sch
+    assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", sch)) == {"TAB_ID"} and 'TAB_ID = "20"' in sch
+    assert "PSNL_EXPN_DIV_CD" not in sch.split('"""', 2)[2]          # 인건비구분 라디오는 건드리지 않는다(설명 글 밖에서)
+
+    per = (claims / "person.py").read_text(encoding="utf-8")
+    assert ".click(" not in per
+    assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", per)) == {"SEARCH_BUTTON_ID", "confirm_id"}
+    assert re.findall(r"open_popup\(page, frame, ([A-Z_]+),", per) == ["OPEN_BUTTON_ID"]
+    assert 'CONFIRM_IDS = {TAB_STUDENT: "btn_s_confirm3", TAB_STAFF: "btn_s_confirm4"}' in per
+    body = per.split("def pick(", 1)[1]
+    assert body.index("if index is None:") < body.index("confirm_id)")
+
+    att = (claims / "attach.py").read_text(encoding="utf-8")
+    assert att.count(".click(") == 1 and ".click(" in att.split("CLICK_TEXT_JS = ", 1)[1].split('"""', 2)[1]
+    assert re.findall(r"evaluate\(CLICK_TEXT_JS,\s*([A-Za-z_]+)\)", att) == ["OPEN_TEXT"] and 'OPEN_TEXT = "첨부"' in att
+    assert re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", att) == ["UPLOAD_BUTTON_ID"] and 'UPLOAD_BUTTON_ID = "btn_upload"' in att
+    for word in ("btn_del", "allCheck"):
+        assert all(word not in line for line in _click_lines(att)), word
+
+
+def test_file_upload_lives_only_in_attach():
+    """OS 대화상자 없이 파일을 넣는 set_input_files 는 claims/attach.py 한 곳에서만."""
+    users = sorted(p.relative_to(SRC).as_posix() for p in SRC.rglob("*.py") if "set_input_files(" in p.read_text(encoding="utf-8"))
+    assert users == ["claims/attach.py"], users

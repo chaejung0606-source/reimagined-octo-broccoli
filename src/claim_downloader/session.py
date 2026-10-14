@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from .claims import form as claim_form
 from .claims import payee as claim_payee
+from .claims import scholarship as claim_scholarship
 from .claims import taxbill as claim_taxbill
 from . import archive, diagnose, erp, settings as settings_mod
 from .reconcile import reconcile
@@ -232,6 +233,43 @@ class ErpSession:
         try:
             return claim_form.save_draft(frame, self.log, messages,
                                          wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)))
+        finally:
+            page.remove_listener("dialog", on_dialog)
+
+    # ── 장학금 ───────────────────────────────────────────────────────────
+    def fill_scholarship(self, job, dry_run: bool = True, ask=None, on_person=None) -> claim_scholarship.ScholarshipReport:
+        """장학금 청구 — 작성 화면 인건비 탭에 학생 한 명씩 넣고 [저장](claims/scholarship.py). [신청] 은 사람.
+
+        ask(문구) 는 앱이 확신하지 못하는 단계에서 사람에게 묻는다 — True 면 [계속], False 면 [멈추기]. 이 스레드에서 기다린다.
+        """
+        if dry_run:
+            # 미리 보기는 ERP 화면 없이 계획만 — 브라우저가 없어도 된다
+            return claim_scholarship.run(None, None, job, self.log, ask=lambda _m: False, dry_run=True)
+        if not self.browser_open:
+            raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
+        page, frame = claim_form.find_form(self.page.context)
+        if frame is None:
+            report = claim_scholarship.ScholarshipReport(dry_run=dry_run)
+            report.blocked = ("작성 화면을 찾지 못했습니다. 앱이 연 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄운 뒤 "
+                              "다시 누르세요. (인건비 탭은 앱이 누릅니다)")
+            self.log(report.blocked)
+            return report
+        messages: list[str] = []
+
+        def on_dialog(dialog) -> None:
+            messages.append(dialog.message.strip())
+            self.log("ERP 알림: %s" % dialog.message.strip())
+            try:
+                dialog.accept()
+            except Exception:  # noqa: BLE001
+                pass
+
+        page.on("dialog", on_dialog)
+        try:
+            return claim_scholarship.run(
+                page, frame, job, self.log, ask=ask or (lambda _m: False),
+                wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)), messages=messages,
+                should_stop=self.should_stop, on_person=on_person, dry_run=dry_run, auto_pick=self._popup_options()[0])
         finally:
             page.remove_listener("dialog", on_dialog)
 

@@ -33,6 +33,7 @@ ART = {
     # 업무 데스크
     "meeting":   "book-pen",        # 펼쳐진 책과 펜 — 회의록 생성
     "claim":     "signed-doc",      # 서명 문서 — 일반청구(결재)
+    "scholarship": "doc-users",     # 사람이 그려진 서류 — 장학금 청구(학생 명단)
     "card":      "card-receipt",    # 카드와 영수증 — 카드청구 (tools/make_card_art.py 로 새로 그림)
     "recent":    "folder-papers",   # 종이 겹친 폴더 — 최근 작업
     "done":      "send-tray",       # 종이비행기와 트레이 — 완료 안내

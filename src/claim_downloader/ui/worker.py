@@ -38,6 +38,9 @@ class SessionWorker(QObject):
     payee_searched = Signal(object)     # 일반청구: claims.payee.PayeeReport (입금처 팝업 검색)
     taxbill_searched = Signal(object)   # 일반청구: claims.taxbill.TaxbillReport (세금계산서 조회 팝업)
     claim_form_state = Signal(bool)     # 일반청구 작성 화면이 브라우저에 떠 있는지
+    scholarship_person = Signal(int, str, str)   # 장학금: 명단 번호, 상태, 설명
+    scholarship_ask = Signal(str)       # 장학금: 앱이 확신 못 하는 단계 — 사람이 [계속]/[멈추기]
+    scholarship_done = Signal(object)   # 장학금: claims.scholarship.ScholarshipReport
 
     def __init__(self) -> None:
         super().__init__()
@@ -68,6 +71,10 @@ class SessionWorker(QObject):
 
     def search_taxbill(self, data: dict) -> None:
         self._queue.put(("search_taxbill", (data,)))
+
+    def fill_scholarship(self, job, dry_run: bool = True) -> None:
+        self._stop.clear()
+        self._queue.put(("fill_scholarship", (job, dry_run)))
 
     def read_list(self) -> None:
         self._queue.put(("read_list", ()))
@@ -150,6 +157,22 @@ class SessionWorker(QObject):
     def _do_search_payee(self, session: ErpSession, data: dict) -> None:
         self.busy.emit(True, "입금처 팝업에서 거래처를 검색하는 중…")
         self.payee_searched.emit(session.search_payee(data))
+
+    def _ask_person(self, message: str) -> bool:
+        """장학금 — 앱이 확신하지 못하는 단계. 재로그인 띠와 같은 방식으로 이 스레드가 [계속]/[멈추기] 를 기다린다."""
+        if self._stop.is_set():
+            return False
+        self._resume.clear()
+        self._waiting_relogin = True
+        self.scholarship_ask.emit(message)
+        self._resume.wait()
+        self._waiting_relogin = False
+        return self._resume_ok and not self._stop.is_set()
+
+    def _do_fill_scholarship(self, session: ErpSession, job, dry_run: bool) -> None:
+        self.busy.emit(True, "장학금 계획을 만드는 중…" if dry_run else "장학금 청구를 넣는 중… (멈추면 안내를 따라 주세요)")
+        report = session.fill_scholarship(job, dry_run=dry_run, ask=self._ask_person, on_person=self.scholarship_person.emit)
+        self.scholarship_done.emit(report)
 
     def _do_check_claim_form(self, session: ErpSession) -> None:
         self.claim_form_state.emit(session.claim_form_open())

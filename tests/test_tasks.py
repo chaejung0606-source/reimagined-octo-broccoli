@@ -49,9 +49,9 @@ def test_dock_holds_only_tasks_not_utilities():
     assert not any(t.dock for t in tasks.UTILITIES)
 
 
-def test_four_tasks_in_requested_order():
-    assert [t.name for t in tasks.TASKS] == ["청구서 받기", "회의록 생성", "일반청구", "카드청구"]
-    assert all(tasks.find(i).ready for i in ("download", "meeting", "claim"))
+def test_tasks_in_requested_order():
+    assert [t.name for t in tasks.TASKS] == ["청구서 받기", "회의록 생성", "일반청구", "장학금 청구", "카드청구"]
+    assert all(tasks.find(i).ready for i in ("download", "meeting", "claim", "scholarship"))
     assert not tasks.find("card").ready
 
 

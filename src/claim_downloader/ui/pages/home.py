@@ -1,6 +1,6 @@
 """COSS 업무데스크 홈 — 어떤 업무를 시작할지 고르는 곳.
 
-업무 타일 넷(그림 + 이름뿐)은 늘 한 줄. 아래에는
+업무 타일(그림 + 이름뿐)은 늘 한 줄. 아래에는
 
   이어서 작업하기   실제로 재개할 수 있는 일만 — 지금은 청구서 받기가 중간에 멈춰 남은 건이
                     있을 때뿐이다. 준비 중 화면을 열어 봤다는 것은 여기에 넣지 않는다.
@@ -112,7 +112,7 @@ class HomePage(QWidget):
             self.cards[task.id] = card
         layout.addLayout(self._grid)
         self._columns = 0
-        self._relayout(4)
+        self._relayout(len(TASKS))
 
         layout.addSpacing(6)
         bottom = QHBoxLayout()
@@ -153,10 +153,10 @@ class HomePage(QWidget):
         for i, card in enumerate(self.cards.values()):
             self._grid.addWidget(card, i // columns, i % columns, Qt.AlignLeft)
         # 타일은 고정 폭. 남는 폭은 오른쪽 빈 칸이 가져간다
-        for col in range(5):
+        for col in range(columns + 1):
             self._grid.setColumnStretch(col, 1 if col == columns else 0)
 
-    # 업무가 넷뿐이라 늘 한 줄에 둔다(담당자 요청). 타일 폭 196 × 4 는 최소 창(1120)에도 넉넉히 들어간다.
+    # 업무 타일은 늘 한 줄에 둔다(담당자 요청). 장학금 청구가 들어와 다섯(2026-10-14) — 196 × 5 + 간격도 최소 창(1120)에 들어간다.
     # 업무가 다섯 이상으로 늘면 여기서 창 폭에 따라 줄을 나누면 된다.
 
     # ── 이어서 작업하기 ──────────────────────────────────────────────

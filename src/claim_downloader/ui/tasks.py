@@ -31,6 +31,8 @@ TASKS: tuple[Task, ...] = (
          "meeting", "book", "lavender", "minutes:MinutesPage", ready=True),
     Task("claim", "일반청구", "지출 자료 폴더에서 값을 뽑아 ERP 일반청구 화면에 채웁니다. 저장·신청은 직접.",
          "claim", "document-check", "peach", "claim:ClaimPage", ready=True),
+    Task("scholarship", "장학금 청구", "명단 엑셀과 증빙 폴더로 ERP 인건비 탭에 학생마다 넣고 임시저장합니다. 신청은 직접.",
+         "scholarship", "people", "mint", "scholarship:ScholarshipPage", ready=True),
     Task("card", "카드청구", "카드 사용 내역과 증빙을 정리합니다.",
          "card", "card", "sky", "pending:CardPage", ready=False),
 )
