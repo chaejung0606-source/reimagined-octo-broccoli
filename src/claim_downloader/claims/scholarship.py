@@ -347,6 +347,38 @@ def _digits(text: str) -> str:
     return re.sub(r"\D", "", str(text or ""))
 
 
+# 계좌처럼 생긴 숫자 — 하이픈으로 묶인 것(110-594-395796) 또는 10~14자리 한 덩어리(30120104410673)
+_ACCOUNT_RE = re.compile(r"(?<![\d-])\d{2,6}(?:-\d{2,8}){1,4}(?![\d-])|(?<!\d)\d{10,14}(?!\d)")
+
+
+def accounts_in_files(paths: list[str], pages: int = 8) -> tuple[set[str], int]:
+    """개별증빙 PDF 글자에서 계좌처럼 생긴 숫자를 모은다(숫자만). (찾은 것, 글자를 읽을 수 있었던 PDF 수).
+
+    학생이 낸 '근로장학금 지출자료' 에 계좌가 적혀 있다. 그림으로만 된 PDF(스캔)는 글자가 없어 못 읽는다 — 그때는 읽은 수가 0.
+    전화번호 · 주민번호도 섞여 들어오지만 특정 계좌가 '들어 있는지' 만 보므로 상관없다."""
+    found: set[str] = set()
+    read = 0
+    try:
+        import pypdf
+    except Exception:  # noqa: BLE001
+        return found, 0
+    for path in paths:
+        if not str(path).lower().endswith(".pdf"):
+            continue
+        try:
+            reader = pypdf.PdfReader(str(path))
+            text = "\n".join((page.extract_text() or "") for page in reader.pages[:pages])
+        except Exception:  # noqa: BLE001 — 깨진 PDF 는 건너뛴다
+            continue
+        if text.strip():
+            read += 1
+        for hit in _ACCOUNT_RE.finditer(text):
+            digits = re.sub(r"\D", "", hit.group())
+            if 10 <= len(digits) <= 16:
+                found.add(digits)
+    return found, read
+
+
 def _same(a, b) -> bool:
     return re.sub(r"\s+", "", str(a or "")) == re.sub(r"\s+", "", str(b or ""))
 
@@ -504,12 +536,9 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
     # 4. 계좌 대조 · 예금주조회 결과
     s = _state(frame, ["ACCT_NO", "BNK_CD", "OWNR", "OWNR_INQ_RSLT"])
     if p.account_digits and _digits(s["ACCT_NO"]) and p.account_digits != _digits(s["ACCT_NO"]):
-        msg = ("%d. %s — 명단의 계좌(%s)와 ERP 가 채운 계좌(%s)가 다릅니다. ERP 의 계좌가 맞는지 확인한 뒤 [계속], 아니면 [멈추기]."
-               % (index + 1, p.name, p.account, s["ACCT_NO"]))
-        log("계좌 불일치: 명단 %s / ERP %s" % (p.account, s["ACCT_NO"]))
-        if not ask(msg):
-            return False, "계좌가 명단과 다름 — 멈춤"
-        result.lines.append("! 계좌가 명단과 달라 사람이 확인함")
+        ok, why = _use_document_account(frame, job, index, s, log, ask, wait, result)
+        if not ok:
+            return False, why
     else:
         result.lines.append("✓ 계좌 %s (명단과 %s)" % (s["ACCT_NO"] or "—", "같음" if p.account_digits else "대조 안 함"))
 
@@ -608,6 +637,51 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         result.lines.extend("! " + item for item in result.review)
         return True, "임시저장 — 신청 전 확인: " + " / ".join(result.review)
     return True, "임시저장"
+
+
+def _use_document_account(frame, job: Job, index: int, s: dict, log, ask: Ask, wait,
+                          result: PersonResult) -> tuple[bool, str]:
+    """명단 계좌와 ERP 가 채운 계좌(인적정보에 등록된 것)가 다를 때 — 첨부서류의 계좌를 넣는다(담당자 결정 2026-10-14).
+
+    실제 시험(17:54)에서 한 학생의 ERP 계좌가 명단과 은행부터 달랐다. 담당자: "이럴 때는 첨부서류에 있는 계좌정보를 입력".
+    - 그 학생의 개별증빙 PDF 에서 계좌를 찾는다. 명단 계좌가 있으면(또는 PDF 를 못 읽으면) 명단의 은행 · 계좌를 ERP 칸에 넣는다.
+      명단은 담당자가 첨부서류를 보고 옮긴 것이다. 못 읽었으면 '신청 전 확인할 것' 에 남긴다.
+    - PDF 에 ERP 계좌만 있고 명단 계좌가 없으면 첨부서류는 ERP 와 같은 것 — 명단이 틀렸다. 바꾸지 않는다.
+    - 계좌를 바꾸면 [예금주조회] 를 새로 해야 한다. 그 단추는 사람이 누른다(14절 '절대 누르지 않을 것') — 노란 띠로 묻는다."""
+    p = job.people[index]
+    erp_acct, erp_digits = s["ACCT_NO"], _digits(s["ACCT_NO"])
+    found, read = accounts_in_files(job.person_files.get(index, []))
+    log("계좌 불일치: 명단 %s %s / ERP %s — 개별증빙 PDF %d개에서 계좌 %s" % (
+        p.bank or "", p.account, erp_acct, read,
+        "명단과 같은 것을 찾음" if p.account_digits in found else
+        "ERP 와 같은 것만 찾음" if erp_digits in found else "를 찾지 못함"))
+    if erp_digits in found and p.account_digits not in found:
+        result.lines.append(f"! 명단 계좌({p.account})가 첨부서류와 다름 — 첨부서류 · ERP 계좌({erp_acct}) 그대로 둠(명단 엑셀을 확인하세요)")
+        return True, ""
+    from_document = p.account_digits in found
+    if not p.bank:
+        ok = ask("%d. %s — ERP 계좌(%s)가 첨부서류 계좌(%s)와 다른데 명단에 은행이 없어 바꾸지 못했습니다. ERP 에서 은행 · 계좌를 고치고 "
+                 "[예금주조회] 로 '성공' 을 확인한 뒤 [계속], 아니면 [멈추기]." % (index + 1, p.name, erp_acct, p.account))
+        return (True, "") if ok else (False, "계좌를 바꾸지 못함 — 멈춤")
+    r_bank = _set(frame, "select", "BNK_CD", p.bank)
+    r_acct = _set(frame, "text", "ACCT_NO", p.account_digits)
+    wait(0.5)
+    now = _state(frame, ["ACCT_NO"])["ACCT_NO"]
+    if not (r_bank.get("ok") and r_acct.get("ok")) or _digits(now) != p.account_digits:
+        why = r_bank.get("why") or r_acct.get("why") or f"넣은 뒤 계좌 칸이 {now or '비어 있음'}"
+        ok = ask("%d. %s — 계좌를 첨부서류의 %s %s 로 바꾸지 못했습니다(%s). ERP 에서 직접 고치고 [예금주조회] 로 '성공' 을 확인한 뒤 [계속], 아니면 [멈추기]."
+                 % (index + 1, p.name, p.bank, p.account, why))
+        return (True, "") if ok else (False, "계좌를 바꾸지 못함 — 멈춤")
+    note = "첨부서류" if from_document else "명단 엑셀(첨부서류에서 계좌를 읽지 못함)"
+    result.lines.append(f"✓ 계좌를 {note}의 {r_bank.get('now') or p.bank} {p.account} 로 바꿈 (ERP 에 있던 계좌 {erp_acct})")
+    log("계좌를 %s의 %s %s 로 바꿈 (ERP 에 있던 계좌 %s)" % (note, p.bank, p.account, erp_acct))
+    if not from_document:
+        result.review.append(f"첨부서류에서 계좌를 읽지 못해 명단 엑셀의 계좌({p.bank} {p.account})로 넣음 — 첨부서류와 같은지 확인한 뒤 [신청]")
+    # 바꾼 계좌는 예금주조회가 새로 필요하다. 남아 있는 '성공' 은 바꾸기 전 계좌의 것일 수 있어 결과 칸만 보고 넘어가지 않는다.
+    if not ask("%d. %s — 계좌를 %s의 %s %s 로 바꿔 넣었습니다(ERP 에 있던 계좌 %s). ERP 에서 [예금주조회] 를 눌러 '성공' 이 나오면 [계속], 아니면 [멈추기]."
+               % (index + 1, p.name, note, p.bank, p.account, erp_acct)):
+        return False, "계좌를 바꾼 뒤 예금주조회를 확인하지 못함 — 멈춤"
+    return True, ""
 
 
 def _summary(frame) -> dict:

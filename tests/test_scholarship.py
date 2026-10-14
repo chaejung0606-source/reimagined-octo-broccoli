@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 openpyxl = pytest.importorskip("openpyxl")
@@ -415,6 +417,74 @@ def test_run_refuses_to_save_on_account_mismatch_if_person_says_stop(monkeypatch
     report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or False,
                              wait=lambda s: None, dry_run=False)
     assert report.saved == 0 and "계좌" in asked[0] and frame.saved == []
+
+
+def _text_pdf(path, *lines):
+    """글자가 든 아주 작은 PDF — 학생이 낸 '지출자료' 처럼 계좌가 적힌 개별증빙을 흉내 낸다(숫자·영문만)."""
+    body = "BT /F1 12 Tf 50 750 Td " + " ".join(f"({line}) Tj 0 -16 Td" for line in lines) + " ET"
+    objs = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+            f"<< /Length {len(body)} >>\nstream\n{body}\nendstream", "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    out, offsets = "%PDF-1.4\n", []
+    for i, obj in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n{obj}\nendobj\n"
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n" + "".join(f"{o:010d} 00000 n \n" for o in offsets)
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+    pathlib.Path(path).write_bytes(out.encode("latin-1"))
+    return str(path)
+
+
+def test_accounts_are_read_from_person_pdfs(tmp_path):
+    pdf = _text_pdf(tmp_path / "a.pdf", "Bank 110-594-395796", "Phone 010-1234-5678", "ID 202416354")
+    found, read = scholarship.accounts_in_files([pdf, str(tmp_path / "없음.pdf"), str(tmp_path / "b.jpg")])
+    assert read == 1 and "110594395796" in found and "202416354" not in found      # 학번(9자리)은 계좌로 보지 않는다
+
+
+def _mismatch_job(tmp_path, pdf_lines=None):
+    folder = tmp_path / "건"
+    folder.mkdir()
+    make_ga(folder / "명단.xlsx", rows=[("가나다", 202600001, "신한", "110-594-395796", 12000, "25", 300000)])
+    if pdf_lines is not None:
+        (folder / "개별증빙").mkdir()
+        _text_pdf(folder / "개별증빙" / "가나다 지출자료.pdf", *pdf_lines)
+    return scholarship.load_job(str(folder))
+
+
+def test_account_mismatch_puts_the_document_account_then_asks_for_owner_check(monkeypatch, tmp_path):
+    """담당자 결정(2026-10-14): ERP 계좌가 다르면 첨부서류의 계좌를 넣는다 — [예금주조회] 는 사람이 누르고 [계속]."""
+    job = _mismatch_job(tmp_path, ["Account 110-594-395796"])
+    frame = FakeForm(account="30120104410673")
+    _patch_popups(monkeypatch, frame)
+    asked = []
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or True,
+                             wait=lambda s: None, dry_run=False)
+    assert report.saved == 1 and frame.saved[0]["ACCT_NO"] == "110594395796" and frame.saved[0]["BNK_CD"] == "신한"
+    assert len(asked) == 1 and "예금주조회" in asked[0] and "30120104410673" in asked[0]
+    assert report.review_items() == []                                              # 첨부서류로 확인된 계좌
+    assert any("첨부서류의" in line and "바꿈" in line for line in report.results[0].lines)
+    assert "btn_ownrInq" not in str(frame.clicks)                                   # 예금주조회는 누르지 않는다
+
+
+def test_account_mismatch_without_readable_document_uses_roster_and_lists_it(monkeypatch, tmp_path):
+    job = _mismatch_job(tmp_path, pdf_lines=None)
+    frame = FakeForm(account="30120104410673")
+    _patch_popups(monkeypatch, frame)
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: True, wait=lambda s: None, dry_run=False)
+    assert report.saved == 1 and frame.saved[0]["ACCT_NO"] == "110594395796"
+    assert any("첨부서류에서 계좌를 읽지 못해" in item for item in report.review_items())
+
+
+def test_account_mismatch_keeps_erp_account_when_document_agrees_with_erp(monkeypatch, tmp_path):
+    job = _mismatch_job(tmp_path, ["Account 301-2010-4410-673"])
+    frame = FakeForm(account="30120104410673")
+    _patch_popups(monkeypatch, frame)
+    asked = []
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or True,
+                             wait=lambda s: None, dry_run=False)
+    assert report.saved == 1 and frame.saved[0]["ACCT_NO"] == "30120104410673" and asked == []
+    assert any("명단 엑셀을 확인" in line for line in report.results[0].lines)
 
 
 def test_run_flags_nonzero_deduction_after_save(monkeypatch, job):
