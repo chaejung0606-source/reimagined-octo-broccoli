@@ -11,7 +11,7 @@ import pytest
 
 openpyxl = pytest.importorskip("openpyxl")
 
-from claim_downloader.claims import attach, form, person, roster, scholarship  # noqa: E402
+from claim_downloader.claims import attach, form, nation, person, roster, scholarship  # noqa: E402
 from claim_downloader.claims import payee  # noqa: E402
 
 
@@ -100,6 +100,30 @@ def test_roster_reads_nation_column_and_fills_merged_rows(tmp_path):
 def test_nation_header_is_not_confused_with_other_columns():
     assert roster._header_key("국적") == "nation" and roster._header_key("국적(국가/지역)") == "nation"
     assert roster._header_key("국가장학금") is None
+
+
+def _nations(*pairs):
+    return [{"index": i, "text": f"{code} {name}", "cells": {"k_NATION_CD": code, "k_NATION_NM": name}}
+            for i, (code, name) in enumerate(pairs)]
+
+
+def test_nation_match_picks_only_one_sure_row():
+    """실측 18:46 — '우즈' 검색에 UZ 우즈베키스탄 한 줄. 같은 이름이 하나면 고르고, 아니면 사람."""
+    assert nation.match(_nations(("UZ", "우즈베키스탄")), "우즈베키스탄") == (0, "국적 이름 일치")
+    assert nation.match(_nations(("UZ", "우즈베키스탄")), "우즈베키스탄 공화국")[0] == 0
+    assert nation.match(_nations(("US", "미국"), ("AS", "미국령사모아")), "미국") == (0, "국적 이름 일치")
+    assert nation.match(_nations(("VN", "베트남사회주의")), "베트남")[0] == 0          # 이름을 담은 줄이 하나
+    assert nation.match(_nations(("CN", "중국")), "cn") == (0, "국적 이름 일치")        # 두 글자 코드로 적어도
+    index, why = nation.match(_nations(("CD", "콩고민주공화국"), ("CG", "콩고공화국")), "콩고")
+    assert index is None and "2줄" in why
+    index, why = nation.match(_nations(("GH", "가나")), "몽골")
+    assert index is None and "없음" in why
+    assert nation.match([], "몽골") == (None, "검색 결과가 없음")
+
+
+def test_nation_queries_try_short_name_too():
+    assert nation.queries_for("우즈베키스탄") == ["우즈베키스탄"]
+    assert nation.queries_for("우즈베키스탄 공화국") == ["우즈베키스탄 공화국", "우즈베키스탄"]
 
 
 def test_same_country_ignores_spaces_and_republic():
@@ -437,8 +461,19 @@ def job(tmp_path):
     return scholarship.load_job(str(folder))
 
 
-def _patch_popups(monkeypatch, frame, picks=True, attach_ok=True):
-    calls = {"person": [], "attach": []}
+def _patch_popups(monkeypatch, frame, picks=True, attach_ok=True, nation=None):
+    """nation: 국적 팝업에서 앱이 고를 (코드, 이름) — None 이면 못 고른다(검색 결과 없음)."""
+    calls = {"person": [], "attach": [], "nation": []}
+
+    def fake_nation(page, fr, name, log, wait=None, messages=None):
+        calls["nation"].append(name)
+        if nation is None:
+            return scholarship.nation_mod.NationReport(ok=True, nation=name, note="검색 결과가 없음")
+        frame.v.update(NATION_CD=nation[0], NATION_NM=nation[1])
+        return scholarship.nation_mod.NationReport(ok=True, nation=name, picked=True, code=nation[0], name=nation[1],
+                                                   note="국적 이름 일치")
+
+    monkeypatch.setattr(scholarship.nation_mod, "pick", fake_nation)
 
     def fake_search(page, fr, name, no, log, wait=None, messages=None, tab=None, auto_pick=True):
         calls["person"].append((name, no, tab))
@@ -581,7 +616,20 @@ def test_roster_nation_marks_foreign_student_even_with_korean_looking_number(mon
     assert "외국인(우즈베키스탄)" in plan.note and any("국적 우즈베키스탄" in line for line in plan.lines)
     assert not scholarship.plan_person(job, 0).note
     frame = FakeForm()                                           # 주민번호 칸은 '-3' (내국인처럼)
-    _patch_popups(monkeypatch, frame)
+    calls = _patch_popups(monkeypatch, frame, nation=("UZ", "우즈베키스탄"))
+    asked = []
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or True,
+                             wait=lambda s: None, dry_run=False)
+    assert report.saved == 2 and asked == []                     # 앱이 국적조회에서 골라 사람에게 묻지 않는다
+    assert calls["nation"] == ["우즈베키스탄"]                     # 외국인 학생 한 명만
+    assert frame.saved[1]["NATION_CD"] == "UZ" and report.review_items() == []
+    assert any("국적: 우즈베키스탄(UZ)" in line for line in report.results[1].lines)
+
+
+def test_nation_falls_back_to_person_when_app_cannot_pick(monkeypatch, tmp_path):
+    job = _nation_job(tmp_path, "우즈베키스탄")
+    frame = FakeForm()
+    _patch_popups(monkeypatch, frame)                              # 국적 팝업에서 못 고름
     asked = []
 
     def ask(message):
@@ -591,8 +639,23 @@ def test_roster_nation_marks_foreign_student_even_with_korean_looking_number(mon
 
     report = scholarship.run(object(), frame, job, lambda m: None, ask=ask, wait=lambda s: None, dry_run=False)
     assert report.saved == 2 and len(asked) == 1
-    assert "명단 국적: 우즈베키스탄" in asked[0] and "명단 국적 우즈베키스탄" in asked[0]
-    assert report.review_items() == []                            # 고른 국적이 명단과 같다
+    assert "명단 국적: 우즈베키스탄" in asked[0] and "앱이 고르지 못함: 검색 결과가 없음" in asked[0]
+    assert report.review_items() == []                            # 사람이 고른 국적이 명단과 같다
+
+
+def test_nation_is_not_picked_when_auto_pick_is_off(monkeypatch, tmp_path):
+    job = _nation_job(tmp_path, "우즈베키스탄")
+    frame = FakeForm()
+    calls = _patch_popups(monkeypatch, frame, nation=("UZ", "우즈베키스탄"))
+    asked = []
+
+    def ask(message):
+        asked.append(message)
+        frame.v.update(NATION_CD="UZ", NATION_NM="우즈베키스탄")
+        return True
+
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=ask, wait=lambda s: None, dry_run=False, auto_pick=False)
+    assert report.saved == 2 and calls["nation"] == [] and len(asked) == 1
 
 
 def test_nation_different_from_roster_is_saved_with_review(monkeypatch, tmp_path):

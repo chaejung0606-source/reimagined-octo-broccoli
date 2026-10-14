@@ -141,6 +141,15 @@ def test_scholarship_presses_only_tab_save_person_and_attach_buttons():
     body = per.split("def pick(", 1)[1]
     assert body.index("if index is None:") < body.index("confirm_id)")
 
+    # 국적조회 팝업(실측 2026-10-14 18:45): 돋보기 · [검색](person.run_search) · 고른 행 · '확인' 뿐 — 숨은 '선택없음' 은 아니다
+    nat = (claims / "nation.py").read_text(encoding="utf-8")
+    assert ".click(" not in nat and "CLICK_ID_JS" not in nat
+    assert re.findall(r"open_popup\(page, frame, ([A-Z_]+),", nat) == ["OPEN_BUTTON_ID"] and 'OPEN_BUTTON_ID = "btnNationCd"' in nat
+    assert re.findall(r"evaluate\(CLICK_TEXT_JS,\s*([A-Za-z_]+)\)", nat) == ["CONFIRM_TEXT"] and 'CONFIRM_TEXT = "확인"' in nat
+    assert 'FORBIDDEN_TEXTS = ("선택없음",)' in nat and all("FORBIDDEN_TEXTS" not in line for line in nat.splitlines() if "evaluate(" in line)
+    body = nat.split("def pick(", 1)[1]
+    assert body.index("if index is None:") < body.index("CLICK_TEXT_JS, CONFIRM_TEXT")      # 하나로 확실할 때만 [확인]
+
     att = (claims / "attach.py").read_text(encoding="utf-8")
     assert att.count(".click(") == 1 and ".click(" in att.split("CLICK_TEXT_JS = ", 1)[1].split('"""', 2)[1]
     assert re.findall(r"evaluate\(CLICK_TEXT_JS,\s*([A-Za-z_]+)\)", att) == ["OPEN_TEXT"] and 'OPEN_TEXT = "첨부"' in att

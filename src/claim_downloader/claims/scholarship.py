@@ -25,7 +25,8 @@ from dataclasses import dataclass, field
 from .. import settings
 from ..minutes.logbook import log as file_log
 from ..minutes.textfile import _read_text
-from . import attach, kinds, person, roster as roster_mod
+from . import attach, kinds, nation as nation_mod, person, roster as roster_mod
+from .nation import same_country  # noqa: F401 — 테스트 · 화면이 scholarship.same_country 로 부른다
 from .form import PROBE_JS, SET_SELECT_JS, SET_TEXT_JS, read_state, save_draft
 from .payee import CLICK_ID_JS, wait_until
 
@@ -37,8 +38,8 @@ INCOME_KIND = "장학금"                 # 소득구분 보기 글자 — 비�
 # 계좌 예금주를 확인만 하는 조회다(돈이 나가지 않는다). '일괄예금주조회' 는 누르지 않는다.
 OWNER_CHECK_ID = "btn_ownrInq"
 # 외국인 학생 — 외국인등록번호는 뒷자리 첫 숫자가 5~8 이다(내국인 1~4). 작성 화면 #VW_SSN 은 '######-3******' 처럼 그 숫자만 보인다(실측 ②).
-# 국적(#NATION_CD, 읽기전용 · 기본 KR)은 #btnNationCd 돋보기 팝업에서 고르는데 그 팝업은 아직 미실측이라 사람이 고른다(담당자 2026-10-14:
-# "개별증빙에 있는 신분증을 참고해서 국적을 선택"). 고른 뒤 #NATION_CD 가 KR 이 아닌지만 앱이 본다.
+# 국적(#NATION_CD, 읽기전용 · 기본 KR)은 #btnNationCd 돋보기 → 국적조회 팝업에서 고른다(nation.py, 실측 2026-10-14 18:45). 나라는
+# 명단 엑셀의 '국적' 열에서 온다 — 없거나 앱이 못 고르면 사람이 신분증을 보고 고른다. 끝나면 #NATION_CD 가 KR 이 아닌지 본다.
 FOREIGN_SSN_DIGITS = "5678"
 HOME_NATION = "KR"
 # 보이는 단추가 있는지만 — 같은 id 가 안 쓰는 탭에도 숨어 있다(14절 ① 함정). 숨은 쪽을 누르면 다른 탭의 빈 계좌를 조회한다.
@@ -457,10 +458,10 @@ def plan_person(job: Job, index: int) -> PersonResult:
                     f"적요: {job.row_summary(index)}",
                     f"첨부 {len(files)}개" + (": " + " · ".join(os.path.basename(f) for f in files[:6]) if files else "")]
     if p.foreign_nation:
-        result.lines.append(f"국적 {p.nation}(명단) — ERP 국적은 넣을 때 노란 띠를 따라 직접 고릅니다")
+        result.lines.append(f"국적 {p.nation}(명단) — 넣을 때 앱이 ERP 국적조회에서 고릅니다(못 고르면 노란 띠로 묻습니다)")
     notes = [p.note] if p.note else []
     if p.foreign_nation:
-        notes.append(f"외국인({p.nation}) — 국적을 ERP 에서 직접 고름")
+        notes.append(f"외국인({p.nation}) — 국적은 앱이 고름")
     if notes:
         result.note = " · ".join(notes)
     return result
@@ -578,7 +579,7 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
     foreign = foreign_reason(s["VW_SSN"], [s["OWNR"], s["OWNR_INQ_RSLT"]], p.foreign_nation)
     if foreign:
         log("외국인 학생으로 봄: %d. %s (%s)" % (index + 1, p.name, foreign))
-        ok, why = _ensure_nation(frame, ask, wait, index, p, foreign, "소득자를 고른 뒤", result)
+        ok, why = _ensure_nation(page, frame, ask, wait, index, p, foreign, "소득자를 고른 뒤", result, log, messages, auto_pick)
         if not ok:
             return False, why
         result.lines.append("✓ 국적 " + why)
@@ -660,7 +661,7 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         result.review.append(item)
         log("신청 전 확인: %d. %s — %s" % (index + 1, p.name, item))
     if foreign:
-        ok, why = _ensure_nation(frame, ask, wait, index, p, foreign, "저장 직전", result)
+        ok, why = _ensure_nation(page, frame, ask, wait, index, p, foreign, "저장 직전", result, log, messages, auto_pick)
         if not ok:
             return False, why
     s = read_state(frame, ["PAY_EXP_CD", "INCM_DIV_CD", "REQ_AMT", "REQ_PTCL", "RCV_NM"])
@@ -756,20 +757,12 @@ def _use_document_account(frame, job: Job, index: int, s: dict, log, ask: Ask, w
     return True, "", True          # 바꾼 계좌는 예금주조회가 새로 필요하다 — 부르는 쪽이 [예금주조회] 를 누른다
 
 
-def same_country(a: str, b: str) -> bool:
-    """'우즈베키스탄' == '우즈베키스탄 공화국' — 공백 · '공화국' 같은 꼬리를 떼고 한쪽이 다른 쪽을 담으면 같다고 본다."""
-    def core(text: str) -> str:
-        t = re.sub(r"\s+|\(.*?\)", "", str(text or "")).lower()
-        return re.sub(r"(인민공화국|민주공화국|공화국|연방|왕국)$", "", t)
-    x, y = core(a), core(b)
-    return bool(x and y) and (x in y or y in x)
+def _ensure_nation(page, frame, ask: Ask, wait, index: int, p, foreign: str, when: str, result: PersonResult,
+                   log, messages: list[str], auto_pick: bool) -> tuple[bool, str]:
+    """외국인 학생의 국적(#NATION_CD)이 KR 이 아니게 한다. (됐는지, '국가이름(코드)' 또는 멈춘 이유).
 
-
-def _ensure_nation(frame, ask: Ask, wait, index: int, p, foreign: str, when: str, result: PersonResult) -> tuple[bool, str]:
-    """외국인 학생의 국적(#NATION_CD)이 KR 이 아닐 때까지 사람에게 묻는다. (됐는지, '국가이름(코드)' 또는 멈춘 이유).
-
-    명단에 국적이 있으면 띠에 그 나라를 보여 주고, 고른 국적이 명단과 다르면 멈추지 않고 '신청 전 확인할 것' 으로 남긴다
-    (ERP 의 나라 이름 표기를 아직 모른다 — 국적 팝업 미실측)."""
+    명단에 국적이 있으면 앱이 국적 팝업에서 그 나라를 골라 본다(nation.pick — 하나로 확실할 때만). 못 고르면, 또는 명단에 국적이
+    없으면 노란 띠로 사람에게 묻는다. 사람이 고른 국적이 명단과 다르면 멈추지 않고 '신청 전 확인할 것' 으로 남긴다."""
     def nation_ok() -> tuple[bool, str]:
         s = _state(frame, ["NATION_CD", "NATION_NM"])
         code = s["NATION_CD"].strip().upper()
@@ -777,11 +770,23 @@ def _ensure_nation(frame, ask: Ask, wait, index: int, p, foreign: str, when: str
             return True, f"{s['NATION_NM'] or '?'}({code})"
         return False, f"국적이 '{s['NATION_NM'] or code or '비어 있음'}' 입니다"
 
-    hint = f"명단 국적: {p.nation}. " if p.foreign_nation else "개별증빙의 신분증(외국인등록증)을 보고 "
+    tried = ""
+    if not nation_ok()[0] and p.foreign_nation and auto_pick:
+        try:
+            found = nation_mod.pick(page, frame, p.foreign_nation, log, wait=wait, messages=messages)
+            result.lines.extend(found.lines())
+            tried = "" if found.picked else f"앱이 고르지 못함: {found.note}. "
+        except Exception as error:  # noqa: BLE001 — 팝업이 안 뜨거나 닫혀도 사람에게 넘기면 된다
+            tried = "앱이 고르지 못함: " + (str(error).splitlines()[0][:80] if str(error) else type(error).__name__) + ". "
+            log("국적 자동 선택 실패: " + tried)
+    if p.foreign_nation:
+        hint = f"명단 국적: {p.nation}. {tried}"
+    else:
+        hint = "개별증빙의 신분증(외국인등록증)을 보고 — 명단 엑셀의 '국적' 열에 적어 두면 앱이 고릅니다 — "
 
     def message(w: str) -> str:
-        return ("%d. %s — 외국인 학생입니다(%s, %s). %sERP 의 국적 돋보기로 국적을 고른 뒤 [계속]. (%s — %s)"
-                % (index + 1, p.name, foreign, when, hint, w, "앱은 국적 팝업을 아직 누르지 않습니다"))
+        return ("%d. %s — 외국인 학생입니다(%s, %s). %sERP 의 국적 돋보기로 국적을 고른 뒤 [계속]. (%s)"
+                % (index + 1, p.name, foreign, when, hint, w))
     ok, why = _ask_until(nation_ok, ask, message, wait)
     if not ok:
         return False, "외국인 학생의 국적을 고르지 못함 — " + why

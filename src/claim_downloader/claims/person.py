@@ -121,7 +121,7 @@ def _digits(text) -> str:
     return "".join(ch for ch in str(text or "") if ch.isdigit())
 
 
-def _listing(popup) -> tuple[list[dict], object]:
+def listing(popup) -> tuple[list[dict], object]:
     """지금 그려진 결과 행들과 그 프레임. 못 읽으면 예외."""
     _, where = count_rows(popup)
     listing = where.evaluate(ROWS_JS)
@@ -130,14 +130,14 @@ def _listing(popup) -> tuple[list[dict], object]:
 
 def _signature(popup) -> str:
     try:
-        rows, _ = _listing(popup)
+        rows, _ = listing(popup)
     except Exception:  # noqa: BLE001 — 아직 그리는 중
         return "?"
     return "\n".join(str(r.get("text", "")) for r in rows)
 
 
-def _run_search(popup, query: str, wait: Callable[[float], None]) -> tuple[bool, str, int | None]:
-    """검색 칸에 query 를 넣고 [검색]. 앞 검색의 행을 새 결과로 읽지 않도록 목록이 바뀔 때까지(최대 ~5초) 본다."""
+def run_search(popup, query: str, wait: Callable[[float], None]) -> tuple[bool, str, int | None]:
+    """검색 칸(#SEARCH_NM)에 query 를 넣고 [검색] — 국적 팝업(nation.py)도 같은 칸을 쓴다. 앞 검색의 행을 새 결과로 읽지 않도록 목록이 바뀔 때까지(최대 ~5초) 본다."""
     before = _signature(popup)
     typed = popup.evaluate(SET_TEXT_JS, [SEARCH_NAME_ID, query])
     if not typed.get("ok"):
@@ -172,7 +172,7 @@ def _scan(popup, name: str, student_no: str, log: Callable[[str], None],
           wait: Callable[[float], None]) -> tuple[int | None, str, object]:
     """학번이 맞는 행 (index, 근거, 프레임). 목록이 그려진 것보다 길면(가상 스크롤) 위에서부터 끝까지 내려가 보고,
     학번이 맞는 줄이 **하나**일 때만 그 줄이 보이는 곳으로 돌아가 고른다."""
-    rows, where = _listing(popup)
+    rows, where = listing(popup)
     index, why = match(rows, name, student_no)
     if index is None and not why.endswith("인 행이 없음"):
         return index, why, where                   # 여럿 · 이름 다름 · 학번 없음 — 더 내려가 볼 것 없이 사람에게
@@ -187,7 +187,7 @@ def _scan(popup, name: str, student_no: str, log: Callable[[str], None],
     for _ in range(MAX_SCROLLS):
         if info is None:
             break
-        rows, where = _listing(popup)
+        rows, where = listing(popup)
         for row in rows:
             key = _row_key(row)
             seen.add(key)
@@ -206,7 +206,7 @@ def _scan(popup, name: str, student_no: str, log: Callable[[str], None],
         return None, f"학번이 같은 행이 {len(found)}개", where
     (key, top), = found.items()
     _scroll(where, top, wait)
-    rows, where = _listing(popup)
+    rows, where = listing(popup)
     index, why = match(rows, name, student_no)
     if index is None or _row_key(rows[index]) != key:
         return None, "찾은 행으로 돌아가지 못함 — " + why, where
@@ -292,7 +292,7 @@ def search(page, frame, name: str, student_no: str, log: Callable[[str], None],
         if not div.get("same"):
             wait(0.5)                                    # 탭이 바뀌며 칸이 다시 그려진다
         for what, query in queries_for(name, student_no, tab):
-            ok, note, rows = _run_search(popup, query, wait)
+            ok, note, rows = run_search(popup, query, wait)
             if not ok:
                 report.note = note
                 return report
