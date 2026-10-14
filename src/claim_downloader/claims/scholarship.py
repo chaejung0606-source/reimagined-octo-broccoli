@@ -11,7 +11,7 @@
 몇 번째 사람까지 저장됐는지 보고한다. 기본은 미리 보기(dry_run). [신청] · [삭제] · [초기화] · '복사하기' 는 절대 누르지 않는다.
 인건비구분 라디오(PSNL_EXPN_DIV_CD)는 건드리지 않는다 — 장학금도 (90) 기타 그대로(담당자 확정 2026-10-14).
 
-누르는 것: 탭 `#20`(CLICK_ID_JS) · 저장(form.save_draft) · 그 밖은 person.py · attach.py 가 누른다. Playwright 를 들여오지 않는다.
+누르는 것: 탭 `#20` · [예금주조회](CLICK_ID_JS) · 저장(form.save_draft) · 그 밖은 person.py · attach.py 가 누른다. Playwright 를 들여오지 않는다.
 """
 from __future__ import annotations
 
@@ -33,6 +33,12 @@ TAB_ID = "20"                         # 작성 화면 서브탭 '인건비(소�
 TAB_VALUE = "20"                      # 숨은 #TAB_GB 가 이 값이면 인건비 탭
 CATEGORY = "장학금"                    # 비목 보기 글자
 INCOME_KIND = "장학금"                 # 소득구분 보기 글자 — 비목이 장학금이면 소득구분도 장학금(담당자 확정 2026-10-14)
+# [예금주조회] — 담당자 결정(2026-10-14): 앱이 누르고, 새 결과가 '성공:학생이름' 이 아니면 사람에게 맡긴다.
+# 계좌 예금주를 확인만 하는 조회다(돈이 나가지 않는다). '일괄예금주조회' 는 누르지 않는다.
+OWNER_CHECK_ID = "btn_ownrInq"
+# 보이는 단추가 있는지만 — 같은 id 가 안 쓰는 탭에도 숨어 있다(14절 ① 함정). 숨은 쪽을 누르면 다른 탭의 빈 계좌를 조회한다.
+VISIBLE_ID_JS = """(id) => Array.from(document.querySelectorAll('[id="' + String(id).replace(/"/g, '\\"') + '"]'))
+  .some(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; })"""
 COMMON_DIR_WORD = kinds.COMMON_WORD    # 폴더 이름에 이 글자가 들면 공통증빙
 PERSON_DIR_WORD = kinds.PERSON_WORD    # 폴더 이름에 이 글자가 들면 개별증빙
 EXCEL_SUFFIXES = kinds.EXCEL_SUFFIXES
@@ -535,22 +541,37 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
 
     # 4. 계좌 대조 · 예금주조회 결과
     s = _state(frame, ["ACCT_NO", "BNK_CD", "OWNR", "OWNR_INQ_RSLT"])
+    changed_account = False
     if p.account_digits and _digits(s["ACCT_NO"]) and p.account_digits != _digits(s["ACCT_NO"]):
-        ok, why = _use_document_account(frame, job, index, s, log, ask, wait, result)
+        ok, why, changed_account = _use_document_account(frame, job, index, s, log, ask, wait, result)
         if not ok:
             return False, why
     else:
         result.lines.append("✓ 계좌 %s (명단과 %s)" % (s["ACCT_NO"] or "—", "같음" if p.account_digits else "대조 안 함"))
 
     def owner_ok() -> tuple[bool, str]:
-        v = _state(frame, ["OWNR_INQ_RSLT"])["OWNR_INQ_RSLT"]
-        return (v.startswith("성공"), v or "비어 있음")
+        return _owner_result_ok(_state(frame, ["OWNR_INQ_RSLT"])["OWNR_INQ_RSLT"], p.name)
 
-    ok, why = _ask_until(owner_ok, ask, lambda w: ("%d. %s — 예금주조회 결과가 '%s' 입니다. ERP 에서 [예금주조회] 를 눌러 '성공' 을 확인한 뒤 [계속] 을 누르세요."
-                                                   % (index + 1, p.name, w)), wait)
-    if not ok:
-        return False, "예금주조회 결과 없음"
-    result.lines.append("✓ 예금주조회 " + _state(frame, ["OWNR_INQ_RSLT"])["OWNR_INQ_RSLT"])
+    # 예금주조회 — 소득자를 고르면 ERP 가 대개 '성공:이름' 을 채워 둔다. 아니거나 계좌를 바꿨으면 앱이 [예금주조회] 를 누르고,
+    # 새 결과가 '성공:학생이름' 이 아니면 사람에게 맡긴다(담당자 결정 2026-10-14).
+    ok, why = (False, "계좌를 바꿈") if changed_account else owner_ok()
+    if ok:
+        result.lines.append("✓ 예금주조회 " + why)
+    else:
+        ok, detail = _press_owner_check(frame, p, log, wait, messages, why)
+        if ok:
+            result.lines.append("✓ 예금주조회(앱이 누름) " + detail)
+        else:
+            def owner_message(w: str) -> str:
+                return ("%d. %s — 앱이 [예금주조회] 를 눌렀지만 '성공' 이 나오지 않았습니다(%s). ERP 에서 계좌를 확인하고 [예금주조회] 로 "
+                        "'성공' 이 나오면 [계속], 아니면 [멈추기]." % (index + 1, p.name, w))
+            # 한 번은 꼭 묻는다 — 남은 '성공' 글이 바꾸기 전 계좌의 것일 수 있어 결과 칸만 보고 넘어가지 않는다
+            if not ask(owner_message(detail)):
+                return False, "예금주조회 '성공' 을 확인하지 못함 — 멈춤"
+            ok, why = _ask_until(owner_ok, ask, owner_message, wait)
+            if not ok:
+                return False, "예금주조회 '성공' 을 확인하지 못함 — 멈춤"
+            result.lines.append("✓ 예금주조회(사람이 확인) " + why)
 
     # 5. 청구액 · 지급예정년월 · 적요 (· 첫 사람이면 대표적요)
     for element_id, value, label in (("REQ_AMT", str(p.amount or ""), "청구액"), ("PAY_PLAN_YM", job.pay_ym, "지급예정년월"),
@@ -640,14 +661,15 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
 
 
 def _use_document_account(frame, job: Job, index: int, s: dict, log, ask: Ask, wait,
-                          result: PersonResult) -> tuple[bool, str]:
+                          result: PersonResult) -> tuple[bool, str, bool]:
     """명단 계좌와 ERP 가 채운 계좌(인적정보에 등록된 것)가 다를 때 — 첨부서류의 계좌를 넣는다(담당자 결정 2026-10-14).
 
     실제 시험(17:54)에서 한 학생의 ERP 계좌가 명단과 은행부터 달랐다. 담당자: "이럴 때는 첨부서류에 있는 계좌정보를 입력".
     - 그 학생의 개별증빙 PDF 에서 계좌를 찾는다. 명단 계좌가 있으면(또는 PDF 를 못 읽으면) 명단의 은행 · 계좌를 ERP 칸에 넣는다.
       명단은 담당자가 첨부서류를 보고 옮긴 것이다. 못 읽었으면 '신청 전 확인할 것' 에 남긴다.
     - PDF 에 ERP 계좌만 있고 명단 계좌가 없으면 첨부서류는 ERP 와 같은 것 — 명단이 틀렸다. 바꾸지 않는다.
-    - 계좌를 바꾸면 [예금주조회] 를 새로 해야 한다. 그 단추는 사람이 누른다(14절 '절대 누르지 않을 것') — 노란 띠로 묻는다."""
+    - 계좌를 바꾸면 [예금주조회] 를 새로 해야 한다 — 돌려주는 셋째 값(바꿨는지)을 보고 부르는 쪽이 누른다(_press_owner_check).
+    돌려주는 것: (계속해도 되는지, 멈춘 이유, 계좌를 바꿨는지)."""
     p = job.people[index]
     erp_acct, erp_digits = s["ACCT_NO"], _digits(s["ACCT_NO"])
     found, read = accounts_in_files(job.person_files.get(index, []))
@@ -657,12 +679,12 @@ def _use_document_account(frame, job: Job, index: int, s: dict, log, ask: Ask, w
         "ERP 와 같은 것만 찾음" if erp_digits in found else "를 찾지 못함"))
     if erp_digits in found and p.account_digits not in found:
         result.lines.append(f"! 명단 계좌({p.account})가 첨부서류와 다름 — 첨부서류 · ERP 계좌({erp_acct}) 그대로 둠(명단 엑셀을 확인하세요)")
-        return True, ""
+        return True, "", False
     from_document = p.account_digits in found
     if not p.bank:
         ok = ask("%d. %s — ERP 계좌(%s)가 첨부서류 계좌(%s)와 다른데 명단에 은행이 없어 바꾸지 못했습니다. ERP 에서 은행 · 계좌를 고치고 "
                  "[예금주조회] 로 '성공' 을 확인한 뒤 [계속], 아니면 [멈추기]." % (index + 1, p.name, erp_acct, p.account))
-        return (True, "") if ok else (False, "계좌를 바꾸지 못함 — 멈춤")
+        return (True, "", False) if ok else (False, "계좌를 바꾸지 못함 — 멈춤", False)
     r_bank = _set(frame, "select", "BNK_CD", p.bank)
     r_acct = _set(frame, "text", "ACCT_NO", p.account_digits)
     wait(0.5)
@@ -671,17 +693,53 @@ def _use_document_account(frame, job: Job, index: int, s: dict, log, ask: Ask, w
         why = r_bank.get("why") or r_acct.get("why") or f"넣은 뒤 계좌 칸이 {now or '비어 있음'}"
         ok = ask("%d. %s — 계좌를 첨부서류의 %s %s 로 바꾸지 못했습니다(%s). ERP 에서 직접 고치고 [예금주조회] 로 '성공' 을 확인한 뒤 [계속], 아니면 [멈추기]."
                  % (index + 1, p.name, p.bank, p.account, why))
-        return (True, "") if ok else (False, "계좌를 바꾸지 못함 — 멈춤")
+        return (True, "", False) if ok else (False, "계좌를 바꾸지 못함 — 멈춤", False)
     note = "첨부서류" if from_document else "명단 엑셀(첨부서류에서 계좌를 읽지 못함)"
     result.lines.append(f"✓ 계좌를 {note}의 {r_bank.get('now') or p.bank} {p.account} 로 바꿈 (ERP 에 있던 계좌 {erp_acct})")
     log("계좌를 %s의 %s %s 로 바꿈 (ERP 에 있던 계좌 %s)" % (note, p.bank, p.account, erp_acct))
     if not from_document:
         result.review.append(f"첨부서류에서 계좌를 읽지 못해 명단 엑셀의 계좌({p.bank} {p.account})로 넣음 — 첨부서류와 같은지 확인한 뒤 [신청]")
-    # 바꾼 계좌는 예금주조회가 새로 필요하다. 남아 있는 '성공' 은 바꾸기 전 계좌의 것일 수 있어 결과 칸만 보고 넘어가지 않는다.
-    if not ask("%d. %s — 계좌를 %s의 %s %s 로 바꿔 넣었습니다(ERP 에 있던 계좌 %s). ERP 에서 [예금주조회] 를 눌러 '성공' 이 나오면 [계속], 아니면 [멈추기]."
-               % (index + 1, p.name, note, p.bank, p.account, erp_acct)):
-        return False, "계좌를 바꾼 뒤 예금주조회를 확인하지 못함 — 멈춤"
-    return True, ""
+    return True, "", True          # 바꾼 계좌는 예금주조회가 새로 필요하다 — 부르는 쪽이 [예금주조회] 를 누른다
+
+
+def _owner_result_ok(value: str, name: str) -> tuple[bool, str]:
+    """예금주조회 결과 칸이 '성공:학생이름' 인지. 이름이 다르면(다른 사람 계좌) 통과시키지 않는다."""
+    v = (value or "").strip()
+    if not v.startswith("성공"):
+        return False, f"결과 '{v or '비어 있음'}'"
+    who = v.split(":", 1)[1].strip() if ":" in v else ""
+    if who and re.sub(r"\s+", "", who) != re.sub(r"\s+", "", name):
+        return False, f"결과의 예금주 '{who}' 가 {name} 이(가) 아님"
+    return True, v
+
+
+def _press_owner_check(frame, p, log, wait, messages: list[str], why: str) -> tuple[bool, str]:
+    """[예금주조회] 를 앱이 누르고 **새** 결과를 본다(담당자 결정 2026-10-14). '성공:학생이름' 이면 (True, 결과), 아니면 (False, 이유).
+
+    결과 칸이 그대로이고 ERP 알림도 없으면 조회가 됐는지 알 수 없다 — 남은 '성공' 이 바꾸기 전 계좌의 것일 수 있어 통과시키지 않는다."""
+    try:
+        visible = frame.evaluate(VISIBLE_ID_JS, OWNER_CHECK_ID)
+    except Exception:  # noqa: BLE001
+        visible = False
+    if not visible:
+        return False, "화면에 [예금주조회] 단추가 보이지 않음"
+    ids = ["OWNR_INQ_RSLT", "OWNR_INQ_RSLT_CD"]
+    before, seen = _state(frame, ids), len(messages)
+    clicked = frame.evaluate(CLICK_ID_JS, OWNER_CHECK_ID)
+    if not clicked.get("ok"):
+        return False, "[예금주조회] 를 누르지 못함: " + str(clicked.get("why", ""))
+    log("[예금주조회] 누름 (%s)" % why)
+    now = before
+    for _ in range(30):                         # ~7.5초 — 펌뱅킹 조회라 몇 초 걸릴 수 있다
+        wait(0.25)
+        now = _state(frame, ids)
+        if (now != before or len(messages) > seen) and now["OWNR_INQ_RSLT"]:
+            break
+    alerts = messages[seen:]
+    log("예금주조회 결과: %s%s" % (now["OWNR_INQ_RSLT"] or "비어 있음", (" · 알림: " + " / ".join(alerts)) if alerts else ""))
+    if now == before and not alerts:
+        return False, f"눌렀지만 결과가 바뀌지 않음(지금 '{now['OWNR_INQ_RSLT'] or '비어 있음'}')"
+    return _owner_result_ok(now["OWNR_INQ_RSLT"], p.name)
 
 
 def _summary(frame) -> dict:

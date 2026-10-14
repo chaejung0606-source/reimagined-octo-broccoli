@@ -238,8 +238,8 @@ def test_attachable_skips_archives_and_temp_files(tmp_path):
 class FakeForm:
     """인건비 탭 작성 화면 — 탭 클릭 · select/text · 저장(청구내역 한 줄 + REQ_CNT)을 흉내."""
 
-    def __init__(self, owner_result="성공:이름", save_works=True, deduction=0, account=None,
-                 reset_income=False, lock_income=False):
+    def __init__(self, owner_result="성공:{name}", save_works=True, deduction=0, account=None,
+                 reset_income=False, lock_income=False, owner_check="성공:{name}", clear_owner_on_account=False):
         self.v = {"TAB_GB": "10", "APPR_DIV_CD": "", "REQ_CNT": "", "REQ_SEQ_NO": "TMP_REQ_1", "MOD_YN": "N",
                   "OWNR_INQ_RSLT": "", "ACCT_NO": "", "RCV_CD": "", "RCV_NM": "", "fileList": 0}
         self.text = {}
@@ -252,11 +252,13 @@ class FakeForm:
         self.account = account
         self.reset_income = reset_income      # 소득자를 고르면 ERP 가 소득구분을 기타소득으로 되돌린다(담당자 첫 시험에서 본 것)
         self.lock_income = lock_income        # 소득구분을 바꿔도 그대로 — 사람이 고쳐야 하는 경우
+        self.owner_check = owner_check        # [예금주조회] 를 누르면 나오는 결과. None 이면 아무 일도 안 일어난다
+        self.clear_owner_on_account = clear_owner_on_account     # 계좌를 고치면 예금주조회 결과가 지워지는 ERP(미실측 — 두 경우 다 본다)
 
     def pick_person(self, name, no):
         # ERP 가 소득자를 고르면 채우는 계좌 — 기본은 명단(make_ga)과 같은 계좌
         acct = self.account or {"202600001": "12345678901", "202600002": "100000000001"}.get(no, "")
-        self.v.update(RCV_CD=no, RCV_NM=name, ACCT_NO=acct, OWNR_INQ_RSLT=self.owner_result)
+        self.v.update(RCV_CD=no, RCV_NM=name, ACCT_NO=acct, OWNR_INQ_RSLT=self.owner_result.format(name=name))
         if self.reset_income:
             self.v["INCM_DIV_CD"] = self.text["INCM_DIV_CD"] = "기타소득"
 
@@ -267,7 +269,11 @@ class FakeForm:
             self.clicks.append(arg)
             if arg == scholarship.TAB_ID:
                 self.v["TAB_GB"] = "20"
+            if arg == scholarship.OWNER_CHECK_ID and self.owner_check is not None:
+                self.v["OWNR_INQ_RSLT"] = self.owner_check.format(name=self.v["RCV_NM"])
             return {"ok": True}
+        if js is scholarship.VISIBLE_ID_JS:
+            return True
         if js is form.STATE_JS:
             out = {}
             for i in arg:
@@ -286,6 +292,8 @@ class FakeForm:
             return {"ok": True, "now": wanted}
         if js is form.SET_TEXT_JS:
             element_id, value = arg
+            if element_id == "ACCT_NO" and self.clear_owner_on_account:
+                self.v["OWNR_INQ_RSLT"] = ""
             self.v[element_id] = value
             return {"ok": True, "now": value}
         if js is form.CLICK_SAVE_JS:
@@ -384,8 +392,28 @@ def test_income_kind_that_will_not_change_is_saved_and_listed_for_review(monkeyp
     assert any("신청 전 확인" in line for line in logs)
 
 
+def test_owner_check_is_pressed_by_the_app_when_result_is_empty(monkeypatch, job):
+    """담당자 결정(2026-10-14): 예금주조회는 앱이 누른다 — '성공:학생이름' 이 나오면 묻지 않고 이어 간다."""
+    frame = FakeForm(owner_result="")
+    _patch_popups(monkeypatch, frame)
+    asked = []
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or False,
+                             wait=lambda s: None, dry_run=False)
+    assert report.saved == 2 and asked == [] and frame.clicks.count(scholarship.OWNER_CHECK_ID) == 2
+    assert any("앱이 누름" in line for line in report.results[0].lines)
+
+
+def test_owner_check_for_someone_else_goes_to_a_person(monkeypatch, job):
+    frame = FakeForm(owner_result="", owner_check="성공:다른사람")   # 계좌 주인이 학생이 아니다
+    _patch_popups(monkeypatch, frame)
+    asked = []
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or False,
+                             wait=lambda s: None, dry_run=False)
+    assert report.saved == 0 and report.stopped and "다른사람" in asked[0]
+
+
 def test_run_stops_and_asks_when_unsure(monkeypatch, job):
-    frame = FakeForm(owner_result="")                           # 예금주조회 결과가 비어 있다
+    frame = FakeForm(owner_result="", owner_check=None)          # 예금주조회 결과가 비어 있고 눌러도 안 나온다
     _patch_popups(monkeypatch, frame)
     asked = []
     report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or False,
@@ -452,19 +480,29 @@ def _mismatch_job(tmp_path, pdf_lines=None):
     return scholarship.load_job(str(folder))
 
 
-def test_account_mismatch_puts_the_document_account_then_asks_for_owner_check(monkeypatch, tmp_path):
-    """담당자 결정(2026-10-14): ERP 계좌가 다르면 첨부서류의 계좌를 넣는다 — [예금주조회] 는 사람이 누르고 [계속]."""
+def test_account_mismatch_puts_the_document_account_then_presses_owner_check(monkeypatch, tmp_path):
+    """담당자 결정(2026-10-14): ERP 계좌가 다르면 첨부서류의 계좌를 넣고, 앱이 [예금주조회] 를 눌러 '성공' 이면 이어 간다."""
     job = _mismatch_job(tmp_path, ["Account 110-594-395796"])
-    frame = FakeForm(account="30120104410673")
+    frame = FakeForm(account="30120104410673", clear_owner_on_account=True)
     _patch_popups(monkeypatch, frame)
     asked = []
     report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or True,
                              wait=lambda s: None, dry_run=False)
     assert report.saved == 1 and frame.saved[0]["ACCT_NO"] == "110594395796" and frame.saved[0]["BNK_CD"] == "신한"
-    assert len(asked) == 1 and "예금주조회" in asked[0] and "30120104410673" in asked[0]
+    assert asked == [] and scholarship.OWNER_CHECK_ID in frame.clicks
     assert report.review_items() == []                                              # 첨부서류로 확인된 계좌
     assert any("첨부서류의" in line and "바꿈" in line for line in report.results[0].lines)
-    assert "btn_ownrInq" not in str(frame.clicks)                                   # 예금주조회는 누르지 않는다
+
+
+def test_owner_check_that_cannot_be_told_fresh_goes_to_a_person(monkeypatch, tmp_path):
+    """계좌를 바꿨는데 [예금주조회] 뒤 결과 글이 그대로이고 알림도 없으면 — 남은 '성공' 이 옛 계좌 것일 수 있어 사람에게."""
+    job = _mismatch_job(tmp_path, ["Account 110-594-395796"])
+    frame = FakeForm(account="30120104410673")                     # 결과 칸이 '성공:가나다' 그대로 남는 ERP
+    _patch_popups(monkeypatch, frame)
+    asked = []
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or True,
+                             wait=lambda s: None, dry_run=False)
+    assert report.saved == 1 and len(asked) == 1 and "바뀌지 않음" in asked[0]
 
 
 def test_account_mismatch_without_readable_document_uses_roster_and_lists_it(monkeypatch, tmp_path):

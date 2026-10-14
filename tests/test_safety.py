@@ -120,13 +120,17 @@ def test_taxbill_popup_presses_only_select_inquiry_pick_and_confirm():
 def test_scholarship_presses_only_tab_save_person_and_attach_buttons():
     """장학금 청구(claims/scholarship.py · person.py · attach.py) — 담당자 결정 2026-10-14: 학생마다 [저장](임시저장)까지, [신청] 은 사람.
 
-    scholarship.py 가 직접 누르는 것은 인건비 탭(#20) 하나. 소득자 팝업은 돋보기 · 구분 라디오 · [검색] · 고른 행 · [확인](인적정보 3 · 참여인력 4),
+    scholarship.py 가 직접 누르는 것은 인건비 탭(#20) 과 [예금주조회](btn_ownrInq — 담당자 결정 2026-10-14: 앱이 누르고 '성공' 이 아니면
+    사람에게. 돈이 나가지 않는 조회다). '일괄예금주조회' 는 누르지 않는다. 소득자 팝업은 돋보기 · 구분 라디오 · [검색] · 고른 행 · [확인](인적정보 3 · 참여인력 4),
     첨부 팝업은 '첨부' 링크 · [업로드] 뿐 — '외부인 등록' · 파일 '삭제'(btn_del) · 전체 체크는 누르지 않는다.
     """
     claims = SRC / "claims"
     sch = (claims / "scholarship.py").read_text(encoding="utf-8")
     assert ".click(" not in sch
-    assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", sch)) == {"TAB_ID"} and 'TAB_ID = "20"' in sch
+    assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", sch)) == {"TAB_ID", "OWNER_CHECK_ID"} and 'TAB_ID = "20"' in sch
+    assert 'OWNER_CHECK_ID = "btn_ownrInq"' in sch and all("일괄" not in line for line in _click_lines(sch))
+    press = sch.split("def _press_owner_check(", 1)[1]
+    assert press.index("VISIBLE_ID_JS") < press.index("CLICK_ID_JS, OWNER_CHECK_ID")      # 보이는 단추가 있을 때만
     assert "PSNL_EXPN_DIV_CD" not in sch.split('"""', 2)[2]          # 인건비구분 라디오는 건드리지 않는다(설명 글 밖에서)
 
     per = (claims / "person.py").read_text(encoding="utf-8")
