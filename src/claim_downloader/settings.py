@@ -28,6 +28,10 @@ APP_DIR_NAME = ".claim-downloader"
 # 윈도우 작업 표시줄이 창과 바로가기를 한 단추로 묶는 이름. 앱(ui/app.py)과 바로가기(tools/create_shortcut.py)가
 # 같은 값을 써야 고정한 바로가기와 실행 중인 창이 하나로 보인다. 바꾸면 담당자가 다시 고정해야 한다.
 APP_USER_MODEL_ID = "Kangwon.COSS.WorkDesk"
+# 바로가기(바탕화면 · 시작 메뉴 · 작업 표시줄 고정)가 가리키는 아이콘 파일. 윈도우는 아이콘 그림을 **파일 경로로** 저장해 두고
+# 파일 내용이 바뀌어도 다시 읽지 않는다 — 2026-10-14 아이콘을 바꾼 뒤 바탕화면 바로가기는 새 그림인데 작업 표시줄에 고정하면
+# 옛 그림이 떴다. 그래서 디자인을 바꿀 때마다 이 이름을 바꾼다(tools/make_icon.py 가 icon.ico 와 같은 그림으로 이 파일도 만든다).
+SHORTCUT_ICON = "icon-20261014.ico"
 ERP_URL = "https://knu-icf.kangwon.ac.kr/rderp_layoutMain.act"
 
 

@@ -288,7 +288,7 @@ class MainWindow(QMainWindow):
     def _running_work(self) -> tuple[list, list[str]]:
         """별도 스레드에서 도는 화면들과, 그중 지금 작업 중인 것의 이름."""
         workers = [(tid, self._pages[tid]) for tid in RUNNING_WORDS if tid in self._pages]
-        running = [RUNNING_WORDS[tid] for _tid, page in workers if page.is_running()]
+        running = [RUNNING_WORDS[tid] for tid, page in workers if page.is_running()]
         return workers, running
 
     def _confirm_leave(self, running: list[str], what: str) -> bool:

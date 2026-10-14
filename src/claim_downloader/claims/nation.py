@@ -45,6 +45,15 @@ def same_country(a: str, b: str) -> bool:
     return bool(x and y) and (x in y or y in x)
 
 
+def same_nation(roster: str, code: str, name: str) -> bool:
+    """명단 국적이 작성 화면의 국적과 같은지. 명단에 'UZ' 처럼 두세 글자 코드를 적었으면 코드끼리 본다(실제 시험 2026-10-14 19:3x —
+    명단 'UZ' 와 ERP '우즈베키스탄' 을 이름으로만 맞춰 '다름' 으로 잘못 남겼다)."""
+    r = str(roster or "").strip()
+    if re.fullmatch(r"[A-Za-z]{2,3}", r):
+        return r.upper() == str(code or "").strip().upper()
+    return same_country(r, name)
+
+
 @dataclass
 class NationReport:
     ok: bool                       # 팝업을 열고 검색까지 했는지

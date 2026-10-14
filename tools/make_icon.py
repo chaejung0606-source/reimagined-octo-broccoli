@@ -17,14 +17,22 @@ assets/icon-source.png 가 있으면 그것을 원본으로 쓴다. 지금 원�
 
 생성 파일:
     src/claim_downloader/ui/assets/icon.png             (256px)
-    src/claim_downloader/ui/assets/icon.ico             (16~256px, 바로가기·작업 표시줄)
+    src/claim_downloader/ui/assets/icon.ico             (16~256px, 창 아이콘 · 옛 바로가기)
+    src/claim_downloader/ui/assets/<settings.SHORTCUT_ICON> (icon.ico 와 같은 그림 — 바로가기 · 작업 표시줄 고정용)
+
+디자인을 바꾸면 settings.SHORTCUT_ICON 의 이름부터 바꾼다 — 윈도우가 아이콘을 파일 경로로 저장해 두어서, 같은 이름이면
+작업 표시줄에 고정할 때 옛 그림이 뜬다(2026-10-14). 옛 이름의 파일은 지운다(옛 바로가기는 icon.ico 를 본다).
     src/claim_downloader/ui/assets/icons/icon-<크기>.png (창 아이콘 · 상단 바 로고, 크기별)
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from claim_downloader.settings import SHORTCUT_ICON  # noqa: E402
 
 ASSETS = Path(__file__).resolve().parents[1] / "src" / "claim_downloader" / "ui" / "assets"
 SOURCE = ASSETS / "icon-source.png"      # 원본 PNG 가 있으면 이것을 쓴다
@@ -184,12 +192,16 @@ def main() -> None:
     frames = {s: draw_icon(s) for s in SIZES}
     frames[256].save(ASSETS / "icon.png")
     # ICO 는 크기마다 따로 그린 그림을 담는다. 큰 그림 하나를 줄이게 두면 16px 가 뭉개진다.
-    frames[256].save(ASSETS / "icon.ico", format="ICO", sizes=[(s, s) for s in SIZES],
-                     append_images=[frames[s] for s in SIZES if s != 256])
+    for name in ("icon.ico", SHORTCUT_ICON):
+        frames[256].save(ASSETS / name, format="ICO", sizes=[(s, s) for s in SIZES],
+                         append_images=[frames[s] for s in SIZES if s != 256])
+    for old in ASSETS.glob("icon-*.ico"):          # 옛 디자인의 바로가기용 파일
+        if old.name != SHORTCUT_ICON:
+            old.unlink()
     (ASSETS / "icons").mkdir(exist_ok=True)
     for s in SIZES:
         frames[s].save(ASSETS / "icons" / f"icon-{s}.png")
-    print("만들었습니다:", ASSETS / "icon.png", ASSETS / "icon.ico")
+    print("만들었습니다:", ASSETS / "icon.png", ASSETS / "icon.ico", ASSETS / SHORTCUT_ICON)
 
 
 if __name__ == "__main__":

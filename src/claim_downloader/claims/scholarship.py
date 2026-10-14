@@ -690,10 +690,24 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
             return False, why
         result.lines.append("✓ 국적 " + why)
 
-    # 4. 계좌 대조 · 예금주조회 결과
+    # 4. 계좌 대조 · 예금주조회 결과 — 소득자를 고르면 ERP 가 인적정보에 등록된 은행 · 계좌를 채운다. 늦게 채워질 수 있어 잠깐 기다린다.
+    #    ERP 계좌가 비었거나 명단과 다르면 지급내역(명단) · 개별증빙의 계좌를 넣는다(담당자 2026-10-14 — 실제 시험 19:47 에서
+    #    인적정보에 계좌가 없는 학생이 있었고, 앱이 빈 계좌로 [예금주조회] 를 눌러 '은행/계좌번호는 필수' 알림으로 멈췄다).
+    #    은행이 '해당없음' 이어도 예금주조회가 같은 알림을 내므로 은행도 본다. 담당자는 "계좌 정상" 이라 했다 — ERP 가 늦게 채웠을 수도 있어
+    #    기다리는 시간(~3초)을 두고, 그래도 비었으면 명단 값을 넣는다. 무엇을 보고 정했는지 로그에 남긴다.
+    #    ERP 가 이미 '성공:학생이름' 을 채웠으면 은행 · 계좌가 확인된 것이니 은행 칸 글자는 따지지 않는다.
+    def account_shown() -> bool:
+        now = _state(frame, ["ACCT_NO", "OWNR_INQ_RSLT"])
+        return bool(_digits(now["ACCT_NO"])) and bool(_bank_shown(frame) or _owner_result_ok(now["OWNR_INQ_RSLT"], p.name)[0])
+
+    wait_until(account_shown, wait, tries=12)
     s = _state(frame, ["ACCT_NO", "BNK_CD", "OWNR", "OWNR_INQ_RSLT"])
+    s["BANK"] = _bank_shown(frame)
+    s["BANK_OK"] = bool(s["BANK"]) or _owner_result_ok(s["OWNR_INQ_RSLT"], p.name)[0]
+    log("소득자를 고른 뒤 ERP 계좌: 은행 %s · 계좌 %s · 예금주 %s · 예금주조회 %s" % (
+        s["BANK"] or "(비어 있음)", s["ACCT_NO"] or "(비어 있음)", s["OWNR"] or "(비어 있음)", s["OWNR_INQ_RSLT"] or "(비어 있음)"))
     changed_account = False
-    if p.account_digits and _digits(s["ACCT_NO"]) and p.account_digits != _digits(s["ACCT_NO"]):
+    if not _digits(s["ACCT_NO"]) or not s["BANK_OK"] or (p.account_digits and p.account_digits != _digits(s["ACCT_NO"])):
         ok, why, changed_account = _use_document_account(frame, job, index, s, log, ask, wait, result)
         if not ok:
             return False, why
@@ -724,6 +738,7 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
                 return False, "예금주조회 '성공' 을 확인하지 못함 — 멈춤"
             result.lines.append("✓ 예금주조회(사람이 확인) " + why)
 
+    _fill_owner_name(frame, p, log, result)
     owner = latin_name(_state(frame, ["OWNR_INQ_RSLT"])["OWNR_INQ_RSLT"].split(":", 1)[-1])
     if owner:
         item = f"예금주가 영문 이름({owner})이라 {p.name} 과(와) 같은 사람인지 앱이 맞춰 보지 못함 — 신분증·통장과 같은지 확인한 뒤 [신청]"
@@ -825,44 +840,79 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
 
 def _use_document_account(frame, job: Job, index: int, s: dict, log, ask: Ask, wait,
                           result: PersonResult) -> tuple[bool, str, bool]:
-    """명단 계좌와 ERP 가 채운 계좌(인적정보에 등록된 것)가 다를 때 — 첨부서류의 계좌를 넣는다(담당자 결정 2026-10-14).
+    """ERP 가 채운 계좌(인적정보에 등록된 것)가 비었거나 명단 계좌와 다를 때 — 지급내역(명단) · 개별증빙의 계좌를 넣는다
+    (담당자 결정 2026-10-14: "계좌정보가 불일치하거나 없을 경우 지급내역이나 개별증빙에 있는 정보 참고해서 입력").
 
-    실제 시험(17:54)에서 한 학생의 ERP 계좌가 명단과 은행부터 달랐다. 담당자: "이럴 때는 첨부서류에 있는 계좌정보를 입력".
     - 그 학생의 개별증빙 PDF 에서 계좌를 찾는다. 명단 계좌가 있으면(또는 PDF 를 못 읽으면) 명단의 은행 · 계좌를 ERP 칸에 넣는다.
-      명단은 담당자가 첨부서류를 보고 옮긴 것이다. 못 읽었으면 '신청 전 확인할 것' 에 남긴다.
-    - PDF 에 ERP 계좌만 있고 명단 계좌가 없으면 첨부서류는 ERP 와 같은 것 — 명단이 틀렸다. 바꾸지 않는다.
-    - 계좌를 바꾸면 [예금주조회] 를 새로 해야 한다 — 돌려주는 셋째 값(바꿨는지)을 보고 부르는 쪽이 누른다(_press_owner_check).
-    돌려주는 것: (계속해도 되는지, 멈춘 이유, 계좌를 바꿨는지)."""
+      명단은 담당자가 첨부서류를 보고 옮긴 것이다. 명단 계좌를 첨부서류에서 확인하지 못했으면 '신청 전 확인할 것' 에 남긴다
+      — ERP 계좌가 비어 있던 경우는 PDF 를 읽었는데도 명단 계좌가 없을 때만(스캔 PDF 라 못 읽은 것까지 매번 묻지 않는다).
+    - ERP 계좌가 있고, PDF 에 ERP 계좌만 있고 명단 계좌가 없으면 첨부서류는 ERP 와 같은 것 — 명단이 틀렸다. 바꾸지 않는다.
+    - 명단에 은행이나 계좌가 없으면 사람에게 — 개별증빙에서 계좌 같은 숫자를 찾았으면 띠에 함께 보인다.
+    - 계좌를 넣으면 [예금주조회] 를 새로 해야 한다 — 돌려주는 셋째 값(넣었는지)을 보고 부르는 쪽이 누른다(_press_owner_check).
+    돌려주는 것: (계속해도 되는지, 멈춘 이유, 계좌를 넣었는지)."""
     p = job.people[index]
     erp_acct, erp_digits = s["ACCT_NO"], _digits(s["ACCT_NO"])
+    empty = not erp_digits
+    no_bank = bool(erp_digits) and not s.get("BANK_OK", True) and (not p.account_digits or p.account_digits == erp_digits)
     found, read = accounts_in_files(job.person_files.get(index, []))
-    log("계좌 불일치: 명단 %s %s / ERP %s — 개별증빙 PDF %d개에서 %s" % (
-        p.bank or "", p.account, erp_acct, read,
-        "명단과 같은 계좌를 찾음" if p.account_digits in found else
-        "ERP 와 같은 계좌만 찾음" if erp_digits in found else "계좌를 찾지 못함"))
-    if erp_digits in found and p.account_digits not in found:
+    log("%s: 명단 %s %s / ERP %s %s — 개별증빙 PDF %d개에서 %s" % (
+        "ERP 계좌 없음" if empty else "ERP 은행 없음" if no_bank else "계좌 불일치", p.bank or "", p.account or "(없음)",
+        s.get("BANK") or "(은행 없음)", erp_acct or "(비어 있음)", read,
+        "명단과 같은 계좌를 찾음" if p.account_digits and p.account_digits in found else
+        "ERP 와 같은 계좌만 찾음" if erp_digits and erp_digits in found else
+        "계좌 같은 숫자 %d개를 찾음" % len(found) if found else "계좌를 찾지 못함"))
+    if erp_digits and erp_digits in found and p.account_digits not in found:
         result.lines.append(f"! 명단 계좌({p.account})가 첨부서류와 다름 — 첨부서류 · ERP 계좌({erp_acct}) 그대로 둠(명단 엑셀을 확인하세요)")
         return True, "", False
+    erp_label = ("ERP 에 이 학생의 계좌가 없는데" if empty else "ERP 에 이 학생의 은행이 없는데" if no_bank else
+                 f"ERP 계좌({erp_acct})가 명단 계좌({p.account})와 다른데")
+    if not (p.bank and p.account_digits):
+        hint = (" 개별증빙에서 찾은 계좌 같은 숫자: " + ", ".join(sorted(found)[:4]) + ".") if found else ""
+        ok = ask("%d. %s — %s 명단에 %s 없어 넣지 못했습니다.%s 개별증빙을 보고 ERP 에 은행 · 계좌를 넣고 [예금주조회] 로 '성공' 을 "
+                 "확인한 뒤 [계속], 아니면 [멈추기]." % (index + 1, p.name, erp_label, "계좌가" if not p.account_digits else "은행이", hint))
+        return (True, "", False) if ok else (False, "계좌를 넣지 못함 — 멈춤", False)
     from_document = p.account_digits in found
-    if not p.bank:
-        ok = ask("%d. %s — ERP 계좌(%s)가 첨부서류 계좌(%s)와 다른데 명단에 은행이 없어 바꾸지 못했습니다. ERP 에서 은행 · 계좌를 고치고 "
-                 "[예금주조회] 로 '성공' 을 확인한 뒤 [계속], 아니면 [멈추기]." % (index + 1, p.name, erp_acct, p.account))
-        return (True, "", False) if ok else (False, "계좌를 바꾸지 못함 — 멈춤", False)
     r_bank = _set(frame, "select", "BNK_CD", p.bank)
     r_acct = _set(frame, "text", "ACCT_NO", p.account_digits)
     wait(0.5)
     now = _state(frame, ["ACCT_NO"])["ACCT_NO"]
     if not (r_bank.get("ok") and r_acct.get("ok")) or _digits(now) != p.account_digits:
         why = r_bank.get("why") or r_acct.get("why") or f"넣은 뒤 계좌 칸이 {now or '비어 있음'}"
-        ok = ask("%d. %s — 계좌를 첨부서류의 %s %s 로 바꾸지 못했습니다(%s). ERP 에서 직접 고치고 [예금주조회] 로 '성공' 을 확인한 뒤 [계속], 아니면 [멈추기]."
-                 % (index + 1, p.name, p.bank, p.account, why))
-        return (True, "", False) if ok else (False, "계좌를 바꾸지 못함 — 멈춤", False)
-    note = "첨부서류" if from_document else "명단 엑셀(첨부서류에서 계좌를 읽지 못함)"
-    result.lines.append(f"✓ 계좌를 {note}의 {r_bank.get('now') or p.bank} {p.account} 로 바꿈 (ERP 에 있던 계좌 {erp_acct})")
-    log("계좌를 %s의 %s %s 로 바꿈 (ERP 에 있던 계좌 %s)" % (note, p.bank, p.account, erp_acct))
-    if not from_document:
+        ok = ask("%d. %s — %s 명단의 %s %s 를 넣지 못했습니다(%s). ERP 에서 직접 넣고 [예금주조회] 로 '성공' 을 확인한 뒤 [계속], 아니면 [멈추기]."
+                 % (index + 1, p.name, erp_label, p.bank, p.account, why))
+        return (True, "", False) if ok else (False, "계좌를 넣지 못함 — 멈춤", False)
+    note = ("첨부서류" if from_document else "명단 엑셀" if empty and not read or no_bank else
+            "명단 엑셀(첨부서류에서 계좌를 읽지 못함)")
+    before = "ERP 계좌 칸이 비어 있었음" if empty else "ERP 은행 칸이 비어 있었음" if no_bank else f"ERP 에 있던 계좌 {erp_acct}"
+    result.lines.append(f"✓ 계좌를 {note}의 {r_bank.get('now') or p.bank} {p.account} 로 넣음 ({before})")
+    log("계좌를 %s의 %s %s 로 넣음 (%s)" % (note, p.bank, p.account, before))
+    if not from_document and not no_bank and (not empty or read):
         result.review.append(f"첨부서류에서 계좌를 읽지 못해 명단 엑셀의 계좌({p.bank} {p.account})로 넣음 — 첨부서류와 같은지 확인한 뒤 [신청]")
-    return True, "", True          # 바꾼 계좌는 예금주조회가 새로 필요하다 — 부르는 쪽이 [예금주조회] 를 누른다
+    return True, "", True          # 넣은 계좌는 예금주조회가 새로 필요하다 — 부르는 쪽이 [예금주조회] 를 누른다
+
+
+def _bank_shown(frame) -> str:
+    """작성 화면 은행 칸(#BNK_CD)에 고른 은행 이름 — '선택' · '해당없음' 이거나 비었으면 ''."""
+    info = read_state(frame, ["BNK_CD"]).get("BNK_CD") or {}
+    text = str(info.get("text", info.get("value", "")) or "").strip()
+    return "" if not str(info.get("value", "")).strip() or text in ("", "선택", "해당없음") else text
+
+
+def _fill_owner_name(frame, p, log, result: PersonResult) -> None:
+    """예금주 칸(#OWNR, 필수)이 비어 있으면 예금주조회가 돌려준 이름을 넣는다. 인적정보에 계좌가 없던 학생은 앱이 계좌를 넣었으니
+    예금주 칸도 비어 있을 수 있다 — 예금주조회가 그 칸을 채우는지는 미실측이라 비었을 때만, 은행이 확인해 준 이름으로 넣는다."""
+    s = _state(frame, ["OWNR", "OWNR_INQ_RSLT"])
+    if s["OWNR"].strip():
+        return
+    result_text = s["OWNR_INQ_RSLT"].strip()
+    holder = result_text.split(":", 1)[1].strip() if result_text.startswith("성공") and ":" in result_text else ""
+    name = holder or p.name
+    r = _set(frame, "text", "OWNR", name)
+    if r.get("ok"):
+        result.lines.append(f"✓ 예금주 칸이 비어 있어 {name} 을(를) 넣음")
+        log("예금주 칸이 비어 있어 '%s' 을(를) 넣음 (예금주조회 %s)" % (name, result_text or "결과 없음"))
+    else:
+        log("예금주 칸이 비어 있는데 넣지 못함: %s" % r.get("why", ""))
 
 
 def _ensure_nation(page, frame, ask: Ask, wait, index: int, p, foreign: str, when: str, result: PersonResult,
@@ -898,8 +948,9 @@ def _ensure_nation(page, frame, ask: Ask, wait, index: int, p, foreign: str, whe
     ok, why = _ask_until(nation_ok, ask, message, wait)
     if not ok:
         return False, "외국인 학생의 국적을 고르지 못함 — " + why
-    chosen = _state(frame, ["NATION_NM"])["NATION_NM"]
-    if p.foreign_nation and not same_country(p.foreign_nation, chosen):
+    now = _state(frame, ["NATION_CD", "NATION_NM"])
+    chosen = now["NATION_NM"]
+    if p.foreign_nation and not nation_mod.same_nation(p.foreign_nation, now["NATION_CD"], chosen):
         item = f"ERP 국적 '{chosen or why}' 가 명단 국적 '{p.nation}' 과 다름 — 같은 나라인지 확인한 뒤 [신청]"
         if item not in result.review:
             result.review.append(item)
@@ -934,7 +985,8 @@ def _press_owner_check(frame, p, log, wait, messages: list[str], why: str) -> tu
     clicked = frame.evaluate(CLICK_ID_JS, OWNER_CHECK_ID)
     if not clicked.get("ok"):
         return False, "[예금주조회] 를 누르지 못함: " + str(clicked.get("why", ""))
-    log("[예금주조회] 누름 (%s)" % why)
+    shown = _state(frame, ["ACCT_NO"])["ACCT_NO"]
+    log("[예금주조회] 누름 (%s · 은행 %s · 계좌 %s)" % (why, _bank_shown(frame) or "비어 있음", shown or "비어 있음"))
     now = before
     for _ in range(30):                         # ~7.5초 — 펌뱅킹 조회라 몇 초 걸릴 수 있다
         wait(0.25)

@@ -23,12 +23,20 @@ APP_NAME = "COSS 업무데스크"
 # 읽는다 — 여기 따로 적어 두면 둘이 어긋나는 순간 단추가 둘로 갈라진다(2026-10-13 담당자 보고).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from claim_downloader.settings import APP_USER_MODEL_ID as APP_ID  # noqa: E402
+from claim_downloader.settings import SHORTCUT_ICON  # noqa: E402
 # 이 저장소가 이전 이름이던 시절의 바로가기들. 남겨 두면 아이콘이 여럿이 돼
 # 어느 쪽을 눌러야 할지 헷갈린다. 새 바로가기를 만들 때 함께 치운다.
 OLD_APP_NAMES = ("지출 서류 검토", "ERP 청구서 다운로더", "업무 도구함")
 MODULE = "claim_downloader.ui.app"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ASSETS = REPO_ROOT / "src" / "claim_downloader" / "ui" / "assets"
+
+
+def icon_path() -> Path:
+    """바로가기가 가리킬 아이콘 — 디자인마다 이름이 다른 파일(settings.SHORTCUT_ICON). 윈도우가 아이콘을 경로로 저장해 두므로
+    같은 이름(icon.ico)을 가리키면 그림을 바꿔도 작업 표시줄에 고정한 단추는 옛 그림이 뜬다(2026-10-14 담당자 보고)."""
+    path = ASSETS / SHORTCUT_ICON
+    return path if path.exists() else ASSETS / "icon.ico"
 
 
 def _pythonw() -> Path:
@@ -205,7 +213,7 @@ def _write_link(link: Path) -> None:
         shortcut.set_target(_pythonw())
         shortcut.set_arguments(f"-m {MODULE}")
         shortcut.set_working_dir(REPO_ROOT)
-        shortcut.set_icon(ASSETS / "icon.ico")
+        shortcut.set_icon(icon_path())
         shortcut.set_description("청구서 받기 등 업무를 한곳에서 시작합니다")
         shortcut.set_app_id(APP_ID)
         shortcut.save(link)
@@ -214,10 +222,11 @@ def _write_link(link: Path) -> None:
 
 
 def _tag_link(link: Path) -> None:
-    """이미 있는 바로가기(고정된 복사본)에 작업 표시줄 이름을 적는다."""
+    """이미 있는 바로가기(고정된 복사본)에 작업 표시줄 이름과 새 아이콘을 적는다."""
     shortcut = _ShellLink()
     try:
         shortcut.load(link)
+        shortcut.set_icon(icon_path())
         shortcut.set_app_id(APP_ID)
         shortcut.save(link)
     finally:
@@ -303,7 +312,16 @@ def make_windows() -> Path:
         print("작업 표시줄 이름이 적히지 않은 바로가기:", "; ".join(wrong))
         raise SystemExit(2)
     print(f"작업 표시줄 이름 확인: {APP_ID} — " + ", ".join(p.name for p in links + pinned))
+    print("아이콘:", icon_path().name, "— 작업 표시줄 단추가 아직 옛 그림이면 고정을 풀고 바탕화면 바로가기를 다시 고정하세요")
     return links[0]
+
+
+def _refresh_icons() -> None:
+    """탐색기에 아이콘이 바뀌었다고 알린다(SHChangeNotify · SHCNE_ASSOCCHANGED). 실패해도 바로가기는 이미 만들어졌다."""
+    try:
+        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
+    except Exception as error:  # noqa: BLE001
+        print("아이콘 새로 고침 알림을 보내지 못했습니다:", error)
 
 
 def make_linux() -> Path:
@@ -328,7 +346,10 @@ def make_linux() -> Path:
 
 def main() -> None:
     if sys.platform.startswith("win"):
-        link = make_windows()
+        try:
+            link = make_windows()
+        finally:
+            _refresh_icons()
     elif sys.platform.startswith("linux"):
         link = make_linux()
     else:

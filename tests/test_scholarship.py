@@ -396,8 +396,10 @@ class FakeForm:
 
     def pick_person(self, name, no):
         # ERP 가 소득자를 고르면 채우는 계좌 — 기본은 명단(make_ga)과 같은 계좌
-        acct = self.account or {"202600001": "12345678901", "202600002": "100000000001"}.get(no, "")
-        self.v.update(RCV_CD=no, RCV_NM=name, ACCT_NO=acct, OWNR_INQ_RSLT=self.owner_result.format(name=name),
+        # account="" 는 인적정보에 계좌가 없는 학생 — ERP 가 계좌 · 예금주 칸을 비워 둔다(실제 시험 2026-10-14 19:47)
+        acct = self.account if self.account is not None else {"202600001": "12345678901", "202600002": "100000000001"}.get(no, "")
+        self.v.update(RCV_CD=no, RCV_NM=name, ACCT_NO=acct, OWNR=name if acct else "", BNK_CD="국민은행" if acct else "",
+                      OWNR_INQ_RSLT=self.owner_result.format(name=name),
                       VW_SSN="######-3******", NATION_CD="KR", NATION_NM="대한민국")
         if no in self.foreign:
             self.v.update(VW_SSN="######-7******", OWNR="SUNATULLAEV GO", OWNR_INQ_RSLT="성공:SUNATULLAEV GO")
@@ -411,7 +413,8 @@ class FakeForm:
             self.clicks.append(arg)
             if arg == scholarship.TAB_ID:
                 self.v["TAB_GB"] = "20"
-            if arg == scholarship.OWNER_CHECK_ID and self.owner_check is not None:
+            # 은행 · 계좌가 비어 있으면 ERP 는 '예금주조회시 은행/계좌번호는 필수입력입니다.' 알림만 띄우고 결과를 안 바꾼다
+            if arg == scholarship.OWNER_CHECK_ID and self.owner_check is not None and self.v.get("ACCT_NO"):
                 self.v["OWNR_INQ_RSLT"] = self.owner_check.format(name=self.v["RCV_NM"])
             return {"ok": True}
         if js is scholarship.VISIBLE_ID_JS:
@@ -829,7 +832,7 @@ def test_account_mismatch_puts_the_document_account_then_presses_owner_check(mon
     assert report.saved == 1 and frame.saved[0]["ACCT_NO"] == "110594395796" and frame.saved[0]["BNK_CD"] == "신한"
     assert asked == [] and scholarship.OWNER_CHECK_ID in frame.clicks
     assert report.review_items() == []                                              # 첨부서류로 확인된 계좌
-    assert any("첨부서류의" in line and "바꿈" in line for line in report.results[0].lines)
+    assert any("첨부서류의" in line and "넣음" in line and "ERP 에 있던 계좌" in line for line in report.results[0].lines)
 
 
 def test_owner_check_that_cannot_be_told_fresh_goes_to_a_person(monkeypatch, tmp_path):
@@ -861,6 +864,113 @@ def test_account_mismatch_keeps_erp_account_when_document_agrees_with_erp(monkey
                              wait=lambda s: None, dry_run=False)
     assert report.saved == 1 and frame.saved[0]["ACCT_NO"] == "30120104410673" and asked == []
     assert any("명단 엑셀을 확인" in line for line in report.results[0].lines)
+
+
+def test_missing_erp_account_is_filled_from_roster_then_owner_check(monkeypatch, tmp_path):
+    """실제 시험(2026-10-14 19:47): 인적정보에 계좌가 없는 학생 — 앱이 빈 계좌로 [예금주조회] 를 눌러 멈췄다.
+    담당자: 계좌가 없거나 다르면 지급내역(명단) · 개별증빙의 계좌를 넣는다. 넣은 뒤 [예금주조회] 를 눌러 '성공' 이면 이어 간다."""
+    job = _mismatch_job(tmp_path, pdf_lines=None)                  # 개별증빙 없음(스캔 PDF 와 같음)
+    frame = FakeForm(account="", owner_result="")
+    _patch_popups(monkeypatch, frame)
+    asked, logs = [], []
+    report = scholarship.run(object(), frame, job, logs.append, ask=lambda m: asked.append(m) or True,
+                             wait=lambda s: None, dry_run=False)
+    assert report.saved == 1 and asked == []
+    saved = frame.saved[0]
+    assert saved["ACCT_NO"] == "110594395796" and saved["BNK_CD"] == "신한" and saved["OWNR_INQ_RSLT"] == "성공:가나다"
+    assert saved["OWNR"] == "가나다"                                 # 비어 있던 예금주 칸은 예금주조회가 돌려준 이름으로
+    assert frame.clicks.index(scholarship.OWNER_CHECK_ID) >= 0
+    assert report.review_items() == []                              # 읽을 첨부서류가 없으면 매번 묻지 않는다
+    assert any("ERP 계좌 없음" in line for line in logs)
+    assert any("ERP 계좌 칸이 비어 있었음" in line for line in report.results[0].lines)
+
+
+def test_missing_erp_account_with_document_disagreeing_is_listed(monkeypatch, tmp_path):
+    job = _mismatch_job(tmp_path, ["Account 333-3333-3333"])        # 첨부서류에 다른 계좌
+    frame = FakeForm(account="", owner_result="")
+    _patch_popups(monkeypatch, frame)
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: True, wait=lambda s: None, dry_run=False)
+    assert report.saved == 1 and frame.saved[0]["ACCT_NO"] == "110594395796"
+    assert any("첨부서류에서 계좌를 읽지 못해" in item for item in report.review_items())
+
+
+def test_missing_erp_account_without_roster_account_goes_to_a_person(monkeypatch, tmp_path):
+    folder = tmp_path / "건"
+    folder.mkdir()
+    make_ga(folder / "명단.xlsx", rows=[("가나다", 202600001, "신한", "", 12000, "25", 300000)])
+    (folder / "개별증빙").mkdir()
+    _text_pdf(folder / "개별증빙" / "가나다 통장.pdf", "Account 110-594-395796")
+    job = scholarship.load_job(str(folder))
+    frame = FakeForm(account="", owner_result="")
+    _patch_popups(monkeypatch, frame)
+    asked = []
+
+    def ask(message):
+        asked.append(message)
+        frame.v.update(BNK_CD="신한", ACCT_NO="110594395796", OWNR_INQ_RSLT="성공:가나다")    # 사람이 넣고 조회함
+        return True
+
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=ask, wait=lambda s: None, dry_run=False)
+    assert report.saved == 1 and len(asked) == 1
+    assert "계좌가 없는데" in asked[0] and "명단에 계좌가" in asked[0] and "110594395796" in asked[0]
+
+
+def test_missing_erp_bank_is_filled_from_roster(monkeypatch, tmp_path):
+    """계좌는 있는데 은행이 '해당없음' 이어도 예금주조회는 '은행/계좌번호는 필수' 를 낸다 — 명단의 은행을 넣고 조회한다."""
+    job = _mismatch_job(tmp_path, pdf_lines=None)
+
+    class NoBank(FakeForm):
+        def pick_person(self, name, no):
+            super().pick_person(name, no)
+            self.v["BNK_CD"] = ""
+
+    frame = NoBank(account="110594395796", owner_result="")
+    _patch_popups(monkeypatch, frame)
+    logs = []
+    report = scholarship.run(object(), frame, job, logs.append, ask=lambda m: True, wait=lambda s: None, dry_run=False)
+    assert report.saved == 1 and frame.saved[0]["BNK_CD"] == "신한" and frame.saved[0]["OWNR_INQ_RSLT"] == "성공:가나다"
+    assert report.review_items() == []
+    assert any("ERP 은행 없음" in line for line in logs)
+    assert any(line.startswith("소득자를 고른 뒤 ERP 계좌: 은행 (비어 있음) · 계좌 110594395796") for line in logs)
+
+
+def test_erp_account_filled_late_is_waited_for(monkeypatch, tmp_path):
+    """소득자를 고른 뒤 ERP 가 계좌를 조금 늦게 채우면 — 비었다고 보고 덮어쓰지 않고 기다린다."""
+    job = _mismatch_job(tmp_path, pdf_lines=None)
+
+    class Late(FakeForm):
+        reads = 0
+
+        def pick_person(self, name, no):
+            super().pick_person(name, no)
+            self.v["ACCT_NO"] = ""
+            self.reads = 0
+
+        def evaluate(self, js, arg=None):
+            if js is form.STATE_JS and "ACCT_NO" in arg and self.v.get("RCV_CD") and not self.v["ACCT_NO"]:
+                self.reads += 1
+                if self.reads == 3:
+                    self.v["ACCT_NO"] = "110-594-395796"
+            return super().evaluate(js, arg)
+
+    frame = Late()
+    _patch_popups(monkeypatch, frame)
+    logs = []
+    report = scholarship.run(object(), frame, job, logs.append, ask=lambda m: True, wait=lambda s: None, dry_run=False)
+    assert report.saved == 1 and not any("ERP 계좌 없음" in line for line in logs)
+    assert scholarship.OWNER_CHECK_ID not in frame.clicks
+
+
+def test_nation_written_as_code_is_compared_by_code(monkeypatch, tmp_path):
+    """실제 시험(2026-10-14): 명단 국적 'UZ' 와 ERP '우즈베키스탄(UZ)' 를 이름으로만 맞춰 '다름' 이라고 잘못 남겼다."""
+    assert scholarship.nation_mod.same_nation("UZ", "uz", "우즈베키스탄")
+    assert not scholarship.nation_mod.same_nation("VN", "UZ", "우즈베키스탄")
+    assert scholarship.nation_mod.same_nation("우즈베키스탄", "UZ", "우즈베키스탄 공화국")
+    job = _nation_job(tmp_path, "UZ")
+    frame = FakeForm()
+    _patch_popups(monkeypatch, frame, nation=("UZ", "우즈베키스탄"))
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: True, wait=lambda s: None, dry_run=False)
+    assert report.saved == 2 and report.review_items() == []
 
 
 def test_run_flags_nonzero_deduction_after_save(monkeypatch, job):

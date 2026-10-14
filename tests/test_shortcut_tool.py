@@ -48,3 +48,12 @@ def test_points_here_matches_any_field():
     assert module.points_here("", "", str(root).upper(), root=root)
     assert not module.points_here("C:\\Python311\\pythonw.exe", "-m something", "C:\\Other", root=root)
     assert not module.points_here(None, None, None, root=root)
+
+
+def test_shortcut_icon_has_its_own_name_with_the_current_picture():
+    """윈도우는 아이콘을 경로로 저장해 둔다 — 바로가기는 디자인마다 이름이 다른 파일을 가리키고, 그 파일은 icon.ico 와 같은 그림이다."""
+    module = load_tool()
+    path = module.icon_path()
+    assert path.name == module.SHORTCUT_ICON != "icon.ico"
+    assert path.read_bytes() == (module.ASSETS / "icon.ico").read_bytes()
+    assert [p.name for p in module.ASSETS.glob("icon-*.ico")] == [module.SHORTCUT_ICON]   # 옛 디자인 파일이 남지 않게
