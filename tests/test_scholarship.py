@@ -314,7 +314,7 @@ class FakeForm:
     """인건비 탭 작성 화면 — 탭 클릭 · select/text · 저장(청구내역 한 줄 + REQ_CNT)을 흉내."""
 
     def __init__(self, owner_result="성공:{name}", save_works=True, deduction=0, account=None,
-                 reset_income=False, lock_income=False, owner_check="성공:{name}", clear_owner_on_account=False):
+                 reset_income=False, lock_income=False, owner_check="성공:{name}", clear_owner_on_account=False, foreign=()):
         self.v = {"TAB_GB": "10", "APPR_DIV_CD": "", "REQ_CNT": "", "REQ_SEQ_NO": "TMP_REQ_1", "MOD_YN": "N",
                   "OWNR_INQ_RSLT": "", "ACCT_NO": "", "RCV_CD": "", "RCV_NM": "", "fileList": 0}
         self.text = {}
@@ -329,11 +329,15 @@ class FakeForm:
         self.lock_income = lock_income        # 소득구분을 바꿔도 그대로 — 사람이 고쳐야 하는 경우
         self.owner_check = owner_check        # [예금주조회] 를 누르면 나오는 결과. None 이면 아무 일도 안 일어난다
         self.clear_owner_on_account = clear_owner_on_account     # 계좌를 고치면 예금주조회 결과가 지워지는 ERP(미실측 — 두 경우 다 본다)
+        self.foreign = set(foreign)           # 외국인 학생의 학번 — 외국인등록번호(뒷자리 7) · 영문 예금주
 
     def pick_person(self, name, no):
         # ERP 가 소득자를 고르면 채우는 계좌 — 기본은 명단(make_ga)과 같은 계좌
         acct = self.account or {"202600001": "12345678901", "202600002": "100000000001"}.get(no, "")
-        self.v.update(RCV_CD=no, RCV_NM=name, ACCT_NO=acct, OWNR_INQ_RSLT=self.owner_result.format(name=name))
+        self.v.update(RCV_CD=no, RCV_NM=name, ACCT_NO=acct, OWNR_INQ_RSLT=self.owner_result.format(name=name),
+                      VW_SSN="######-3******", NATION_CD="KR", NATION_NM="대한민국")
+        if no in self.foreign:
+            self.v.update(VW_SSN="######-7******", OWNR="SUNATULLAEV GO", OWNR_INQ_RSLT="성공:SUNATULLAEV GO")
         if self.reset_income:
             self.v["INCM_DIV_CD"] = self.text["INCM_DIV_CD"] = "기타소득"
 
@@ -485,6 +489,54 @@ def test_owner_check_for_someone_else_goes_to_a_person(monkeypatch, job):
     report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or False,
                              wait=lambda s: None, dry_run=False)
     assert report.saved == 0 and report.stopped and "다른사람" in asked[0]
+
+
+def test_foreign_student_is_told_by_registration_number_then_english_owner():
+    assert scholarship.foreign_reason("######-7******", ["성공:SUNATULLAEV GO"]) == "외국인등록번호"
+    assert scholarship.foreign_reason("######-3******", ["성공:SUNATULLAEV GO"]) == ""      # 내국인 — 영문 예금주만으로는 아니다
+    assert scholarship.foreign_reason("", ["", "성공:SUNATULLAEV GO"]) == "예금주가 영문 이름(SUNATULLAEV GO)"
+    assert scholarship.foreign_reason("", ["가나다", "성공:가나다"]) == ""
+    assert scholarship.latin_name("SUNATULLAEV GO") == "SUNATULLAEV GO" and scholarship.latin_name("가나다 GO") == ""
+
+
+def test_english_owner_passes_when_success():
+    """실제 시험 18:25 — 외국인 학생의 예금주조회 결과 '성공:SUNATULLAEV GO' 를 한글 이름과 달라 사람에게 넘겼다."""
+    assert scholarship._owner_result_ok("성공:SUNATULLAEV GO", "수나툴라예브 골리브존") == (True, "성공:SUNATULLAEV GO")
+    assert not scholarship._owner_result_ok("성공:다른사람", "가나다")[0]
+    assert not scholarship._owner_result_ok("실패:SUNATULLAEV GO", "가나다")[0]
+
+
+def test_foreign_student_asks_for_nationality_then_saves_with_review(monkeypatch, job):
+    """담당자 2026-10-14: 외국인 학생은 개별증빙의 신분증을 보고 국적을 고른다 — 국적 팝업은 미실측이라 사람이, 앱은 KR 이 아닌지만 본다."""
+    frame = FakeForm(foreign={"202600002"})
+    _patch_popups(monkeypatch, frame)
+    asked = []
+
+    def ask(message):
+        asked.append(message)
+        frame.v.update(NATION_CD="UZ", NATION_NM="우즈베키스탄")     # 사람이 국적 돋보기로 고름
+        return True
+
+    logs = []
+    report = scholarship.run(object(), frame, job, logs.append, ask=ask, wait=lambda s: None, dry_run=False)
+    assert report.saved == 2 and not report.stopped
+    assert len(asked) == 1 and "라마바" in asked[0] and "외국인" in asked[0] and "신분증" in asked[0]
+    assert frame.saved[1]["NATION_CD"] == "UZ" and frame.saved[0]["NATION_CD"] == "KR"
+    assert scholarship.OWNER_CHECK_ID not in frame.clicks             # 영문 예금주 '성공' 은 다시 조회하지 않는다
+    review = report.review_items()
+    assert len(review) == 1 and "라마바" in review[0] and "SUNATULLAEV GO" in review[0]
+    assert any("외국인 학생으로 봄: 2. 라마바 (외국인등록번호)" in line for line in logs)
+    assert not any("######" in line for line in logs)                  # 주민번호 칸 값은 로그에 남기지 않는다
+
+
+def test_foreign_student_stops_when_nationality_is_left_korean(monkeypatch, job):
+    frame = FakeForm(foreign={"202600001"})
+    _patch_popups(monkeypatch, frame)
+    asked = []
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or False,
+                             wait=lambda s: None, dry_run=False)
+    assert report.saved == 0 and report.stopped and frame.saved == []
+    assert "국적" in asked[0] and "대한민국" in asked[0]
 
 
 def test_run_stops_and_asks_when_unsure(monkeypatch, job):

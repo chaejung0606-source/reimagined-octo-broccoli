@@ -36,6 +36,11 @@ INCOME_KIND = "장학금"                 # 소득구분 보기 글자 — 비�
 # [예금주조회] — 담당자 결정(2026-10-14): 앱이 누르고, 새 결과가 '성공:학생이름' 이 아니면 사람에게 맡긴다.
 # 계좌 예금주를 확인만 하는 조회다(돈이 나가지 않는다). '일괄예금주조회' 는 누르지 않는다.
 OWNER_CHECK_ID = "btn_ownrInq"
+# 외국인 학생 — 외국인등록번호는 뒷자리 첫 숫자가 5~8 이다(내국인 1~4). 작성 화면 #VW_SSN 은 '######-3******' 처럼 그 숫자만 보인다(실측 ②).
+# 국적(#NATION_CD, 읽기전용 · 기본 KR)은 #btnNationCd 돋보기 팝업에서 고르는데 그 팝업은 아직 미실측이라 사람이 고른다(담당자 2026-10-14:
+# "개별증빙에 있는 신분증을 참고해서 국적을 선택"). 고른 뒤 #NATION_CD 가 KR 이 아닌지만 앱이 본다.
+FOREIGN_SSN_DIGITS = "5678"
+HOME_NATION = "KR"
 # 보이는 단추가 있는지만 — 같은 id 가 안 쓰는 탭에도 숨어 있다(14절 ① 함정). 숨은 쪽을 누르면 다른 탭의 빈 계좌를 조회한다.
 VISIBLE_ID_JS = """(id) => Array.from(document.querySelectorAll('[id="' + String(id).replace(/"/g, '\\"') + '"]'))
   .some(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; })"""
@@ -385,6 +390,25 @@ def accounts_in_files(paths: list[str], pages: int = 8) -> tuple[set[str], int]:
     return found, read
 
 
+_HANGUL_RE = re.compile(r"[가-힣]")
+_LATIN_RE = re.compile(r"[A-Za-z]")
+
+
+def latin_name(text: str) -> str:
+    """영문 이름이면 그 글자, 아니면 ''. 외국인 학생은 은행 예금주가 'SUNATULLAEV GO' 처럼 영문이다(실제 시험 2026-10-14 18:25)."""
+    t = str(text or "").strip()
+    return t if _LATIN_RE.search(t) and not _HANGUL_RE.search(t) else ""
+
+
+def foreign_reason(vw_ssn: str, owners: list[str]) -> str:
+    """외국인 학생으로 볼 까닭(글) — 아니면 ''. 주민번호 칸의 뒷자리 첫 숫자를 먼저 보고, 그 숫자가 안 보일 때만 영문 예금주로 본다."""
+    m = re.search(r"-\s*(\d)", str(vw_ssn or ""))
+    if m:
+        return "외국인등록번호" if m.group(1) in FOREIGN_SSN_DIGITS else ""
+    latin = next((latin_name(o.split(":", 1)[-1]) for o in owners if latin_name(o.split(":", 1)[-1])), "")
+    return f"예금주가 영문 이름({latin})" if latin else ""
+
+
 def _same(a, b) -> bool:
     return re.sub(r"\s+", "", str(a or "")) == re.sub(r"\s+", "", str(b or ""))
 
@@ -539,6 +563,16 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
 
     _ensure_income(frame, wait, log, result, "소득자를 고른 뒤")      # 안 바뀌어도 여기서는 넘어간다 — 저장 직전에 다시 본다
 
+    # 3-1. 외국인 학생이면 국적 — 국적 팝업은 미실측이라 사람이 신분증을 보고 고른다(담당자 2026-10-14)
+    s = _state(frame, ["VW_SSN", "OWNR", "OWNR_INQ_RSLT"])
+    foreign = foreign_reason(s["VW_SSN"], [s["OWNR"], s["OWNR_INQ_RSLT"]])
+    if foreign:
+        log("외국인 학생으로 봄: %d. %s (%s)" % (index + 1, p.name, foreign))
+        ok, why = _ensure_nation(frame, ask, wait, index, p, foreign, "소득자를 고른 뒤")
+        if not ok:
+            return False, why
+        result.lines.append("✓ 국적 " + why)
+
     # 4. 계좌 대조 · 예금주조회 결과
     s = _state(frame, ["ACCT_NO", "BNK_CD", "OWNR", "OWNR_INQ_RSLT"])
     changed_account = False
@@ -572,6 +606,12 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
             if not ok:
                 return False, "예금주조회 '성공' 을 확인하지 못함 — 멈춤"
             result.lines.append("✓ 예금주조회(사람이 확인) " + why)
+
+    owner = latin_name(_state(frame, ["OWNR_INQ_RSLT"])["OWNR_INQ_RSLT"].split(":", 1)[-1])
+    if owner:
+        item = f"예금주가 영문 이름({owner})이라 {p.name} 과(와) 같은 사람인지 앱이 맞춰 보지 못함 — 신분증·통장과 같은지 확인한 뒤 [신청]"
+        result.review.append(item)
+        log("신청 전 확인: %d. %s — %s" % (index + 1, p.name, item))
 
     # 5. 청구액 · 지급예정년월 · 적요 (· 첫 사람이면 대표적요)
     for element_id, value, label in (("REQ_AMT", str(p.amount or ""), "청구액"), ("PAY_PLAN_YM", job.pay_ym, "지급예정년월"),
@@ -609,6 +649,10 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         item = f"{income_why} — 앱이 '장학금' 으로 바꾸지 못한 채 임시저장함. ERP 에서 이 줄의 소득구분을 '장학금' 으로 고친 뒤 [신청]"
         result.review.append(item)
         log("신청 전 확인: %d. %s — %s" % (index + 1, p.name, item))
+    if foreign:
+        ok, why = _ensure_nation(frame, ask, wait, index, p, foreign, "저장 직전")
+        if not ok:
+            return False, why
     s = read_state(frame, ["PAY_EXP_CD", "INCM_DIV_CD", "REQ_AMT", "REQ_PTCL", "RCV_NM"])
     pay = (s.get("PAY_EXP_CD") or {}).get("text", "")
     income = (s.get("INCM_DIV_CD") or {}).get("text", "")
@@ -702,12 +746,30 @@ def _use_document_account(frame, job: Job, index: int, s: dict, log, ask: Ask, w
     return True, "", True          # 바꾼 계좌는 예금주조회가 새로 필요하다 — 부르는 쪽이 [예금주조회] 를 누른다
 
 
+def _ensure_nation(frame, ask: Ask, wait, index: int, p, foreign: str, when: str) -> tuple[bool, str]:
+    """외국인 학생의 국적(#NATION_CD)이 KR 이 아닐 때까지 사람에게 묻는다. (됐는지, '국가이름(코드)' 또는 멈춘 이유)."""
+    def nation_ok() -> tuple[bool, str]:
+        s = _state(frame, ["NATION_CD", "NATION_NM"])
+        code = s["NATION_CD"].strip().upper()
+        if code and code != HOME_NATION:
+            return True, f"{s['NATION_NM'] or '?'}({code})"
+        return False, f"국적이 '{s['NATION_NM'] or code or '비어 있음'}' 입니다"
+
+    def message(w: str) -> str:
+        return ("%d. %s — 외국인 학생입니다(%s, %s). 개별증빙의 신분증(외국인등록증)을 보고 ERP 의 국적 돋보기로 국적을 고른 뒤 [계속]. "
+                "(%s — %s)" % (index + 1, p.name, foreign, when, w, "앱은 국적 팝업을 아직 누르지 않습니다"))
+    ok, why = _ask_until(nation_ok, ask, message, wait)
+    return (True, why) if ok else (False, "외국인 학생의 국적을 고르지 못함 — " + why)
+
+
 def _owner_result_ok(value: str, name: str) -> tuple[bool, str]:
     """예금주조회 결과 칸이 '성공:학생이름' 인지. 이름이 다르면(다른 사람 계좌) 통과시키지 않는다."""
     v = (value or "").strip()
     if not v.startswith("성공"):
         return False, f"결과 '{v or '비어 있음'}'"
     who = v.split(":", 1)[1].strip() if ":" in v else ""
+    if who and latin_name(who):
+        return True, v          # 외국인 학생의 영문 예금주 — 한글 이름과 맞춰 볼 수 없다. 부르는 쪽이 '신청 전 확인' 으로 남긴다
     if who and re.sub(r"\s+", "", who) != re.sub(r"\s+", "", name):
         return False, f"결과의 예금주 '{who}' 가 {name} 이(가) 아님"
     return True, v

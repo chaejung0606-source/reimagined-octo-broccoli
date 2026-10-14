@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 from ... import archive, settings
 from ...targets import volume_warning
 from ..art import Art
+from ..report_dialog import show_structure_saved
 from ..widgets import Card, EmptyState, KpiCard, Pill, PillDelegate, Step, WrapLabel, muted_label
 from ..worker import SessionWorker
 
@@ -282,7 +283,7 @@ class DownloadPage(QWidget):
         self.structure_button.setToolTip(
             "지금 브라우저에 열린 ERP 화면의 창·프레임·입력 요소를 _화면구조.txt 로 저장합니다. "
             "읽기만 하고 아무것도 누르거나 넣지 않습니다. 새 화면을 자동화하기 전 실측용입니다.")
-        self.structure_button.clicked.connect(self.worker.capture_structure)
+        self.structure_button.clicked.connect(self._capture_structure)
         corner_row.addWidget(self.structure_button)
         open_log = QPushButton("로그 파일 열기")
         open_log.setObjectName("ghost")
@@ -609,15 +610,15 @@ class DownloadPage(QWidget):
         self.window().raise_()
         self.window().activateWindow()
 
+    def _capture_structure(self) -> None:
+        self._capture_asked = True              # 일반청구 화면도 같은 브라우저 스레드의 신호를 받는다 — 누른 쪽만 창을 띄운다
+        self.worker.capture_structure()
+
     def _on_structure_saved(self, path: str) -> None:
-        answer = QMessageBox.question(
-            self, "화면 구조 저장",
-            f"지금 열린 화면의 구조를 저장했습니다.\n{path}\n\n"
-            "이 파일을 담당자(Claude)에게 보내면 그 화면의 자동화를 설계할 수 있습니다. "
-            "계좌번호 같은 값이 섞일 수 있으니 빈 작성 화면에서 저장한 것인지 확인하세요.\n\n지금 열어 볼까요?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-        if answer == QMessageBox.Yes:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        if not getattr(self, "_capture_asked", False):
+            return
+        self._capture_asked = False
+        show_structure_saved(self, path)
 
     def _on_error(self, message: str) -> None:
         self.banner.hide()

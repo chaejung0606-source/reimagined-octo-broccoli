@@ -32,7 +32,7 @@ class SessionWorker(QObject):
     relogin = Signal(str)               # 사람이 다시 로그인해야 함
     error = Signal(str)
     browser_state = Signal(bool)        # 명령을 마칠 때마다 브라우저가 살아 있는지
-    structure_saved = Signal(str)       # 진단: 화면 구조를 저장한 파일 경로
+    structure_saved = Signal(str)       # 진단: 화면 구조를 저장한 파일 경로 (못 했으면 "")
     claim_filled = Signal(object)       # 일반청구: claims.form.FillReport
     claim_saved = Signal(object)        # 일반청구: claims.form.SaveReport (임시저장)
     payee_searched = Signal(object)     # 일반청구: claims.payee.PayeeReport (입금처 팝업 검색)
@@ -49,6 +49,8 @@ class SessionWorker(QObject):
         self._resume = threading.Event()
         self._resume_ok = False
         self._waiting_relogin = False
+        self._capture_now = threading.Event()   # 띠에서 기다리는 중에 누른 [화면 구조 저장]
+        self._session: ErpSession | None = None
         self._thread = threading.Thread(target=self._loop, name="erp-browser", daemon=True)
         self._thread.start()
 
@@ -84,8 +86,14 @@ class SessionWorker(QObject):
         self._queue.put(("download", (targets,)))
 
     def capture_structure(self) -> None:
-        """진단 모드 — 지금 열린 화면의 구조를 파일로. 읽기만 한다."""
-        self._queue.put(("capture", ()))
+        """진단 모드 — 지금 열린 화면의 구조를 파일로. 읽기만 한다.
+
+        장학금 노란 띠 · 재로그인 띠로 이 스레드가 기다리는 중이면 그 자리에서 바로 읽는다 — 큐에 넣으면 작업이 다 끝난 뒤에야 돌아,
+        띠가 떠 있는 동안 연 팝업(국적 돋보기 등)을 실측할 수 없다(담당자 요청 2026-10-14: 일반청구에서도 화면 구조 저장)."""
+        if self._waiting_relogin:
+            self._capture_now.set()
+        else:
+            self._queue.put(("capture", ()))
 
     def request_stop(self) -> None:
         """지금 받는 건을 마치고 멈춘다. 받는 도중 끊으면 반쪽짜리 파일이 남는다."""
@@ -109,14 +117,32 @@ class SessionWorker(QObject):
         self._resume.clear()
         self._waiting_relogin = True
         self.relogin.emit(message)
-        self._resume.wait()
+        self._wait_resume()
         self._waiting_relogin = False
         return self._resume_ok and not self._stop.is_set()
+
+    def _wait_resume(self) -> None:
+        """[계속]/[멈추기] 를 기다린다. 그 사이 [화면 구조 저장] 을 누르면 이 스레드에서 바로 읽는다(Playwright 는 이 스레드에서만)."""
+        while not self._resume.wait(0.25):
+            if self._capture_now.is_set():
+                self._capture_now.clear()
+                self._capture_inline()
+        if self._capture_now.is_set():           # 띠가 닫히는 순간 누른 것 — 지금 작업 뒤에 돈다
+            self._capture_now.clear()
+            self._queue.put(("capture", ()))
+
+    def _capture_inline(self) -> None:
+        try:
+            self.structure_saved.emit(str(self._session.capture_structure()))
+        except Exception as error:  # noqa: BLE001 — 실측이 실패해도 기다리던 작업은 이어 가야 한다(error 신호는 화면이 작업을 끝난 것으로 본다)
+            self.log.emit("화면 구조를 저장하지 못했습니다: " + (str(error).splitlines()[0] if str(error) else type(error).__name__))
+            self.structure_saved.emit("")
 
     def _loop(self) -> None:
         log = file_logger(self.log.emit)
         log("════ %s 앱 실행 ════" % time.strftime("%Y-%m-%d"))
         session = ErpSession(log, self._ask_relogin, should_stop=self._stop.is_set)
+        self._session = session
         while True:
             command = self._queue.get()
             if command is None:
@@ -165,7 +191,7 @@ class SessionWorker(QObject):
         self._resume.clear()
         self._waiting_relogin = True
         self.scholarship_ask.emit(message)
-        self._resume.wait()
+        self._wait_resume()
         self._waiting_relogin = False
         return self._resume_ok and not self._stop.is_set()
 

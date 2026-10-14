@@ -50,7 +50,7 @@ from ...minutes.backends import claude_cli
 from .. import ai_status
 from ..art import Art
 from ..claim_worker import ClaimExtractWorker
-from ..report_dialog import ReportRow, show_report
+from ..report_dialog import ReportRow, show_report, show_structure_saved
 from ..widgets import Card, EmptyState, Field, Pill, PillDelegate, WrapLabel, muted_label
 from ..worker import SessionWorker
 from .scholarship import ScholarshipPanel
@@ -189,6 +189,7 @@ class ClaimPage(QWidget):
         b.scholarship_person.connect(self._on_sch_person)
         b.scholarship_ask.connect(self._on_sch_ask)
         b.scholarship_done.connect(self._on_sch_done)
+        b.structure_saved.connect(self._on_structure_saved)
         b.error.connect(self._on_error)
 
         self._show_form(-1)
@@ -330,10 +331,24 @@ class ClaimPage(QWidget):
         self.log_view.setMaximumBlockCount(3000)
         log_layout.addWidget(self.log_view, 1)
         self.tabs.addTab(log_page, "진행 기록")
+        corner = QWidget()
+        corner_row = QHBoxLayout(corner)
+        corner_row.setContentsMargins(0, 0, 0, 0)
+        corner_row.setSpacing(4)
+        # 진단 모드 — 청구서 받기 화면과 같은 단추(담당자 요청 2026-10-14). 장학금 노란 띠에서 기다리는 중에도 눌러
+        # 그때 열어 둔 팝업(국적 돋보기 등)을 실측할 수 있다 — 브라우저 스레드가 기다리는 자리에서 읽는다(worker._wait_resume).
+        self.structure_button = QPushButton("화면 구조 저장")
+        self.structure_button.setObjectName("ghost")
+        self.structure_button.setToolTip(
+            "지금 브라우저에 열린 ERP 화면(팝업 포함)의 창·프레임·입력 요소를 _화면구조.txt 로 저장합니다. "
+            "읽기만 하고 아무것도 누르거나 넣지 않습니다. 새 화면을 자동화하기 전 실측용입니다.")
+        self.structure_button.clicked.connect(self._capture_structure)
+        corner_row.addWidget(self.structure_button)
         open_log = QPushButton("로그 파일 열기")
         open_log.setObjectName("ghost")
         open_log.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(settings.log_path()))))
-        self.tabs.setCornerWidget(open_log, Qt.TopRightCorner)
+        corner_row.addWidget(open_log)
+        self.tabs.setCornerWidget(corner, Qt.TopRightCorner)
         card.add(self.tabs, 1)
         return card
 
@@ -554,6 +569,8 @@ class ClaimPage(QWidget):
         is_taxbill = filled and taxbill.wanted(self._data[self._current])
         self.taxbill_button.setVisible(is_taxbill)
         self.taxbill_button.setEnabled(is_taxbill and self._browser_open and not self._browser_busy and not running)
+        # 브라우저가 다른 일을 하는 중에는 큐에서 기다리게 되므로 막는다 — 단, 노란 띠에서 기다리는 중이면 바로 읽힌다
+        self.structure_button.setEnabled(self._browser_open and (not self._browser_busy or self.ask_banner.isVisible()))
         self.tabs.setTabText(0, f"지출 목록 ({len(self._dirs)})" if self._dirs else "지출 목록")
         self.list_stack.setCurrentIndex(1 if self._dirs else 0)
 
@@ -1118,12 +1135,24 @@ class ClaimPage(QWidget):
     def _answer(self, ok: bool) -> None:
         self.ask_banner.hide()
         self.browser.answer_relogin(ok)
+        self._sync_buttons()
         if ok:
             self._set_state("넣는 중", "info", "이어서 넣습니다.")
+
+    def _capture_structure(self) -> None:
+        self._capture_asked = True              # 청구서 받기 화면도 같은 신호를 받는다 — 누른 쪽만 창을 띄운다
+        self.browser.capture_structure()
+
+    def _on_structure_saved(self, path: str) -> None:
+        if not getattr(self, "_capture_asked", False):
+            return
+        self._capture_asked = False
+        show_structure_saved(self, path)
 
     def _on_sch_ask(self, message: str) -> None:
         self.ask_text.setText(message)
         self.ask_banner.show()
+        self._sync_buttons()
         self._set_state("확인 필요", "warning", "위의 노란 띠를 따른 뒤 [계속] 을 누르세요.")
         self.window().raise_()
         self.window().activateWindow()

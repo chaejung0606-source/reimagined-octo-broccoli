@@ -10,13 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QTableWidget,
@@ -181,3 +183,18 @@ def show_report(parent: QWidget | None, **kwargs) -> bool:
     """창을 띄우고 기다린다. accept_text 가 있으면 [그 단추] 를 눌렀는지 돌려준다."""
     dialog = ReportDialog(parent, **kwargs)
     return dialog.exec() == QDialog.Accepted
+
+
+def show_structure_saved(parent: QWidget | None, path: str) -> None:
+    """[화면 구조 저장] 을 마친 뒤 — 청구서 받기 · 일반청구 화면이 같이 쓴다. path 가 비었으면 못 한 것."""
+    if not path:
+        QMessageBox.warning(parent, "화면 구조 저장", "화면 구조를 저장하지 못했습니다. [진행 기록] 을 보세요.")
+        return
+    answer = QMessageBox.question(
+        parent, "화면 구조 저장",
+        f"지금 열린 화면의 구조를 저장했습니다.\n{path}\n\n"
+        "이 파일을 담당자(Claude)에게 보내면 그 화면의 자동화를 설계할 수 있습니다. "
+        "계좌번호 같은 값이 섞일 수 있으니 빈 작성 화면에서 저장한 것인지 확인하세요.\n\n지금 열어 볼까요?",
+        QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+    if answer == QMessageBox.Yes:
+        QDesktopServices.openUrl(QUrl.fromLocalFile(path))
