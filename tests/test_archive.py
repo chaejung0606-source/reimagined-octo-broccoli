@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from claim_downloader import archive
 
 
@@ -73,3 +75,27 @@ def test_folder_status(tmp_path):
     (tmp_path / "청구서다운내역").mkdir()
     status = archive.folder_status(str(tmp_path))
     assert [(f.name, f.waiting, f.uploaded) for f in status] == [("01. 인건비", 2, 1)]
+
+
+def test_unopenable_pdf_is_not_cached_and_read_again(tmp_path):
+    """열지 못한 PDF(OneDrive 에만 있음 · 잠김)는 캐시에 남기지 않고 다음 스캔에 다시 읽는다 — 영영 '안 받은 것' 이 되지 않게."""
+    root = tmp_path / "root"
+    _pdf(root / "02. 장학금" / "잠김.pdf")
+    cache = tmp_path / "cache.json"
+
+    def locked(path):
+        raise PermissionError("다른 프로그램이 사용 중")
+
+    report = archive.scan_archive(str(root), cache, set(), reader=locked)
+    assert report.ok and report.unreadable == 1 and report.unreadable_names == [str(Path("02. 장학금") / "잠김.pdf")]
+    done: set[str] = set()
+    report = archive.scan_archive(str(root), cache, done, reader=lambda path: "산학-20261001-0009")
+    assert report.scanned == 1 and done == {"산학-20261001-0009"}
+
+
+def test_done_record_only_grows(tmp_path):
+    """받은 기록은 파일과 합쳐 쓴다 — 기록을 읽지 않은 세션이 덮어써 지난 기록이 사라지지 않게."""
+    path = tmp_path / "_받은기록.json"
+    archive.save_done(path, {"A-20260101-1", "A-20260101-2"})
+    archive.save_done(path, {"A-20260101-3"})
+    assert archive.load_done(path) == {"A-20260101-1", "A-20260101-2", "A-20260101-3"}

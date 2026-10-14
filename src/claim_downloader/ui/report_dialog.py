@@ -148,7 +148,11 @@ class ReportDialog(QDialog):
             buttons.addWidget(cancel)
             ok = QPushButton(accept_text)
             ok.setObjectName("primary")
-            ok.setDefault(True)
+            # ERP 에 넣는 단추는 기본 단추로 두지 않는다 — 표를 읽다 Enter 를 누르면 그대로 넣기가 시작됐다(2026-10-14 점검).
+            # 마우스로 누르거나 Tab 으로 옮겨 Space 로만.
+            ok.setAutoDefault(False)
+            ok.setDefault(False)
+            cancel.setAutoDefault(False)
             ok.clicked.connect(self.accept)
             buttons.addWidget(ok)
         else:

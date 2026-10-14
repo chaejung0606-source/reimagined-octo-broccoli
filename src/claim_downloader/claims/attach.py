@@ -79,6 +79,13 @@ def file_count(frame) -> int:
 def open_popup(page, frame, log: Callable[[str], None]):
     popup = find_popup(page.context, POPUP_PROBE_JS)
     if popup is not None:
+        try:
+            pending = int(popup.evaluate(ROW_COUNT_JS))
+        except Exception:  # noqa: BLE001
+            pending = 0
+        if pending:
+            # 앞에서 멈춘 시도의 파일이 남은 창 — 그대로 쓰면 앞 학생의 파일이 이 학생 줄에 올라간다(2026-10-14 점검)
+            return None, f"열려 있는 파일등록 창에 아직 올리지 않은 파일이 {pending}개 있습니다 — 그 창을 닫은 뒤 다시 하세요"
         log("파일등록 팝업이 이미 열려 있어 그대로 씁니다")
         return popup, ""
     try:
@@ -128,7 +135,8 @@ def upload(page, frame, paths: list[str], log: Callable[[str], None],
             except Exception as error:  # noqa: BLE001
                 report.note = "파일을 넣지 못했습니다(%s): %s" % (os.path.basename(path), str(error).splitlines()[0][:80] if str(error) else "")
                 return report
-            if not wait_until(lambda: int(popup.evaluate(ROW_COUNT_JS)) > rows_before, wait, tries=20):
+            # 큰 PDF 는 줄이 늦게 생긴다 — 5초는 짧았다
+            if not wait_until(lambda: int(popup.evaluate(ROW_COUNT_JS)) > rows_before, wait, tries=60):
                 report.note = "파일을 넣었는데 목록에 줄이 생기지 않음(%s)" % os.path.basename(path)
                 return report
             log("  첨부 %d/%d: %s" % (index + 1, len(files), os.path.basename(path)))

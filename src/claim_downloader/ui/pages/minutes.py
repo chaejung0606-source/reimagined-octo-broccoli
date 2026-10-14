@@ -76,6 +76,7 @@ class MinutesPage(QWidget):
         self.worker = MinutesWorker()
         self._dirs: list[str] = []
         self._status: list[str] = []
+        self._run_rows: list[int] = []        # 이번 작업에 보낸 회의 → 표의 행 (끝난 회의는 다시 보내지 않는다)
         self._results: dict[int, str] = {}
         self._busy = False
         self._running = False
@@ -269,7 +270,9 @@ class MinutesPage(QWidget):
         self.platform.set_enabled_for_run(can_edit)
         self.clear_button.setEnabled(can_edit and bool(self._dirs))
         self.start_button.setEnabled(can_edit and bool(self._dirs) and self._available is True)
-        self.start_button.setText("작업 중…" if running else f"{len(self._dirs)}건 작업 시작" if self._dirs else "작업 시작")
+        todo = len(self._todo_rows())
+        self.start_button.setText("작업 중…" if running else "작업 시작" if not self._dirs or not todo
+                                  else f"{todo}건 작업 시작" if todo == len(self._dirs) else f"남은 {todo}건 작업 시작")
         self.stop_button.setVisible(running)
         self.stop_button.setEnabled(running)
         self.tabs.setTabText(0, f"회의 목록 ({len(self._dirs)})" if self._dirs else "회의 목록")
@@ -405,25 +408,39 @@ class MinutesPage(QWidget):
             if QMessageBox.question(self, "로그인 확인", claude_cli.LOGIN_HELP,
                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
+        # 이미 회의록을 만든 회의는 다시 보내지 않는다 — 멈춘 뒤 [작업 시작] 을 다시 누르면 앞 회의까지 또 만들어 '-2' 회의록이
+        # 생기고 AI 사용량을 다시 썼다(2026-10-14 점검). 다시 만들려면 목록을 비우고 다시 넣는다.
+        todo = self._todo_rows()
+        if not todo:
+            QMessageBox.information(self, "작업 시작", "목록의 회의록을 모두 만들었습니다.\n다시 만들려면 [목록 비우기] 뒤 폴더를 다시 넣으세요.")
+            return
         label = ai.label_of(self._backend_key)
         answer = QMessageBox.question(
             self, "작업 시작",
-            f"회의 {len(self._dirs)}건의 자료가 '{label}' 로 전송되어 회의록이 만들어집니다.\n"
+            f"회의 {len(todo)}건의 자료가 '{label}' 로 전송되어 회의록이 만들어집니다.\n"
             "회의록은 각 회의 폴더 안에 저장되며 기존 파일은 덮어쓰지 않습니다.\n\n시작할까요?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if answer != QMessageBox.Yes:
             return
         self._running = True
-        self._results = {}
+        self._run_rows = todo
         self._done_count = 0
-        for row in range(len(self._dirs)):
+        for row in todo:
+            self._results.pop(row, None)
             self._set_status(row, "waiting")
-        self._set_progress(0, len(self._dirs))
+        self._set_progress(0, len(todo))
         self._set_state("작성 중", "info", GUIDE_RUNNING)
         self.tabs.setCurrentIndex(0)
         self._sync_buttons()
         self.busy_changed.emit(True)
-        self.worker.run(self._dirs, self._backend_key)
+        self.worker.run([self._dirs[row] for row in todo], self._backend_key)
+
+    def _todo_rows(self) -> list[int]:
+        return [row for row, status in enumerate(self._status) if status != "done"]
+
+    def _row(self, index: int) -> int:
+        """작업 스레드의 회의 번호(이번에 보낸 것 중 몇 번째) → 표의 행."""
+        return self._run_rows[index] if 0 <= index < len(self._run_rows) else index
 
     def _stop(self) -> None:
         self.worker.request_stop()
@@ -448,13 +465,15 @@ class MinutesPage(QWidget):
 
     def _advance(self) -> None:
         self._done_count += 1
-        self._set_progress(self._done_count, len(self._dirs))
+        self._set_progress(self._done_count, len(self._run_rows) or len(self._dirs))
 
-    def _on_started(self, row: int) -> None:
+    def _on_started(self, index: int) -> None:
+        row = self._row(index)
         self._set_status(row, "running")
         self.table.scrollToItem(self.table.item(row, COL_STATUS))
 
-    def _on_done(self, row: int, result) -> None:
+    def _on_done(self, index: int, result) -> None:
+        row = self._row(index)
         if result.ok:
             self._results[row] = result.info
             self._set_status(row, "done", os.path.basename(result.info), result.note)
@@ -462,12 +481,12 @@ class MinutesPage(QWidget):
             self._set_status(row, "failed", "⚠ " + result.info)
         self._advance()
 
-    def _on_skipped(self, row: int, _kind: str) -> None:
-        self._set_status(row, "skipped", "⚠ 앞의 오류로 건너뜀 (해결 후 다시 시작)")
+    def _on_skipped(self, index: int, _kind: str) -> None:
+        self._set_status(self._row(index), "skipped", "⚠ 앞의 오류로 건너뜀 (해결 후 다시 시작)")
         self._advance()
 
-    def _on_stopped(self, row: int) -> None:
-        self._set_status(row, "stopped", "멈춰서 하지 않음")
+    def _on_stopped(self, index: int) -> None:
+        self._set_status(self._row(index), "stopped", "멈춰서 하지 않음")
         self._advance()
 
     def _on_finished(self, stop: str, ok_count: int, fail_count: int) -> None:

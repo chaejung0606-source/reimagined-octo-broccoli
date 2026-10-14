@@ -1100,3 +1100,71 @@ def test_innovation_job_uses_its_own_category_and_rules(monkeypatch, tmp_path):
     assert all(row["INCM_DIV_CD"] == "장학금" for row in frame.saved)         # 소득구분은 장학금 그대로(공제 0)
     assert any("혁신인재지원금 청구 시작" in line for line in logs)
     assert any("✓ 비목 교육·연구프로그램개발·운영비 · 소득구분 장학금" in line for line in report.results[0].lines)
+
+
+def test_total_row_with_other_labels_is_not_a_student_line(tmp_path):
+    """'합계(원)' 처럼 적힌 합계 줄이 마지막 학생의 둘째 줄로 들어가 합계 금액이 청구될 뻔했다(2026-10-14 점검)."""
+    path = make_na(tmp_path / "나.xlsx")
+    wb = openpyxl.load_workbook(path)
+    ws = wb.active
+    ws["B8"] = None
+    ws["H8"] = "합계(원)"                        # 이름 칸 오른쪽에 적힌 합계
+    wb.save(path)
+    r = roster.read(path)
+    assert [p.name for p in r.people] == ["사아자", "사아자", "차카타"] and r.sheet_total == 370000
+
+
+def test_unmerged_blank_name_row_is_reported_not_inherited(tmp_path):
+    path = make_na(tmp_path / "나.xlsx")
+    wb = openpyxl.load_workbook(path)
+    ws = wb.active
+    ws["J7"] = 999999                             # 셋째 학생 아래가 아니라 — 이름 없는 메모 줄
+    ws.insert_rows(8)
+    ws["J8"] = 5000
+    wb.save(path)
+    r = roster.read(path)
+    assert all(p.amount != 5000 for p in r.people)
+    assert any("이름이 없는데 금액" in w for w in r.warnings)
+
+
+def test_korean_placeholders_in_nation_column_are_home():
+    for value in ("-", "—", "한국인", "내국인", "대한민국(KR)", "해당없음", "KR"):
+        assert roster.Person(name="가", nation=value).foreign_nation == "", value
+    assert roster.Person(name="가", nation="UZ").foreign_nation == "UZ"
+
+
+def test_float_student_number_does_not_gain_a_digit():
+    assert roster.digits(202416354.0) == "202416354"
+
+
+def test_owner_check_failure_alert_is_not_success(monkeypatch, tmp_path):
+    """계좌를 넣고 [예금주조회] 했는데 ERP 가 실패 알림을 띄우고 결과 칸에 옛 '성공' 을 남기면 — 통과시키지 않는다(2026-10-14 점검)."""
+    job = _mismatch_job(tmp_path, ["Account 110-594-395796"])
+    frame = FakeForm(account="30120104410673", owner_check=None)   # 눌러도 결과 칸이 그대로
+    _patch_popups(monkeypatch, frame)
+    messages = []
+    original = frame.evaluate
+
+    def evaluate(js, arg=None):
+        if js is payee.CLICK_ID_JS and arg == scholarship.OWNER_CHECK_ID:
+            messages.append("예금주조회 실패: 계좌번호를 확인하세요")
+        return original(js, arg)
+
+    frame.evaluate = evaluate
+    asked = []
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or False,
+                             wait=lambda s: None, messages=messages, dry_run=False)
+    assert report.saved == 0 and asked and "실패" in asked[0]
+
+
+def test_attachment_failure_is_not_uploaded_twice(monkeypatch, job):
+    """앱이 첨부를 다 못 올리면 사람이 마저 올리고 [계속] — 앱은 다시 올리지 않고 첨부문서 수만 본다(전에는 겹쳐 올렸다)."""
+    frame = FakeForm()
+    calls = _patch_popups(monkeypatch, frame, attach_ok=False)
+
+    def ask(message):
+        frame.v["fileList"] = int(frame.v["fileList"]) + 2          # 사람이 ERP '첨부' 로 두 개를 올림
+        return True
+
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=ask, wait=lambda s: None, dry_run=False)
+    assert report.saved == 2 and len(calls["attach"]) == 2           # 학생마다 한 번씩만

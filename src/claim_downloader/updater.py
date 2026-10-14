@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,7 +55,7 @@ class UpdateStatus:
         return head
 
 
-def _git(*args: str) -> subprocess.CompletedProcess:
+def _git(*args: str, timeout: int = GIT_TIMEOUT) -> subprocess.CompletedProcess:
     """git 을 돌리고 결과를 돌려준다. 실패해도 예외를 던지지 않는다.
 
     호출부가 returncode 만 보게 하려는 것이다. 예외가 위로 새면 화면에는
@@ -80,7 +81,7 @@ def _git(*args: str) -> subprocess.CompletedProcess:
     try:
         done = subprocess.run(
             command,
-            capture_output=True, text=True, timeout=GIT_TIMEOUT,
+            capture_output=True, text=True, timeout=timeout,
             encoding="utf-8", errors="replace", env=env, **hidden,
         )
     except FileNotFoundError:
@@ -89,7 +90,7 @@ def _git(*args: str) -> subprocess.CompletedProcess:
                        "에서 설치한 뒤 앱을 다시 시작하세요.")
     except subprocess.TimeoutExpired:
         return _result(args, 124,
-                       f"응답이 {GIT_TIMEOUT}초 안에 오지 않았습니다. 네트워크를 확인해 주세요.")
+                       f"응답이 {timeout}초 안에 오지 않았습니다. 네트워크를 확인해 주세요.")
     except OSError as error:
         return _result(args, 1, str(error))
 
@@ -203,7 +204,8 @@ def _check() -> UpdateStatus:
     if EXPECTED_REPO not in remote.stdout:
         return UpdateStatus(error="원격 저장소가 예상과 다릅니다. 업데이트를 중단합니다.")
 
-    fetched = _git("fetch", "origin", BRANCH)
+    # 느린 학교망에서 받기가 멈춘 채 붙들려 있지 않게 — 30초 동안 초당 1KB 도 안 오면 끊는다
+    fetched = _git("-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=30", "fetch", "origin", BRANCH)
     if fetched.returncode != 0:
         # 학교망·방화벽에서 막히는 일이 실제로 있었다. 막힌 채로 두지 않고
         # 다른 길을 함께 알려 준다.
@@ -238,6 +240,19 @@ def _check() -> UpdateStatus:
     return status
 
 
+LOCK_STALE_SECONDS = 600
+
+
+def _clear_stale_lock() -> None:
+    """앞선 적용이 끊겨 남은 .git/index.lock 을 치운다 — 남아 있으면 적용이 매번 실패했다. 10분 넘은 것만(지금 도는 git 의 것은 아니다)."""
+    lock = REPO_ROOT / ".git" / "index.lock"
+    try:
+        if lock.exists() and time.time() - lock.stat().st_mtime > LOCK_STALE_SECONDS:
+            lock.unlink()
+    except OSError:
+        pass
+
+
 def apply() -> tuple[bool, str]:
     """확인된 업데이트를 적용한다. 되돌릴 수 없는 병합은 하지 않는다.
 
@@ -258,7 +273,9 @@ def _apply() -> tuple[bool, str]:
     if status.blocked_reason:
         return False, status.blocked_reason
 
-    pulled = _git("merge", "--ff-only", f"origin/{BRANCH}")
+    _clear_stale_lock()
+    # 파일을 바꾸는 단계라 60초에 끊지 않는다 — 백신 검사로 느린 PC 에서 중간에 끊겨 반쯤 바뀐 채 남을 수 있었다(2026-10-14 점검)
+    pulled = _git("merge", "--ff-only", f"origin/{BRANCH}", timeout=600)
     if pulled.returncode != 0:
         return False, (
             "빨리감기로 갱신할 수 없습니다. 로컬 커밋이 있는지 확인하세요.\n"

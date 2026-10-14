@@ -94,6 +94,8 @@ SET_TEXT_JS = """([id, value]) => {
   """ + PICK_EL_JS + """
   const el = pickEl(id);
   if (!el) return {ok: false, why: '칸이 없음'};
+  // 고르기 칸(select)에 글을 넣으면 값이 '' 가 되는데도 ok 로 보고됐다 — 글 칸만 받는다(2026-10-14 점검)
+  if (!/^(INPUT|TEXTAREA)$/.test(el.tagName)) return {ok: false, why: '글 칸이 아님(' + el.tagName.toLowerCase() + ')'};
   if (el.readOnly || el.disabled) return {ok: false, why: '읽기전용'};
   el.focus();
   el.value = value;
@@ -267,11 +269,18 @@ def fill(frame, data: dict, log: Callable[[str], None], dry_run: bool = True,
          wait: Callable[[float], None] = time.sleep) -> FillReport:
     """작성 화면에 값을 넣는다. dry_run 이면 화면 상태만 읽고 계획을 보여 준다."""
     report = FillReport(dry_run=dry_run)
-    state = read_state(frame, ["PROC_TYP_CD", "MOD_YN", "REQ_SEQ_NO"])
+    state = read_state(frame, ["PROC_TYP_CD", "MOD_YN", "REQ_SEQ_NO", "REQ_CNT", "APPR_DIV_CD"])
     mod = (state.get("MOD_YN") or {}).get("value", "")
     if mod and mod != "N":
         # 기존 청구서를 변경하는 화면 — 거기에 덮어쓰면 남의 값을 지운다
         report.blocked = f"새 청구서 화면이 아닙니다(MOD_YN={mod}). 결의서내역에서 [일반청구] 로 새 화면을 여세요."
+        return report
+    saved_no = saved_sheet(state)
+    if saved_no and not dry_run:
+        # 이미 [저장] 된 청구서 — MOD_YN 은 저장 뒤에도 N 이라(실측 ⑤) 그것만으로는 못 막았다. 장학금 폴더를 넣은 화면에 일반 건을
+        # 채우면 그 청구서에 줄이 더해진다(2026-10-14 점검). 일반 1건은 새 청구서에.
+        report.blocked = (f"이미 임시저장된 청구서 화면입니다(결의번호 {saved_no}). 이 건은 새 청구서에 넣으세요 — "
+                          "ERP 에서 [새 청구서] 또는 결의서내역 → [일반청구] 로 새 화면을 띄운 뒤 다시 누르세요.")
         return report
     log("일반청구 채우기 %s — %s" % ("미리 보기" if dry_run else "시작", (state.get("REQ_SEQ_NO") or {}).get("value", "")))
     for line in summary_lines(data):
@@ -340,6 +349,16 @@ def _wait_for_options(frame, element_id: str, wait: Callable[[float], None], tri
 _STATUS_IDS = ("REQ_SEQ_NO", "MOD_YN", "APPR_DIV_CD", "REQ_CNT", "RCV_NM", "REQ_PTCL", "REQ_AMT")
 
 
+def saved_sheet(state: dict) -> str:
+    """작성 화면이 이미 [저장] 된 청구서면 그 결의번호(없으면 '임시저장'), 새 청구서면 ''. state 는 read_state 결과."""
+    def value(key: str) -> str:
+        item = state.get(key)
+        return str(item.get("value", "") if isinstance(item, dict) else item or "").strip()
+    if value("REQ_CNT"):
+        return value("REQ_CNT")
+    return "임시저장" if value("APPR_DIV_CD") == "40" else ""
+
+
 def _status(frame) -> dict:
     state = read_state(frame, _STATUS_IDS)
     return {key: (state.get(key) or {}).get("value", "") for key in _STATUS_IDS}
@@ -396,6 +415,9 @@ def _changed(before: dict, after: dict) -> bool:
         return True
     if after.get("APPR_DIV_CD") == "40" and before.get("APPR_DIV_CD") != "40":
         return True
+    # 작성 화면이 아니게 됐으면(로그인 · 오류 화면으로 넘어가 칸이 모두 비면) 저장된 것으로 보지 않는다(2026-10-14 점검)
+    if not after.get("REQ_SEQ_NO") and not after.get("MOD_YN"):
+        return False
     return any(after.get(k) != before.get(k) for k in ("REQ_SEQ_NO", "MOD_YN", "APPR_DIV_CD"))
 
 

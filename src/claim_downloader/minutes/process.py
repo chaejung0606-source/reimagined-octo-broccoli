@@ -10,6 +10,7 @@ Qt 를 모르는 제너레이터라 화면 없이 테스트한다(tests/test_min
 from __future__ import annotations
 
 import os
+import re
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,10 +34,26 @@ class MeetingResult:
     kind: str = ""     # 실패가 남은 회의까지 막는 종류면 login · limit · balance
 
 
+_XML_BAD = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+
+
+def _clean(value):
+    """AI 가 돌려준 값에서 XML 에 쓸 수 없는 제어 문자를 걷어낸다 — 그대로 두면 한글이 못 여는 .hwpx 가 '성공' 으로 남았다
+    (2026-10-14 점검). hwpx.py 는 손대지 않고 넘기기 전에 여기서."""
+    if isinstance(value, str):
+        return _XML_BAD.sub("", value)
+    if isinstance(value, dict):
+        return {k: _clean(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_clean(v) for v in value]
+    return value
+
+
 def write_minutes(data: dict, meeting_dir: str | Path) -> tuple[str, str]:
     """dict 를 회의 폴더 안의 .hwpx 로. 돌려주는 값은 (경로, 보완요청)."""
     meeting_dir = str(meeting_dir)
     ensure_not_upload(meeting_dir)
+    data = _clean(data)
     for problem in problems(data):
         log("회의록 데이터 확인: %s — %s" % (problem, meeting_dir))
     base = _sanitize(data.get("filenameBase") or "회의록")

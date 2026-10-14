@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 
 from . import settings
@@ -22,6 +23,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--structure", action="store_true",
                         help="진단 모드: 브라우저를 열어 두고 원하는 화면을 띄운 뒤 구조를 파일로 저장 (읽기만)")
     args = parser.parse_args(argv)
+    # 한글 윈도우 콘솔(CP949)로 내보내면 ═ · ⚠ · — 같은 글자에서 UnicodeEncodeError 로 첫 줄부터 멈췄다 — 못 찍는 글자는 ? 로
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
 
     log = file_logger(print)
     log("════ %s 명령줄 실행 ════" % time.strftime("%Y-%m-%d"))

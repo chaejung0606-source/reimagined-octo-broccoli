@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QEvent, QPoint, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QRegion,
 )
 from PySide6.QtWidgets import (
     QFrame,
@@ -654,7 +655,19 @@ class DockOverlay(QWidget):
         self.handle.move((width - self.handle.width()) // 2, height - self.handle.height() - 2)
         self.dock.resize(dock_size)
         self.dock.move(self._dock_pos(self._expanded))
+        self._update_mask()
         self.raise_()
+
+    def _update_mask(self) -> None:
+        """겹쳐 뜬 이 칸은 펼친 독 크기라, 접혀 있을 때 그대로 두면 선 둘레 384×90 쯤이 아래 페이지의 단추 · 표 · 휠을
+        삼켰다(1320×860 에서 일반청구 [내용 읽기] 가 안 눌림, 2026-10-14 점검). 접혀 있으면 선 자리만, 펼쳐 있으면 독 자리만
+        마우스를 받는다. 움직이는 동안만 칸 전체."""
+        if self._anim.state() == QAbstractAnimation.Running:
+            self.clearMask()
+        elif self._expanded:
+            self.setMask(QRegion(self.dock.geometry()))
+        else:
+            self.setMask(QRegion(self.handle.geometry()))
 
     def _dock_pos(self, expanded: bool) -> QPoint:
         x = (self.width() - self.dock.width()) // 2
@@ -684,11 +697,13 @@ class DockOverlay(QWidget):
         self._anim.setStartValue(self.dock.pos())
         self._anim.setEndValue(target)
         self._anim.start()
+        self._update_mask()
 
     def _after_anim(self) -> None:
         if not self._expanded:
             self.dock.hide()
             self.handle.show()
+        self._update_mask()
 
     def _collapse_if_idle(self) -> None:
         """마우스가 독 위에 없고 독 안에 초점도 없을 때만 접는다."""

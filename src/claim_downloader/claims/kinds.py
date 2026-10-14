@@ -73,6 +73,9 @@ def uses_roster(key: str) -> bool:
     return key in ROSTER_KINDS
 
 
+INNOVATION_WORDS = ("혁신인재", "진행요원")
+
+
 def roster_kind(folder: str) -> str:
     """명단 폴더가 장학금인지 혁신인재지원금인지 — 명단 엑셀 이름 → 폴더 이름 → 위 폴더 이름(세 칸까지) 순으로
     '혁신인재' 나 '장학금' 이 든 첫 이름을 따른다. 둘 다 든 이름('4. 장학금 및 혁신인재지원금' 같은 묶음 폴더)은 건너뛴다. 못 정하면 장학금."""
@@ -86,7 +89,10 @@ def roster_kind(folder: str) -> str:
         up = os.path.dirname(up)
         names.append(os.path.basename(up))
     for name in names:
-        innovation, scholarship = "혁신인재" in name, "장학금" in name
+        # 진행요원비 · 시상금 쪽은 '혁신인재' 글자가 없는 폴더도 있다 — 비목 03 이라 혁신인재지원금으로 본다(14절 '장학금 밖의 청구').
+        # '근로장학' 은 장학금. 이름에 둘 다 있거나 둘 다 없으면 다음 이름으로.
+        innovation = any(w in name for w in INNOVATION_WORDS)
+        scholarship = "장학금" in name or "근로장학" in name
         if innovation != scholarship:
             return INNOVATION if innovation else SCHOLARSHIP
     return SCHOLARSHIP

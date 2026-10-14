@@ -13,7 +13,8 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -267,7 +268,7 @@ class HomePage(QWidget):
             when = dt.datetime.fromtimestamp(mtime).strftime("%m-%d %H:%M")
             where = "업로드 완료" if "업로드" in path.relative_to(cfg.out_root).parts else "업로드 대기"
             self._recent_rows.addWidget(self._row("approved", path.stem, f"{when} · {path.parent.name} · {where}",
-                                                  "download", "열기"))
+                                                  "download", "열기", path=path))
         if files:
             self._recent_empty.hide()
         elif not cfg.out_root:
@@ -277,7 +278,8 @@ class HomePage(QWidget):
             self._recent_empty.setText("아직 받은 청구서가 없습니다.")
             self._recent_empty.show()
 
-    def _row(self, art: str, name: str, status: str, task_id: str, button: str) -> QWidget:
+    def _row(self, art: str, name: str, status: str, task_id: str, button: str, path=None) -> QWidget:
+        """path 가 있으면 [열기] 가 그 파일을 연다 — 전에는 받기 화면만 열려 '열기' 와 맞지 않았다(2026-10-14 점검)."""
         row = QFrame()
         row.setObjectName("recentRow")
         layout = QHBoxLayout(row)
@@ -297,6 +299,10 @@ class HomePage(QWidget):
         go = QPushButton(button)
         go.setObjectName("ghost")
         go.setAccessibleName(f"{name} {button}")
-        go.clicked.connect(lambda: self.open_task.emit(task_id))
+        if path is not None:
+            go.setToolTip(str(path))
+            go.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))))
+        else:
+            go.clicked.connect(lambda: self.open_task.emit(task_id))
         layout.addWidget(go)
         return row

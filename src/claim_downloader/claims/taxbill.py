@@ -348,7 +348,12 @@ def search(page, frame, data: dict, log: Callable[[str], None],
             rows = _inquire(popup, wait, log, "수신메일만 (%s~)" % period)
         report.rows = rows
         report.ok = True
-        if auto_pick:
+        if auto_pick and not (query or mailed):
+            # 사업자번호 · 거래처명 · 수신메일 어느 것으로도 좁히지 못한 목록은 산학협력단 전체 계산서다 — 금액만 맞는 남의 계산서를
+            # 고를 수 있어 고르지 않는다(2026-10-14 점검)
+            report.pick_note = "사업자번호 · 거래처명 · 수신메일 없이 조회한 목록이라 고르지 않음"
+            log("세금계산서 자동 선택 안 함: " + report.pick_note)
+        elif auto_pick:
             report.picked, report.pick_note = pick(popup, frame, data, log, wait, email)
         return report
     except RuntimeError as error:

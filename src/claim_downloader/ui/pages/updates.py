@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import html
+
 import traceback
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal
@@ -51,6 +53,7 @@ class UpdatesPage(QWidget):
     status_checked = Signal(object)   # updater.UpdateStatus — 홈의 업데이트 띠가 본다
     applied = Signal(bool)            # 적용이 끝남 — 홈 띠가 [새로고침] 으로 바뀐다
     restart_requested = Signal()      # [새로고침] — 앱이 새로 떠서 받은 것을 반영
+    idle = Signal()                   # 확인·적용 스레드가 끝남 — 그동안 창을 닫으려 했으면 그때 닫는다(app.closeEvent)
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -166,6 +169,11 @@ class UpdatesPage(QWidget):
             self._thread.wait()
             self._thread = None
         self.check_button.setEnabled(True)
+        self.idle.emit()
+
+    def busy(self) -> bool:
+        """git 이 도는 중인지 — 이때 창을 닫으면 스레드가 살아 있는 채로 지워져 앱이 강제 종료됐다(2026-10-14 점검)."""
+        return self._thread is not None
 
     def _on_checked(self, status) -> None:
         self._stop()
@@ -182,13 +190,13 @@ class UpdatesPage(QWidget):
         self.version_label.setText(updater.current_version())
 
         if status.messages:
-            items = "".join(f"<li>{message}</li>" for message in status.messages)
+            items = "".join(f"<li>{html.escape(message)}</li>" for message in status.messages)
             self.log.setHtml(
                 f"<p style='color:{COLORS['text_muted']};font-size:12px;'>"
                 f"새 변경 {status.behind}건</p><ul>{items}</ul>"
             )
         elif status.error:
-            self.log.setHtml(f"<p style='color:{COLORS['danger']};'>{status.error}</p>")
+            self.log.setHtml(f"<p style='color:{COLORS['danger']};'>{html.escape(status.error)}</p>")
         else:
             self.log.setHtml(
                 f"<p style='color:{COLORS['text_muted']};'>받아 올 변경이 없습니다.</p>"
@@ -232,4 +240,4 @@ class UpdatesPage(QWidget):
         reason = lines[-1] if lines else "알 수 없는 오류"
         self.status_label.setText(f"업데이트 처리 중 오류가 발생했습니다 — {reason}")
         self.status_pill.set_status("오류", "danger")
-        self.log.setHtml(f"<pre style='font-size:12px;'>{message}</pre>")
+        self.log.setHtml(f"<pre style='font-size:12px;'>{html.escape(message)}</pre>")

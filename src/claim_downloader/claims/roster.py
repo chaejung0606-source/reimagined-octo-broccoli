@@ -26,8 +26,15 @@ HEADERS = {
     # 외국인 학생의 국적 — 담당자가 명단에 열을 더하기로 함(2026-10-14). 비어 있으면 내국인으로 본다
     "nation": ("국적", "국가", "국적(국가)", "국가/지역", "국적(국가/지역)"),
 }
-HOME_NATIONS = ("", "한국", "대한민국", "kr", "kor", "korea", "southkorea", "republicofkorea")
+HOME_NATIONS = ("", "한국", "대한민국", "한국인", "내국인", "kr", "kor", "korea", "southkorea", "republicofkorea",
+                "해당없음", "없음", "x")
 TOTAL_WORDS = ("합계", "총계", "계")
+# 합계 줄 — '합계' '총 합계' '합계(원)' '총계' 처럼 적힌 칸. 이름 칸 오른쪽에 있어도 본다(2026-10-14 점검: '합계(원)' 줄이 마지막 학생의
+# 둘째 줄로 들어가 합계 금액이 청구될 뻔했다). '소계' 는 중간 줄이라 건너뛰기만 한다.
+TOTAL_RE = re.compile(r"^(총)?(합계|총계|계)(\(.*\))?$|합계|총계")
+SUBTOTAL_RE = re.compile(r"소계")
+# 머리글 윗줄이 이 글자면 묶음 머리 — 아래 줄 글자로 열을 정한다('산출내역' 아래 단가 · 시간 · 금액)
+GROUP_HEADERS = ("산출내역", "지급내역", "지급액내역", "세부내역")
 MAX_HEADER_SCAN = 12          # 머리글은 위쪽 열두 줄 안에 있다
 
 
@@ -49,8 +56,12 @@ class Person:
 
     @property
     def foreign_nation(self) -> str:
-        """명단 국적이 외국이면 그 글자, 비었거나 한국이면 ''."""
-        return self.nation if norm(self.nation).lower() not in HOME_NATIONS else ""
+        """명단 국적이 외국이면 그 글자, 비었거나 한국이면 ''. '대한민국(KR)' · '-' 같은 칸도 한국으로 본다 — 그런 칸이 외국인으로
+        잡혀 내국인 학생마다 국적 팝업과 노란 띠가 떴다(2026-10-14 점검)."""
+        core = re.sub(r"\(.*?\)", "", norm(self.nation)).lower()
+        if core in HOME_NATIONS or re.fullmatch(r"[-—–·._/]*", core):
+            return ""
+        return self.nation
 
 
 @dataclass
@@ -112,6 +123,9 @@ def norm(text) -> str:
 
 
 def digits(text) -> str:
+    """숫자만. 202416354.0 처럼 실수로 저장된 학번은 정수로 먼저 바꾼다 — 그대로 두면 끝에 0 이 붙는다."""
+    if isinstance(text, float) and text.is_integer():
+        text = int(text)
     return re.sub(r"\D", "", str(text if text is not None else ""))
 
 
@@ -165,12 +179,22 @@ def _find_header(ws) -> tuple[int, dict]:
             top = norm(ws.cell(r, c).value)
             below = norm(ws.cell(r + 1, c).value) if r < ws.max_row else ""
             # 윗줄 글자가 먼저. 윗줄이 비었거나(세로 병합 아래 칸) '산출내역' 같은 묶음 머리면 둘째 줄 글자를 본다
-            key = _header_key(top) or (_header_key(below) if below else None)
+            # 윗줄이 머리글이 아닌 글자면(한 줄 머리글의 '비고' 등) 아래 줄은 자료다 — 첫 학생의 비고를 열 이름으로 보던 것을 막는다
+            key = _header_key(top) or (_header_key(below) if below and (not top or top in GROUP_HEADERS) else None)
             if key and key not in columns:
                 columns[key] = c
         if "name" in columns and "student_no" in columns and _header_key(norm(ws.cell(r, columns["name"]).value)) == "name":
             return r, columns
     return 0, {}
+
+
+def _merged(ws, r: int, c: int) -> bool:
+    """그 칸이 세로 병합의 아래 칸인지((나)형 TA: 한 학생이 두 강좌)."""
+    try:
+        from openpyxl.cell.cell import MergedCell
+        return isinstance(ws.cell(r, c), MergedCell)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _is_header_row(ws, r: int, columns: dict) -> bool:
@@ -218,15 +242,24 @@ def read(path, sheet: str | None = None) -> Roster:
         if start <= ws.max_row and _is_header_row(ws, start, columns):
             start += 1
         last: Person | None = None
+        found_total = False
         for r in range(start, ws.max_row + 1):
             cells = {key: ws.cell(r, c).value for key, c in columns.items()}
             name = str(cells.get("name") or "").strip()
             amount = _to_int(cells.get("amount"))
-            if norm(name) in TOTAL_WORDS or (not name and any(norm(ws.cell(r, c).value) in TOTAL_WORDS for c in range(1, columns["name"] + 1))):
+            texts = [norm(v) for v in (ws.cell(r, c).value for c in range(1, ws.max_column + 1)) if isinstance(v, str)]
+            if norm(name) in TOTAL_WORDS or (not name and any(TOTAL_RE.search(x) for x in texts)):
                 roster.sheet_total = amount
+                found_total = True
                 break
+            if not name and any(SUBTOTAL_RE.search(x) for x in texts):
+                continue                       # 중간 소계 줄
             if not name and amount is None:
                 continue                       # 빈 줄
+            if not name and not _merged(ws, r, columns["name"]):
+                # 이름 칸이 병합된 둘째 줄이 아닌데 금액만 있다 — 앞 학생 줄로 내려받지 않는다(합계 · 메모 줄일 수 있다)
+                roster.warnings.append(f"{r}행: 이름이 없는데 금액({amount:,})이 있습니다 — 합계 줄이면 '합계' 라고 적어 주세요")
+                continue
             person = Person(name=name, row=r, amount=amount,
                             student_no=digits(cells.get("student_no")),
                             bank=str(cells.get("bank") or "").strip(),
@@ -248,6 +281,8 @@ def read(path, sheet: str | None = None) -> Roster:
                 person.note = (person.note + " · " if person.note else "") + "금액이 없음"
             roster.people.append(person)
             last = person
+        if roster.people and not found_total:
+            roster.warnings.append("명단 아래에 '합계' 줄이 없습니다 — 합계와 맞춰 보지 못했습니다. 금액을 한 번 더 확인하세요")
     finally:
         try:
             wb.close()

@@ -241,7 +241,16 @@ def save_oz_pdf(popup, dest_path: Path) -> bool:
     dl = dl_info.value
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     dl.save_as(str(dest_path))
-    return dest_path.exists() and dest_path.stat().st_size > 0
+    if not (dest_path.exists() and dest_path.stat().st_size > 0):
+        return False
+    # PDF 인지 본다 — OZ 저장 형식이 바뀌어 다른 파일이 .pdf 로 저장되면 받은 것으로 기록돼 다시 받지 않게 된다(2026-10-14 점검).
+    # 방금 이 함수가 만든 파일이라 지워도 남의 파일을 지우는 것이 아니다.
+    with open(dest_path, "rb") as f:
+        head = f.read(5)
+    if head != b"%PDF-":
+        dest_path.unlink(missing_ok=True)
+        return False
+    return True
 
 
 # ── 대상 행을 스크롤로 찾아 선택 ─────────────────────────────────────────
@@ -301,9 +310,11 @@ def select_row(page, gfr, target: dict) -> bool:
     return False
 
 
-_DETAIL_READY_JS = """(doc) => {
+_DETAIL_READY_JS = r"""(doc) => {
   const t=document.body?document.body.innerText:''; if(t.length<200) return null;
-  if(doc && t.indexOf(doc)<0) return null;
+  // 문서번호는 앞뒤가 숫자가 아닐 때만 같은 것으로 — '…-1' 이 '…-12' 의 옛 상세화면에 맞지 않게(2026-10-14 점검)
+  if(doc){ const esc=doc.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+           if(!new RegExp('(^|[^0-9])'+esc+'([^0-9]|$)').test(t)) return null; }
   const els=document.querySelectorAll('a,span,button,input');
   for(const e of els){ const s=(e.textContent||e.value||'').trim(); if(s==='청구서출력') return true; }
   return false;

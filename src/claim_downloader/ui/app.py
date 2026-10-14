@@ -21,7 +21,7 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QFontDatabase, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -67,7 +67,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(APP_NAME)
         self.resize(1320, 860)
-        self.setMinimumSize(1120, 720)
+        # 1366×768 노트북(작업 표시줄 빼면 창 안쪽 ~690)과 1920×1080 150% 배율(논리 1280×720)에서도 창 아래가 화면 밖으로 나가지 않게
+        self.setMinimumSize(1024, 640)
         self._pages: dict[str, QWidget] = {}
         self._session_worker = None       # 브라우저 스레드 — 청구서 받기와 일반청구가 함께 쓴다
 
@@ -96,6 +97,9 @@ class MainWindow(QMainWindow):
         wrap_layout.setContentsMargins(10, 0, 10, 0)
         self.stack = WorkSurface()
         self.stack.setObjectName("work")
+        # 켜자마자 초점은 작업 표면에 — 위쪽 단추(찾기 칸 · AI 단추)가 첫 초점을 받아 보라 테두리가 떠 있었다(2026-10-14 점검).
+        # 누르기로만 초점을 받으니 Tab 순서에는 끼지 않는다.
+        self.stack.setFocusPolicy(Qt.ClickFocus)
         wrap_layout.addWidget(self.stack)
         column.addWidget(surface_wrap, 1)
         self.setCentralWidget(central)
@@ -123,6 +127,13 @@ class MainWindow(QMainWindow):
         self.home.ai_login.connect(lambda: self.ai.login(self))
         self.home.ai_check.connect(self.ai.check)
         self._closing_for_restart = False
+        self._leave_confirmed = False      # 작업 중 닫기를 한 번 물었으면 업데이트를 기다렸다 닫을 때 다시 묻지 않는다
+        # 설정은 바꿀 때마다 저장되고 홈은 보관 폴더를 훑어 숫자를 다시 센다 — 숫자 칸을 누를 때마다 화면이 멈칫하지 않게 모아서 한 번
+        self._settings_timer = QTimer(self)
+        self._settings_timer.setSingleShot(True)
+        self._settings_timer.setInterval(500)
+        self._settings_timer.timeout.connect(self._on_settings_changed)
+        self._close_when_idle = False
         self._pages[HOME_ID] = self.home
         self.stack.addWidget(self.home)
         self.dock_overlay.raise_()
@@ -136,6 +147,7 @@ class MainWindow(QMainWindow):
         # 앱을 켜면 AI 로그인 상태부터 본다 — 홈에서 바로 알 수 있게(담당자 요청 2026-10-14)
         self._sync_ai()
         QTimer.singleShot(600, self.ai.check)
+        self.stack.setFocus()
 
     # ── 화면 만들기 · 열기 ────────────────────────────────────────────
     def page(self, task_id: str) -> QWidget:
@@ -170,19 +182,24 @@ class MainWindow(QMainWindow):
             page.counts_changed.connect(self._sync_home)
         elif task.id in ("meeting", "claim"):
             page.busy_changed.connect(lambda busy: self._on_busy(task.id, busy))
-            page.need_settings.connect(self.open_ai_settings)
+            use = "claim" if task.id == "claim" else "minutes"
+            page.need_settings.connect(lambda use=use: self.open_ai_settings(use))
+        # 브라우저 스레드가 띠([계속]/[멈추기])에서 기다리기 시작하면 그 화면으로 — 다른 탭에 있으면 띠가 안 보여
+        # 작업이 끝없이 멈춰 있는 것처럼 보였다(2026-10-14 점검)
+        if hasattr(page, "attention"):
+            page.attention.connect(lambda tid=task.id: self.open(tid))
         elif task.id == "settings":
-            page.changed.connect(self._on_settings_changed)
+            page.changed.connect(self._settings_timer.start)
         elif task.id == "updates":
             page.version_changed.connect(lambda _v: self._sync_user_menu())
             page.status_checked.connect(self._on_update_status)
             page.applied.connect(self._on_update_applied)
             page.restart_requested.connect(self.restart)
 
-    def open_ai_settings(self) -> None:
-        """설정을 열고 AI 플랫폼 칸으로 — 위쪽 AI 단추 메뉴와 업무 화면의 [설정에서 바꾸기]."""
+    def open_ai_settings(self, use: str = "minutes") -> None:
+        """설정을 열고 AI 플랫폼 칸으로 — 위쪽 AI 단추 메뉴와 업무 화면의 [설정에서 바꾸기]. use 는 그 업무의 고르기 칸."""
         self.open("settings")
-        self.page("settings").focus_ai()
+        self.page("settings").focus_ai(use)
 
     def open(self, task_id: str) -> None:
         """독·홈 카드·[+]·메뉴에서 부른다. 이미 열려 있으면 그 탭으로 간다."""
@@ -193,6 +210,9 @@ class MainWindow(QMainWindow):
         self.page(task_id)
         if not self.tabs.has(task_id):
             self.tabs.add(task_id, task.name, task.icon)
+            page = self._pages.get(task_id)
+            if page is not None and hasattr(page, "is_running"):
+                self.tabs.set_busy(task_id, page.is_running())     # 닫았던 탭을 다시 열어도 작업 중 점이 그대로
         self.show_task(task_id)
 
     def show_task(self, task_id: str) -> None:
@@ -232,7 +252,7 @@ class MainWindow(QMainWindow):
 
     def _on_settings_changed(self) -> None:
         if "download" in self._pages:
-            self._pages["download"].refresh_counts()
+            self._pages["download"].settings_changed()
         self._sync_home()
         # 설정에서 AI 플랫폼을 바꿨을 수 있다 — 새로 쓰는 플랫폼의 로그인 상태를 본다
         if set(ai.used_keys()) != {s.key for s in self.ai.statuses() if s.checked_at}:
@@ -326,8 +346,12 @@ class MainWindow(QMainWindow):
         """업무 이름으로 찾아 연다. 못 찾으면 상태줄에 알린다."""
         if not text:
             return
+        needle = text.lower()
+        # 장학금 · 혁신인재지원금 · 출장비 · 카드는 일반청구 안의 청구 종류다 — 그 이름으로 찾아도 일반청구가 열리게
+        aliases = {"claim": "장학금 혁신인재지원금 진행요원비 출장비 카드 세금계산서 임시저장"}
         for task in TASKS + UTILITIES:
-            if text in task.name or text in task.description:
+            haystack = f"{task.name} {task.description} {aliases.get(task.id, '')}".lower()
+            if needle in haystack:
                 self.open(task.id)
                 self.topbar.search.clear()
                 return
@@ -339,8 +363,19 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         workers, running = self._running_work()
-        if running and not self._closing_for_restart and not self._confirm_leave(running, "닫으면"):
+        if running and not self._closing_for_restart and not self._leave_confirmed and not self._confirm_leave(running, "닫으면"):
             event.ignore()
+            return
+        self._leave_confirmed = True
+        updates = self._pages.get("updates")
+        if updates is not None and updates.busy():
+            # 업데이트 확인·적용(git)이 도는 중 — 끝날 때까지 창만 숨겼다가 닫는다. 그냥 닫으면 앱이 강제 종료되고,
+            # 적용 중이었다면 git 이 중간에 끊긴다(2026-10-14 점검)
+            event.ignore()
+            if not self._close_when_idle:
+                self._close_when_idle = True
+                updates.idle.connect(self.close)
+                self.hide()
             return
         for _tid, page in workers:
             page.shutdown()

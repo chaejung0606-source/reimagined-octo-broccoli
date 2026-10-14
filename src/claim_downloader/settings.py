@@ -135,8 +135,20 @@ def load() -> Settings:
     """
     settings = Settings()
     try:
-        data = json.loads(config_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        # utf-8-sig — 메모장이 'UTF-8(BOM)' 으로 저장하면 앞에 BOM 이 붙어 json 이 못 읽고 설정이 모두 기본값으로 돌아갔다(2026-10-14 점검)
+        text = config_path().read_text(encoding="utf-8-sig")
+    except OSError:
+        return settings
+    except ValueError:                          # UTF-8 이 아님(메모장 'ANSI') — 한글 윈도우 기본 인코딩으로 한 번 더
+        try:
+            text = config_path().read_text(encoding="cp949")
+        except (OSError, ValueError):
+            _keep_broken()
+            return settings
+    try:
+        data = json.loads(text)
+    except ValueError:
+        _keep_broken()
         return settings
     if not isinstance(data, dict):
         return settings
@@ -154,6 +166,17 @@ def load() -> Settings:
         elif isinstance(value, str):
             setattr(settings, field.name, value)
     return settings
+
+
+def _keep_broken() -> None:
+    """읽지 못한 설정 파일은 다음 저장이 기본값으로 덮어쓰기 전에 옆에 남겨 둔다(config.json.읽지못함) — 담당자가 고친 경로를 되살릴 수 있게."""
+    path = config_path()
+    keep = path.with_name(path.name + ".읽지못함")
+    try:
+        if path.exists() and not keep.exists():
+            keep.write_bytes(path.read_bytes())
+    except OSError:
+        pass
 
 
 def save(settings: Settings) -> None:

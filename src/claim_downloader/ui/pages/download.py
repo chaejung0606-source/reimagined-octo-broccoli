@@ -90,6 +90,7 @@ class DownloadPage(QWidget):
     need_settings = Signal()
     busy_changed = Signal(bool)      # 받는 중인지 — 작업 탭의 점이 본다
     counts_changed = Signal()        # 보관·대기 숫자나 받기 상태가 바뀜 — 홈이 본다
+    attention = Signal()             # 띠에서 사람을 기다림 — 다른 탭에 있으면 이 화면으로(app._wire)
 
     def __init__(self, parent: QWidget | None = None, worker: SessionWorker | None = None):
         super().__init__(parent)
@@ -103,6 +104,7 @@ class DownloadPage(QWidget):
         self._status: list[str] = []
         self._running_rows: list[int] = []   # 이번 받기 순번 → 표의 행
         self._archive_ok = True
+        self._scanned_root = settings.load().out_root
         self._selection = None
         self._listed = False
         self._run_ok = 0
@@ -165,7 +167,7 @@ class DownloadPage(QWidget):
         w.item.connect(self._on_item)
         w.finished.connect(self._on_finished)
         w.relogin.connect(self._on_relogin)
-        w.error.connect(self._on_error)
+        w.failed.connect(self._on_failed)
         w.browser_state.connect(self._on_browser_state)
         w.structure_saved.connect(self._on_structure_saved)
 
@@ -500,6 +502,18 @@ class DownloadPage(QWidget):
             self.window().statusBar().clearMessage()
         self._sync_buttons()
 
+    def settings_changed(self) -> None:
+        """저장 폴더가 바뀌면 이미 읽은 목록 · 보관 스캔은 옛 폴더 기준이다 — 목록을 다시 읽을 때 새 폴더를 훑게 한다."""
+        root = settings.load().out_root
+        if root != self._scanned_root:
+            self._scanned_root = root
+            self.worker.forget_archive()
+            if self._listed:
+                self._listed = False
+                self._set_state("저장 폴더 바뀜", "warning", "저장 폴더가 바뀌었습니다. ② 목록 읽기를 다시 누르면 새 폴더를 훑고 받을 건을 다시 고릅니다.")
+        self.refresh_counts()
+        self._sync_buttons()
+
     def _on_prepared(self, report) -> None:
         self._archive_ok = report.ok
         if not report.ok:
@@ -606,6 +620,7 @@ class DownloadPage(QWidget):
     def _on_relogin(self, message: str) -> None:
         self.banner_text.setText(message)
         self.banner.show()
+        self.attention.emit()
         self._set_state("다시 로그인", "warning", "아래 띠의 안내를 따른 뒤 [계속] 을 누르세요.")
         self.window().raise_()
         self.window().activateWindow()
@@ -620,6 +635,13 @@ class DownloadPage(QWidget):
         self._capture_asked = False
         show_structure_saved(self, path)
 
+    def _on_failed(self, owner: str, message: str) -> None:
+        """이 화면이 넣은 명령의 오류만 — 일반청구가 넣은 명령의 오류는 그 화면이 알린다."""
+        if owner != "download":
+            return
+        self._capture_asked = False
+        self._on_error(message)
+
     def _on_error(self, message: str) -> None:
         self.banner.hide()
         if "Executable doesn't exist" in message or "msedge" in message:
@@ -633,7 +655,7 @@ class DownloadPage(QWidget):
         """창이 낮거나 좁으면 위쪽을 접어 표에 자리를 준다. 글씨는 줄이지 않는다."""
         super().resizeEvent(event)
         low = self.height() < 600
-        narrow = self.width() < 1300
+        narrow = self.width() < 1240      # 기본 창(1320)에서 페이지는 1298 — 1300 이면 늘 접혀 단계 설명이 안 보였다
         for step in (self.step1, self.step2, self.step3):
             step.set_compact(low or narrow)
         for card in (self.kpi_total, self.kpi_remaining, self.kpi_ok, self.kpi_waiting):

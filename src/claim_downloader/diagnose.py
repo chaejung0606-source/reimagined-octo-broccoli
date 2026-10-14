@@ -64,6 +64,9 @@ _PROBE_JS = r"""() => {
       if (type === 'checkbox' || type === 'radio') value = e.checked ? '켜짐' : '꺼짐';
       else if (SAFE_TYPES.includes(type)) value = String(e.value || '');
     }
+    // 이름이 로그인 · 비밀번호를 뜻하는 칸은 값을 적지 않는다 — 로그인 화면에서 누르면 아이디 · 숨은 비밀번호 사본이 남을 수 있었다
+    const key = ((e.id || '') + ' ' + (e.getAttribute('name') || '')).toLowerCase();
+    if (/(pw|pass|pwd|secret|비밀|login|userid|user_id|usr_id|loginid|암호)/.test(key)) value = value ? '(가림)' : '';
     const clickable = tag === 'button' || tag === 'a' || e.getAttribute('role') === 'button'
                       || type === 'button' || type === 'submit' || type === 'image';
     out.push({

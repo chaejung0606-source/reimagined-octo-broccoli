@@ -34,7 +34,9 @@ def _session(process, answers=None, stop=lambda: False, monkeypatch=None):
 
     s = ErpSession(logs.append, ask, should_stop=stop, process=process)
     s.page = FakePage()
-    s.browser = type("B", (), {"is_connected": lambda self: True})()
+    open_page = type("P", (), {"is_closed": lambda self: False})()
+    s.browser = type("B", (), {"is_connected": lambda self: True,
+                               "contexts": [type("C", (), {"pages": [open_page]})()]})()
     monkeypatch.setattr(session_mod.erp, "wait_for_grid", lambda ctx: (None, None))
     return s, logs, asked
 
@@ -143,3 +145,30 @@ def test_file_logger_writes_log_file():
     log("첫 줄\n둘째 줄")
     text = settings.log_path().read_text(encoding="utf-8")
     assert "첫 줄" in text and "둘째 줄" in text
+
+
+def test_download_skips_rows_already_in_done(monkeypatch):
+    """목록을 읽은 뒤 보관 폴더를 다시 훑어 이미 받은 것으로 확인된 건 — 표가 옛것이어도 다시 받지 않는다(2026-10-14 점검)."""
+    calls = []
+
+    def record(page, row, *rest):
+        calls.append(row["docNo"])
+        return _ok(page, row, *rest)
+
+    s, logs, _ = _session(record, monkeypatch=monkeypatch)
+    s.done = {"A"}
+    items = []
+    summary = s.download([make_row(docNo="A"), make_row(docNo="B")], on_item=lambda *a: items.append(a))
+    assert calls == ["B"] and summary.ok == 1
+    assert (0, "done", "이미 받음") in items
+    assert any("이미 받은 문서번호라 건너뜀" in line for line in logs)
+
+
+def test_download_asks_to_close_claim_form_first(monkeypatch):
+    """일반청구 작성 화면이 열려 있으면 받기 전에 닫게 한다(7절 8번) — 멈추기를 고르면 아무것도 받지 않는다."""
+    calls = []
+    s, _, asked = _session(lambda page, row, *rest: calls.append(row) or _ok(page, row, *rest),
+                           answers=[False], monkeypatch=monkeypatch)
+    monkeypatch.setattr(s, "claim_form_open", lambda: True)
+    summary = s.download([make_row(docNo="A")])
+    assert summary.stopped and calls == [] and "일반청구 작성 화면" in asked[0]

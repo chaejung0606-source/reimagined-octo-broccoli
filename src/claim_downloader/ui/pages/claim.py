@@ -75,7 +75,8 @@ ROW_STATUS = {
 GUIDE_START = "청구 종류를 고르고 지출 폴더를 추가하세요. 일반은 [내용 읽기], 장학금 · 혁신인재지원금은 바로 오른쪽에 학생 명단이 나옵니다."
 GUIDE_SCHOLARSHIP = ("학생 표를 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [ERP 에 넣기] 를 누르세요. "
                      "인건비 탭은 앱이 누릅니다.")
-GUIDE_READ = "값을 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [ERP 에 채우기] 를 누르세요."
+GUIDE_READ = ("값을 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [미리 보기] 로 확인하세요. "
+              "실제로 넣으려면 '미리 보기만' 체크를 풀고 [ERP 에 채우기].")
 NO_BACKEND = ("일반 폴더의 [내용 읽기] 는 Claude Code 가 필요합니다(장학금 · 혁신인재지원금은 AI 없이 됩니다). Claude Code 를 설치한 뒤 "
               "[다시 확인] 을 누르세요. 설치했는데도 이 안내가 보이면 컴퓨터를 다시 시작해 보세요.")
 
@@ -128,6 +129,7 @@ def scholarship_rows(job, results) -> list[ReportRow]:
 class ClaimPage(QWidget):
     busy_changed = Signal(bool)
     need_settings = Signal()        # [설정에서 바꾸기] — AI 플랫폼은 설정에서 고른다
+    attention = Signal()            # 노란 띠에서 사람을 기다림 — 다른 탭에 있으면 이 화면으로(app._wire)
 
     def __init__(self, parent: QWidget | None = None, worker: SessionWorker | None = None):
         super().__init__(parent)
@@ -144,6 +146,8 @@ class ClaimPage(QWidget):
         self._jobs: list[sch.Job | None] = []            # 장학금 폴더의 명단 · 증빙
         self._running = False
         self._erp_running = False                        # 장학금을 ERP 에 넣는 중 (브라우저 스레드)
+        self._stopping = False
+        self._capture_asked = False
         self._erp_row = -1
         self._browser_busy = False
         self._browser_open = False
@@ -176,7 +180,7 @@ class ClaimPage(QWidget):
         e.skipped.connect(self._on_skipped)
         e.stopped.connect(self._on_stopped)
         e.finished.connect(self._on_finished)
-        e.error.connect(self._on_error)
+        e.error.connect(self._on_extract_error)
         b = self.browser
         b.log.connect(self._append_log)
         b.busy.connect(self._on_browser_busy)
@@ -190,7 +194,7 @@ class ClaimPage(QWidget):
         b.scholarship_ask.connect(self._on_sch_ask)
         b.scholarship_done.connect(self._on_sch_done)
         b.structure_saved.connect(self._on_structure_saved)
-        b.error.connect(self._on_error)
+        b.failed.connect(self._on_browser_failed)
 
         self._show_form(-1)
         self._on_platform(self.platform.status())
@@ -199,10 +203,11 @@ class ClaimPage(QWidget):
     def _build_head(self) -> QHBoxLayout:
         head = QHBoxLayout()
         head.setSpacing(12)
-        head.addWidget(Art("claim", 52), 0, Qt.AlignVCenter)
+        self.head_art = Art("claim", 52)
+        head.addWidget(self.head_art, 0, Qt.AlignVCenter)
         texts = QVBoxLayout()
         texts.setSpacing(1)
-        title = QLabel("일반청구")
+        title = self.head_title = QLabel("일반청구")
         title.setObjectName("pageTitle")
         texts.addWidget(title)
         self.page_desc = muted_label(
@@ -272,13 +277,17 @@ class ClaimPage(QWidget):
         row = QHBoxLayout(self.drop_zone)
         row.setContentsMargins(18, 10, 14, 10)
         row.setSpacing(12)
-        row.addWidget(Art("archive", 52), 0, Qt.AlignVCenter)
+        self.drop_art = Art("archive", 52)
+        row.addWidget(self.drop_art, 0, Qt.AlignVCenter)
         texts = QVBoxLayout()
         texts.setSpacing(1)
         hint = QLabel("여기에 지출 폴더를 끌어다 놓으세요")
         hint.setObjectName("cardTitle")
         texts.addWidget(hint)
-        texts.addWidget(muted_label("폴더 1개 = 청구 1건. '자동' 이면 명단 엑셀 + 공통·개별증빙 폴더는 장학금(이름에 '혁신인재' 가 있으면 혁신인재지원금)으로 봅니다."))
+        # 칸 높이가 76 으로 정해져 있어 좁은 창에서 세 줄이 되면 아래가 잘렸다 — 두 줄 안에 들게 줄이고 자세한 것은 말풍선으로
+        detail = muted_label("폴더 1개 = 청구 1건. '자동' 은 폴더 모양과 이름으로 종류를 정합니다.")
+        detail.setToolTip("명단 엑셀 + 공통·개별증빙 폴더가 있으면 장학금, 이름에 '혁신인재' 가 있으면 혁신인재지원금, 아니면 일반으로 봅니다.")
+        texts.addWidget(detail)
         row.addLayout(texts, 1)
         kind_label = QLabel("청구 종류")
         kind_label.setObjectName("fieldLabel")
@@ -466,23 +475,32 @@ class ClaimPage(QWidget):
         self.form_card = card
         return card
 
-    def _build_bottom_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(10)
+    def _build_bottom_row(self) -> QVBoxLayout:
+        """두 줄 — 위는 상태 · 안내 · 진행, 아래는 단추. 한 줄에 다 두면 일반 줄을 채운 뒤(세금계산서 · 입금처 · 임시저장)
+        1120px 창에서 단추 글자가 잘리고 안내가 9줄로 접혔다(2026-10-14 점검)."""
+        bottom = QVBoxLayout()
+        bottom.setSpacing(8)
+        status = QHBoxLayout()
+        status.setSpacing(10)
         self.state_pill = Pill("준비", "neutral")
-        row.addWidget(self.state_pill, 0, Qt.AlignVCenter)
+        status.addWidget(self.state_pill, 0, Qt.AlignVCenter)
         self.guide = QLabel(GUIDE_START)
         self.guide.setObjectName("body")
         self.guide.setWordWrap(True)
-        row.addWidget(self.guide, 1)
+        status.addWidget(self.guide, 1)
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
         self.progress.setFixedSize(160, 8)
         self.progress.setRange(0, 1)
-        row.addWidget(self.progress, 0, Qt.AlignVCenter)
+        status.addWidget(self.progress, 0, Qt.AlignVCenter)
         self.progress_label = QLabel("0 / 0")
         self.progress_label.setObjectName("muted")
-        row.addWidget(self.progress_label, 0, Qt.AlignVCenter)
+        self.progress_label.setMinimumWidth(48)
+        status.addWidget(self.progress_label, 0, Qt.AlignVCenter)
+        bottom.addLayout(status)
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        bottom.addLayout(row)
         self.stop_button = QPushButton("멈추기")
         self.stop_button.setObjectName("danger")
         self.stop_button.clicked.connect(self._stop)
@@ -492,8 +510,9 @@ class ClaimPage(QWidget):
         row.addWidget(self.read_button)
         self.open_button = QPushButton("브라우저 열기")
         self.open_button.setToolTip("앱이 연 브라우저에서 ERP 로그인 → 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우세요")
-        self.open_button.clicked.connect(lambda: self.browser.open_browser(scan=False))
+        self.open_button.clicked.connect(lambda: self.browser.open_browser(scan=False, owner="claim"))
         row.addWidget(self.open_button)
+        row.addStretch(1)
         self.dry_run = QCheckBox("미리 보기만")
         self.dry_run.setChecked(True)
         self.dry_run.setToolTip("체크돼 있으면 ERP 에 넣지 않고 무엇을 넣을지만 보여 줍니다. 풀면 실제로 채웁니다 (저장·신청은 그래도 직접).")
@@ -526,7 +545,7 @@ class ClaimPage(QWidget):
         self.save_button.setToolTip("ERP 의 [저장] 을 눌러 임시저장합니다. [신청] 은 검토 후 직접 누르세요.")
         self.save_button.clicked.connect(self._save_draft)
         row.addWidget(self.save_button)
-        return row
+        return bottom
 
     # ── 상태 ────────────────────────────────────────────────────────────
     def _kind(self, row: int) -> str:
@@ -549,7 +568,10 @@ class ClaimPage(QWidget):
         unread = self._unread_rows()
         self.read_button.setEnabled(can_edit and bool(unread) and self._available is True)
         self.read_button.setText("읽는 중…" if running else f"{len(unread)}건 내용 읽기" if unread else "내용 읽기")
+        if not busy:
+            self._stopping = False
         self.stop_button.setVisible(busy)
+        self.stop_button.setEnabled(busy and not self._stopping)      # 한 번 멈춘 뒤 다음 작업에서 다시 눌리게
         self.open_button.setVisible(not self._browser_open)
         self.open_button.setEnabled(not self._browser_busy)
         self.row_kind.setEnabled(can_edit and 0 <= self._current < len(self._dirs))
@@ -561,10 +583,13 @@ class ClaimPage(QWidget):
             self.fill_button.setEnabled(chosen > 0 and not busy and not self._browser_busy and (dry or self._browser_open))
             count = job.count_text() if job is not None else "0명"
             self.fill_button.setText(f"미리 보기 ({count})" if dry else f"ERP 에 넣기 ({count})")
+            self.fill_button.setToolTip("" if dry or self._browser_open else "먼저 [브라우저 열기] 로 ERP 를 열고 새 청구서 화면을 띄우세요.")
         else:
             has_row = 0 <= self._current < len(self._dirs) and self._status[self._current] in ("read", "filled", "saved")
             self.fill_button.setEnabled(has_row and self._browser_open and not self._browser_busy and not busy)
             self.fill_button.setText("미리 보기" if dry else "ERP 에 채우기")
+            self.fill_button.setToolTip("" if self._browser_open else
+                                        "일반 줄은 미리 보기도 ERP 작성 화면을 봅니다 — 먼저 [브라우저 열기] 로 새 청구서 화면을 띄우세요.")
         filled = (not is_sch and 0 <= self._current < len(self._dirs)
                   and self._status[self._current] in ("filled", "saved"))
         self.save_button.setVisible(filled)
@@ -695,7 +720,7 @@ class ClaimPage(QWidget):
         self._sync_buttons()
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802
-        if not self._running and any(os.path.isdir(u.toLocalFile()) for u in event.mimeData().urls()):
+        if not self._running and not self._erp_running and any(os.path.isdir(u.toLocalFile()) for u in event.mimeData().urls()):
             event.acceptProposedAction()
             self._set_drop_active(True)
 
@@ -733,6 +758,8 @@ class ClaimPage(QWidget):
             self._set_wide_form(True)
             self.form_card.setEnabled(True)
             self._loading_form = False
+            if not self.is_running():
+                self.guide.setText(GUIDE_SCHOLARSHIP)
             return
         self.form_stack.setCurrentIndex(0)
         self.form_card.title_label.setText("청구 내용")
@@ -822,6 +849,7 @@ class ClaimPage(QWidget):
         self.extractor.run([self._dirs[i] for i in rows], self._backend_key)
 
     def _stop(self) -> None:
+        self._stopping = True
         if self._erp_running:
             self.browser.request_stop()
             self.stop_button.setEnabled(False)
@@ -1126,7 +1154,7 @@ class ClaimPage(QWidget):
         if not dry:
             if not self._browser_open:
                 return
-            hard = [p for p in problems if "대표적요" in p or "지급예정년월" in p or "합계" in p or "사람이 없" in p]
+            hard = [p for p in problems if "대표적요" in p or "지급예정년월" in p or "표의 합계" in p or "사람이 없" in p]
             if hard:
                 QMessageBox.warning(self, "넣기 전에 고칠 것", "\n".join("· " + p for p in hard))
                 return
@@ -1172,7 +1200,7 @@ class ClaimPage(QWidget):
 
     def _capture_structure(self) -> None:
         self._capture_asked = True              # 청구서 받기 화면도 같은 신호를 받는다 — 누른 쪽만 창을 띄운다
-        self.browser.capture_structure()
+        self.browser.capture_structure(owner="claim")
 
     def _on_structure_saved(self, path: str) -> None:
         if not getattr(self, "_capture_asked", False):
@@ -1185,6 +1213,7 @@ class ClaimPage(QWidget):
         self.ask_banner.show()
         self._sync_buttons()
         self._set_state("확인 필요", "warning", "위의 노란 띠를 따른 뒤 [계속] 을 누르세요.")
+        self.attention.emit()
         self.window().raise_()
         self.window().activateWindow()
 
@@ -1224,7 +1253,10 @@ class ClaimPage(QWidget):
         else:
             saved = [r.index for r in report.results if r.status == "saved"]
             if saved and job is not None:
-                sch.record_job(job, report)
+                try:
+                    sch.record_job(job, report)
+                except Exception as error:  # noqa: BLE001 — 기록을 못 남겨도 저장된 학생의 체크는 풀어야 다시 넣지 않는다
+                    self._append_log("채운 기록을 남기지 못했습니다: %s" % (str(error).splitlines()[0] if str(error) else type(error).__name__))
             # 다 넣었으면(멈추지 않았으면) 남은 명단 폴더로 이어 간다 — 담당자 요청(2026-10-14) '하나를 끝내고 다음으로'
             nxt = self._next_roster_row(row) if saved and not report.stopped else None
             if 0 <= row < len(self._status):
@@ -1280,8 +1312,13 @@ class ClaimPage(QWidget):
         elif not busy:
             self.window().statusBar().clearMessage()
 
-    def _on_browser_busy(self, busy: bool, _message: str) -> None:
+    def _on_browser_busy(self, busy: bool, message: str) -> None:
         self._browser_busy = busy
+        # 받기 화면을 한 번도 안 열었으면 상태줄이 비어 있었다 — 팝업에서 고르기를 기다리는 안내(최대 3분)가 안 보였다
+        if message:
+            self.window().statusBar().showMessage(message)
+        elif not busy:
+            self.window().statusBar().clearMessage()
         self._sync_buttons()
 
     def _on_browser_opened(self) -> None:
@@ -1292,22 +1329,43 @@ class ClaimPage(QWidget):
         self._browser_open = alive
         self._sync_buttons()
 
-    def _on_error(self, message: str) -> None:
+    def _on_extract_error(self, message: str) -> None:
+        """AI 읽기 스레드의 오류 — 브라우저 쪽 상태는 건드리지 않는다."""
+        self._running = False
+        self._on_platform(self.platform.status())
+        self.busy_changed.emit(self.is_running())
+        self._set_state("오류", "danger")
+        self._sync_buttons()
+        QMessageBox.warning(self, "문제가 생겼습니다", f"{message}\n\n자세한 내용은 [진행 기록] 탭과 로그 파일에 있습니다.")
+
+    def _on_browser_failed(self, owner: str, message: str) -> None:
+        """브라우저 스레드의 오류 — 이 화면이 넣은 명령의 것만. 받기 화면의 오류로 AI 읽기 상태가 풀리던 것을 막는다."""
+        if owner != "claim":
+            return
+        self._capture_asked = False
         if self._erp_running:
             self._erp_running = False
             self.ask_banner.hide()
             self.scholarship_panel.set_locked(False)
             if 0 <= self._erp_row < len(self._status):
                 self._set_status(self._erp_row, "partial")
-        self._running = False
-        self._on_platform(self.platform.status())
-        self.busy_changed.emit(False)
+        self.busy_changed.emit(self.is_running())
         self._set_state("오류", "danger")
+        self._sync_buttons()
         QMessageBox.warning(self, "문제가 생겼습니다", f"{message}\n\n자세한 내용은 [진행 기록] 탭과 로그 파일에 있습니다.")
 
     def resizeEvent(self, event) -> None:  # noqa: N802
+        """창이 낮으면 머리 · 끌어다 놓기 칸을 줄여 목록과 학생 표에 자리를 준다 — 1366×768 노트북(창 안쪽 ~690)에서
+        학생 표가 한 줄 반만 보였다(2026-10-14 점검). 탭 이름이 이미 '일반청구' 라 제목은 접어도 된다."""
         super().resizeEvent(event)
-        self.page_desc.setVisible(self.height() >= 600)
+        height = self.height()
+        self.page_desc.setVisible(height >= 600)
+        low = height < 720
+        self.head_art.setVisible(not low)
+        self.head_title.setVisible(not low)
+        self.drop_art.setVisible(not low)
+        self.drop_zone.setFixedHeight(58 if low else 76)
+        self.form_card.hint_label.setVisible(not low)
 
     def shutdown(self) -> None:
         if self._erp_running:

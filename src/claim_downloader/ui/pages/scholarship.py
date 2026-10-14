@@ -287,6 +287,13 @@ class ScholarshipPanel(QWidget):
         if self._loading or self.job is None or item.column() != COL_CHECK:
             return
         row = item.row()
+        if self._locked:
+            # 넣는 중에는 브라우저 스레드가 이미 넣을 학생을 들고 있다 — 여기서 체크를 풀어도 그 학생은 저장된다(2026-10-14 점검).
+            # 표는 막지 않는다(상태를 보려고 스크롤해야 한다). 체크만 되돌린다.
+            self._loading = True
+            item.setCheckState(Qt.Checked if self.job.selected[row] else Qt.Unchecked)
+            self._loading = False
+            return
         self.job.selected[row] = item.checkState() == Qt.Checked
         p = self.job.people[row]
         self._put_status(row, "problem" if p.note and self.job.selected[row] else ("ready" if self.job.selected[row] else "skip"))

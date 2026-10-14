@@ -171,22 +171,34 @@ def match(rows: list[dict], data: dict) -> tuple[int | None, str]:
     """
     if not rows:
         return None, "검색 결과가 없음"
+
+    def tokens(row: dict) -> list[str]:
+        cells = [str(v) for v in (row.get("cells") or {}).values()]
+        return cells + str(row.get("text", "")).split() + str(row.get("titles", "")).split()
+
     biz = digits(data.get("payeeBizNo"))
     if len(biz) == 10:
-        hits = [r for r in rows if any(digits(tok) == biz for tok in str(r.get("text", "")).split())]
+        hits = [r for r in rows if any(digits(tok) == biz for tok in tokens(r))]
         if len(hits) == 1:
             return int(hits[0]["index"]), "사업자번호 일치"
         if len(hits) > 1:
             return None, f"사업자번호가 같은 행이 {len(hits)}개"
+        # 목록에 사업자번호가 보이는데 서류의 번호인 행이 없다 — 이름이 같아도 다른 거래처다. 이름으로 고르지 않는다(2026-10-14 점검)
+        if any(len(digits(tok)) == 10 for r in rows for tok in tokens(r)):
+            return None, f"{len(rows)}행 중 사업자번호 {data.get('payeeBizNo')} 인 행이 없음"
     name = normalize(data.get("payeeName"))
     if len(name) < 2:
         return None, "상호가 너무 짧아 고르지 않음"
-    hits = [r for r in rows if name in normalize(str(r.get("text", "")) + " " + str(r.get("titles", "")))]
+    # 상호는 정확히 같은 칸만 — '한빛' 이 '한빛소프트' 를 고르던 것을 막는다
+    hits = [r for r in rows if any(normalize(tok) == name for tok in tokens(r))]
     if len(hits) == 1:
         return int(hits[0]["index"]), "상호 일치"
     if not hits:
+        near = [r for r in rows if name in normalize(str(r.get("text", "")) + " " + str(r.get("titles", "")))]
+        if near:
+            return None, f"상호 '{data.get('payeeName')}' 를 담은 행이 {len(near)}개 있지만 이름이 똑같지 않아 고르지 않음"
         return None, f"{len(rows)}행 중 상호 '{data.get('payeeName')}' 를 담은 행이 없음"
-    return None, f"상호를 담은 행이 {len(hits)}개 — 어느 것인지 애매함"
+    return None, f"상호가 같은 행이 {len(hits)}개 — 어느 것인지 애매함"
 
 
 def pick(popup, frame, data: dict, log: Callable[[str], None], wait: Callable[[float], None] = time.sleep) -> tuple[bool, str, str]:

@@ -294,10 +294,10 @@ class SettingsPage(QWidget):
             login.style().unpolish(login)
             login.style().polish(login)
 
-    def focus_ai(self) -> None:
-        """위쪽 AI 단추 · 업무 화면의 [설정에서 바꾸기] 로 왔을 때 AI 플랫폼 칸을 보이게."""
+    def focus_ai(self, use: str = "minutes") -> None:
+        """위쪽 AI 단추 · 업무 화면의 [설정에서 바꾸기] 로 왔을 때 AI 플랫폼 칸을 보이게 — 그 업무의 고르기 칸에 초점."""
         self._scroll.ensureWidgetVisible(self.ai_card, 0, 24)
-        box = self.ai_boxes.get("minutes")
+        box = self.ai_boxes.get(use) or self.ai_boxes.get("minutes")
         if box is not None:
             box.setFocus()
 

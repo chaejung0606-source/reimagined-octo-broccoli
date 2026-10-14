@@ -12,7 +12,7 @@ import json
 import os
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .naming import BIMOK, UNSORTED, UPLOAD_DIR
@@ -29,8 +29,13 @@ def load_done(path: Path) -> set[str]:
 
 
 def save_done(path: Path, done: set[str]) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(sorted(done), f, ensure_ascii=False, indent=0)
+    """받은 기록은 늘기만 한다 — 파일에 이미 있던 번호와 합쳐 쓴다. 기록을 읽지 않은 채 받은 건만 들고 있던 세션이
+    파일을 덮어써 지난 기록이 사라진 적이 있다(2026-10-14 점검). 처음부터 다시 받으려면 사람이 파일을 지운다(README)."""
+    merged = set(done) | load_done(path)
+    tmp = Path(str(path) + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:            # 쓰다 끊겨도 기록 파일이 반쪽이 되지 않게 임시 파일 → 바꿔치기
+        json.dump(sorted(merged), f, ensure_ascii=False, indent=0)
+    os.replace(tmp, path)
 
 
 def read_doc_no(pdf: Path) -> str:
@@ -49,6 +54,8 @@ class ScanReport:
     scanned: int = 0        # 캐시에 없어 새로 읽은 PDF 수
     total_pdfs: int = 0
     warning: str = ""
+    unreadable: int = 0     # 이번에 읽지 못한 PDF 수 — 캐시에 남기지 않아 다음에 다시 읽는다
+    unreadable_names: list[str] = field(default_factory=list)
 
 
 def scan_archive(out_root: str, cache_path: Path, done: set[str],
@@ -79,7 +86,8 @@ def scan_archive(out_root: str, cache_path: Path, done: set[str],
         cache = {}
 
     report = ScanReport(ok=True)
-    for root, _, files in os.walk(out_root):
+    walk_errors: list[str] = []
+    for root, _, files in os.walk(out_root, onerror=lambda error: walk_errors.append(str(getattr(error, "filename", "") or error))):
         for fn in files:
             if not fn.lower().endswith(".pdf"):
                 continue
@@ -89,7 +97,14 @@ def scan_archive(out_root: str, cache_path: Path, done: set[str],
             if dn is None:
                 try:
                     dn = reader(Path(p))
-                except Exception:              # noqa: BLE001 — 깨진 PDF 하나로 스캔 전체를 멈추지 않는다
+                except OSError:
+                    # 열지 못한 파일(OneDrive 에만 있는 파일 · 다른 프로그램이 잡고 있는 파일)은 캐시에 남기지 않는다 — 전에는 '' 로
+                    # 남겨 다시 읽지 않아, 그 청구서를 영영 '받지 않은 것' 으로 보고 다시 받았다(2026-10-14 점검). 다음 스캔에 다시 읽는다.
+                    report.unreadable += 1
+                    if len(report.unreadable_names) < 5:
+                        report.unreadable_names.append(os.path.relpath(p, out_root))
+                    continue
+                except Exception:              # noqa: BLE001 — 깨진 PDF 하나로 스캔 전체를 멈추지 않는다(내용이 깨진 것은 다시 읽어도 같다)
                     dn = ""
                 cache[p] = dn
                 report.scanned += 1
@@ -103,6 +118,12 @@ def scan_archive(out_root: str, cache_path: Path, done: set[str],
             json.dump(cache, f, ensure_ascii=False, indent=0)
     except OSError:
         pass
+    if walk_errors:
+        # 읽지 못한 폴더가 있으면 그 안의 청구서를 모두 다시 받을 수 있다 — 받기 전에 묻게 ok=False
+        report.ok = False
+        report.warning = ("⚠⚠ 보관 폴더 중 열지 못한 곳이 있습니다: " + ", ".join(walk_errors[:3])
+                          + ("" if len(walk_errors) <= 3 else f" 외 {len(walk_errors) - 3}곳")
+                          + "\n      그 안의 청구서는 이미 받은 것인지 가려내지 못합니다. 폴더 권한 · OneDrive 동기화를 확인하세요.")
     return report
 
 

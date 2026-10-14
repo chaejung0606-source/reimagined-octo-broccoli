@@ -561,7 +561,15 @@ def _rows(*texts, **extra):
 def test_payee_match_picks_only_an_unambiguous_row():
     data = {"payeeName": "코웨이(주)", "payeeBizNo": "123-45-67890"}
     assert payee.match(_rows("1 코웨이(주) 123-45-67890 활동", "2 코웨이엔텍 987-65-43210 활동"), data) == (0, "사업자번호 일치")
-    assert payee.match(_rows("1 ㈜코웨이 111-11-11111", "2 코웨이산업 222-22-22222"), {"payeeName": "코웨이"}) == (None, "상호를 담은 행이 2개 — 어느 것인지 애매함")
+    # 상호가 똑같은 칸만 고른다 — ㈜코웨이 는 코웨이, 코웨이산업은 다른 회사
+    assert payee.match(_rows("1 ㈜코웨이 111-11-11111", "2 코웨이산업 222-22-22222"), {"payeeName": "코웨이"}) == (0, "상호 일치")
+    assert payee.match(_rows("1 ㈜코웨이 111-11-11111", "2 코웨이(주) 222-22-22222"), {"payeeName": "코웨이"}) == (None, "상호가 같은 행이 2개 — 어느 것인지 애매함")
+    # 이름만 담은 행은 고르지 않는다('한빛' → '한빛소프트')
+    index, why = payee.match(_rows("1 한빛소프트 444-44-44444"), {"payeeName": "한빛"})
+    assert index is None and "똑같지 않아" in why
+    # 서류의 사업자번호가 목록에 없으면 이름이 같아도 고르지 않는다(다른 거래처)
+    index, why = payee.match(_rows("1 코웨이 999-99-99999"), {"payeeName": "코웨이", "payeeBizNo": "123-45-67890"})
+    assert index is None and "사업자번호" in why
     assert payee.match(_rows("1 ㈜코웨이 111-11-11111"), {"payeeName": "코웨이 주식회사"}) == (0, "상호 일치")
     assert payee.match([], data)[0] is None
     assert payee.match(_rows("1 다른회사 333-33-33333"), {"payeeName": "코웨이"})[0] is None
@@ -591,8 +599,10 @@ def test_payee_search_auto_picks_and_confirms_when_sure():
     assert report.ok and report.picked and report.chosen == "코웨이(주)" and report.pick_note == "사업자번호 일치"
     assert popup.clicks == [payee.SEARCH_BUTTON_ID, "row:0", payee.CONFIRM_BUTTON_ID] and popup.closed
     assert "골라 [확인] 까지" in report.lines()[0]
-    # 애매하면 [확인] 을 누르지 않는다
-    popup = FakePopup(listing=listing, form=FakeFormFrame())
+    # 애매하면 [확인] 을 누르지 않는다 — 상호가 똑같은 행이 둘
+    same = [{"index": 0, "text": "코웨이(주) 123-45-67890", "titles": "", "pick": True, "rcv": "코웨이(주)"},
+            {"index": 1, "text": "㈜코웨이 987-65-43210", "titles": "", "pick": True, "rcv": "㈜코웨이"}]
+    popup = FakePopup(listing=same, form=FakeFormFrame())
     report = payee.search(FakePage(popup), FakeFormFrame(), {"payeeName": "코웨이"}, lambda m: None, wait=lambda s: None)
     assert report.ok and not report.picked and payee.CONFIRM_BUTTON_ID not in popup.clicks and "2개" in report.pick_note
     assert "직접" not in report.lines()[0] and "고르고 [확인]" in report.lines()[0]
@@ -686,3 +696,37 @@ def test_payee_pick_reads_rows_from_a_child_frame():
     report = payee.search(FakePage(popup), frame, {"payeeName": "코웨이(주)", "payeeBizNo": "123-45-67890"}, lambda m: None, wait=lambda s: None)
     assert report.ok and report.rows == 1 and report.picked and report.chosen == "코웨이(주)"
     assert popup.clicks == [payee.SEARCH_BUTTON_ID, "row:0", payee.CONFIRM_BUTTON_ID]
+
+
+def test_fill_refuses_a_sheet_that_was_already_saved():
+    """저장 뒤에도 MOD_YN 은 N 이다(실측 ⑤) — 결의번호(REQ_CNT)가 있으면 이미 저장된 청구서라 일반 건을 더하지 않는다(2026-10-14 점검)."""
+    frame = FakeFrame()
+    frame.values["REQ_CNT"] = "324"
+    report = form.fill(frame, schema.normalize(sample()), lambda m: None, dry_run=False, wait=lambda s: None)
+    assert report.blocked and "324" in report.blocked and frame.sets == []
+    report = form.fill(frame, schema.normalize(sample()), lambda m: None, dry_run=True)
+    assert not report.blocked                                   # 미리 보기는 ERP 를 건드리지 않으니 보여 준다
+
+
+def test_save_is_not_counted_when_the_page_navigated_away():
+    """[저장] 뒤 로그인 · 오류 화면으로 넘어가 칸이 모두 비면 저장된 것으로 보지 않는다."""
+    before = {"REQ_SEQ_NO": "TMP_REQ_1", "MOD_YN": "N", "APPR_DIV_CD": "", "REQ_CNT": ""}
+    assert not form._changed(before, {k: "" for k in before})
+    assert form._changed(before, {**before, "REQ_CNT": "322", "APPR_DIV_CD": "40"})
+
+
+def test_amounts_with_decimals_and_korean_dates():
+    assert schema.parse_amount("51900.0") == 51900 and schema.parse_amount("51,900.00") == 51900
+    assert schema.parse_amount("51,900원") == 51900 and schema.parse_amount("₩ 51,900") == 51900
+    assert schema.normalize_date("2026년 10월 13일") == "2026-10-13"
+    assert schema.normalize_date("2026. 10. 13.") == "2026-10-13"
+
+
+def test_taxbill_does_not_pick_from_an_unfiltered_list():
+    """사업자번호 · 거래처명 · 수신메일 없이 조회하면 산학협력단 전체 목록 — 금액만 맞는 남의 계산서를 고르지 않는다."""
+    frame = FakeFormFrame()
+    listing = [{"index": 0, "text": "2026-09-30 남의회사 47,182 4,718 51,900", "titles": "", "pick": True, "bill": "TB9"}]
+    popup = FakePopup(kind="taxbill", listing=listing, form=frame)
+    data = {"evidence": "세금계산서", "amount": 51900, "supplyAmount": 47182, "expenseDate": "2026-09-30"}
+    report = taxbill.search(FakePage(popup), frame, data, lambda m: None, wait=lambda s: None)
+    assert not report.picked and taxbill.CONFIRM_BUTTON_ID not in popup.clicks

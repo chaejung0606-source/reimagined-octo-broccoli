@@ -36,7 +36,7 @@ TASKS: tuple[Task, ...] = (
 
 # 상단 메뉴에서 여는 화면. 독·홈 카드·[+] 메뉴에는 두지 않는다.
 UTILITIES: tuple[Task, ...] = (
-    Task("settings", "설정", "저장 폴더 · 파일 이름 형식", "settings", "sliders", "lavender",
+    Task("settings", "설정", "저장 폴더 · 파일 이름 형식 · AI 플랫폼(로그인) · 일반청구 · 바로가기 · 기록", "settings", "sliders", "lavender",
          "settings:SettingsPage", ready=True, dock=False),
     Task("updates", "업데이트", "기능 갱신 확인·적용", "upload", "gear", "sky",
          "updates:UpdatesPage", ready=True, dock=False),

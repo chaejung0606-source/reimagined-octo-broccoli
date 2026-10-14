@@ -47,10 +47,16 @@ function Find-Python {
             if ($v -and ([version]$v -ge [version]'3.11')) { return $cmd.Source }
         } catch { }
     }
-    $found = Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe" -ErrorAction SilentlyContinue |
-        Sort-Object FullName -Descending | Select-Object -First 1
-    if ($found) { return $found.FullName }
-    return $null
+    # 사용자 폴더에 깔린 파이썬도 3.11 이상만. 이름순으로 고르면 Python39 가 Python312 보다 앞서 옛 판이 뽑혔다(2026-10-14 점검)
+    $best = $null
+    $bestVersion = [version]'0.0'
+    foreach ($exe in Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe" -ErrorAction SilentlyContinue) {
+        try {
+            $v = & $exe.FullName -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null
+            if ($v -and ([version]$v -ge [version]'3.11') -and ([version]$v -gt $bestVersion)) { $best = $exe.FullName; $bestVersion = [version]$v }
+        } catch { }
+    }
+    return $best
 }
 
 function Install-Python {
@@ -68,7 +74,7 @@ function Install-Python {
     $exe = Join-Path $env:TEMP "python-$PyVersion-amd64.exe"
     Invoke-WebRequest -UseBasicParsing $url -OutFile $exe
     # 사용자 설치 - 관리자 권한 없이. PATH 와 py 런처를 함께 넣는다.
-    Start-Process -FilePath $exe -ArgumentList '/quiet', 'InstallAllUsers=0', 'PrependPath=1', 'Include_launcher=1', 'Include_test=0' -Wait
+    Start-Process -FilePath $exe -ArgumentList '/quiet', 'InstallAllUsers=0', 'PrependPath=1', 'Include_launcher=1', 'InstallLauncherAllUsers=0', 'Include_test=0' -Wait
     Refresh-Path
 }
 

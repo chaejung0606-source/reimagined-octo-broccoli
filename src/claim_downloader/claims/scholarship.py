@@ -72,14 +72,21 @@ RULES_DEFAULT = """대표적요: 02_{제목}
 SUMMARY_JS = """() => {
   const rows = document.querySelectorAll('input[name=CUR_REQ]').length;
   const txt = e => (e.innerText || e.textContent || '').replace(/\\s+/g, ' ').trim();
-  let totals = [];
-  for (const tr of Array.from(document.querySelectorAll('tr'))) {
-    const cells = Array.from(tr.children).map(txt);
-    const i = cells.findIndex(c => c.replace(/\\s/g, '') === '합계');
-    if (i < 0) continue;
-    const nums = cells.slice(i + 1).map(c => c.replace(/[^\\d-]/g, '')).filter(c => c !== '' && c !== '-').map(Number);
-    if (nums.length >= 2) { totals = nums; break; }
-  }
+  // 청구내역 표(CUR_REQ 가 든 표)의 합계 줄을 먼저 본다 — 숨은 탭의 다른 '합계' 줄을 읽지 않게. 거기 없으면 문서 전체에서.
+  const radio = document.querySelector('input[name=CUR_REQ]');
+  const own = radio && radio.closest('table');
+  const find = scope => {
+    for (const tr of Array.from(scope.querySelectorAll('tr'))) {
+      const cells = Array.from(tr.children).map(txt);
+      const i = cells.findIndex(c => c.replace(/\\s/g, '') === '합계');
+      if (i < 0) continue;
+      const nums = cells.slice(i + 1).map(c => c.replace(/[^\\d-]/g, '')).filter(c => c !== '' && c !== '-').map(Number);
+      if (nums.length >= 2) return nums;
+    }
+    return [];
+  };
+  let totals = own ? find(own) : [];
+  if (!totals.length) totals = find(document);
   return {rows, totals};
 }"""
 
@@ -142,6 +149,12 @@ def load_rules(spec: Spec | None = None) -> dict[str, str]:
                 parsed = parse_rules(cur)
                 if parsed.get("대표적요") and parsed.get("행적요"):
                     return parsed
+                # 담당자가 고친 파일인데 줄 하나를 못 읽었다 — 파일을 기본값으로 덮어쓰지 않는다(고친 것이 사라졌다, 2026-10-14 점검).
+                # 못 읽은 줄만 기본값으로 채워 쓰고 알린다.
+                file_log(f"{spec.name} 규칙 파일에서 '대표적요:' 또는 '행적요:' 줄을 읽지 못해 그 줄만 기본값으로 씁니다 — {path}")
+                merged = parse_rules(default)
+                merged.update({k: v for k, v in parsed.items() if v})
+                return merged
         for p in (path, base):
             with open(p, "w", encoding="utf-8") as f:
                 f.write(header + default + "\n")
@@ -214,7 +227,7 @@ class Job:
     def count_text(self, indexes: list[int] | None = None) -> str:
         """'3명', 또는 한 학생이 교과목 여럿이면 '4줄(3명)' — ERP 에는 줄 수만큼 [저장] 한다."""
         indexes = self.chosen() if indexes is None else indexes
-        students = len({(self.people[i].name.replace(" ", ""), self.people[i].student_no or f"#{i}") for i in indexes})
+        students = len({(_squash(self.people[i].name), self.people[i].student_no or f"#{i}") for i in indexes})
         return f"{len(indexes)}명" if students == len(indexes) else f"{len(indexes)}줄({students}명)"
 
     def files_for(self, index: int) -> list[str]:
@@ -272,7 +285,7 @@ def _rows_of_student(key: str, indexes: list[int], people: list[roster_mod.Perso
         indexes = [i for i in indexes if people[i].student_no and people[i].student_no in key]
         if len({people[i].student_no for i in indexes}) != 1:
             return []
-    by_course = [i for i in indexes if people[i].course and people[i].course.replace(" ", "") in key]
+    by_course = [i for i in indexes if people[i].course and _squash(people[i].course) in key]
     return by_course if len(by_course) == 1 else indexes
 
 
@@ -280,18 +293,18 @@ def assign_person_files(files: list[str], base: str, people: list[roster_mod.Per
     """개별증빙 파일을 학생에게 — 파일명이나 상위 폴더 이름에 이름이 들어 있으면 그 학생. 같은 이름이 둘이면 학번으로 가린다."""
     by_name: dict[str, list[int]] = {}
     for i, p in enumerate(people):
-        by_name.setdefault(p.name.replace(" ", ""), []).append(i)
+        by_name.setdefault(_squash(p.name), []).append(i)
     assigned: dict[int, list[str]] = {}
     unmatched: list[str] = []
     for path in files:
         rel = os.path.relpath(path, base).replace("\\", "/")
-        key = rel.replace(" ", "")
+        key = _squash(rel)
         hits: set[int] = set()
         for name, indexes in by_name.items():
             if name and name in key:
                 hits.update(_rows_of_student(key, indexes, people))
         # 한 학생의 줄만 맞았을 때만 붙인다 — 두 학생에 걸리면 사람이 정한다
-        students = {(people[i].name.replace(" ", ""), people[i].student_no) for i in hits}
+        students = {(_squash(people[i].name), people[i].student_no) for i in hits}
         if hits and len(students) == 1:
             for i in sorted(hits):
                 assigned.setdefault(i, []).append(path)
@@ -397,6 +410,11 @@ def _set(frame, kind: str, element_id: str, value: str) -> dict:
         return frame.evaluate(SET_SELECT_JS if kind == "select" else SET_TEXT_JS, [element_id, value])
     except Exception as error:  # noqa: BLE001
         return {"ok": False, "why": str(error).splitlines()[0][:80] if str(error) else "오류"}
+
+
+def _squash(text) -> str:
+    """이름 · 경로 비교용 — 공백뿐 아니라 줄 안의 줄바꿈 · 탭 · 줄바꿈 없는 공백(NBSP)까지 걷어낸다."""
+    return re.sub(r"\s+", "", str(text or ""))
 
 
 def _digits(text: str) -> str:
@@ -666,7 +684,7 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         s = _state(frame, ["RCV_CD", "RCV_NM"])
         if p.student_no and _digits(s["RCV_CD"]) == p.student_no:
             return True, ""
-        if not p.student_no and s["RCV_NM"].replace(" ", "") == p.name.replace(" ", ""):
+        if not p.student_no and _squash(s["RCV_NM"]) == _squash(p.name):
             return True, ""
         return False, f"작성 화면의 소득자가 {p.name}({p.student_no or '학번 없음'}) 이 아님 (지금: {s['RCV_NM'] or '—'} {s['RCV_CD'] or ''})"
 
@@ -761,16 +779,23 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
     # 6. 첨부
     files = job.files_for(index)
     if files:
-        def attach_ok() -> tuple[bool, str]:
-            rep = attach.upload(page, frame, files, log, wait=wait, messages=messages)
-            result.lines.extend(rep.lines())
-            return rep.ok, rep.note
+        # 앱은 한 번만 올린다. 실패하면 사람이 ERP '첨부' 로 마저 올리고, [계속] 이면 다시 올리지 않고 첨부문서 수만 본다 —
+        # 전에는 [계속] 마다 처음부터 다시 올려 사람이 올린 것과 겹쳤다(2026-10-14 점검).
+        want = len(attach.attachable(list(files)))
+        base = attach.file_count(frame)
+        rep = attach.upload(page, frame, files, log, wait=wait, messages=messages)
+        result.lines.extend(rep.lines())
+        if not rep.ok:
+            def attached_ok() -> tuple[bool, str]:
+                added = attach.file_count(frame) - base
+                return added >= want, f"첨부문서가 {added}개 늘었습니다({want}개 필요)"
 
-        ok, why = _ask_until(attach_ok, ask, lambda w: ("%d. %s — 첨부를 올리지 못했습니다(%s). ERP 의 '첨부' 로 %d개를 직접 올린 뒤 [계속] 을 누르세요. "
-                                                       "(앱이 다시 시도합니다 — 이미 올렸으면 [계속] 을 누르고 중복된 것은 ERP 에서 지우세요)"
-                                                       % (index + 1, p.name, w, len(files))), wait)
-        if not ok:
-            return False, "첨부 실패"
+            first = rep.note
+            ok, why = _ask_until(attached_ok, ask, lambda w: ("%d. %s — 앱이 첨부를 다 올리지 못했습니다(%s). ERP 의 '첨부' 로 남은 파일을 직접 올려 "
+                                                             "이 줄 첨부문서가 %d개 늘면 [계속] 을 누르세요. (%s)" % (index + 1, p.name, first, want, w)), wait)
+            if not ok:
+                return False, "첨부 실패"
+            result.lines.append("✓ 첨부(사람이 마저 올림) " + why)
     else:
         result.lines.append("· 첨부 없음")
 
@@ -880,7 +905,9 @@ def _use_document_account(frame, job: Job, index: int, s: dict, log, ask: Ask, w
         why = r_bank.get("why") or r_acct.get("why") or f"넣은 뒤 계좌 칸이 {now or '비어 있음'}"
         ok = ask("%d. %s — %s 명단의 %s %s 를 넣지 못했습니다(%s). ERP 에서 직접 넣고 [예금주조회] 로 '성공' 을 확인한 뒤 [계속], 아니면 [멈추기]."
                  % (index + 1, p.name, erp_label, p.bank, p.account, why))
-        return (True, "", False) if ok else (False, "계좌를 넣지 못함 — 멈춤", False)
+        # 은행이나 계좌 중 하나라도 이미 바꿨으면 결과 칸의 '성공' 은 바꾸기 전 계좌의 것일 수 있다 — 앱이 [예금주조회] 를 다시 본다
+        wrote = bool(r_acct.get("ok") or r_bank.get("ok"))
+        return (True, "", wrote) if ok else (False, "계좌를 넣지 못함 — 멈춤", False)
     note = ("첨부서류" if from_document else "명단 엑셀" if empty and not read or no_bank else
             "명단 엑셀(첨부서류에서 계좌를 읽지 못함)")
     before = "ERP 계좌 칸이 비어 있었음" if empty else "ERP 은행 칸이 비어 있었음" if no_bank else f"ERP 에 있던 계좌 {erp_acct}"
@@ -970,6 +997,10 @@ def _owner_result_ok(value: str, name: str) -> tuple[bool, str]:
     return True, v
 
 
+# 예금주조회 알림 중 실패로 볼 글 — '예금주조회시 은행/계좌번호는 필수입력입니다.'(실제 2026-10-14) 같은 것
+FAIL_WORDS = re.compile(r"실패|오류|필수|없습니다|없음|불일치|확인할 수 없|맞지 않|잘못|아닙니다|불가")
+
+
 def _press_owner_check(frame, p, log, wait, messages: list[str], why: str) -> tuple[bool, str]:
     """[예금주조회] 를 앱이 누르고 **새** 결과를 본다(담당자 결정 2026-10-14). '성공:학생이름' 이면 (True, 결과), 아니면 (False, 이유).
 
@@ -988,13 +1019,22 @@ def _press_owner_check(frame, p, log, wait, messages: list[str], why: str) -> tu
     shown = _state(frame, ["ACCT_NO"])["ACCT_NO"]
     log("[예금주조회] 누름 (%s · 은행 %s · 계좌 %s)" % (why, _bank_shown(frame) or "비어 있음", shown or "비어 있음"))
     now = before
+    after_alert = 0
     for _ in range(30):                         # ~7.5초 — 펌뱅킹 조회라 몇 초 걸릴 수 있다
         wait(0.25)
         now = _state(frame, ids)
-        if (now != before or len(messages) > seen) and now["OWNR_INQ_RSLT"]:
+        if now != before and now["OWNR_INQ_RSLT"]:
             break
+        if len(messages) > seen:                # 알림이 먼저 오고 결과 칸은 뒤에 바뀔 수 있다 — 알림만 보고 끝내지 않고 조금 더 본다
+            after_alert += 1
+            if after_alert >= 8:
+                break
     alerts = messages[seen:]
     log("예금주조회 결과: %s%s" % (now["OWNR_INQ_RSLT"] or "비어 있음", (" · 알림: " + " / ".join(alerts)) if alerts else ""))
+    # 실패 알림이면 결과 칸에 남은 옛 '성공' 을 믿지 않는다 — 알림만 있으면 통과시키던 것을 막는다(2026-10-14 점검)
+    failed = [a for a in alerts if FAIL_WORDS.search(a)]
+    if failed:
+        return False, "ERP 알림: " + " / ".join(failed)
     if now == before and not alerts:
         return False, f"눌렀지만 결과가 바뀌지 않음(지금 '{now['OWNR_INQ_RSLT'] or '비어 있음'}')"
     return _owner_result_ok(now["OWNR_INQ_RSLT"], p.name)

@@ -69,7 +69,11 @@ def parse_amount(value) -> int | None:
         return None
     if isinstance(value, (int, float)):
         return int(round(value))
-    digits = re.sub(r"[^0-9\-]", "", str(value))
+    text = re.sub(r"[,\s원₩]", "", str(value))
+    # 소수점이 있는 글('51900.0' · '51,900.00')은 실수로 읽는다 — 숫자만 남기면 점이 빠져 10배 · 100배가 됐다(2026-10-14 점검)
+    if re.fullmatch(r"-?\d+(\.\d+)?", text):
+        return int(round(float(text)))
+    digits = re.sub(r"[^0-9\-]", "", text)
     try:
         return int(digits)
     except ValueError:
@@ -79,7 +83,8 @@ def parse_amount(value) -> int | None:
 def normalize_date(value) -> str:
     """2026.10.13 · 20261013 · 2026-10-13 · 2026년 10월 13일 → 2026-10-13. 못 읽으면 입력 그대로."""
     text = str(value or "").strip()
-    m = re.search(r"(\d{4})\D?(\d{1,2})\D?(\d{1,2})", text)
+    # 구분자가 '년 ' · '. ' 처럼 두 글자 이상이어도 — '2026년 10월 13일' · '2026. 10. 13.'
+    m = re.search(r"(\d{4})\D{0,3}?(\d{1,2})\D{0,3}?(\d{1,2})", text)
     if not m:
         return text
     y, mo, d = (int(g) for g in m.groups())

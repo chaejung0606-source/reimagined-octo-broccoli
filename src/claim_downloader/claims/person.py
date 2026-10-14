@@ -16,6 +16,7 @@ JS 는 payee.py 의 것을 빌려 쓴다. Playwright 를 들여오지 않는다.
 """
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -87,6 +88,11 @@ class PersonReport:
         return [f"✗ 소득자 팝업: {self.note or '열지 못함'} — 돋보기를 직접 눌러 골라 주세요"]
 
 
+def _squash(text) -> str:
+    """이름 비교용 — 공백 · 탭 · NBSP 를 모두 걷어낸다."""
+    return re.sub(r"\s+", "", str(text or ""))
+
+
 def match(rows: list[dict], name: str, student_no: str) -> tuple[int | None, str]:
     """`k_EMP_NO` 가 학번과 같은 행이 하나면 (index, 근거). 아니면 (None, 이유). 학번이 없으면 고르지 않는다."""
     if not rows:
@@ -108,8 +114,8 @@ def match(rows: list[dict], name: str, student_no: str) -> tuple[int | None, str
             hits.append(row)
     if len(hits) == 1:
         row = hits[0]
-        got = str((row.get("cells") or {}).get(COL_NAME, "")).replace(" ", "")
-        if got and name and got != name.replace(" ", ""):
+        got = _squash((row.get("cells") or {}).get(COL_NAME, ""))
+        if got and name and got != _squash(name):
             return None, f"학번은 같은데 이름이 다름 (목록: {got})"
         return int(row["index"]), "학번 일치"
     if not hits:

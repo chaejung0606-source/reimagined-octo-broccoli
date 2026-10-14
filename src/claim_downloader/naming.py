@@ -155,9 +155,33 @@ def ensure_not_upload(path: Path) -> None:
         raise RuntimeError(f"'{UPLOAD_DIR}' 폴더에는 쓰지 않습니다: {path}")
 
 
+MAX_PATH = 240       # 윈도우 경로 한도(259)보다 여유 있게 — 넘으면 저장은 되는데 파이썬이 못 찾아 '저장 실패' 가 됐다
+
+
+def fit_name(fname: str, room: int) -> str:
+    """파일 이름이 room 글자를 넘으면 적요 부분을 줄인다 — 앞의 '0N_(날짜) ' 와 뒤의 '_이체자_(금액)' 은 남긴다."""
+    if len(fname) <= room:
+        return fname
+    base, ext = fname[:-4], fname[-4:]
+    head_end = base.find(") ") + 2 if ") " in base else 0
+    tail_at = base.rfind("_(")
+    if tail_at > head_end:
+        owner_at = base.rfind("_", head_end, tail_at)
+        if owner_at > head_end:
+            tail_at = owner_at
+    else:
+        tail_at = len(base)
+    head, middle, tail = base[:head_end], base[head_end:tail_at], base[tail_at:]
+    keep = room - len(ext) - len(head) - len(tail) - 1
+    if keep < 8:
+        return base[:max(room - len(ext), 1)] + ext
+    return head + middle[:keep].rstrip() + "…" + tail + ext
+
+
 def destination(out_root: str | Path, code: str, fname: str) -> Path:
-    """비목 폴더 바로 아래의 저장 경로. 같은 이름이 있으면 덮어쓰지 않고 _2, _3."""
+    """비목 폴더 바로 아래의 저장 경로. 같은 이름이 있으면 덮어쓰지 않고 _2, _3. 경로가 길면 적요를 줄인다."""
     folder = Path(out_root) / folder_name(code)
+    fname = fit_name(fname, MAX_PATH - len(str(folder)) - 1 - 3)      # 3 = 겹칠 때 붙는 _NN
     dest = folder / fname
     if dest.exists():
         base = fname[:-4]
@@ -165,5 +189,6 @@ def destination(out_root: str | Path, code: str, fname: str) -> Path:
         while (folder / f"{base}_{n}.pdf").exists():
             n += 1
         dest = folder / f"{base}_{n}.pdf"
-    ensure_not_upload(dest.relative_to(out_root))
+    # 저장 폴더 자체가 '업로드' 안에 잡혀 있어도 막는다 — 전에는 저장 폴더 아래만 보았다(2026-10-14 점검)
+    ensure_not_upload(dest)
     return dest

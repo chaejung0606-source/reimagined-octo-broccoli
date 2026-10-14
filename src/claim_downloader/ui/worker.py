@@ -31,6 +31,7 @@ class SessionWorker(QObject):
     finished = Signal(object)           # session.RunSummary
     relogin = Signal(str)               # 사람이 다시 로그인해야 함
     error = Signal(str)
+    failed = Signal(str, str)           # 명령을 넣은 화면("download" · "claim"), 오류 — 화면마다 제 명령의 오류만 받는다
     browser_state = Signal(bool)        # 명령을 마칠 때마다 브라우저가 살아 있는지
     structure_saved = Signal(str)       # 진단: 화면 구조를 저장한 파일 경로 (못 했으면 "")
     claim_filled = Signal(object)       # 일반청구: claims.form.FillReport
@@ -50,50 +51,61 @@ class SessionWorker(QObject):
         self._resume_ok = False
         self._waiting_relogin = False
         self._capture_now = threading.Event()   # 띠에서 기다리는 중에 누른 [화면 구조 저장]
+        self._capture_owner = "download"
         self._session: ErpSession | None = None
         self._thread = threading.Thread(target=self._loop, name="erp-browser", daemon=True)
         self._thread.start()
 
     # ── 화면 스레드에서 부르는 것 ──────────────────────────────────────────
-    def open_browser(self, scan: bool = True) -> None:
-        """scan=False 면 보관 폴더를 읽지 않고 브라우저만 연다 — 일반청구는 보관 폴더가 필요 없다."""
-        self._queue.put(("open", (scan,)))
+    def _put(self, name: str, args: tuple, owner: str) -> None:
+        # 받기 · 일반청구 두 화면이 이 스레드를 같이 쓴다. 오류를 둘 다 받으면 같은 오류 창이 두 번 뜨고, 일반청구의 AI 읽기 상태까지
+        # 풀렸다(2026-10-14 점검) — 명령마다 넣은 화면을 붙여 오류는 그 화면만 받는다(failed).
+        self._queue.put((name, args, owner))
+
+    def open_browser(self, scan: bool = True, owner: str = "download") -> None:
+        """scan=False 면 보관 폴더를 읽지 않고 브라우저만 연다 — 일반청구는 보관 폴더가 필요 없다(받기 전에는 _ensure_scanned 가 읽는다)."""
+        self._put("open", (scan,), owner)
 
     def fill_claim(self, data: dict, dry_run: bool = True) -> None:
-        self._queue.put(("fill_claim", (data, dry_run)))
+        self._put("fill_claim", (data, dry_run), "claim")
 
     def check_claim_form(self) -> None:
-        self._queue.put(("check_claim_form", ()))
+        self._put("check_claim_form", (), "claim")
 
     def save_claim_draft(self) -> None:
-        self._queue.put(("save_claim_draft", ()))
+        self._put("save_claim_draft", (), "claim")
 
     def search_payee(self, data: dict) -> None:
-        self._queue.put(("search_payee", (data,)))
+        self._put("search_payee", (data,), "claim")
 
     def search_taxbill(self, data: dict) -> None:
-        self._queue.put(("search_taxbill", (data,)))
+        self._put("search_taxbill", (data,), "claim")
 
     def fill_scholarship(self, job, dry_run: bool = True) -> None:
         self._stop.clear()
-        self._queue.put(("fill_scholarship", (job, dry_run)))
+        self._put("fill_scholarship", (job, dry_run), "claim")
 
     def read_list(self) -> None:
-        self._queue.put(("read_list", ()))
+        self._put("read_list", (), "download")
+
+    def forget_archive(self) -> None:
+        """저장 폴더가 바뀌었다 — 다음 목록 읽기 전에 보관 폴더를 다시 훑게 한다."""
+        self._put("forget_archive", (), "download")
 
     def download(self, targets: list[dict]) -> None:
         self._stop.clear()
-        self._queue.put(("download", (targets,)))
+        self._put("download", (targets,), "download")
 
-    def capture_structure(self) -> None:
+    def capture_structure(self, owner: str = "download") -> None:
         """진단 모드 — 지금 열린 화면의 구조를 파일로. 읽기만 한다.
 
         장학금 노란 띠 · 재로그인 띠로 이 스레드가 기다리는 중이면 그 자리에서 바로 읽는다 — 큐에 넣으면 작업이 다 끝난 뒤에야 돌아,
         띠가 떠 있는 동안 연 팝업(국적 돋보기 등)을 실측할 수 없다(담당자 요청 2026-10-14: 일반청구에서도 화면 구조 저장)."""
+        self._capture_owner = owner
         if self._waiting_relogin:
             self._capture_now.set()
         else:
-            self._queue.put(("capture", ()))
+            self._put("capture", (), owner)
 
     def request_stop(self) -> None:
         """지금 받는 건을 마치고 멈춘다. 받는 도중 끊으면 반쪽짜리 파일이 남는다."""
@@ -129,7 +141,7 @@ class SessionWorker(QObject):
                 self._capture_inline()
         if self._capture_now.is_set():           # 띠가 닫히는 순간 누른 것 — 지금 작업 뒤에 돈다
             self._capture_now.clear()
-            self._queue.put(("capture", ()))
+            self._put("capture", (), self._capture_owner)
 
     def _capture_inline(self) -> None:
         try:
@@ -148,13 +160,15 @@ class SessionWorker(QObject):
             if command is None:
                 session.close()
                 return
-            name, args = command
+            name, args, owner = command
             try:
                 getattr(self, "_do_" + name)(session, *args)
             except Exception as error:   # noqa: BLE001 — 스레드가 죽으면 앱 전체가 먹통이 된다
                 log("오류: %s" % (str(error).splitlines()[0] if str(error) else type(error).__name__))
                 log(traceback.format_exc())
-                self.error.emit(str(error).splitlines()[0] if str(error) else type(error).__name__)
+                message = str(error).splitlines()[0] if str(error) else type(error).__name__
+                self.failed.emit(owner, message)
+                self.error.emit(message)
             finally:
                 self.browser_state.emit(session.browser_open)
                 self.busy.emit(False, "")
@@ -208,7 +222,18 @@ class SessionWorker(QObject):
         self.busy.emit(True, "화면 구조를 읽는 중…")
         self.structure_saved.emit(str(session.capture_structure()))
 
+    def _ensure_scanned(self, session: ErpSession) -> None:
+        """받기 전에는 보관 폴더를 반드시 한 번 훑는다. 일반청구가 브라우저를 먼저 열면(scan=False) 훑지 않은 채
+        받기 화면의 ①이 끝난 것처럼 보여, 이미 받은 청구서를 다시 받고 받은 기록까지 덮어썼다(7절 4번 · 2026-10-14 점검)."""
+        if session.archive_report is None or not session.archive_report.ok:     # 실패했으면 폴더를 고쳤을 수 있어 다시
+            self.busy.emit(True, "보관 폴더를 읽는 중…")
+            self.prepared.emit(session.prepare())
+
+    def _do_forget_archive(self, session: ErpSession) -> None:
+        session.archive_report = None
+
     def _do_read_list(self, session: ErpSession) -> None:
+        self._ensure_scanned(session)
         self.busy.emit(True, "결의서 목록을 읽는 중…")
         try:
             selection = session.read_list()
@@ -218,6 +243,7 @@ class SessionWorker(QObject):
         self.listed.emit(selection)
 
     def _do_download(self, session: ErpSession, targets: list[dict]) -> None:
+        self._ensure_scanned(session)
         self.busy.emit(True, "청구서를 받는 중…")
         summary = session.download(targets, on_item=self.item.emit)
         self.finished.emit(summary)

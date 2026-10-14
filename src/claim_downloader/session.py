@@ -85,14 +85,22 @@ class ErpSession:
             archive.save_done(settings_mod.done_path(), self.done)
         else:
             self.log(report.warning)
+        if report.unreadable:
+            self.log("⚠ 보관 PDF %d개를 읽지 못했습니다(%s%s) — 그 청구서는 이미 받은 것인지 몰라 다시 받을 수 있습니다. "
+                     "OneDrive 에만 있는 파일이면 '이 디바이스에 항상 유지' 로 내려받은 뒤 다시 읽으세요(다음 스캔 때 다시 읽습니다)."
+                     % (report.unreadable, ", ".join(report.unreadable_names), " …" if report.unreadable > len(report.unreadable_names) else ""))
         self.archive_report = report
         return report
 
     # ── 브라우저 ─────────────────────────────────────────────────────────
     @property
     def browser_open(self) -> bool:
+        """브라우저가 살아 있고 열린 창이 하나라도 있는지. 사람이 마지막 창을 닫아도 브라우저는 연결된 채 남을 수 있어
+        창까지 본다 — 안 그러면 ① 이 꺼진 채로 '열린 창이 없음' 만 되풀이했다(2026-10-14 점검)."""
         try:
-            return self.browser is not None and self.browser.is_connected()
+            if self.browser is None or not self.browser.is_connected():
+                return False
+            return any(not page.is_closed() for context in self.browser.contexts for page in context.pages)
         except Exception:      # noqa: BLE001
             return False
 
@@ -103,6 +111,12 @@ class ErpSession:
         """
         if self.browser_open:
             return
+        if self.browser is not None:          # 창이 모두 닫힌 채 남은 브라우저 — 새로 띄우기 전에 닫는다
+            try:
+                self.browser.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self.browser = None
         from playwright.sync_api import sync_playwright
 
         if self._pw is None:
@@ -219,6 +233,14 @@ class ErpSession:
             report.note = "일반청구 작성 화면을 찾지 못했습니다. 채운 화면이 그대로 열려 있는지 확인하세요."
             self.log(report.note)
             return report
+        saved_no = claim_form.saved_sheet(claim_form.read_state(frame, ["REQ_CNT", "APPR_DIV_CD"]))
+        if saved_no:
+            # 이미 저장된 청구서 — [임시저장] 을 두 번 누르거나 다른 청구서가 떠 있으면 줄이 하나 더 생긴다
+            report = claim_form.SaveReport(ok=False)
+            report.note = (f"이 화면은 이미 임시저장된 청구서입니다(결의번호 {saved_no}). 다시 누르면 줄이 하나 더 생겨 누르지 않았습니다. "
+                           "ERP 의 청구내역 표에서 저장된 것을 확인하세요.")
+            self.log(report.note)
+            return report
         messages: list[str] = []
 
         def on_dialog(dialog) -> None:
@@ -301,6 +323,19 @@ class ErpSession:
         notify = on_item or (lambda *_: None)
         summary = RunSummary()
         retried: dict[str, int] = {}
+        # 일반청구 작성 화면에도 '청구서출력' 이 있어 받기가 그 화면을 상세화면으로 볼 수 있다(7절 8번). 탐지 코드는 겪기 전까지
+        # 바꾸지 않기로 했으니, 받기 전에 그 탭을 닫게 한다 — 엉뚱한 화면을 기다리다 ERP 를 새로 열면 작성 중인 값이 사라진다.
+        try:
+            form_open = self.claim_form_open()
+        except Exception:  # noqa: BLE001
+            form_open = False
+        if form_open:
+            self.log("⚠ 일반청구 작성 화면이 열려 있어 받기 전에 닫게 합니다")
+            if not self.ask_relogin("ERP 에 일반청구 작성 화면(청구서(일반) 탭)이 열려 있습니다. 받기가 그 화면을 상세화면으로 잘못 볼 수 "
+                                    "있어요. 작성 중인 것이 있으면 [저장] 한 뒤 그 탭을 닫고, 결의서내역 목록을 띄운 다음 계속하세요."):
+                summary.stopped = True
+                self.log("사용자가 중단했습니다.")
+                return summary
         i = 0
         while i < len(targets):
             if self.should_stop():
@@ -308,6 +343,12 @@ class ErpSession:
                 self.log("멈춤 요청 — 여기서 그만 받습니다.")
                 break
             row = targets[i]
+            if row.get("docNo") and row["docNo"] in self.done:
+                # 목록을 읽은 뒤 다시 훑은 보관 폴더에 이미 있는 건 — 표가 옛것이어도 다시 받지 않는다(2026-10-14 점검)
+                self.log("[%d/%d] No %s — 이미 받은 문서번호라 건너뜀" % (i + 1, len(targets), row.get("no")))
+                notify(i, "done", "이미 받음")
+                i += 1
+                continue
             notify(i, "running", "")
             self.log("[%d/%d] No %s (결의 %s) · %s" % (
                 i + 1, len(targets), row.get("no"), row.get("seq"), (row.get("cont") or "")[:30]))
