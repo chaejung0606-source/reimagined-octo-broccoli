@@ -702,7 +702,7 @@ class TaskCard(QFrame):
         self.setFocusPolicy(Qt.StrongFocus)
         self.setAccessibleName(f"{task.name} 열기" + ("" if task.ready else " (준비 중, 미리보기)"))
         # 타일은 폭을 못박고 왼쪽부터 늘어놓는다. 창 폭에 맞춰 늘이면 넷이 멀찍이 흩어져 '도구함' 으로 안 읽힌다
-        self.setFixedSize(196, 186)
+        self.setFixedSize(196, 200)
         self.setAttribute(Qt.WA_Hover, True)
 
         layout = QVBoxLayout(self)
@@ -711,10 +711,10 @@ class TaskCard(QFrame):
 
         self.plate = QFrame()
         self.plate.setObjectName(f"taskArt_{task.accent}")
-        self.plate.setFixedSize(108, 108)
+        self.plate.setFixedSize(122, 122)
         plate_layout = QVBoxLayout(self.plate)
         plate_layout.setContentsMargins(0, 0, 0, 0)
-        plate_layout.addWidget(Art(task.art, 92), 0, Qt.AlignCenter)
+        plate_layout.addWidget(Art(task.art, 112), 0, Qt.AlignCenter)
         layout.addWidget(self.plate, 0, Qt.AlignHCenter)
 
         name = QLabel(task.name)

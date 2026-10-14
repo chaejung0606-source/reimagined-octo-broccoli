@@ -110,7 +110,7 @@ class MinutesPage(QWidget):
     def _build_head(self) -> QHBoxLayout:
         head = QHBoxLayout()
         head.setSpacing(12)
-        head.addWidget(Art("meeting", 44), 0, Qt.AlignVCenter)
+        head.addWidget(Art("meeting", 52), 0, Qt.AlignVCenter)
         texts = QVBoxLayout()
         texts.setSpacing(1)
         title = QLabel("회의록 생성")
@@ -180,7 +180,7 @@ class MinutesPage(QWidget):
         row = QHBoxLayout(self.drop_zone)
         row.setContentsMargins(18, 10, 14, 10)
         row.setSpacing(12)
-        row.addWidget(Art("archive", 44), 0, Qt.AlignVCenter)
+        row.addWidget(Art("archive", 52), 0, Qt.AlignVCenter)
         texts = QVBoxLayout()
         texts.setSpacing(1)
         hint = QLabel("여기에 회의 폴더를 끌어다 놓으세요")

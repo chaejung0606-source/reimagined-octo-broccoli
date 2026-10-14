@@ -236,7 +236,7 @@ class HomePage(QWidget):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(12, 8, 10, 8)
         layout.setSpacing(10)
-        layout.addWidget(Art(art, 36))
+        layout.addWidget(Art(art, 42))
         texts = QVBoxLayout()
         texts.setSpacing(1)
         label = QLabel(name)

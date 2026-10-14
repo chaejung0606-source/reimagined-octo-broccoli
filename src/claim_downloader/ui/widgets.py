@@ -123,7 +123,7 @@ class Card(QFrame):
             header = QHBoxLayout()
             header.setSpacing(12)
             if art:
-                header.addWidget(Art(art, 40))
+                header.addWidget(Art(art, 46))
             titles = QVBoxLayout()
             titles.setSpacing(2)
             self.title_label = _label(title, "cardTitle")
@@ -167,7 +167,8 @@ class KpiCard(QFrame):
         texts.addWidget(self.value)
         texts.addWidget(self.caption)
         row.addLayout(texts, 1)
-        row.addWidget(Art(art, 48), 0, Qt.AlignVCenter)
+        self.art = Art(art, 56)
+        row.addWidget(self.art, 0, Qt.AlignVCenter)
 
     def set_value(self, value: str, caption: str | None = None) -> None:
         self.value.setText(value)
@@ -178,6 +179,7 @@ class KpiCard(QFrame):
         """낮은 창 — 보조 문구를 숨기고 높이를 줄인다. 숫자와 이름은 그대로."""
         self.caption.setVisible(not compact)
         self.setFixedHeight(68 if compact else 88)
+        self.art.set_size(46 if compact else 56)     # 낮은 카드(위아래 여백 10씩)에 들어가게
 
 
 class Step(QFrame):
@@ -194,7 +196,7 @@ class Step(QFrame):
         row = QHBoxLayout(self)
         row.setContentsMargins(14, 12, 14, 12)
         row.setSpacing(10)
-        row.addWidget(Art(art, 44), 0, Qt.AlignVCenter)
+        row.addWidget(Art(art, 52), 0, Qt.AlignVCenter)
         body = QVBoxLayout()
         body.setSpacing(3)
         head = QHBoxLayout()
@@ -239,7 +241,7 @@ class EmptyState(QWidget):
         layout.setContentsMargins(24, 16, 24, 16)
         layout.setSpacing(6)
         layout.addStretch(1)
-        self.art = Art(art, 112)
+        self.art = Art(art, 128)
         layout.addWidget(self.art, 0, Qt.AlignHCenter)
         self.title = _label(title, "cardTitle")
         self.title.setAlignment(Qt.AlignCenter)

@@ -8,13 +8,17 @@
 
 크기 기준: 바로가기 48~72 · 요약 카드 40~56 · 빈 상태 96~144.
 원본이 한 변 약 200px 이므로 그보다 크게 쓰지 않는다.
+
+그릴 때 원본 둘레의 빈 여백을 잘라 낸다(CROP). make_art.py 가 오브젝트를 캔버스의 1/1.3(약 77%)로 앉혀서, 그대로 그리면
+상자의 4분의 1 이 흰 여백이라 그림이 작아 보였다(담당자 요청 2026-10-14 '아이콘을 키워서 잘 보이게'). 잘라 낸 뒤에는
+가장자리를 다시 투명하게 풀어(FEATHER) 흰 면이 아닌 곳에서도 사각 경계가 날카롭게 보이지 않게 한다. 에셋 파일은 그대로다.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QPainter, QPixmap
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt
+from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPixmap
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 ART_DIR = Path(__file__).parent / "assets" / "art"
@@ -42,6 +46,10 @@ ART = {
 # doc-users · keyboard-mouse · chat-bubbles · chat-mention · folder-heart
 
 MAX_SOURCE = 200
+# 둘레에서 잘라 낼 몫. 오브젝트(그림자 포함)는 원본 가장자리에서 10.5% 이상 안쪽에 있다(15개 모두 실측) — 9% 면 그림자도 다치지 않는다.
+CROP = 0.09
+# 잘라 낸 뒤 투명하게 풀어 줄 가장자리 몫 (make_art.py 4번과 같은 이유)
+FEATHER = 0.05
 
 
 class Art(QWidget):
@@ -73,10 +81,14 @@ class Art(QWidget):
         self.update()
 
     def _pixmap_for(self, ratio: float) -> QPixmap:
-        """그릴 때마다 줄이면 계단이 진다. 화면 배율에 맞춰 한 번 곱게 줄여 둔다."""
+        """그릴 때마다 줄이면 계단이 진다. 화면 배율에 맞춰 한 번 곱게 줄여 둔다 — 여백을 잘라 내고 가장자리를 풀어서."""
         if self._scaled is None or self._scaled[0] != ratio:
             side = round(self._size * ratio)
-            pix = self._source.scaled(side, side, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            w, h = self._source.width(), self._source.height()
+            mx, my = round(w * CROP), round(h * CROP)
+            cropped = self._source.copy(mx, my, w - 2 * mx, h - 2 * my)
+            pix = cropped.scaled(side, side, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pix = QPixmap.fromImage(_feather(pix.toImage(), max(1, round(side * FEATHER))))
             pix.setDevicePixelRatio(ratio)
             self._scaled = (ratio, pix)
         return self._scaled[1]
@@ -86,3 +98,23 @@ class Art(QWidget):
             return
         painter = QPainter(self)
         painter.drawPixmap(0, 0, self._pixmap_for(self.devicePixelRatioF()))
+
+
+def _feather(image: QImage, band: int) -> QImage:
+    """네 가장자리 band 픽셀을 바깥으로 갈수록 투명하게. 모서리는 두 번 곱해져 더 옅어진다(둥근 느낌)."""
+    image = image.convertToFormat(QImage.Format_ARGB32_Premultiplied)
+    w, h = image.width(), image.height()
+    painter = QPainter(image)
+    painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+    clear, solid = QColor(0, 0, 0, 0), QColor(0, 0, 0, 255)
+    for x0, y0, x1, y1, rect in (
+            (0, 0, band, 0, QRectF(0, 0, band, h)),                 # 왼쪽
+            (w, 0, w - band, 0, QRectF(w - band, 0, band, h)),      # 오른쪽
+            (0, 0, 0, band, QRectF(0, 0, w, band)),                 # 위
+            (0, h, 0, h - band, QRectF(0, h - band, w, band))):     # 아래
+        gradient = QLinearGradient(QPointF(x0, y0), QPointF(x1, y1))
+        gradient.setColorAt(0.0, clear)
+        gradient.setColorAt(1.0, solid)
+        painter.fillRect(rect, gradient)
+    painter.end()
+    return image

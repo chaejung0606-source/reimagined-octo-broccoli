@@ -115,7 +115,7 @@ class DownloadPage(QWidget):
         # 머리 — 한 줄
         head = QHBoxLayout()
         head.setSpacing(12)
-        head.addWidget(Art("receive", 44), 0, Qt.AlignVCenter)
+        head.addWidget(Art("receive", 52), 0, Qt.AlignVCenter)
         texts = QVBoxLayout()
         texts.setSpacing(1)
         title = QLabel("청구서 받기")
