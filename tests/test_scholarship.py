@@ -364,15 +364,22 @@ def test_income_kind_is_picked_again_when_erp_resets_it_after_person(monkeypatch
     assert any("기타소득" in line and "다시" in line for line in logs)            # 무엇으로 바뀌어 있었는지 로그에 남긴다
 
 
-def test_income_kind_that_will_not_change_asks_and_says_what_it_saw(monkeypatch, job):
-    frame = FakeForm(reset_income=True, lock_income=True)
+def test_income_kind_that_will_not_change_is_saved_and_listed_for_review(monkeypatch, job):
+    """담당자 결정(2026-10-14): 앱이 다시 골라도 소득구분이 안 바뀌면 멈추지 말고 그대로 임시저장 + 신청 전 확인 목록."""
+    frame = FakeForm(reset_income=True, lock_income=True, deduction=26400)
     _patch_popups(monkeypatch, frame)
-    asked = []
-    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or False,
-                             wait=lambda s: None, dry_run=False)
-    assert report.saved == 0 and report.stopped and frame.saved == []           # 저장하지 않는다
-    assert asked and "소득구분" in asked[0] and "기타소득" in asked[0]
-    assert "기타소득" in report.results[0].note
+    asked, logs, notified = [], [], []
+    report = scholarship.run(object(), frame, job, logs.append, ask=lambda m: asked.append(m) or False,
+                             wait=lambda s: None, dry_run=False, on_person=lambda i, st, n: notified.append((i, st)))
+    assert report.saved == 2 and not report.stopped and asked == []             # 묻지도 멈추지도 않는다
+    assert [row["INCM_DIV_CD"] for row in frame.saved] == ["기타소득", "기타소득"]   # 그대로 저장
+    review = report.review_items()
+    assert len(review) == 3 and all(item.startswith(("1. 가나다", "2. 라마바")) for item in review)
+    assert "기타소득" in review[0] and "[신청]" in review[0]
+    assert "공제 26,400원" in review[1]                                         # 첫 줄을 넣고 공제가 생겼다
+    assert not any("공제" in item for item in report.results[1].review)         # 둘째 줄은 공제가 늘지 않았다(합계 그대로)
+    assert ("review" in [st for _i, st in notified]) and "신청 전 확인" in "\n".join(report.lines())
+    assert any("신청 전 확인" in line for line in logs)
 
 
 def test_run_stops_and_asks_when_unsure(monkeypatch, job):
@@ -411,12 +418,14 @@ def test_run_refuses_to_save_on_account_mismatch_if_person_says_stop(monkeypatch
 
 
 def test_run_flags_nonzero_deduction_after_save(monkeypatch, job):
+    """공제가 0 이 아니면 멈추지 않고 신청 전 확인 목록으로(담당자 결정 2026-10-14) — 늘어난 줄에만 붙는다."""
     frame = FakeForm(deduction=26400)
     _patch_popups(monkeypatch, frame)
     asked = []
     report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or False,
                              wait=lambda s: None, dry_run=False)
-    assert report.saved == 0 and report.stopped and "공제합계" in asked[0] and len(frame.saved) == 1
+    assert report.saved == 2 and not report.stopped and asked == [] and len(frame.saved) == 2
+    assert report.review_items() == [report.review_items()[0]] and "공제 26,400원" in report.review_items()[0]
 
 
 def test_dry_run_touches_nothing(job):

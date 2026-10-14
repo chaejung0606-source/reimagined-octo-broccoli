@@ -290,6 +290,9 @@ class PersonResult:
     summary: str = ""
     files: list[str] = field(default_factory=list)     # 공통 먼저, 그다음 개별
     common_count: int = 0
+    # 저장은 했지만 [신청] 전에 사람이 ERP 에서 봐야 할 것 — 담당자 결정(2026-10-14): 소득구분이 앱으로 안 바뀌면
+    # 멈추지 말고 그대로 임시저장한 뒤 신청 전 확인 목록으로 알린다
+    review: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -304,10 +307,18 @@ class ScholarshipReport:
     def saved(self) -> int:
         return sum(1 for r in self.results if r.status == "saved")
 
+    def review_items(self) -> list[str]:
+        """[신청] 전에 ERP 에서 확인할 것 — 결과 창 · 진행 기록 · 로그에 그대로 보인다."""
+        return [f"{r.index + 1}. {r.name} — {item}" for r in self.results for item in r.review]
+
     def lines(self) -> list[str]:
         out = ["미리 보기 (ERP 에 넣지 않음)" if self.dry_run else f"ERP 임시저장 {self.saved}명" + (" — 멈춤" if self.stopped else "")]
         if self.blocked:
             out.append("✗ " + self.blocked)
+        review = self.review_items()
+        if review:
+            out.append(f"신청 전 확인할 것 {len(review)}건:")
+            out.extend("  ! " + item for item in review)
         for r in self.results:
             mark = {"saved": "✓", "planned": "·", "stopped": "■", "failed": "✗"}.get(r.status, "·")
             out.append(f"{mark} {r.index + 1}. {r.name}" + (f" — {r.note}" if r.note else ""))
@@ -418,12 +429,14 @@ def run(page, frame, job: Job, log: Callable[[str], None], ask: Ask, wait: Calla
         result.note = note
         result.status = "saved" if ok else "stopped"
         report.results.append(result)
-        notify(index, result.status, note)
+        notify(index, "review" if ok and result.review else result.status, note)     # 저장했지만 신청 전 확인할 것이 있다
         if not ok:
             report.stopped = True
             log("장학금 청구 멈춤 — %d. %s: %s" % (index + 1, p.name, note))
             break
     log("장학금 청구 끝 — 임시저장 %d명%s" % (report.saved, " (멈춤)" if report.stopped else ""))
+    for item in report.review_items():
+        log("  신청 전 확인: " + item)
     return report
 
 
@@ -486,13 +499,7 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         return False, "소득자를 고르지 못함"
     wait(0.5)
 
-    def income_message(why: str) -> str:
-        return ("%d. %s — ERP 작성 화면의 소득구분을 '장학금' 으로 골라 주세요 (%s). 고른 뒤 [계속], 아니면 [멈추기]."
-                % (index + 1, p.name, why))
-
-    ok, why = _ask_until(lambda: _ensure_income(frame, wait, log, result, "소득자를 고른 뒤"), ask, income_message, wait)
-    if not ok:
-        return False, why + " — 저장하지 않았습니다"
+    _ensure_income(frame, wait, log, result, "소득자를 고른 뒤")      # 안 바뀌어도 여기서는 넘어간다 — 저장 직전에 다시 본다
 
     # 4. 계좌 대조 · 예금주조회 결과
     s = _state(frame, ["ACCT_NO", "BNK_CD", "OWNR", "OWNR_INQ_RSLT"])
@@ -545,17 +552,20 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
     else:
         result.lines.append("· 첨부 없음")
 
-    # 7. 저장 전 검사 — 소득구분은 첨부 뒤에도 한 번 더 보고 고친다(위 _ensure_income)
-    ok, why = _ask_until(lambda: _ensure_income(frame, wait, log, result, "저장 직전"), ask, income_message, wait)
-    if not ok:
-        return False, why + " — 저장하지 않았습니다"
+    # 7. 저장 전 검사 — 소득구분은 첨부 뒤에도 한 번 더 보고 고친다(위 _ensure_income). 그래도 안 바뀌면 멈추지 않고
+    #    그대로 임시저장한 뒤 '신청 전 확인할 것' 으로 남긴다(담당자 결정 2026-10-14) — [신청] 은 어차피 사람이 검토하고 누른다.
+    income_ok, income_why = _ensure_income(frame, wait, log, result, "저장 직전")
+    if not income_ok:
+        item = f"{income_why} — 앱이 '장학금' 으로 바꾸지 못한 채 임시저장함. ERP 에서 이 줄의 소득구분을 '장학금' 으로 고친 뒤 [신청]"
+        result.review.append(item)
+        log("신청 전 확인: %d. %s — %s" % (index + 1, p.name, item))
     s = read_state(frame, ["PAY_EXP_CD", "INCM_DIV_CD", "REQ_AMT", "REQ_PTCL", "RCV_NM"])
     pay = (s.get("PAY_EXP_CD") or {}).get("text", "")
     income = (s.get("INCM_DIV_CD") or {}).get("text", "")
     amount = (s.get("REQ_AMT") or {}).get("value", "")
     checks = {
         f"비목(지금: {pay or '비어 있음'})": _same(pay, CATEGORY),
-        f"소득구분(지금: {income or '비어 있음'})": _same(income, INCOME_KIND),
+        f"소득구분(지금: {income or '비어 있음'})": _same(income, INCOME_KIND) or not income_ok,   # 못 바꾼 것은 위에서 확인 목록으로
         f"청구액(지금: {amount or '비어 있음'})": _digits(amount) == str(p.amount or ""),
         "적요(비어 있음)": bool((s.get("REQ_PTCL") or {}).get("value", "").strip()),
         "소득자(비어 있음)": bool((s.get("RCV_NM") or {}).get("value", "").strip()),
@@ -585,12 +595,18 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
                    % (index + 1, p.name, rows_before, rows_after)):
             return False, "저장 뒤 청구내역이 늘지 않음 — 멈춤"
     totals = list(after.get("totals") or [])
-    if len(totals) >= 3 and totals[2]:
-        log("합계 줄 공제합계가 %s — 소득구분을 확인하세요" % f"{totals[2]:,}")
-        if not ask("%d. %s — 청구내역 합계의 공제합계가 %s 입니다(장학금이면 0 이어야 함). ERP 에서 소득구분을 확인한 뒤 [계속], 아니면 [멈추기]."
-                   % (index + 1, p.name, f"{totals[2]:,}")):
-            return False, "공제합계가 0 이 아님 — 멈춤"
+    before_totals = list(before.get("totals") or [])
+    # 합계 줄의 공제합계는 청구서 전체 값이다 — 이 사람을 넣고 **늘어난 만큼**이 이 줄의 공제다. 장학금이면 0 이어야 한다.
+    # 소득구분 문제와 같은 뿌리라 멈추지 않고 신청 전 확인 목록으로 남긴다(담당자 결정 2026-10-14).
+    added = (totals[2] - (before_totals[2] if len(before_totals) >= 3 else 0)) if len(totals) >= 3 else 0
+    if added:
+        item = f"공제 {added:,}원이 잡힘(장학금이면 0) — ERP 에서 이 줄의 소득구분을 확인한 뒤 [신청]"
+        result.review.append(item)
+        log("신청 전 확인: %d. %s — %s" % (index + 1, p.name, item))
     result.lines.append("✓ 청구내역 %d줄" % rows_after + (f" · 공제합계 {totals[2]:,}" if len(totals) >= 3 else ""))
+    if result.review:
+        result.lines.extend("! " + item for item in result.review)
+        return True, "임시저장 — 신청 전 확인: " + " / ".join(result.review)
     return True, "임시저장"
 
 

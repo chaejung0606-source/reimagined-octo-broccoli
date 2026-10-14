@@ -86,7 +86,8 @@ def _money(value) -> str:
 
 # 장학금 미리 보기 · 넣기 확인 · 결과 창의 표 (ui/report_dialog.py) — 사람마다 한 줄
 SCH_COLUMNS = [("상태", 104), ("No", 44), ("이름", 92), ("학번", 104), ("청구액", 92), ("개별 적요", 300), ("첨부", 56), ("확인할 것", None)]
-SCH_STATUS = {"planned": ("넣을 것", "neutral"), "saved": ("임시저장", "success"), "stopped": ("멈춤", "warning"),
+SCH_STATUS = {"planned": ("넣을 것", "neutral"), "saved": ("임시저장", "success"), "review": ("저장·확인", "warning"),
+              "stopped": ("멈춤", "warning"),
               "failed": ("실패", "danger"), "waiting": ("대기", "neutral")}
 
 
@@ -97,6 +98,8 @@ def scholarship_rows(job, results) -> list[ReportRow]:
         status, tone = SCH_STATUS.get(r.status, (r.status, "neutral"))
         if r.status == "planned" and r.note:
             status, tone = "확인 필요", "warning"
+        if r.status == "saved" and r.review:
+            status, tone = SCH_STATUS["review"]
         main = job.main_summary if job is not None else ""
         # 줄마다 앞의 대표적요는 같다 — 줄을 가르는 뒷부분(_이름 · (이름_교과목))이 보이게 앞을 줄인다
         shown = "…" + r.summary[len(main):] if main and r.summary.startswith(main) and r.summary != main else r.summary
@@ -109,13 +112,15 @@ def scholarship_rows(job, results) -> list[ReportRow]:
         for i, path in enumerate(r.files):
             name = os.path.relpath(path, base) if base else os.path.basename(path)
             detail.append(f"  [{'공통' if i < r.common_count else '개별'}] {name}")
-        if r.note:
+        for item in r.review:
+            detail.append(f"신청 전 확인: {item}")
+        if r.note and not r.review:
             detail.append(f"확인할 것: {r.note}")
         if r.status != "planned" and r.lines:
             detail.append("진행:")
             detail.extend("  " + line for line in r.lines)
         rows.append(ReportRow(status, tone, [str(r.index + 1), r.name, r.student_no or "—", _money(r.amount) or "—",
-                                             shown, f"{len(r.files)}개", r.note],
+                                             shown, f"{len(r.files)}개", " / ".join(r.review) or r.note],
                               detail="\n".join(detail), tips={4: r.summary}, right=(3, 5)))
     return rows
 
@@ -1164,27 +1169,40 @@ class ClaimPage(QWidget):
                 self._set_status(row, "partial" if report.stopped and saved else "saved" if saved else "read")
             if self._current == row:
                 for r in report.results:
-                    self.scholarship_panel.set_person_status(r.index, r.status, r.note)
+                    self.scholarship_panel.set_person_status(r.index, "review" if r.review else r.status, r.note)
                 self.scholarship_panel.uncheck_saved(saved)
             elif job is not None:
                 for index in saved:
                     job.selected[index] = False
             if 0 <= row < len(self._dirs):
                 self._refresh_row(row)
+            # 저장은 했지만 [신청] 전에 ERP 에서 고칠 것(소득구분 · 공제) — 담당자 결정(2026-10-14): 멈추지 않고 여기서 알린다
+            review = report.review_items()
+            for item in review:
+                self._append_log("신청 전 확인: " + item)
+            check = f" 신청 전 확인할 것 {len(review)}건 — 결과 창과 [진행 기록] 에 있습니다." if review else ""
             if report.stopped:
-                self._set_state("멈춤", "warning", f"{report.saved}명까지 임시저장했습니다. 남은 학생만 체크돼 있으니 고친 뒤 다시 누르면 이어집니다.")
+                self._set_state("멈춤", "warning", f"{report.saved}명까지 임시저장했습니다. 남은 학생만 체크돼 있으니 고친 뒤 다시 누르면 이어집니다." + check)
+            elif review:
+                self._set_state("확인 필요", "warning", f"{report.saved}명을 임시저장했습니다." + check + " ERP 에서 고친 뒤 [신청] 을 직접 누르세요.")
             else:
                 self._set_state("임시저장", "success", f"{report.saved}명을 임시저장했습니다. ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요.")
             if job is None:
                 QMessageBox.information(self, "장학금 청구", "\n".join(report.lines()[:40]))
             else:
                 saved_text = job.count_text(saved) if saved else "0명"
-                show_report(self, title="장학금 청구", tone="warning" if report.stopped else "success",
-                            heading=f"임시저장 {saved_text}" + (" — 중간에 멈췄습니다" if report.stopped else ""),
-                            summary=[f"대표적요: {job.main_summary}", f"지급예정년월: {job.pay_ym}"],
+                # 같은 ERP 알림이 파일마다 되풀이된다('파일명의 특수문자는 제거됩니다.') — 한 줄로 모아 몇 번인지만
+                alerts = [f"{m} (×{report.messages.count(m)})" if report.messages.count(m) > 1 else m
+                          for m in dict.fromkeys(report.messages)]
+                show_report(self, title="장학금 청구", tone="warning" if report.stopped or review else "success",
+                            heading=f"임시저장 {saved_text}" + (" — 중간에 멈췄습니다" if report.stopped else "")
+                                    + (f" · 신청 전 확인할 것 {len(review)}건" if review else ""),
+                            summary=[f"대표적요: {job.main_summary}", f"지급예정년월: {job.pay_ym}"]
+                                    + (["ERP 알림: " + " · ".join(alerts)] if alerts and review else []),
                             columns=SCH_COLUMNS, rows=scholarship_rows(job, report.results),
-                            notes=report.messages, notes_title="ERP 알림",
-                            footer="ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요 — 앱은 누르지 않습니다.")
+                            notes=review or alerts, notes_title="신청 전 확인할 것" if review else "ERP 알림",
+                            footer="ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요 — 앱은 누르지 않습니다."
+                                   + (" 위 '신청 전 확인할 것' 을 먼저 고치세요." if review else ""))
         self._sync_buttons()
 
     # ── 신호 ────────────────────────────────────────────────────────────

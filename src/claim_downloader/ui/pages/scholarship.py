@@ -38,6 +38,7 @@ PERSON_STATUS = {
     "planned": ("확인함", "info"),
     "running": ("넣는 중", "info"),
     "saved": ("임시저장", "success"),
+    "review": ("저장·확인", "warning"),     # 임시저장은 했지만 [신청] 전에 ERP 에서 볼 것이 있다
     "stopped": ("멈춤", "warning"),
     "failed": ("실패", "danger"),
 }
