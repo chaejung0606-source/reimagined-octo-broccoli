@@ -416,7 +416,7 @@ def main() -> int:
     app.setStyleSheet(stylesheet())
     window = MainWindow()
     window.show()
-    shortcuts.refresh_once_in_background()     # 업데이트로 바로가기 규격이 바뀌었으면 한 번 새로 만든다
+    shortcuts.remember_made()      # 바로가기는 만들지 않는다 — 업데이트 때마다 바탕화면에 다시 생기지 않게(shortcuts.py)
     return app.exec()
 
 

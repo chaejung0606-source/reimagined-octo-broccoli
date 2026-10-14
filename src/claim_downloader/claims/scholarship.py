@@ -283,6 +283,13 @@ class PersonResult:
     status: str = "waiting"          # planned · saved · stopped · failed
     lines: list[str] = field(default_factory=list)
     note: str = ""
+    # 화면의 결과 표가 쓰는 값 — 글 줄(lines)을 다시 쪼개지 않게 따로 둔다
+    student_no: str = ""
+    course: str = ""
+    amount: int | None = None
+    summary: str = ""
+    files: list[str] = field(default_factory=list)     # 공통 먼저, 그다음 개별
+    common_count: int = 0
 
 
 @dataclass
@@ -329,10 +336,17 @@ def _digits(text: str) -> str:
     return re.sub(r"\D", "", str(text or ""))
 
 
+def new_result(job: Job, index: int, status: str = "waiting") -> PersonResult:
+    p = job.people[index]
+    return PersonResult(index=index, name=p.name, status=status, student_no=p.student_no, course=p.course,
+                        amount=p.amount, summary=job.row_summary(index), files=job.files_for(index),
+                        common_count=len(job.common_files))
+
+
 def plan_person(job: Job, index: int) -> PersonResult:
     p = job.people[index]
     files = job.files_for(index)
-    result = PersonResult(index=index, name=p.name, status="planned")
+    result = new_result(job, index, "planned")
     result.lines = [f"학번 {p.student_no or '—'} · 청구액 {p.amount:,}원" if p.amount else f"학번 {p.student_no or '—'} · 청구액 —",
                     f"적요: {job.row_summary(index)}",
                     f"첨부 {len(files)}개" + (": " + " · ".join(os.path.basename(f) for f in files[:6]) if files else "")]
@@ -364,7 +378,7 @@ def run(page, frame, job: Job, log: Callable[[str], None], ask: Ask, wait: Calla
             break
         p = job.people[index]
         notify(index, "running", "")
-        result = PersonResult(index=index, name=p.name)
+        result = new_result(job, index)
         live.clear()
         try:
             ok, note = _run_person(page, frame, job, index, log, ask, wait, live, result, auto_pick)

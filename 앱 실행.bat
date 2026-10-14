@@ -77,7 +77,12 @@ if errorlevel 1 goto broken
 echo done > ".venv\setup-claim-v1.txt"
 
 rem 앞으로 검은 창 없이 쓰실 수 있도록 바탕화면 바로가기를 만들어 둔다.
-".venv\Scripts\python.exe" tools\create_shortcut.py
+rem 처음 설치할 때 한 번만 만든다. 업데이트로 준비 단계를 다시 돌 때는 만들지 않는다
+rem (담당자 요청 2026-10-14). 이미 설치된 PC 는 앱이 켜질 때 표시 파일을 남긴다.
+if not exist ".venv\shortcut-made.txt" (
+    ".venv\Scripts\python.exe" tools\create_shortcut.py
+    echo done> ".venv\shortcut-made.txt"
+)
 
 echo.
 echo   준비를 마쳤습니다. 앱을 띄웁니다.

@@ -193,6 +193,11 @@ def test_ta_student_with_two_courses_gets_files_per_course_or_both(tmp_path):
     assert assigned == {0: [files[0]], 1: [files[0], files[1]], 2: [files[2]]} and unmatched == []
     job = scholarship.Job(folder=str(tmp_path), roster=roster.Roster(path="", people=people), selected=[True, True, True])
     assert job.count_text() == "3줄(2명)" and job.count_text([0, 2]) == "2명"
+    # 결과 표(ui/report_dialog)가 쓰는 값 — 줄글을 다시 쪼개지 않고 칸마다 읽는다
+    job.person_files, job.common_files = assigned, [str(tmp_path / "공문.pdf")]
+    plan = scholarship.plan_person(job, 1)
+    assert (plan.student_no, plan.course, plan.common_count) == ("202600010", "운영체제", 1)
+    assert plan.files == [job.common_files[0], files[0], files[1]] and plan.summary == job.row_summary(1)
 
 
 def test_same_name_needs_student_no_in_file_name(tmp_path):

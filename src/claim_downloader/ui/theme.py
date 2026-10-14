@@ -352,5 +352,6 @@ QToolTip {{
     font-size: {f['caption']}px;
 }}
 QMessageBox {{ background: {c['surface']}; }}
+QDialog#reportDialog {{ background: {c['surface']}; }}
 QMessageBox QLabel {{ font-size: {f['body']}px; }}
 """

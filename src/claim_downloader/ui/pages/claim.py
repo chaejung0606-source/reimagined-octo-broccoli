@@ -50,6 +50,7 @@ from ...minutes.backends import claude_cli
 from .. import ai_status
 from ..art import Art
 from ..claim_worker import ClaimExtractWorker
+from ..report_dialog import ReportRow, show_report
 from ..widgets import Card, EmptyState, Field, Pill, PillDelegate, WrapLabel, muted_label
 from ..worker import SessionWorker
 from .scholarship import ScholarshipPanel
@@ -81,6 +82,42 @@ NO_BACKEND = ("일반 폴더의 [내용 읽기] 는 Claude Code 가 필요합니
 
 def _money(value) -> str:
     return f"{value:,}" if isinstance(value, int) else ""
+
+
+# 장학금 미리 보기 · 넣기 확인 · 결과 창의 표 (ui/report_dialog.py) — 사람마다 한 줄
+SCH_COLUMNS = [("상태", 104), ("No", 44), ("이름", 92), ("학번", 104), ("청구액", 92), ("개별 적요", 300), ("첨부", 56), ("확인할 것", None)]
+SCH_STATUS = {"planned": ("넣을 것", "neutral"), "saved": ("임시저장", "success"), "stopped": ("멈춤", "warning"),
+              "failed": ("실패", "danger"), "waiting": ("대기", "neutral")}
+
+
+def scholarship_rows(job, results) -> list[ReportRow]:
+    """결과(PersonResult)마다 표 한 줄. 긴 값(첨부 목록 · 진행 단계)은 '자세히' 칸으로."""
+    rows = []
+    for r in results:
+        status, tone = SCH_STATUS.get(r.status, (r.status, "neutral"))
+        if r.status == "planned" and r.note:
+            status, tone = "확인 필요", "warning"
+        main = job.main_summary if job is not None else ""
+        # 줄마다 앞의 대표적요는 같다 — 줄을 가르는 뒷부분(_이름 · (이름_교과목))이 보이게 앞을 줄인다
+        shown = "…" + r.summary[len(main):] if main and r.summary.startswith(main) and r.summary != main else r.summary
+        personal = len(r.files) - r.common_count
+        base = job.folder if job is not None else ""
+        detail = [f"{r.index + 1}. {r.name}  ·  학번 {r.student_no or '—'}" + (f"  ·  교과목 {r.course}" if r.course else "")
+                  + f"  ·  청구액 {_money(r.amount) or '—'}원",
+                  f"개별 적요: {r.summary}",
+                  f"첨부 {len(r.files)}개 (공통 {r.common_count} · 개별 {personal})"]
+        for i, path in enumerate(r.files):
+            name = os.path.relpath(path, base) if base else os.path.basename(path)
+            detail.append(f"  [{'공통' if i < r.common_count else '개별'}] {name}")
+        if r.note:
+            detail.append(f"확인할 것: {r.note}")
+        if r.status != "planned" and r.lines:
+            detail.append("진행:")
+            detail.extend("  " + line for line in r.lines)
+        rows.append(ReportRow(status, tone, [str(r.index + 1), r.name, r.student_no or "—", _money(r.amount) or "—",
+                                             shown, f"{len(r.files)}개", r.note],
+                              detail="\n".join(detail), tips={4: r.summary}, right=(3, 5)))
+    return rows
 
 
 class ClaimPage(QWidget):
@@ -1054,13 +1091,14 @@ class ClaimPage(QWidget):
                     f"이 폴더는 {before.get('when')} 에 넣은 적이 있습니다 ({before.get('summary')}).\n\n다시 넣을까요?",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
-        lines = "\n".join("· " + line for line in job.summary_lines())
-        warn = ("\n\n확인: " + "\n  ".join(problems)) if problems else ""
-        text = ("학생마다 무엇을 넣을지 보여 줍니다. ERP 에는 넣지 않습니다.\n\n" if dry else
-                "브라우저의 작성 화면에 학생 한 명씩 넣고 [저장](임시저장) 합니다. 앱이 확신하지 못하는 단계에서는 멈추고 묻습니다.\n"
-                "[신청] 은 누르지 않습니다.\n\n")
-        if QMessageBox.question(self, "미리 보기" if dry else "ERP 에 넣기", text + lines + warn + "\n\n진행할까요?",
-                                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+        # 미리 보기는 ERP 를 건드리지 않으니 바로 결과 표를 보인다. 실제로 넣을 때만 같은 표로 한 번 더 묻는다.
+        if not dry and not show_report(
+                self, title="ERP 에 넣기", tone="warning",
+                heading=f"학생 한 명씩 넣고 [저장](임시저장) 합니다 — {job.count_text()} · [신청] 은 누르지 않습니다",
+                summary=job.summary_lines(), columns=SCH_COLUMNS,
+                rows=scholarship_rows(job, [sch.plan_person(job, i) for i in job.chosen()]), notes=problems,
+                footer="앱이 확신하지 못하는 단계에서는 멈추고 위의 노란 띠로 묻습니다. 브라우저에 새 청구서 작성 화면이 떠 있어야 합니다.",
+                accept_text=f"ERP 에 넣기 ({job.count_text()})"):
             return
         self._erp_row = row
         if not dry:
@@ -1104,8 +1142,15 @@ class ClaimPage(QWidget):
         if report.dry_run:
             if self._current == row:
                 self.scholarship_panel.mark_planned(r.index for r in report.results)
-            self._set_state("미리 봄", "info", "학생마다 넣을 값은 [진행 기록] 에 있습니다. 실제로 넣으려면 '미리 보기만' 체크를 풀고 다시 누르세요.")
-            QMessageBox.information(self, "미리 보기", text if len(text) < 3000 else text[:3000] + "\n…(나머지는 [진행 기록])")
+            self._set_state("미리 봄", "info", "학생마다 넣을 값은 [진행 기록] 에도 있습니다. 실제로 넣으려면 '미리 보기만' 체크를 풀고 다시 누르세요.")
+            if job is None:
+                QMessageBox.information(self, "미리 보기", "\n".join(report.lines()[:40]))
+            else:
+                show_report(self, title="미리 보기", tone="info",
+                            heading=f"ERP 에 넣지 않았습니다 — 이렇게 넣습니다 ({job.count_text([r.index for r in report.results])})",
+                            summary=job.summary_lines(), columns=SCH_COLUMNS, rows=scholarship_rows(job, report.results),
+                            notes=job.problems(),
+                            footer="실제로 넣으려면 '미리 보기만' 체크를 풀고 [ERP 에 넣기] 를 누르세요.")
         elif report.blocked:
             if 0 <= row < len(self._status):
                 self._set_status(row, "read")
@@ -1130,7 +1175,16 @@ class ClaimPage(QWidget):
                 self._set_state("멈춤", "warning", f"{report.saved}명까지 임시저장했습니다. 남은 학생만 체크돼 있으니 고친 뒤 다시 누르면 이어집니다.")
             else:
                 self._set_state("임시저장", "success", f"{report.saved}명을 임시저장했습니다. ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요.")
-            QMessageBox.information(self, "장학금 청구", "\n".join(report.lines()[:40]))
+            if job is None:
+                QMessageBox.information(self, "장학금 청구", "\n".join(report.lines()[:40]))
+            else:
+                saved_text = job.count_text(saved) if saved else "0명"
+                show_report(self, title="장학금 청구", tone="warning" if report.stopped else "success",
+                            heading=f"임시저장 {saved_text}" + (" — 중간에 멈췄습니다" if report.stopped else ""),
+                            summary=[f"대표적요: {job.main_summary}", f"지급예정년월: {job.pay_ym}"],
+                            columns=SCH_COLUMNS, rows=scholarship_rows(job, report.results),
+                            notes=report.messages, notes_title="ERP 알림",
+                            footer="ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요 — 앱은 누르지 않습니다.")
         self._sync_buttons()
 
     # ── 신호 ────────────────────────────────────────────────────────────
