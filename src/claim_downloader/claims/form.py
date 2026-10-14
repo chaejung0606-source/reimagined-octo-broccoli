@@ -131,14 +131,24 @@ SELECT_STATE_JS = """(id) => {
   return {count: el.options.length, visible: r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden'};
 }"""
 
-# 글자가 정확히 같은 단추가 딱 하나일 때만 누른다 — '청구서출력' · '신청' 같은 다른 단추와 섞이지 않게
+# 글자가 정확히 같은 단추가 **화면에 보이는 것으로** 딱 하나일 때만 누른다 — '청구서출력' · '신청' 같은 다른 단추와 섞이지 않게.
+# 숨은 단추는 세지 않는다: 작성 화면은 일반청구 탭 · 인건비 탭이 각자 [저장] 을 가지고 있고 안 쓰는 탭 것은 숨어 있다(14절 ① 같은 id 함정과
+# 같은 꼴). 담당자 실제 시험(2026-10-14 17:49)에서 화면에는 [저장] 이 하나뿐인데 숨은 것까지 세어 '여럿' 으로 멈췄다.
+# 단추 안에 같은 글자의 요소가 겹쳐 있으면(a 안의 span[onclick]) 가장 안쪽 하나로 센다 — 안쪽을 누르면 바깥 처리기까지 올라간다.
 CLICK_SAVE_JS = """(text) => {
   const norm = s => (s || '').replace(/\\s+/g, '');
-  const hits = Array.from(document.querySelectorAll('a, button, input[type=button], span[onclick]'))
+  const vis = e => { const r = e.getBoundingClientRect(), s = getComputedStyle(e);
+                     return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden'; };
+  const all = Array.from(document.querySelectorAll('a, button, input[type=button], span[onclick]'))
     .filter(e => norm(e.textContent || e.value) === norm(text));
-  if (hits.length !== 1) return {ok: false, why: hits.length ? '같은 글자의 단추가 여럿' : '단추가 없음'};
+  const shown = all.filter(vis);
+  const hits = shown.filter(h => !shown.some(o => o !== h && h.contains(o)));
+  if (hits.length !== 1) {
+    return {ok: false, why: (hits.length ? '화면에 보이는 같은 글자의 단추가 여럿' : '화면에 보이는 단추가 없음')
+                            + ' (보이는 것 ' + hits.length + '개 · 숨은 것 포함 ' + all.length + '개)'};
+  }
   hits[0].click();
-  return {ok: true};
+  return {ok: true, hidden: all.length - shown.length};
 }"""
 
 
@@ -337,7 +347,6 @@ def save_draft(frame, log: Callable[[str], None], messages: list[str],
         report.note = "ERP 화면에 %s 이(가) 비어 있어 누르지 않았습니다. 넣은 뒤 다시 누르세요." % " · ".join(missing)
         log("임시저장 보류 — " + report.note)
         return report
-    log("임시저장: ERP [%s] 누름 (결의번호 %s)" % (SAVE_TEXT, before.get("REQ_SEQ_NO") or "—"))
     try:
         result = frame.evaluate(CLICK_SAVE_JS, SAVE_TEXT)
     except Exception as error:  # noqa: BLE001
@@ -346,6 +355,8 @@ def save_draft(frame, log: Callable[[str], None], messages: list[str],
         report.note = "[%s] 단추를 누르지 못했습니다: %s" % (SAVE_TEXT, result.get("why", ""))
         log("임시저장 실패 — " + report.note)
         return report
+    # 누른 뒤에 적는다 — 전에는 누르기 전에 '누름' 을 적어 실패한 시험의 로그가 헷갈렸다
+    log("임시저장: ERP [%s] 누름 (결의번호 %s)" % (SAVE_TEXT, before.get("REQ_SEQ_NO") or "—"))
     after = before
     for _ in range(tries):
         wait(0.25)
