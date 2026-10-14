@@ -39,16 +39,19 @@ EXCEL_SUFFIXES = kinds.EXCEL_SUFFIXES
 MAX_ASKS = 3                          # 한 단계에서 사람에게 묻는 횟수
 
 # 적요 규칙 — 담당자가 고칠 수 있다(~/.claim-downloader/장학금규칙.txt). {제목}=명단 B2 제목, {대표적요}, {이름}, {학번}, {강좌명}, {금액}
+# TA 근로장학금은 한 학생이 여러 교과목을 맡으면 줄이 교과목마다 하나라, 개별 적요에 교과목을 넣어 줄을 구분한다 —
+# '대표적요_(이름_교과목명)' (담당자 지정 2026-10-14). 그 전 기본값 '행적요(나): {대표적요}({이름}_{학번}_{강좌명})' 은 지난 청구서 PDF 에서 읽은 꼴이었다.
 RULES_HEADER = (
     "# 장학금 청구 적요 규칙\n"
     "# 대표적요·행 적요를 어떻게 만들지 정합니다. 저장만 하면 다음 [폴더 읽기] 부터 반영됩니다.\n"
-    "# 쓸 수 있는 자리표: {제목} {대표적요} {이름} {학번} {강좌명} {금액}\n"
-    "# '행적요(나)' 처럼 괄호 안 글자는 명단 제목의 '(나)형' 유형 — 그 유형에만 쓰입니다. 없으면 '행적요' 를 씁니다.\n"
+    "# 쓸 수 있는 자리표: {제목} {대표적요} {이름} {학번} {강좌명} {금액}   ({강좌명} = 명단의 강좌명 · 교과목 열)\n"
+    "# '행적요(강좌)' 는 명단에 강좌명(교과목) 이 적힌 줄(TA 근로장학금)에 쓰입니다.\n"
+    "# '행적요(나)' 처럼 괄호 안이 한 글자면 명단 제목의 '(나)형' 유형에만 쓰입니다(있으면 가장 먼저). 둘 다 아니면 '행적요' 를 씁니다.\n"
     "# 기본값으로 되돌리려면 이 파일을 지우고 프로그램을 다시 켜세요.\n\n"
 )
 RULES_DEFAULT = """대표적요: 02_{제목}
 행적요: {대표적요}_{이름}
-행적요(나): {대표적요}({이름}_{학번}_{강좌명})"""
+행적요(강좌): {대표적요}_({이름}_{강좌명})"""
 
 # 저장 뒤 '청구내역' 표 — 줄 수(행 라디오 CUR_REQ)와 '합계' 줄의 숫자(청구액 · 실지급액 · 공제합계 순, 실측 ⑤)
 SUMMARY_JS = """() => {
@@ -112,6 +115,8 @@ def main_summary(title: str, rules: dict[str, str] | None = None) -> str:
 def row_summary(main: str, p: roster_mod.Person, kind: str, rules: dict[str, str] | None = None) -> str:
     rules = rules or parse_rules(RULES_DEFAULT)
     template = rules.get(f"행적요({kind})") if kind else None
+    if not template and p.course:
+        template = rules.get("행적요(강좌)")         # TA — 한 학생의 교과목마다 줄이 따로라 교과목으로 구분
     template = template or rules.get("행적요", "{대표적요}_{이름}")
     return _render(template, {"대표적요": main, "이름": p.name, "학번": p.student_no, "강좌명": p.course,
                               "금액": f"{p.amount:,}" if p.amount else ""})
@@ -140,6 +145,12 @@ class Job:
     def chosen(self) -> list[int]:
         return [i for i, on in enumerate(self.selected) if on]
 
+    def count_text(self, indexes: list[int] | None = None) -> str:
+        """'3명', 또는 한 학생이 교과목 여럿이면 '4줄(3명)' — ERP 에는 줄 수만큼 [저장] 한다."""
+        indexes = self.chosen() if indexes is None else indexes
+        students = len({(self.people[i].name.replace(" ", ""), self.people[i].student_no or f"#{i}") for i in indexes})
+        return f"{len(indexes)}명" if students == len(indexes) else f"{len(indexes)}줄({students}명)"
+
     def files_for(self, index: int) -> list[str]:
         return list(self.common_files) + list(self.person_files.get(index, []))
 
@@ -154,6 +165,11 @@ class Job:
             out.append("지급예정년월은 YYYY-MM 꼴이어야 합니다")
         if self.unmatched:
             out.append("어느 학생 것인지 모르는 개별증빙 %d개: %s" % (len(self.unmatched), " · ".join(os.path.basename(f) for f in self.unmatched[:5])))
+        # ERP 청구내역 표에서는 줄을 적요로 구분한다 — 같은 적요가 둘이면 어느 줄이 누구 것인지 모른다
+        summaries = [self.row_summary(i) for i in range(len(self.people))]
+        same = sorted({t for t in summaries if t and summaries.count(t) > 1})
+        for text in same:
+            out.append(f"개별 적요가 같은 줄이 둘 이상입니다: {text} — 장학금규칙.txt 로 구분되게 고치세요")
         return out
 
     def summary_lines(self) -> list[str]:
@@ -161,7 +177,7 @@ class Job:
         total = sum(self.people[i].amount or 0 for i in chosen)
         return [f"폴더: {self.folder}", f"명단: {os.path.basename(self.roster.path)} — {self.roster.title or '제목 없음'}",
                 f"대표적요: {self.main_summary}", f"지급예정년월: {self.pay_ym} · 소득자 구분: {self.tab}",
-                f"넣을 사람 {len(chosen)}명 / 명단 {len(self.people)}명 · 합계 {total:,}원",
+                f"넣을 사람 {self.count_text(chosen)} / 명단 {self.count_text(list(range(len(self.people))))} · 합계 {total:,}원",
                 f"공통증빙 {len(self.common_files)}개 · 개별증빙 {sum(len(v) for v in self.person_files.values())}개"]
 
 
@@ -181,8 +197,20 @@ def _subdirs_with(folder: str, word: str) -> list[str]:
     return [os.path.join(folder, n) for n in names if word in n and os.path.isdir(os.path.join(folder, n))]
 
 
+def _rows_of_student(key: str, indexes: list[int], people: list[roster_mod.Person]) -> list[int]:
+    """같은 이름 줄들 중 이 파일(경로 글자 key)의 줄. 담당자 규칙(2026-10-14): 학번이 다르면 다른 학생, 학번까지 같으면
+    한 학생이 교과목 여럿을 맡은 것. 그래서 학번으로 학생을 정하고(동명이인이면 경로에 학번이 있어야 한다), 그 학생의 줄이
+    여럿이면 경로에 교과목이 있는 줄 하나 — 교과목이 없으면 그 학생의 모든 줄(교과목마다 같은 개인 서류를 붙인다)."""
+    if len({people[i].student_no for i in indexes}) > 1:
+        indexes = [i for i in indexes if people[i].student_no and people[i].student_no in key]
+        if len({people[i].student_no for i in indexes}) != 1:
+            return []
+    by_course = [i for i in indexes if people[i].course and people[i].course.replace(" ", "") in key]
+    return by_course if len(by_course) == 1 else indexes
+
+
 def assign_person_files(files: list[str], base: str, people: list[roster_mod.Person]) -> tuple[dict[int, list[str]], list[str]]:
-    """개별증빙 파일을 학생에게 — 파일명이나 상위 폴더 이름에 이름이 들어 있으면 그 학생. 같은 이름이 둘이면 학번도 있어야 한다."""
+    """개별증빙 파일을 학생에게 — 파일명이나 상위 폴더 이름에 이름이 들어 있으면 그 학생. 같은 이름이 둘이면 학번으로 가린다."""
     by_name: dict[str, list[int]] = {}
     for i, p in enumerate(people):
         by_name.setdefault(p.name.replace(" ", ""), []).append(i)
@@ -191,16 +219,15 @@ def assign_person_files(files: list[str], base: str, people: list[roster_mod.Per
     for path in files:
         rel = os.path.relpath(path, base).replace("\\", "/")
         key = rel.replace(" ", "")
-        hits = []
+        hits: set[int] = set()
         for name, indexes in by_name.items():
             if name and name in key:
-                if len(indexes) == 1:
-                    hits.append(indexes[0])
-                else:
-                    hits.extend(i for i in indexes if people[i].student_no and people[i].student_no in key)
-        hits = sorted(set(hits))
-        if len(hits) == 1:
-            assigned.setdefault(hits[0], []).append(path)
+                hits.update(_rows_of_student(key, indexes, people))
+        # 한 학생의 줄만 맞았을 때만 붙인다 — 두 학생에 걸리면 사람이 정한다
+        students = {(people[i].name.replace(" ", ""), people[i].student_no) for i in hits}
+        if hits and len(students) == 1:
+            for i in sorted(hits):
+                assigned.setdefault(i, []).append(path)
         else:
             unmatched.append(path)
     return assigned, unmatched

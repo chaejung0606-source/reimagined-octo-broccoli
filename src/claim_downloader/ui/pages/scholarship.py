@@ -28,7 +28,7 @@ from ... import settings
 from ...claims import person, scholarship
 from ..widgets import Field, PillDelegate, WrapLabel, muted_label
 
-COLUMNS = [("", 30), ("상태", 84), ("이름", 76), ("학번", 92), ("금액", 84), ("첨부", 44), ("행 적요", None)]
+COLUMNS = [("", 30), ("상태", 84), ("이름", 76), ("학번", 104), ("금액", 84), ("첨부", 44), ("행 적요", None)]
 COL_CHECK, COL_STATUS, COL_NAME, COL_STUDENT, COL_AMOUNT, COL_FILES, COL_SUMMARY = range(7)
 
 PERSON_STATUS = {
@@ -183,12 +183,18 @@ class ScholarshipPanel(QWidget):
             check.setCheckState(Qt.Checked if job.selected[row] else Qt.Unchecked)
             self.table.setItem(row, COL_CHECK, check)
             files = job.files_for(row)
+            summary = job.row_summary(row)
+            # 줄마다 앞의 대표적요는 같다 — 좁은 칸에서는 줄을 가르는 뒷부분(_이름 · _(이름_교과목))이 보이게 앞을 줄인다
+            shown = ("…" + summary[len(job.main_summary):]
+                     if job.main_summary and summary.startswith(job.main_summary) and summary != job.main_summary else summary)
             values = {COL_NAME: p.name, COL_STUDENT: p.student_no or "—", COL_AMOUNT: _money(p.amount) or "—",
-                      COL_FILES: str(len(files)), COL_SUMMARY: job.row_summary(row)}
+                      COL_FILES: str(len(files)), COL_SUMMARY: shown}
             for col, value in values.items():
                 item = QTableWidgetItem(value)
                 if col == COL_FILES:
                     item.setToolTip("\n".join(os.path.relpath(f, job.folder) for f in files) or "첨부 없음")
+                elif col == COL_SUMMARY:
+                    item.setToolTip(summary)
                 else:
                     item.setToolTip(value + (f"\n{p.note}" if p.note else ""))
                 if col in (COL_AMOUNT, COL_FILES):
@@ -206,7 +212,7 @@ class ScholarshipPanel(QWidget):
         job = self.job
         per = sum(len(v) for v in job.person_files.values())
         chosen = job.chosen()
-        self.files_note.setText(f"넣을 사람 {len(chosen)}명 · 합계 {sum(job.people[i].amount or 0 for i in chosen):,}원 · "
+        self.files_note.setText(f"넣을 사람 {job.count_text(chosen)} · 합계 {sum(job.people[i].amount or 0 for i in chosen):,}원 · "
                                 f"공통증빙 {len(job.common_files)}개 · 개별증빙 {per}개")
 
     def _put_status(self, row: int, status: str) -> None:

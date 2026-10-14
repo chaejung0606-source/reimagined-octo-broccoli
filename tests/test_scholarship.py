@@ -86,7 +86,25 @@ def test_roster_fills_merged_second_row_and_reads_course(tmp_path):
         ("차카타", "202600011", "알고리즘", 100000)]
     assert r.people[1].account == "111-11-111111"                  # 병합된 둘째 줄은 앞 줄 값을 내려받는다
     assert r.sheet_total == 370000 and not any("합계" in p for p in r.problems())
-    assert any("같은 이름" in p for p in r.problems())             # 같은 학생 두 줄 — 알려 준다(학번으로 구분)
+    # 학번까지 같고 교과목이 다르면 한 학생이 교과목 둘을 맡은 것 — 문제가 아니다(담당자 규칙 2026-10-14)
+    assert r.duplicate_problems() == [] and not any("중복" in p for p in r.problems())
+
+
+def _people(*rows):
+    return [roster.Person(name=n, student_no=no, course=c, amount=1, row=5 + i) for i, (n, no, c) in enumerate(rows)]
+
+
+def test_same_name_is_told_apart_by_student_no_then_course():
+    ok = roster.Roster(path="", people=_people(("가나다", "202600001", "자료구조"),
+                                                ("가나다", "202600002", "자료구조"),     # 동명이인 — 학번이 다르다
+                                                ("가나다", "202600001", "운영체제")))    # 같은 학생의 다른 교과목
+    assert ok.duplicate_problems() == []
+    twice = roster.Roster(path="", people=_people(("가나다", "202600001", "자료구조"), ("가나다", "202600001", "자료구조")))
+    assert any("중복" in p and "자료구조" in p for p in twice.duplicate_problems())
+    no_course = roster.Roster(path="", people=_people(("가나다", "202600001", ""), ("가나다", "202600001", "")))
+    assert any("중복" in p for p in no_course.duplicate_problems())
+    wrong = roster.Roster(path="", people=_people(("가나다", "202600001", ""), ("라마바", "202600001", "")))
+    assert any("이름이 다릅니다" in p for p in wrong.duplicate_problems())
 
 
 def test_roster_flags_total_mismatch_and_missing_student_no(tmp_path):
@@ -102,8 +120,13 @@ def test_summaries_follow_type_rules():
     assert main == "02_2026년도 7월 (가)형 근로장학금 지급내역"
     ga = roster.Person(name="가나다", student_no="202600001", amount=1)
     assert scholarship.row_summary(main, ga, "가", rules) == main + "_가나다"
+    # TA 근로장학금: 대표적요_(이름_교과목명) — 담당자 지정 2026-10-14. 제목에 '(나)형' 이 없어도 교과목이 있으면 이 꼴
     na = roster.Person(name="사아자", student_no="202600010", course="자료구조", amount=1)
-    assert scholarship.row_summary("02_X", na, "나", rules) == "02_X(사아자_202600010_자료구조)"
+    assert scholarship.row_summary("02_X", na, "나", rules) == "02_X_(사아자_자료구조)"
+    assert scholarship.row_summary("02_X", na, "", rules) == "02_X_(사아자_자료구조)"
+    # 유형 글자 규칙을 담당자가 따로 적었으면 그것이 먼저
+    typed = scholarship.parse_rules(scholarship.RULES_DEFAULT + "\n행적요(나): {대표적요}({이름}_{학번}_{강좌명})")
+    assert scholarship.row_summary("02_X", na, "나", typed) == "02_X(사아자_202600010_자료구조)"
     custom = scholarship.parse_rules("대표적요: 02_[선지원금] {제목}\n행적요: {대표적요}-{이름}")
     assert scholarship.main_summary("T", custom) == "02_[선지원금] T"
 
@@ -132,6 +155,40 @@ def test_load_job_splits_common_and_person_files(tmp_path):
     assert [f.rsplit("/", 1)[-1] for f in job.unmatched] == ["누군지모름.pdf"]
     assert any("모르는 개별증빙" in p for p in job.problems())
     assert job.main_summary.startswith("02_2026년도 7월 (가)형")
+
+
+def test_old_default_rules_file_is_upgraded_but_edited_one_is_kept():
+    from claim_downloader import settings
+    old = scholarship.RULES_HEADER + "대표적요: 02_{제목}\n행적요: {대표적요}_{이름}\n행적요(나): {대표적요}({이름}_{학번}_{강좌명})\n"
+    path, base = settings.scholarship_rules_path(), settings.scholarship_rules_base_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(old, encoding="utf-8")
+    base.write_text(old, encoding="utf-8")
+    rules = scholarship.load_rules()                      # 손대지 않은 옛 기본값 → 새 기본값으로
+    assert "행적요(강좌)" in rules and "행적요(나)" not in rules
+    path.write_text(old.replace("02_{제목}", "02_[선지원금] {제목}"), encoding="utf-8")
+    rules = scholarship.load_rules()                      # 담당자가 고친 것 → 그대로
+    assert rules["대표적요"] == "02_[선지원금] {제목}" and "행적요(나)" in rules
+
+
+def test_job_warns_when_two_rows_get_the_same_summary(tmp_path):
+    rows = [("가나다", 202600001, "국민", "1", 10000, "1", 10000), ("가나다", 202600002, "국민", "2", 10000, "1", 10000)]
+    folder = tmp_path / "7월"
+    folder.mkdir()
+    make_ga(folder / "명단.xlsx", rows=rows, total=20000)
+    job = scholarship.load_job(str(folder))
+    assert any("개별 적요가 같은 줄" in p for p in job.problems())      # (가)형 동명이인은 '대표적요_이름' 이 같아진다
+
+
+def test_ta_student_with_two_courses_gets_files_per_course_or_both(tmp_path):
+    people = [roster.Person("사아자", "202600010", course="자료구조"), roster.Person("사아자", "202600010", course="운영체제"),
+              roster.Person("차카타", "202600011", course="알고리즘")]
+    files = [str(tmp_path / "사아자.pdf"), str(tmp_path / "사아자_운영체제 근무일지.pdf"), str(tmp_path / "차카타.pdf")]
+    assigned, unmatched = scholarship.assign_person_files(files, str(tmp_path), people)
+    # 교과목이 없는 개인 서류는 그 학생의 두 줄 모두에, 교과목이 적힌 것은 그 줄에만
+    assert assigned == {0: [files[0]], 1: [files[0], files[1]], 2: [files[2]]} and unmatched == []
+    job = scholarship.Job(folder=str(tmp_path), roster=roster.Roster(path="", people=people), selected=[True, True, True])
+    assert job.count_text() == "3줄(2명)" and job.count_text([0, 2]) == "2명"
 
 
 def test_same_name_needs_student_no_in_file_name(tmp_path):

@@ -496,7 +496,8 @@ class ClaimPage(QWidget):
             job = self._jobs[self._current]
             chosen = len(job.chosen()) if job is not None else 0
             self.fill_button.setEnabled(chosen > 0 and not busy and not self._browser_busy and (dry or self._browser_open))
-            self.fill_button.setText(f"미리 보기 ({chosen}명)" if dry else f"ERP 에 넣기 ({chosen}명)")
+            count = job.count_text() if job is not None else "0명"
+            self.fill_button.setText(f"미리 보기 ({count})" if dry else f"ERP 에 넣기 ({count})")
         else:
             has_row = 0 <= self._current < len(self._dirs) and self._status[self._current] in ("read", "filled", "saved")
             self.fill_button.setEnabled(has_row and self._browser_open and not self._browser_busy and not busy)
@@ -541,7 +542,8 @@ class ClaimPage(QWidget):
             chosen = job.chosen()
             data = {"summary": job.main_summary or "(대표적요 없음)",
                     "amount": sum(job.people[i].amount or 0 for i in chosen),
-                    "payeeName": f"학생 {len(chosen)}명" + (f" / 명단 {len(job.people)}명" if len(chosen) != len(job.people) else "")}
+                    "payeeName": f"학생 {job.count_text(chosen)}" + (f" / 명단 {job.count_text(list(range(len(job.people))))}"
+                                                                        if len(chosen) != len(job.people) else "")}
         kind_item = QTableWidgetItem(kinds.name_of(self._kind(row)))
         kind_item.setToolTip(kinds.find(self._kind(row)).hint)
         self.table.setItem(row, COL_KIND, kind_item)

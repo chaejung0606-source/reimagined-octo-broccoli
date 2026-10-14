@@ -22,7 +22,7 @@ HEADERS = {
     "bank": ("은행", "은행명", "금융기관"),
     "account": ("계좌", "계좌번호"),
     "amount": ("금액(C=A*B)", "지급금액", "지급액", "금액", "청구액"),
-    "course": ("강좌명", "강좌", "과목명", "과목"),
+    "course": ("강좌명", "강좌", "교과목명", "교과목", "과목명", "과목"),
 }
 TOTAL_WORDS = ("합계", "총계", "계")
 MAX_HEADER_SCAN = 12          # 머리글은 위쪽 열두 줄 안에 있다
@@ -35,7 +35,7 @@ class Person:
     amount: int | None = None
     bank: str = ""
     account: str = ""             # 적힌 그대로(하이픈 포함). 대조는 digits() 로
-    course: str = ""              # (나)형 TA 의 강좌명 — 행 적요에 들어간다
+    course: str = ""              # (나)형 TA 의 강좌명(교과목) — 행 적요에 들어간다
     row: int = 0                  # 엑셀 행 번호 (사람에게 알려 줄 때)
     note: str = ""                # 이 사람 줄의 문제 (학번 없음 등)
 
@@ -65,13 +65,35 @@ class Roster:
             out.append("명단에 사람이 없습니다")
         if self.sheet_total is not None and self.sheet_total != self.total:
             out.append(f"표의 합계({self.sheet_total:,})와 금액을 더한 값({self.total:,})이 다릅니다")
-        names = [p.name for p in self.people]
-        dup = sorted({n for n in names if names.count(n) > 1})
-        if dup:
-            out.append("같은 이름이 둘 이상: " + " · ".join(dup) + " — 학번으로 구분합니다")
+        out.extend(self.duplicate_problems())
         for p in self.people:
             if p.note:
                 out.append(f"{p.row}행 {p.name}: {p.note}")
+        return out
+
+
+    def duplicate_problems(self) -> list[str]:
+        """같은 이름 · 같은 학번 줄 — 담당자 규칙(2026-10-14): 학번이 다르면 다른 학생(동명이인)이라 문제없고,
+        학번까지 같은데 교과목이 다르면 한 학생이 여러 교과목 TA 를 한 것이라 문제없다. 학번 · 교과목까지 같으면 같은 줄이
+        두 번 들어간 것일 수 있어 알린다. 학번이 같은데 이름이 다르면 명단을 잘못 쓴 것일 수 있어 알린다."""
+        out: list[str] = []
+        seen: dict[tuple[str, str, str], Person] = {}
+        names_by_no: dict[str, set[str]] = {}
+        for p in self.people:
+            if not p.student_no:
+                continue                  # 학번 없음은 그 줄의 note 로 따로 알린다
+            name = norm(p.name)
+            names_by_no.setdefault(p.student_no, set()).add(name)
+            key = (name, p.student_no, norm(p.course))
+            if key in seen:
+                first = seen[key]
+                what = f"교과목 '{p.course}' 까지 같은" if p.course else "같은"
+                out.append(f"{first.row}행 · {p.row}행 {p.name}(학번 {p.student_no}) — {what} 줄이 둘입니다. 중복인지 확인하세요")
+            else:
+                seen[key] = p
+        for no, names in names_by_no.items():
+            if len(names) > 1:
+                out.append(f"학번 {no} 인데 이름이 다릅니다: " + " · ".join(sorted(names)))
         return out
 
 
