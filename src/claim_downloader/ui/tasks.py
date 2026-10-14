@@ -29,12 +29,9 @@ TASKS: tuple[Task, ...] = (
          "receive", "download", "mint", "download:DownloadPage", ready=True),
     Task("meeting", "회의록 생성", "회의 자료 폴더에서 정산용 회의록(.hwpx)을 만듭니다.",
          "meeting", "book", "lavender", "minutes:MinutesPage", ready=True),
-    Task("claim", "일반청구", "지출 자료 폴더에서 값을 뽑아 ERP 일반청구 화면에 채웁니다. 저장·신청은 직접.",
+    # 장학금 · 카드 · 출장비는 따로 두지 않고 일반청구 화면에서 폴더마다 '청구 종류' 로 고른다(담당자 제안 2026-10-14, claims/kinds.py)
+    Task("claim", "일반청구", "지출 폴더마다 청구 종류(일반 · 장학금 …)를 골라 ERP 일반청구 화면에 채우고 임시저장합니다. 신청은 직접.",
          "claim", "document-check", "peach", "claim:ClaimPage", ready=True),
-    Task("scholarship", "장학금 청구", "명단 엑셀과 증빙 폴더로 ERP 인건비 탭에 학생마다 넣고 임시저장합니다. 신청은 직접.",
-         "scholarship", "people", "mint", "scholarship:ScholarshipPage", ready=True),
-    Task("card", "카드청구", "카드 사용 내역과 증빙을 정리합니다.",
-         "card", "card", "sky", "pending:CardPage", ready=False),
 )
 
 # 상단 메뉴에서 여는 화면. 독·홈 카드·[+] 메뉴에는 두지 않는다.

@@ -50,9 +50,9 @@ def test_dock_holds_only_tasks_not_utilities():
 
 
 def test_tasks_in_requested_order():
-    assert [t.name for t in tasks.TASKS] == ["청구서 받기", "회의록 생성", "일반청구", "장학금 청구", "카드청구"]
-    assert all(tasks.find(i).ready for i in ("download", "meeting", "claim", "scholarship"))
-    assert not tasks.find("card").ready
+    """장학금 · 카드 · 출장비는 홈 타일이 아니라 일반청구 화면의 '청구 종류'(담당자 제안 2026-10-14)."""
+    assert [t.name for t in tasks.TASKS] == ["청구서 받기", "회의록 생성", "일반청구"]
+    assert all(t.ready for t in tasks.TASKS)
 
 
 def test_dock_overlay_is_raised_whenever_the_page_changes():

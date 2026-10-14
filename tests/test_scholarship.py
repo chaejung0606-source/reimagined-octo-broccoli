@@ -357,3 +357,36 @@ def test_previous_students_save_message_does_not_count_for_the_next(monkeypatch,
                              wait=lambda s: None, messages=live, dry_run=False)
     assert report.saved == 1 and report.stopped and report.results[1].status == "stopped"
     assert report.messages == ["저장되었습니다."]
+
+
+# ── 청구 종류 (일반청구 화면에서 폴더마다 고른다) ─────────────────────────
+def test_kind_guess_recognizes_scholarship_folder_shape(tmp_path):
+    from claim_downloader.claims import kinds
+
+    general = tmp_path / "정수기 9월"
+    general.mkdir()
+    (general / "세금계산서.pdf").write_bytes(b"%PDF")
+    assert kinds.guess(str(general)) == kinds.GENERAL
+
+    sch_dir = tmp_path / "7월 (가)형"
+    sch_dir.mkdir()
+    make_ga(sch_dir / "명단.xlsx")
+    assert kinds.guess(str(sch_dir)) == kinds.GENERAL           # 엑셀만 있고 증빙 폴더가 없으면 아직 일반
+    (sch_dir / "개별증빙").mkdir()
+    assert kinds.guess(str(sch_dir)) == kinds.SCHOLARSHIP
+    (sch_dir / "~$명단.xlsx").write_bytes(b"x")                  # 엑셀이 열려 있을 때 생기는 임시 파일은 엑셀로 치지 않는다
+    assert kinds.looks_like_scholarship(str(sch_dir))
+
+
+def test_kind_resolve_honors_choice_and_refuses_unready(tmp_path):
+    from claim_downloader.claims import kinds
+
+    folder = tmp_path / "건"
+    folder.mkdir()
+    assert kinds.resolve(kinds.AUTO, str(folder)) == kinds.GENERAL
+    assert kinds.resolve(kinds.SCHOLARSHIP, str(folder)) == kinds.SCHOLARSHIP     # 담당자가 고르면 모양과 상관없이 그 종류
+    for key in (kinds.TRAVEL, kinds.CARD):
+        assert not kinds.find(key).ready
+        with pytest.raises(ValueError):
+            kinds.resolve(key, str(folder))
+    assert [k.name for k in kinds.KINDS] == ["일반", "장학금", "출장비", "카드"]

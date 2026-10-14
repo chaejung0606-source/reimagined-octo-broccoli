@@ -45,8 +45,7 @@ WORKSPACE = ""     # 이름 아래 기관 문구는 두지 않는다(담당자 �
 COMPACT_BELOW = 800
 
 # 별도 스레드에서 오래 도는 업무 — 탭·앱을 닫기 전에 묻고, 홈의 '이어서 작업하기' 에 보인다
-RUNNING_WORDS = {"download": "청구서를 받는", "meeting": "회의록을 만드는", "claim": "일반청구 내용을 읽는",
-                 "scholarship": "장학금 청구를 넣는"}
+RUNNING_WORDS = {"download": "청구서를 받는", "meeting": "회의록을 만드는", "claim": "일반청구 작업을 하는"}
 
 ASSETS = Path(__file__).parent / "assets"
 log = logging.getLogger(__name__)
@@ -134,9 +133,7 @@ class MainWindow(QMainWindow):
         module_name, class_name = task.page.split(":")
         module = importlib.import_module(f".pages.{module_name}", __package__)
         cls = getattr(module, class_name)
-        if module_name == "pending":
-            page = cls(task)
-        elif task_id in ("download", "claim", "scholarship"):
+        if task_id in ("download", "claim"):
             page = cls(worker=self.session_worker())
         else:
             page = cls()
@@ -158,7 +155,7 @@ class MainWindow(QMainWindow):
             page.need_settings.connect(lambda: self.open("settings"))
             page.busy_changed.connect(lambda busy: self._on_busy(task.id, busy))
             page.counts_changed.connect(self._sync_home)
-        elif task.id in ("meeting", "claim", "scholarship"):
+        elif task.id in ("meeting", "claim"):
             page.busy_changed.connect(lambda busy: self._on_busy(task.id, busy))
         elif task.id == "settings":
             page.changed.connect(self._on_settings_changed)

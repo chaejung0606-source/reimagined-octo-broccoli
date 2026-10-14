@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from .. import settings
 from ..minutes.logbook import log as file_log
 from ..minutes.textfile import _read_text
-from . import attach, person, roster as roster_mod
+from . import attach, kinds, person, roster as roster_mod
 from .form import PROBE_JS, SET_SELECT_JS, SET_TEXT_JS, read_state, save_draft
 from .payee import CLICK_ID_JS, wait_until
 
@@ -33,9 +33,9 @@ TAB_ID = "20"                         # 작성 화면 서브탭 '인건비(소�
 TAB_VALUE = "20"                      # 숨은 #TAB_GB 가 이 값이면 인건비 탭
 CATEGORY = "장학금"                    # 비목 보기 글자
 INCOME_KIND = "장학금"                 # 소득구분 보기 글자 — 비목이 장학금이면 소득구분도 장학금(담당자 확정 2026-10-14)
-COMMON_DIR_WORD = "공통"               # 폴더 이름에 이 글자가 들면 공통증빙
-PERSON_DIR_WORD = "개별"               # 폴더 이름에 이 글자가 들면 개별증빙
-EXCEL_SUFFIXES = (".xlsx", ".xlsm")
+COMMON_DIR_WORD = kinds.COMMON_WORD    # 폴더 이름에 이 글자가 들면 공통증빙
+PERSON_DIR_WORD = kinds.PERSON_WORD    # 폴더 이름에 이 글자가 들면 개별증빙
+EXCEL_SUFFIXES = kinds.EXCEL_SUFFIXES
 MAX_ASKS = 3                          # 한 단계에서 사람에게 묻는 횟수
 
 # 적요 규칙 — 담당자가 고칠 수 있다(~/.claim-downloader/장학금규칙.txt). {제목}=명단 B2 제목, {대표적요}, {이름}, {학번}, {강좌명}, {금액}

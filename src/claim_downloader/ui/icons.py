@@ -192,24 +192,8 @@ def _check(painter: QPainter) -> None:
     painter.drawPath(path)
 
 
-def _people(painter: QPainter) -> None:
-    """장학금 청구 — 두 사람(명단)."""
-    painter.drawEllipse(QPointF(9.5, 8.5), 3, 3)
-    front = QPainterPath()
-    front.moveTo(3.5, 19.5)
-    front.quadTo(3.5, 13.5, 9.5, 13.5)
-    front.quadTo(15.5, 13.5, 15.5, 19.5)
-    painter.drawPath(front)
-    painter.drawArc(QRectF(13.3, 5.5, 6, 6), -60 * 16, 230 * 16)
-    back = QPainterPath()
-    back.moveTo(17, 13.6)
-    back.quadTo(20.5, 14.5, 20.5, 19.5)
-    painter.drawPath(back)
-
-
 _ICONS = {
     "home": _home,
-    "people": _people,
     "book": _book,
     "card": _card,
     "plus": _plus,
