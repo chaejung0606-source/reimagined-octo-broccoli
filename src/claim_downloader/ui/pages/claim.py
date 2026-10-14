@@ -325,6 +325,16 @@ class ClaimPage(QWidget):
         log_page = QWidget()
         log_layout = QVBoxLayout(log_page)
         log_layout.setContentsMargins(0, 10, 0, 0)
+        # [로그 파일 열기] 는 진행 기록 탭 안에 둔다 — 장학금 줄을 고르면 이 칸이 좁아져(2:3) 모서리 단추 둘이 탭 글자를
+        # 밀어내 '진행 기록' 이 잘리고 화살표가 생겼다(1024px 창, 2026-10-14 점검).
+        log_bar = QHBoxLayout()
+        log_bar.setContentsMargins(0, 0, 0, 6)
+        log_bar.addStretch(1)
+        open_log = QPushButton("로그 파일 열기")
+        open_log.setObjectName("ghost")
+        open_log.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(settings.log_path()))))
+        log_bar.addWidget(open_log)
+        log_layout.addLayout(log_bar)
         self.log_view = QPlainTextEdit()
         self.log_view.setObjectName("logView")
         self.log_view.setReadOnly(True)
@@ -344,10 +354,6 @@ class ClaimPage(QWidget):
             "읽기만 하고 아무것도 누르거나 넣지 않습니다. 새 화면을 자동화하기 전 실측용입니다.")
         self.structure_button.clicked.connect(self._capture_structure)
         corner_row.addWidget(self.structure_button)
-        open_log = QPushButton("로그 파일 열기")
-        open_log.setObjectName("ghost")
-        open_log.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(settings.log_path()))))
-        corner_row.addWidget(open_log)
         self.tabs.setCornerWidget(corner, Qt.TopRightCorner)
         card.add(self.tabs, 1)
         return card

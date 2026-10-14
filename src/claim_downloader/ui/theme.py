@@ -21,6 +21,7 @@ __all__ = ["COLORS", "STATUS", "card_shadow", "stylesheet"]
 
 # QSS 의 image: 는 파일 경로만 받는다. 윈도우에서도 슬래시로 적어야 읽는다.
 CHECK_ICON = (Path(__file__).parent / "assets" / "check.svg").as_posix()
+CHEVRON_ICON = (Path(__file__).parent / "assets" / "chevron-down.svg").as_posix()
 
 # 상태 배지: 이름 → (글자색, 바탕색)
 STATUS = {
@@ -233,6 +234,16 @@ QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus, QT
     padding: 6px 9px;
 }}
 QLineEdit:read-only, QPlainTextEdit[readOnly="true"], QTextBrowser {{ background: {c['surface_alt']}; }}
+/* 펼침 단추를 따로 꾸미지 않으면 테두리를 바꾼 고르기 칸 오른쪽 아래에 운영체제 기본 단추의 검은 선이 비친다 */
+QComboBox {{ padding-right: 28px; }}
+QComboBox:focus {{ padding-right: 27px; }}
+QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right; width: 26px; border: none; background: transparent; }}
+QComboBox::down-arrow {{ image: url({CHEVRON_ICON}); width: 12px; height: 12px; }}
+QComboBox::down-arrow:disabled {{ image: url({CHEVRON_ICON}); }}
+QComboBox QAbstractItemView {{
+    background: {c['surface']}; color: {c['text']}; border: 1px solid {c['border']};
+    selection-background-color: {c['selection']}; selection-color: {c['text']}; outline: 0;
+}}
 /* 숫자 칸 안쪽의 글자 칸에까지 위 여백·테두리가 겹쳐 붙으면 값이 칸 밖으로 밀려 안 보인다 */
 QAbstractSpinBox QLineEdit {{ border: none; padding: 0; min-height: 0; background: transparent; }}
 /* 화살표는 쓰지 않는다. 키보드 위·아래 화살표로는 값이 바뀐다 */

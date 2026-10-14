@@ -126,7 +126,9 @@ class TopBar(QWidget):
 
         self.search = QLineEdit()
         self.search.setObjectName("search")
-        self.search.setPlaceholderText("업무 찾기")
+        self.search.setPlaceholderText("업무 찾기 (Ctrl+F)")
+        # 앱을 켜자마자 찾기 칸에 커서가 깜빡이며 보라 테두리가 뜨지 않게 — 누르거나 Ctrl+F 로만 들어간다(창 단축키는 app.py)
+        self.search.setFocusPolicy(Qt.ClickFocus)
         self.search.setClearButtonEnabled(True)
         self.search.setAccessibleName("업무 찾기")
         self.search.setMinimumWidth(200)

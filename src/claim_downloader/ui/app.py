@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Signal
-from PySide6.QtGui import QFont, QFontDatabase, QIcon
+from PySide6.QtGui import QFont, QFontDatabase, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -81,6 +81,7 @@ class MainWindow(QMainWindow):
         self.topbar.open_utility.connect(self.open)
         self.topbar.search_submitted.connect(self._search)
         column.addWidget(self.topbar)
+        QShortcut(QKeySequence.Find, self, activated=lambda: (self.topbar.search.setFocus(), self.topbar.search.selectAll()))
 
         self.tabs = WorkTabs()
         self.tabs.activated.connect(self.show_task)

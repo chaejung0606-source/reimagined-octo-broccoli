@@ -32,11 +32,16 @@ jobs:
       - name: 문법 검사
         run: python -m compileall -q src tools
 
+      # 문법 검사는 없는 이름을 못 잡는다 — 화면 코드는 CI 에서 돌지 않아 단추를 눌러야 터지는 NameError 가
+      # 그대로 배포됐다(작업 중 [새로고침] 의 `tid`, 2026-10-14). 없는 이름 · 겹친 정의 · 잘못된 return/break 만 본다.
+      - name: 이름 오류 검사
+        run: ruff check --select F821,F822,F823,F811,F632,F701,F702,F704,F706,F707,E9 src tools tests
+
       # 청구서에는 계좌번호·이체자 이름이 들어 있다. .gitignore 를 믿지 않고
       # 실제로 올라간 파일을 확인한다. 한 번 올라가면 이력에서 지우기 어렵다.
       - name: 개인정보 파일 혼입 검사
         run: |
-          found=$(git ls-files '*.pdf' '*.hwp' '*.hwpx' '*.jpg' '*.jpeg' '*.xls' '*.xlsx' 'samples/*' '서류/*' '*_받은기록.json' '*_보관목록.json' '*_실행로그.txt')
+          found=$(git ls-files '*.pdf' '*.hwp' '*.hwpx' '*.jpg' '*.jpeg' '*.xls' '*.xlsx' 'samples/*' '서류/*' '*_받은기록.json' '*_보관목록.json' '*_실행로그.txt' '*_화면구조.txt' '*_청구입력기록.json' 'config.json')
           if [ -n "$found" ]; then
             echo "중단: 청구서·기록 파일이 저장소에 올라가 있습니다."
             echo "$found"
