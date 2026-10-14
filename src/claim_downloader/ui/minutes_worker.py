@@ -21,7 +21,6 @@ from ..minutes import backends, logbook, process
 
 class MinutesWorker(QObject):
     log = Signal(str)
-    checked = Signal(str, bool, str, str)   # 백엔드 key, 쓸 수 있는지, 안내, 백엔드 상태(참고용)
     started = Signal(int)                   # 회의 번호 — 작성 시작
     done = Signal(int, object)              # 회의 번호, minutes.MeetingResult
     skipped = Signal(int, str)              # 회의 번호, 건너뛴 이유(login · limit · balance)
@@ -38,10 +37,6 @@ class MinutesWorker(QObject):
         self._thread.start()
 
     # ── 화면 스레드에서 부르는 것 ──────────────────────────────────────────
-    def check(self, key: str) -> None:
-        """백엔드를 쓸 수 있는지 — claude --version 을 돌리므로(최대 60초) 스레드에서 한다."""
-        self._queue.put(("check", (key,)))
-
     def run(self, meeting_dirs: list[str], key: str) -> None:
         self._stop.clear()
         self._queue.put(("run", (list(meeting_dirs), key)))
@@ -70,12 +65,6 @@ class MinutesWorker(QObject):
                 self.error.emit(str(error).splitlines()[0] if str(error) else type(error).__name__)
             finally:
                 self.busy.emit(False, "")
-
-    def _do_check(self, key: str) -> None:
-        self.busy.emit(True, "AI 플랫폼을 확인하는 중…")
-        backend = backends.get(key)
-        ok, note = backend.available()
-        self.checked.emit(backend.key, ok, note, getattr(backend, "last_state", ""))
 
     def _do_run(self, meeting_dirs: list[str], key: str) -> None:
         backend = backends.get(key)

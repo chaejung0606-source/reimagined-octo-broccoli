@@ -43,13 +43,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import settings
-from ...claims import extract, kinds, record, rules, schema
+from ... import ai, settings
+from ...claims import kinds, record, rules, schema
 from ...claims import scholarship as sch
 from ...minutes.backends import claude_cli
+from .. import ai_status
 from ..art import Art
 from ..claim_worker import ClaimExtractWorker
-from ..widgets import Card, ElideLabel, EmptyState, Field, Pill, PillDelegate, WrapLabel, muted_label
+from ..widgets import Card, EmptyState, Field, Pill, PillDelegate, WrapLabel, muted_label
 from ..worker import SessionWorker
 from .scholarship import ScholarshipPanel
 
@@ -74,8 +75,8 @@ GUIDE_START = "청구 종류를 고르고 지출 폴더를 추가하세요. 일�
 GUIDE_SCHOLARSHIP = ("학생 표를 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [ERP 에 넣기] 를 누르세요. "
                      "인건비 탭은 앱이 누릅니다.")
 GUIDE_READ = "값을 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [ERP 에 채우기] 를 누르세요."
-NO_BACKEND = ("이 기능은 Claude Code 가 필요합니다. Claude Code 를 설치하고 로그인한 뒤 [다시 확인] 을 누르세요. "
-              "설치했는데도 이 안내가 보이면 컴퓨터를 다시 시작해 보세요.")
+NO_BACKEND = ("일반 폴더의 [내용 읽기] 는 Claude Code 가 필요합니다(장학금은 AI 없이 됩니다). Claude Code 를 설치한 뒤 "
+              "[다시 확인] 을 누르세요. 설치했는데도 이 안내가 보이면 컴퓨터를 다시 시작해 보세요.")
 
 
 def _money(value) -> str:
@@ -84,6 +85,7 @@ def _money(value) -> str:
 
 class ClaimPage(QWidget):
     busy_changed = Signal(bool)
+    need_settings = Signal()        # [설정에서 바꾸기] — AI 플랫폼은 설정에서 고른다
 
     def __init__(self, parent: QWidget | None = None, worker: SessionWorker | None = None):
         super().__init__(parent)
@@ -105,6 +107,7 @@ class ClaimPage(QWidget):
         self._browser_open = False
         self._available: bool | None = None
         self._backend_state = ""
+        self._backend_key = ai.chosen("claim")
         self._done_count = 0
         self._current = -1
         self._loading_form = False
@@ -113,7 +116,10 @@ class ClaimPage(QWidget):
         layout.setContentsMargins(24, 18, 24, 26)
         layout.setSpacing(12)
         layout.addLayout(self._build_head())
-        layout.addLayout(self._build_backend_row())
+        self.platform = ai_status.PlatformRow("claim")
+        self.platform.changed.connect(self._on_platform)
+        self.platform.settings_requested.connect(self.need_settings.emit)
+        layout.addWidget(self.platform)
         layout.addWidget(self._build_banner())
         layout.addWidget(self._build_ask_banner())
         layout.addWidget(self._build_drop_zone())
@@ -123,7 +129,6 @@ class ClaimPage(QWidget):
         e = self.extractor
         e.log.connect(self._append_log)
         e.busy.connect(self._on_extract_busy)
-        e.checked.connect(self._on_checked)
         e.started.connect(self._on_started)
         e.done.connect(self._on_done)
         e.skipped.connect(self._on_skipped)
@@ -144,9 +149,8 @@ class ClaimPage(QWidget):
         b.scholarship_done.connect(self._on_sch_done)
         b.error.connect(self._on_error)
 
-        self._sync_buttons()
         self._show_form(-1)
-        self._check_backend()
+        self._on_platform(self.platform.status())
 
     # ── 구성 ────────────────────────────────────────────────────────────
     def _build_head(self) -> QHBoxLayout:
@@ -169,33 +173,6 @@ class ClaimPage(QWidget):
         rules_button.clicked.connect(self._open_rules)
         head.addWidget(rules_button, 0, Qt.AlignVCenter)
         return head
-
-    def _build_backend_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        label = QLabel("AI 플랫폼")
-        label.setObjectName("fieldLabel")
-        row.addWidget(label)
-        self.backend_box = QComboBox()
-        self.backend_box.setMinimumWidth(300)
-        current = settings.load().minutes_backend
-        for key, text in extract.labels():
-            self.backend_box.addItem(text, key)
-        index = self.backend_box.findData(current)
-        self.backend_box.setCurrentIndex(index if index >= 0 else 0)
-        self.backend_box.currentIndexChanged.connect(lambda _i: self._check_backend())
-        label.setBuddy(self.backend_box)
-        row.addWidget(self.backend_box)
-        self.backend_pill = Pill("확인 중", "neutral")
-        row.addWidget(self.backend_pill, 0, Qt.AlignVCenter)
-        self.backend_note = ElideLabel("")
-        self.backend_note.setObjectName("muted")
-        row.addWidget(self.backend_note, 1)
-        self.recheck_button = QPushButton("다시 확인")
-        self.recheck_button.setObjectName("ghost")
-        self.recheck_button.clicked.connect(self._check_backend)
-        row.addWidget(self.recheck_button)
-        return row
 
     def _build_banner(self) -> QFrame:
         self.banner = QFrame()
@@ -489,9 +466,6 @@ class ClaimPage(QWidget):
         return row
 
     # ── 상태 ────────────────────────────────────────────────────────────
-    def _backend_key(self) -> str:
-        return self.backend_box.currentData() or extract.DEFAULT_KEY
-
     def _kind(self, row: int) -> str:
         return self._kinds[row] if 0 <= row < len(self._kinds) else kinds.GENERAL
 
@@ -504,8 +478,9 @@ class ClaimPage(QWidget):
         running = self._running
         busy = running or self._erp_running
         can_edit = not busy
-        for widget in (self.add_one_button, self.add_parent_button, self.backend_box, self.recheck_button, self.add_kind):
+        for widget in (self.add_one_button, self.add_parent_button, self.add_kind):
             widget.setEnabled(can_edit)
+        self.platform.set_enabled_for_run(not running)
         self.clear_button.setEnabled(can_edit and bool(self._dirs))
         self.table.setEnabled(not self._erp_running)          # 넣는 중에는 다른 줄로 옮기지 않게
         unread = self._unread_rows()
@@ -732,27 +707,19 @@ class ClaimPage(QWidget):
         self._sync_buttons()
 
     # ── AI 플랫폼 ───────────────────────────────────────────────────────
-    def _check_backend(self) -> None:
-        self._available = None
-        self.backend_pill.set_status("확인 중", "neutral")
-        self.backend_note.setText("")
-        self._sync_buttons()
-        self.extractor.check(self._backend_key())
-
-    def _on_checked(self, key: str, ok: bool, note: str, state: str) -> None:
-        if key != self._backend_key():
+    def _on_platform(self, status: ai.Status) -> None:
+        """설정에서 고른 플랫폼의 상태(ui/ai_status.py). 읽는 중에는 쓰던 플랫폼 그대로 간다."""
+        if self._running:
             return
-        self._available = ok
-        self._backend_state = state
-        self.backend_note.setText(note.replace("\n", " "))
-        if not ok:
-            self.backend_pill.set_status("사용 불가", "danger")
-            self.banner_text.setText(NO_BACKEND if key == claude_cli.ClaudeCliBackend.key else note)
+        self._backend_key = status.key
+        self._backend_state = status.state
+        self._available = None if status.state == ai.CHECKING else status.usable
+        if status.state in (ai.MISSING, ai.ERROR):
+            self.banner_text.setText(NO_BACKEND if status.key == claude_cli.ClaudeCliBackend.key and status.state == ai.MISSING
+                                     else status.note or "AI 플랫폼을 확인하지 못했습니다. [다시 확인] 을 눌러 보세요.")
             self.banner.show()
         else:
             self.banner.hide()
-            self.backend_pill.set_status("로그인 확인" if state == "no_login" else "사용 가능",
-                                         "warning" if state == "no_login" else "success")
         self._sync_buttons()
 
     def _open_rules(self) -> None:
@@ -766,13 +733,13 @@ class ClaimPage(QWidget):
         rows = self._unread_rows()
         if not rows:
             return
-        if self._backend_state == "no_login":
+        if self._backend_state == ai.NO_LOGIN:
             if QMessageBox.question(self, "로그인 확인", claude_cli.LOGIN_HELP,
                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
         if QMessageBox.question(
                 self, "내용 읽기",
-                f"지출 {len(rows)}건의 자료가 '{self.backend_box.currentText()}' 로 전송되어 값을 뽑습니다.\n"
+                f"지출 {len(rows)}건의 자료가 '{ai.label_of(self._backend_key)}' 로 전송되어 값을 뽑습니다.\n"
                 "ERP 에는 아직 아무것도 넣지 않습니다.\n\n시작할까요?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
             return
@@ -785,7 +752,7 @@ class ClaimPage(QWidget):
         self._set_state("읽는 중", "info", "폴더 하나에 수십 초에서 몇 분이 걸립니다. 다른 탭으로 가도 작업은 이어집니다.")
         self._sync_buttons()
         self.busy_changed.emit(True)
-        self.extractor.run([self._dirs[i] for i in rows], self._backend_key())
+        self.extractor.run([self._dirs[i] for i in rows], self._backend_key)
 
     def _stop(self) -> None:
         if self._erp_running:
@@ -843,11 +810,21 @@ class ClaimPage(QWidget):
 
     def _on_finished(self, stop: str, ok_count: int, fail_count: int) -> None:
         self._running = False
-        self._sync_buttons()
+        self._on_platform(self.platform.status())       # 읽는 동안 바뀐 설정·로그인 상태를 이제 반영
         self.busy_changed.emit(False)
         summary = f"읽음 {ok_count}건 · 실패 {fail_count}건"
         if stop == "login":
-            self._set_state("로그인 필요", "danger", summary + " — Claude 로그인이 풀려 남은 폴더를 건너뛰었습니다. 회의록 화면의 [Claude 로그인] 뒤 다시 읽으세요.")
+            name = ai.short_label(self._backend_key)
+            self._set_state("로그인 필요", "danger", summary + f" — {name} 로그인이 풀려 남은 폴더를 건너뛰었습니다. "
+                            "위쪽 AI 단추에서 로그인한 뒤 다시 읽으세요.")
+            status = ai_status.instance()
+            status.mark(self._backend_key, ai.NO_LOGIN, "작업 중 로그인이 풀렸습니다")
+            if QMessageBox.question(
+                    self, "로그인이 풀렸습니다",
+                    f"{name} 로그인이 풀려 있어 지출 자료를 읽지 못했습니다.\n\n지금 로그인 창을 열까요?\n"
+                    "(로그인을 마치면 위쪽 AI 단추가 '로그인됨' 으로 바뀝니다. 그 뒤 [내용 읽기] 를 다시 누르시면 됩니다.)",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes:
+                status.login(self, self._backend_key)
         elif stop == "limit":
             self._set_state("한도 초과", "danger", summary + " — 한도가 풀린 뒤 [내용 읽기] 를 다시 누르세요.")
         elif stop == "balance":
@@ -1184,7 +1161,7 @@ class ClaimPage(QWidget):
             if 0 <= self._erp_row < len(self._status):
                 self._set_status(self._erp_row, "partial")
         self._running = False
-        self._sync_buttons()
+        self._on_platform(self.platform.status())
         self.busy_changed.emit(False)
         self._set_state("오류", "danger")
         QMessageBox.warning(self, "문제가 생겼습니다", f"{message}\n\n자세한 내용은 [진행 기록] 탭과 로그 파일에 있습니다.")

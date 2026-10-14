@@ -17,7 +17,6 @@ from ..minutes import logbook
 
 class ClaimExtractWorker(QObject):
     log = Signal(str)
-    checked = Signal(str, bool, str, str)   # 백엔드 key, 쓸 수 있는지, 안내, 상태
     started = Signal(int)
     done = Signal(int, object)              # 번호, claims.ExtractResult
     skipped = Signal(int, str)
@@ -32,9 +31,6 @@ class ClaimExtractWorker(QObject):
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="claims", daemon=True)
         self._thread.start()
-
-    def check(self, key: str) -> None:
-        self._queue.put(("check", (key,)))
 
     def run(self, folders: list[str], key: str) -> None:
         self._stop.clear()
@@ -62,12 +58,6 @@ class ClaimExtractWorker(QObject):
                 self.error.emit(str(error).splitlines()[0] if str(error) else type(error).__name__)
             finally:
                 self.busy.emit(False, "")
-
-    def _do_check(self, key: str) -> None:
-        self.busy.emit(True, "AI 플랫폼을 확인하는 중…")
-        backend = extract.get(key)
-        ok, note = backend.available()
-        self.checked.emit(backend.key, ok, note, getattr(backend, "last_state", ""))
 
     def _do_run(self, folders: list[str], key: str) -> None:
         backend = extract.get(key)

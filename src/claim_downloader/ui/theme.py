@@ -87,6 +87,13 @@ QPushButton#userMenu {{
 }}
 QPushButton#userMenu:hover {{ background: {c['hover']}; }}
 QPushButton#userMenu::menu-indicator {{ image: none; width: 0; }}
+QPushButton#aiChip {{
+    border: 1px solid transparent; border-radius: 15px; padding: 4px 12px;
+    font-size: {f['caption']}px; font-weight: 600;
+}}
+QPushButton#aiChip::menu-indicator {{ image: none; width: 0; }}
+QPushButton#aiChip:focus {{ border: 2px solid {c['primary']}; }}
+{''.join(f'QPushButton#aiChip[tone="{n}"] {{ background: {bg}; color: {fg}; }}' + chr(10) for n, (fg, bg) in STATUS.items())}
 QLabel#avatar {{
     background: {c['selection']}; color: {c['primary_hover']};
     border-radius: 13px; min-width: 26px; max-width: 26px; min-height: 26px; max-height: 26px;

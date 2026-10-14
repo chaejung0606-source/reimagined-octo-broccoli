@@ -1,4 +1,4 @@
-"""설정 화면 — 저장 폴더 · 파일 이름 형식 · 누락 검토 엑셀 · 동작 · 기록.
+"""설정 화면 — 저장 폴더 · AI 플랫폼 · 파일 이름 형식 · 누락 검토 엑셀 · 동작 · 기록.
 
 고치는 즉시 `~/.claim-downloader/config.json` 에 저장한다. 앱 폴더에 두지
 않으므로 업데이트를 받아도 그대로 남는다.
@@ -12,9 +12,11 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -23,8 +25,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import archive, settings
-from ..widgets import Card, Field, PageHeader, Pill, muted_label
+from ... import ai, archive, settings
+from .. import ai_status
+from ..widgets import Card, ElideLabel, Field, PageHeader, Pill, muted_label
 
 EXAMPLE_DATE = "(261008) 2026년 사업단 정수기 임차료(9월)_코웨이(주)_(51,900).pdf"
 EXAMPLE_CODE = "09_" + EXAMPLE_DATE
@@ -44,6 +47,7 @@ class SettingsPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
+        self._scroll = scroll
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         content = QWidget()
@@ -89,6 +93,8 @@ class SettingsPage(QWidget):
         status_row.addWidget(self.folder_status, 1)
         folder_card.add_layout(status_row)
         column.addWidget(folder_card)
+
+        column.addWidget(self._build_ai_card(cfg))
 
         # 파일 이름
         name_card = Card("파일 이름")
@@ -184,6 +190,116 @@ class SettingsPage(QWidget):
         column.addWidget(shortcut_card)
 
         self._refresh()
+        ai_status.instance().changed.connect(self._sync_ai)
+        self._sync_ai()
+
+    # ── AI 플랫폼 ────────────────────────────────────────────────────
+    def _build_ai_card(self, cfg: settings.Settings) -> Card:
+        """회의록 생성 · 일반청구에 쓸 AI 를 여기서 정한다(담당자 요청 2026-10-14). 로그인 상태도 여기서 본다.
+
+        로그인은 그 플랫폼의 로그인 창에서 사람이 한다 — 앱은 창을 열어 주기만 하고 비밀번호는 어디에도 두지 않는다.
+        """
+        self.ai_card = Card("AI 플랫폼", "회의록 생성 · 일반청구가 자료를 읽힐 AI", art="login")
+        self.ai_boxes: dict[str, QComboBox] = {}
+        helps = {
+            "minutes": "회의 자료를 읽고 회의록을 씁니다.",
+            "claim": "일반 지출 폴더의 [내용 읽기] 에 씁니다. 장학금은 명단 엑셀을 바로 읽어 AI 를 쓰지 않습니다.",
+        }
+        row = QHBoxLayout()
+        row.setSpacing(16)
+        for use, (title, field) in ai.USES.items():
+            box = QComboBox()
+            for key, label in ai.platforms(use):
+                box.addItem(label, key)
+            index = box.findData(ai.chosen(use, cfg))
+            box.setCurrentIndex(index if index >= 0 else 0)
+            box.currentIndexChanged.connect(lambda _i, use=use, field=field: self._save_platform(use, field))
+            self.ai_boxes[use] = box
+            row.addWidget(Field(title, box, helps.get(use, "")), 1, Qt.AlignTop)   # 도움말 줄 수가 달라도 칸이 나란히
+        self.ai_card.add_layout(row)
+        if all(len(ai.platforms(use)) <= 1 for use in ai.USES):
+            self.ai_card.add(muted_label("지금 고를 수 있는 것은 Claude Code 하나입니다. 다른 AI 플랫폼이 추가되면 여기에서 고릅니다."))
+
+        # 로그인 상태 — 쓰기로 정한 플랫폼마다 한 줄
+        self.ai_rows = QVBoxLayout()
+        self.ai_rows.setSpacing(8)
+        self._ai_row_widgets: dict[str, tuple[QWidget, Pill, ElideLabel, QPushButton]] = {}
+        self.ai_card.add_layout(self.ai_rows)
+
+        self.claude_email = QLineEdit(cfg.claude_email)
+        self.claude_email.setPlaceholderText("예: 홍길동@kangwon.ac.kr")
+        self.claude_email.editingFinished.connect(self._save_email)
+        email_field = Field(
+            "로그인 이메일", self.claude_email,
+            "로그인 창에 미리 채워 넣을 주소입니다. 이 PC 에만 저장되고, 비밀번호는 저장하지 않습니다.")
+        email_field.setMaximumWidth(520)
+        self.ai_card.add(email_field)
+        return self.ai_card
+
+    def _save_email(self) -> None:
+        value = self.claude_email.text().strip()
+        if value != settings.load().claude_email:
+            self._save(claude_email=value)
+
+    def _save_platform(self, use: str, field: str) -> None:
+        key = self.ai_boxes[use].currentData()
+        if key and key != getattr(settings.load(), field, ""):
+            self._save(**{field: key})
+
+    def _ai_row(self, key: str) -> tuple[QWidget, Pill, ElideLabel, QPushButton]:
+        if key in self._ai_row_widgets:
+            return self._ai_row_widgets[key]
+        holder = QWidget()
+        line = QHBoxLayout(holder)
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(10)
+        name = QLabel(ai.short_label(key))
+        name.setObjectName("body")
+        line.addWidget(name)
+        pill = Pill("확인 중", "neutral")
+        line.addWidget(pill, 0, Qt.AlignVCenter)
+        note = ElideLabel("")
+        note.setObjectName("muted")
+        line.addWidget(note, 1)
+        login = QPushButton("로그인")
+        login.clicked.connect(lambda _c=False, key=key: ai_status.instance().login(self, key))
+        line.addWidget(login)
+        recheck = QPushButton("다시 확인")
+        recheck.setObjectName("ghost")
+        recheck.clicked.connect(ai_status.instance().check)
+        line.addWidget(recheck)
+        self.ai_rows.addWidget(holder)
+        self._ai_row_widgets[key] = (holder, pill, note, login)
+        return self._ai_row_widgets[key]
+
+    def _sync_ai(self) -> None:
+        status_of = ai_status.instance()
+        used = ai.used_keys()
+        for key, (holder, *_rest) in self._ai_row_widgets.items():
+            holder.setVisible(key in used)
+        for key in used:
+            _holder, pill, note, login = self._ai_row(key)
+            status = status_of.status(key)
+            if status.state == ai.CHECKING or (status_of.checking and not status.checked_at):
+                pill.set_status("확인 중", "neutral")
+            else:
+                pill.set_status(status.text, status.tone)
+            uses = " · ".join(title for use, (title, _f) in ai.USES.items() if ai.chosen(use) == key)
+            note.setText(f"{uses} — {status.note}" if status.note else uses)
+            note.setToolTip(status.note)
+            login.setVisible(ai.can_login(key) and status.state != ai.MISSING)
+            # 로그인돼 있으면 계정을 바꿀 때만 쓴다 — 주된 단추로 보이지 않게
+            login.setText("다시 로그인" if status.state == ai.OK else "로그인")
+            login.setObjectName("ghost" if status.state == ai.OK else "primary")
+            login.style().unpolish(login)
+            login.style().polish(login)
+
+    def focus_ai(self) -> None:
+        """위쪽 AI 단추 · 업무 화면의 [설정에서 바꾸기] 로 왔을 때 AI 플랫폼 칸을 보이게."""
+        self._scroll.ensureWidgetVisible(self.ai_card, 0, 24)
+        box = self.ai_boxes.get("minutes")
+        if box is not None:
+            box.setFocus()
 
     def _rebuild_shortcuts(self) -> None:
         from ... import shortcuts

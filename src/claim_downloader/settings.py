@@ -42,7 +42,8 @@ class Settings:
     auto_update_check: bool = True
     # 회의록 생성 (minutes/). 이메일은 Claude 로그인 화면에 미리 채워 넣는 용도 — 비밀번호는 없다.
     claude_email: str = ""
-    minutes_backend: str = "claude-cli"   # minutes/backends 의 key
+    minutes_backend: str = "claude-cli"   # 회의록 생성에 쓸 AI 플랫폼 — minutes/backends 의 key (설정 → AI 플랫폼)
+    claim_backend: str = "claude-cli"     # 일반청구 [내용 읽기] 에 쓸 AI 플랫폼 — claims/extract 의 key (ai.py)
     minutes_model: str = ""               # 비우면 백엔드의 기본 모델
     # 일반청구 팝업(입금처·세금계산서)에서 결과가 하나로 확실하면 앱이 골라 [확인]까지 누른다. 애매하면 사람(담당자 결정 2026-10-13).
     claim_auto_pick: bool = True

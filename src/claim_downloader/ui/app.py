@@ -32,7 +32,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import settings, shortcuts, updater
+from .. import ai, settings, shortcuts, updater
+from . import ai_status
 from .pages.home import HomePage
 from .shell import Dock, DockOverlay, TopBar, WorkTabs
 from .tasks import HOME_ICON, HOME_ID, TASKS, UTILITIES, Task, find
@@ -112,6 +113,14 @@ class MainWindow(QMainWindow):
         self.home.open_task.connect(self.open)
         self.home.apply_update.connect(self._apply_update)
         self.home.restart_requested.connect(self.restart)
+        # AI 플랫폼 로그인 상태 — 위쪽 바 단추와 홈 띠가 같은 것을 본다(ui/ai_status.py)
+        self.ai = ai_status.instance()
+        self.ai.changed.connect(self._sync_ai)
+        self.topbar.ai_login.connect(lambda: self.ai.login(self))
+        self.topbar.ai_check.connect(self.ai.check)
+        self.topbar.ai_settings.connect(self.open_ai_settings)
+        self.home.ai_login.connect(lambda: self.ai.login(self))
+        self.home.ai_check.connect(self.ai.check)
         self._closing_for_restart = False
         self._pages[HOME_ID] = self.home
         self.stack.addWidget(self.home)
@@ -123,6 +132,9 @@ class MainWindow(QMainWindow):
         self._sync_user_menu()
         # 시작 직후 창이 그려지고 나서 확인한다. 네트워크가 느려도 창은 바로 뜬다.
         QTimer.singleShot(1200, lambda: self.page("updates").check_quietly())
+        # 앱을 켜면 AI 로그인 상태부터 본다 — 홈에서 바로 알 수 있게(담당자 요청 2026-10-14)
+        self._sync_ai()
+        QTimer.singleShot(600, self.ai.check)
 
     # ── 화면 만들기 · 열기 ────────────────────────────────────────────
     def page(self, task_id: str) -> QWidget:
@@ -157,6 +169,7 @@ class MainWindow(QMainWindow):
             page.counts_changed.connect(self._sync_home)
         elif task.id in ("meeting", "claim"):
             page.busy_changed.connect(lambda busy: self._on_busy(task.id, busy))
+            page.need_settings.connect(self.open_ai_settings)
         elif task.id == "settings":
             page.changed.connect(self._on_settings_changed)
         elif task.id == "updates":
@@ -164,6 +177,11 @@ class MainWindow(QMainWindow):
             page.status_checked.connect(self._on_update_status)
             page.applied.connect(self._on_update_applied)
             page.restart_requested.connect(self.restart)
+
+    def open_ai_settings(self) -> None:
+        """설정을 열고 AI 플랫폼 칸으로 — 위쪽 AI 단추 메뉴와 업무 화면의 [설정에서 바꾸기]."""
+        self.open("settings")
+        self.page("settings").focus_ai()
 
     def open(self, task_id: str) -> None:
         """독·홈 카드·[+]·메뉴에서 부른다. 이미 열려 있으면 그 탭으로 간다."""
@@ -215,6 +233,31 @@ class MainWindow(QMainWindow):
         if "download" in self._pages:
             self._pages["download"].refresh_counts()
         self._sync_home()
+        # 설정에서 AI 플랫폼을 바꿨을 수 있다 — 새로 쓰는 플랫폼의 로그인 상태를 본다
+        if set(ai.used_keys()) != {s.key for s in self.ai.statuses() if s.checked_at}:
+            self.ai.check()
+        else:
+            self._sync_ai()
+
+    def _sync_ai(self) -> None:
+        """위쪽 AI 단추와 홈 띠를 지금 상태로."""
+        head = self.ai.headline()
+        checking = self.ai.checking
+        if head is None:
+            return
+        name = ai.short_label(head.key)
+        lines = [f"{title}: {ai.short_label(ai.chosen(use))} · {self.ai.for_use(use).text}"
+                 for use, (title, _f) in ai.USES.items()]
+        if head.note:
+            lines.append(head.note)
+        if head.state == ai.CHECKING or (checking and head.state == ai.OK and not head.checked_at):
+            text, tone = "AI 확인 중", "neutral"
+        else:
+            text, tone = f"{name} · {head.text}", head.tone
+        # 로그인돼 있어도 메뉴에 남긴다 — 계정을 바꿀 때 쓴다
+        login_label = "" if not ai.can_login(head.key) else f"{name} 다시 로그인" if head.state == ai.OK else f"{name} 로그인"
+        self.topbar.set_ai(text, tone, "\n".join(lines), login_label)
+        self.home.show_ai(head, checking)
 
     def _sync_home(self) -> None:
         """홈의 '이어서 작업하기'(실제 재개 가능한 일만)와 최근 기록을 새로 읽는다."""

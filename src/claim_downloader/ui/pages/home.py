@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import archive, settings
+from ... import ai, archive, settings
 from ..art import Art
 from ..shell import TaskCard
 from ..tasks import TASKS
@@ -53,6 +53,8 @@ class HomePage(QWidget):
     open_task = Signal(str)
     apply_update = Signal()
     restart_requested = Signal()     # 업데이트를 받은 뒤 [새로고침]
+    ai_login = Signal()              # AI 띠 [로그인]
+    ai_check = Signal()              # AI 띠 [다시 확인]
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -95,6 +97,29 @@ class HomePage(QWidget):
         banner.addWidget(self.restart_button)
         self.update_banner.hide()
         layout.addWidget(self.update_banner)
+
+        # AI 플랫폼 띠 — 회의록 생성 · 일반청구에 쓰는 AI 가 로그인이 풀렸거나 쓸 수 없을 때만 보인다(담당자 요청 2026-10-14).
+        # 로그인돼 있으면 띠는 숨고, 위쪽 바의 AI 단추가 초록 '로그인됨' 으로 늘 상태를 보여 준다.
+        self.ai_banner = QFrame()
+        self.ai_banner.setObjectName("banner")
+        ai_row = QHBoxLayout(self.ai_banner)
+        ai_row.setContentsMargins(16, 10, 12, 10)
+        ai_row.setSpacing(10)
+        self.ai_pill = Pill("로그인 필요", "warning")
+        ai_row.addWidget(self.ai_pill, 0, Qt.AlignVCenter)
+        self.ai_text = WrapLabel("")
+        self.ai_text.setObjectName("bannerText")
+        self.ai_text.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)     # 단추 높이에 맞춰 가운데 — 한 줄일 때 위로 붙지 않게
+        ai_row.addWidget(self.ai_text, 1)
+        self.ai_login_button = QPushButton("로그인")
+        self.ai_login_button.setObjectName("primary")
+        self.ai_login_button.clicked.connect(self.ai_login.emit)
+        ai_row.addWidget(self.ai_login_button)
+        self.ai_check_button = QPushButton("다시 확인")
+        self.ai_check_button.clicked.connect(self.ai_check.emit)
+        ai_row.addWidget(self.ai_check_button)
+        self.ai_banner.hide()
+        layout.addWidget(self.ai_banner)
 
         title = QLabel("어떤 업무를 시작할까요?")
         title.setObjectName("homeTitle")
@@ -142,6 +167,28 @@ class HomePage(QWidget):
         self.apply_button.hide()
         self.restart_button.show()
         self.update_banner.show()
+
+    # ── AI 플랫폼 ────────────────────────────────────────────────────
+    def show_ai(self, status: "ai.Status | None", checking: bool = False) -> None:
+        """로그인이 필요하거나 쓸 수 없을 때만 띠를 보인다. 확인 중에는 이전 상태를 그대로 둔다."""
+        if status is None or status.state in (ai.OK, ai.CHECKING):
+            if not checking:
+                self.ai_banner.hide()
+            return
+        name = ai.short_label(status.key)
+        uses = " · ".join(title for use, (title, _f) in ai.USES.items() if ai.chosen(use) == status.key)
+        self.ai_pill.set_status(status.text, status.tone)
+        if status.state == ai.NO_LOGIN:
+            text = f"{uses} 에 쓰는 {name} 에 로그인되어 있지 않습니다. [로그인] 을 누르면 로그인 창이 열립니다."
+        elif status.state == ai.MISSING:
+            text = f"{uses} 에 쓰는 {name} 을(를) 이 PC 에서 찾지 못했습니다. 설치한 뒤 [다시 확인] 을 누르세요."
+        else:
+            text = f"{name} 상태를 확인하지 못했습니다: {status.note or '알 수 없는 문제'}"
+        self.ai_text.setText(text)
+        self.ai_login_button.setVisible(status.state == ai.NO_LOGIN and ai.can_login(status.key))
+        self.ai_check_button.setEnabled(not checking)
+        self.ai_check_button.setText("확인 중…" if checking else "다시 확인")
+        self.ai_banner.show()
 
     # ── 업무 카드 배열 ───────────────────────────────────────────────
     def _relayout(self, columns: int) -> None:

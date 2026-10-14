@@ -99,6 +99,9 @@ class TopBar(QWidget):
 
     search_submitted = Signal(str)
     open_utility = Signal(str)       # 'settings' | 'updates'
+    ai_login = Signal()              # AI 단추 → 로그인 창 열기
+    ai_check = Signal()              # AI 단추 → 다시 확인
+    ai_settings = Signal()           # AI 단추 → 설정의 AI 플랫폼 칸
 
     def __init__(self, app_name: str, workspace: str = "", user_name: str = "", parent: QWidget | None = None):
         super().__init__(parent)
@@ -130,6 +133,21 @@ class TopBar(QWidget):
         self.search.returnPressed.connect(lambda: self.search_submitted.emit(self.search.text().strip()))
         row.addWidget(self.search)
 
+        # AI 플랫폼 로그인 상태 — 회의록 화면에 있던 로그인 단추를 여기로 옮겼다(담당자 요청 2026-10-14).
+        # 글자와 색으로 상태를 같이 보인다(색만으로 알리지 않는다). 누르면 로그인 · 다시 확인 · 설정.
+        self.ai_button = QPushButton("AI 확인 중")
+        self.ai_button.setObjectName("aiChip")
+        self.ai_button.setCursor(Qt.PointingHandCursor)
+        self.ai_button.setAccessibleName("AI 플랫폼 로그인 상태")
+        self.ai_button.setProperty("tone", "neutral")
+        self.ai_menu = QMenu(self.ai_button)
+        self.ai_login_action = self.ai_menu.addAction("로그인", self.ai_login.emit)
+        self.ai_menu.addAction("다시 확인", self.ai_check.emit)
+        self.ai_menu.addSeparator()
+        self.ai_menu.addAction("AI 플랫폼 설정", self.ai_settings.emit)
+        self.ai_button.setMenu(self.ai_menu)
+        row.addWidget(self.ai_button, 0, Qt.AlignVCenter)
+
         settings_button = IconButton("gear", "설정")
         settings_menu = QMenu(settings_button)
         settings_menu.addAction("설정", lambda: self.open_utility.emit("settings"))
@@ -149,6 +167,18 @@ class TopBar(QWidget):
         self.user_menu = QMenu(self.user_button)
         self.user_button.setMenu(self.user_menu)
         row.addWidget(self.user_button)
+
+    def set_ai(self, text: str, tone: str, tooltip: str = "", login_label: str = "") -> None:
+        """AI 단추의 글자 · 색(success · warning · danger · neutral) · 설명. login_label 이 비면 로그인 메뉴를 숨긴다."""
+        self.ai_button.setText(text)
+        self.ai_button.setToolTip(tooltip)
+        self.ai_login_action.setVisible(bool(login_label))
+        if login_label:
+            self.ai_login_action.setText(login_label)
+        if self.ai_button.property("tone") != tone:
+            self.ai_button.setProperty("tone", tone)
+            self.ai_button.style().unpolish(self.ai_button)
+            self.ai_button.style().polish(self.ai_button)
 
 
 # ── 작업 탭 (파일 탐색기형) ─────────────────────────────────────────────

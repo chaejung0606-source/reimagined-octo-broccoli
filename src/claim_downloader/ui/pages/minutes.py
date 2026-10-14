@@ -1,13 +1,14 @@
 """회의록 생성 화면 — 회의 폴더를 모아 [작업 시작] 하면 폴더마다 회의록(.hwpx)이 그 안에 생긴다.
 
-    AI 플랫폼 고르기(1단계는 Claude Code 하나) → 회의 폴더 추가(끌어다 놓기 · 버튼) → 작업 시작
+    회의 폴더 추가(끌어다 놓기 · 버튼) → 작업 시작
     → 표에서 작성 중 / 완료 / 실패 / 건너뜀 → 더블클릭으로 만든 파일 열기
 
 옛 '회의록 자동 작성 도구' 의 흐름 그대로다. 출력 폴더를 따로 고르지 않는다 — 회의록은 그 회의
 자료가 있는 폴더 안에 저장한다. 자료는 선택한 AI 플랫폼으로 전송되므로 화면에 적어 둔다.
 
-Claude Code 가 없는 PC 에서는 화면은 보이되 안내 띠와 함께 [작업 시작] 이 비활성이다. 확인은
-작업 스레드(ui/minutes_worker.py)에서 하므로 화면은 바로 뜬다. 다른 화면은 영향을 받지 않는다.
+AI 플랫폼은 설정(`minutes_backend`)에서 정하고 로그인은 위쪽 바 AI 단추에서 한다(2026-10-14) — 이 화면은
+ui/ai_status.py 의 상태를 보여 주기만 한다. Claude Code 가 없는 PC 에서는 화면은 보이되 안내 띠와 함께
+[작업 시작] 이 비활성이다. 확인은 뒤 스레드에서 하므로 화면은 바로 뜬다. 다른 화면은 영향을 받지 않는다.
 
 높이 배분은 청구서 받기와 같다 — 위는 낮게 고정, 남는 높이는 표가 쓴다. 화면 전체를 스크롤하지 않는다.
 """
@@ -20,12 +21,10 @@ from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
@@ -39,12 +38,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import settings
-from ...minutes import backends, rules
+from ... import ai, settings
+from ...minutes import rules
 from ...minutes.backends import claude_cli
+from .. import ai_status
 from ..art import Art
 from ..minutes_worker import MinutesWorker
-from ..widgets import Card, ElideLabel, EmptyState, Pill, PillDelegate, WrapLabel, muted_label
+from ..widgets import Card, EmptyState, Pill, PillDelegate, WrapLabel, muted_label
 
 # (머리글, 너비). None 이면 남는 폭을 채운다.
 COLUMNS = [("상태", 104), ("회의 (폴더)", 360), ("생성된 회의록", 300), ("보완요청", None)]
@@ -61,12 +61,13 @@ ROW_STATUS = {
 
 GUIDE_START = "회의 폴더를 추가하고 [작업 시작] 을 누르세요. 회의록은 각 회의 폴더 안에 만들어집니다."
 GUIDE_RUNNING = "회의 1건에 수십 초에서 몇 분이 걸립니다. 다른 탭으로 가도 작업은 이어집니다."
-NO_BACKEND = ("이 기능은 Claude Code 가 필요합니다. Claude Code 를 설치하고 로그인한 뒤 [다시 확인] 을 누르세요. "
+NO_BACKEND = ("이 기능은 Claude Code 가 필요합니다. Claude Code 를 설치한 뒤 [다시 확인] 을 누르세요. "
               "설치했는데도 이 안내가 보이면 컴퓨터를 다시 시작해 보세요.")
 
 
 class MinutesPage(QWidget):
     busy_changed = Signal(bool)     # 작업 중인지 — 작업 탭의 점이 본다
+    need_settings = Signal()        # [설정에서 바꾸기] — AI 플랫폼은 설정에서 고른다
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -80,13 +81,17 @@ class MinutesPage(QWidget):
         self._running = False
         self._available: bool | None = None     # None 이면 아직 확인 중
         self._backend_state = ""
+        self._backend_key = ai.chosen("minutes")
         self._done_count = 0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 18, 24, 26)
         layout.setSpacing(12)
         layout.addLayout(self._build_head())
-        layout.addLayout(self._build_backend_row())
+        self.platform = ai_status.PlatformRow("minutes")
+        self.platform.changed.connect(self._on_platform)
+        self.platform.settings_requested.connect(self.need_settings.emit)
+        layout.addWidget(self.platform)
         layout.addWidget(self._build_banner())
         layout.addWidget(self._build_drop_zone())
         layout.addWidget(self._build_work_card(), 1)
@@ -95,7 +100,6 @@ class MinutesPage(QWidget):
         w = self.worker
         w.log.connect(self._append_log)
         w.busy.connect(self._on_busy)
-        w.checked.connect(self._on_checked)
         w.started.connect(self._on_started)
         w.done.connect(self._on_done)
         w.skipped.connect(self._on_skipped)
@@ -103,8 +107,7 @@ class MinutesPage(QWidget):
         w.finished.connect(self._on_finished)
         w.error.connect(self._on_error)
 
-        self._sync_buttons()
-        self._check_backend()
+        self._on_platform(self.platform.status())
 
     # ── 구성 ────────────────────────────────────────────────────────────
     def _build_head(self) -> QHBoxLayout:
@@ -127,37 +130,6 @@ class MinutesPage(QWidget):
         rules_button.clicked.connect(self._open_rules)
         head.addWidget(rules_button, 0, Qt.AlignVCenter)
         return head
-
-    def _build_backend_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(10)
-        label = QLabel("AI 플랫폼")
-        label.setObjectName("fieldLabel")
-        row.addWidget(label)
-        self.backend_box = QComboBox()
-        self.backend_box.setMinimumWidth(300)
-        current = settings.load().minutes_backend
-        for key, text in backends.labels():
-            self.backend_box.addItem(text, key)
-        index = self.backend_box.findData(current)
-        self.backend_box.setCurrentIndex(index if index >= 0 else 0)
-        self.backend_box.currentIndexChanged.connect(self._on_backend_changed)
-        label.setBuddy(self.backend_box)
-        row.addWidget(self.backend_box)
-        self.backend_pill = Pill("확인 중", "neutral")
-        row.addWidget(self.backend_pill, 0, Qt.AlignVCenter)
-        self.backend_note = ElideLabel("")
-        self.backend_note.setObjectName("muted")
-        row.addWidget(self.backend_note, 1)
-        self.recheck_button = QPushButton("다시 확인")
-        self.recheck_button.setObjectName("ghost")
-        self.recheck_button.clicked.connect(self._check_backend)
-        row.addWidget(self.recheck_button)
-        self.login_button = QPushButton("Claude 로그인")
-        self.login_button.setToolTip("Claude Code 로그인 창을 대신 열어 줍니다. 아이디·비밀번호는 앱에 저장하지 않습니다.")
-        self.login_button.clicked.connect(self._login)
-        row.addWidget(self.login_button)
-        return row
 
     def _build_banner(self) -> QFrame:
         """Claude Code 가 없을 때만 보이는 띠. 화면은 그대로 두고 [작업 시작] 만 막는다."""
@@ -289,14 +261,12 @@ class MinutesPage(QWidget):
         return row
 
     # ── 상태 ────────────────────────────────────────────────────────────
-    def _backend_key(self) -> str:
-        return self.backend_box.currentData() or backends.DEFAULT_KEY
-
     def _sync_buttons(self) -> None:
         running = self._running
         can_edit = not running
-        for button in (self.add_one_button, self.add_parent_button, self.backend_box, self.recheck_button, self.login_button):
+        for button in (self.add_one_button, self.add_parent_button):
             button.setEnabled(can_edit)
+        self.platform.set_enabled_for_run(can_edit)
         self.clear_button.setEnabled(can_edit and bool(self._dirs))
         self.start_button.setEnabled(can_edit and bool(self._dirs) and self._available is True)
         self.start_button.setText("작업 중…" if running else f"{len(self._dirs)}건 작업 시작" if self._dirs else "작업 시작")
@@ -404,58 +374,23 @@ class MinutesPage(QWidget):
         self.drop_zone.style().polish(self.drop_zone)
 
     # ── AI 플랫폼 ────────────────────────────────────────────────────────
-    def _on_backend_changed(self, _index: int) -> None:
-        settings.update(minutes_backend=self._backend_key())
-        self._check_backend()
-
-    def _check_backend(self) -> None:
-        self._available = None
-        self.backend_pill.set_status("확인 중", "neutral")
-        self.backend_note.setText("")
-        self._sync_buttons()
-        self.worker.check(self._backend_key())
-
-    def _on_checked(self, key: str, ok: bool, note: str, state: str) -> None:
-        if key != self._backend_key():
+    def _on_platform(self, status: ai.Status) -> None:
+        """설정에서 고른 플랫폼의 상태가 바뀔 때마다(ui/ai_status.py). 작업 중에는 쓰던 플랫폼 그대로 간다."""
+        if self._running:
             return
-        self._available = ok
-        self._backend_state = state
-        self.backend_note.setText(note.replace("\n", " "))
-        if not ok:
-            self.backend_pill.set_status("사용 불가", "danger")
-            self.banner_text.setText(NO_BACKEND if key == claude_cli.ClaudeCliBackend.key else note)
+        self._backend_key = status.key
+        self._backend_state = status.state
+        if status.state == ai.CHECKING:
+            self._available = None
+        else:
+            self._available = status.usable
+        if status.state in (ai.MISSING, ai.ERROR):
+            self.banner_text.setText(NO_BACKEND if status.key == claude_cli.ClaudeCliBackend.key and status.state == ai.MISSING
+                                     else status.note or "AI 플랫폼을 확인하지 못했습니다. [다시 확인] 을 눌러 보세요.")
             self.banner.show()
         else:
             self.banner.hide()
-            if state == "no_login":
-                self.backend_pill.set_status("로그인 확인", "warning")
-            else:
-                self.backend_pill.set_status("사용 가능", "success")
         self._sync_buttons()
-
-    def _login(self) -> None:
-        """Claude 로그인 창을 대신 연다. 이메일은 미리 채워 넣는 용도로만 설정에 남긴다."""
-        email = settings.load().claude_email.strip()
-        if not email:
-            email, ok = QInputDialog.getText(
-                self, "Claude 로그인",
-                "로그인에 사용할 이메일 주소를 입력하세요.\n로그인 화면에 미리 채워집니다. (이 PC 에만 저장됩니다)")
-            email = email.strip() if ok else ""
-            if email:
-                settings.update(claude_email=email)
-        try:
-            claude_cli.open_login(email)
-        except Exception as error:  # noqa: BLE001 — 사유를 그대로 보여 준다
-            QMessageBox.warning(
-                self, "claude 를 찾을 수 없습니다",
-                f"로그인 창을 열지 못했습니다.\n\n{error}\n\nClaude Code 가 설치되어 있는지 확인해 주세요. "
-                "설치했는데도 이 메시지가 보이면 컴퓨터를 다시 시작해 보세요.")
-            return
-        QMessageBox.information(
-            self, "Claude 로그인",
-            "로그인 창을 열었습니다.\n\n새로 열린 검은 창의 안내를 따라가시면 브라우저가 열립니다.\n"
-            "브라우저에서 로그인을 마치면 검은 창이 알아서 끝납니다.\n그 사이 검은 창에는 아무것도 입력하지 마세요.\n\n"
-            "로그인이 끝나면 [다시 확인] 을 누른 뒤 [작업 시작] 을 누르세요.")
 
     def _open_rules(self) -> None:
         rules.load_rules()          # 파일이 없으면 기본 규칙으로 만들어 둔다
@@ -465,12 +400,12 @@ class MinutesPage(QWidget):
     def _start(self) -> None:
         if self._running or not self._dirs or self._available is not True:
             return
-        if self._backend_state == "no_login":
+        if self._backend_state == ai.NO_LOGIN:
             # 이 확인은 틀릴 수 있으므로 막지 않고 물어본다.
             if QMessageBox.question(self, "로그인 확인", claude_cli.LOGIN_HELP,
                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
-        label = self.backend_box.currentText()
+        label = ai.label_of(self._backend_key)
         answer = QMessageBox.question(
             self, "작업 시작",
             f"회의 {len(self._dirs)}건의 자료가 '{label}' 로 전송되어 회의록이 만들어집니다.\n"
@@ -488,7 +423,7 @@ class MinutesPage(QWidget):
         self.tabs.setCurrentIndex(0)
         self._sync_buttons()
         self.busy_changed.emit(True)
-        self.worker.run(self._dirs, self._backend_key())
+        self.worker.run(self._dirs, self._backend_key)
 
     def _stop(self) -> None:
         self.worker.request_stop()
@@ -537,17 +472,20 @@ class MinutesPage(QWidget):
 
     def _on_finished(self, stop: str, ok_count: int, fail_count: int) -> None:
         self._running = False
-        self._sync_buttons()
+        self._on_platform(self.platform.status())       # 도는 동안 바뀐 설정·로그인 상태를 이제 반영
         self.busy_changed.emit(False)
         summary = f"완료 {ok_count}건 · 실패 {fail_count}건"
         if stop == "login":
             self._set_state("로그인 필요", "danger", summary + " — 로그인이 풀려 남은 회의를 건너뛰었습니다.")
+            status = ai_status.instance()
+            status.mark(self._backend_key, ai.NO_LOGIN, "작업 중 로그인이 풀렸습니다")
             if QMessageBox.question(
                     self, "로그인이 풀렸습니다",
-                    "Claude 로그인이 풀려 있어 회의록을 만들지 못했습니다.\n\n지금 로그인 창을 열까요?\n"
-                    "(로그인을 마친 뒤 [다시 확인] → [작업 시작] 을 다시 누르시면 됩니다. 목록은 그대로 두셔도 됩니다.)",
+                    f"{ai.short_label(self._backend_key)} 로그인이 풀려 있어 회의록을 만들지 못했습니다.\n\n지금 로그인 창을 열까요?\n"
+                    "(로그인을 마치면 위쪽 AI 단추가 '로그인됨' 으로 바뀝니다. 그 뒤 [작업 시작] 을 다시 누르시면 됩니다. "
+                    "목록은 그대로 두셔도 됩니다.)",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes:
-                self._login()
+                status.login(self, self._backend_key)
             return
         if stop == "limit":
             self._set_state("한도 초과", "danger", summary + " — 한도가 풀린 뒤 [작업 시작] 을 다시 누르세요.")
@@ -572,7 +510,7 @@ class MinutesPage(QWidget):
 
     def _on_error(self, message: str) -> None:
         self._running = False
-        self._sync_buttons()
+        self._on_platform(self.platform.status())
         self.busy_changed.emit(False)
         self._set_state("오류", "danger")
         QMessageBox.warning(self, "문제가 생겼습니다", f"{message}\n\n자세한 내용은 [진행 기록] 탭과 로그 파일에 있습니다.")
