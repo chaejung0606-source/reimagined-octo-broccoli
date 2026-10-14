@@ -400,11 +400,16 @@ def latin_name(text: str) -> str:
     return t if _LATIN_RE.search(t) and not _HANGUL_RE.search(t) else ""
 
 
-def foreign_reason(vw_ssn: str, owners: list[str]) -> str:
-    """외국인 학생으로 볼 까닭(글) — 아니면 ''. 주민번호 칸의 뒷자리 첫 숫자를 먼저 보고, 그 숫자가 안 보일 때만 영문 예금주로 본다."""
+def foreign_reason(vw_ssn: str, owners: list[str], nation: str = "") -> str:
+    """외국인 학생으로 볼 까닭(글) — 아니면 ''. 주민번호 칸의 뒷자리 첫 숫자 → 명단의 국적 열(담당자가 적은 것) →
+    (숫자가 안 보일 때만) 영문 예금주 순으로 본다. nation 은 명단 국적 중 외국인 것만(Person.foreign_nation)."""
     m = re.search(r"-\s*(\d)", str(vw_ssn or ""))
+    if m and m.group(1) in FOREIGN_SSN_DIGITS:
+        return "외국인등록번호"
+    if nation:
+        return f"명단 국적 {nation}"
     if m:
-        return "외국인등록번호" if m.group(1) in FOREIGN_SSN_DIGITS else ""
+        return ""
     latin = next((latin_name(o.split(":", 1)[-1]) for o in owners if latin_name(o.split(":", 1)[-1])), "")
     return f"예금주가 영문 이름({latin})" if latin else ""
 
@@ -451,8 +456,13 @@ def plan_person(job: Job, index: int) -> PersonResult:
     result.lines = [f"학번 {p.student_no or '—'} · 청구액 {p.amount:,}원" if p.amount else f"학번 {p.student_no or '—'} · 청구액 —",
                     f"적요: {job.row_summary(index)}",
                     f"첨부 {len(files)}개" + (": " + " · ".join(os.path.basename(f) for f in files[:6]) if files else "")]
-    if p.note:
-        result.note = p.note
+    if p.foreign_nation:
+        result.lines.append(f"국적 {p.nation}(명단) — ERP 국적은 넣을 때 노란 띠를 따라 직접 고릅니다")
+    notes = [p.note] if p.note else []
+    if p.foreign_nation:
+        notes.append(f"외국인({p.nation}) — 국적을 ERP 에서 직접 고름")
+    if notes:
+        result.note = " · ".join(notes)
     return result
 
 
@@ -565,10 +575,10 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
 
     # 3-1. 외국인 학생이면 국적 — 국적 팝업은 미실측이라 사람이 신분증을 보고 고른다(담당자 2026-10-14)
     s = _state(frame, ["VW_SSN", "OWNR", "OWNR_INQ_RSLT"])
-    foreign = foreign_reason(s["VW_SSN"], [s["OWNR"], s["OWNR_INQ_RSLT"]])
+    foreign = foreign_reason(s["VW_SSN"], [s["OWNR"], s["OWNR_INQ_RSLT"]], p.foreign_nation)
     if foreign:
         log("외국인 학생으로 봄: %d. %s (%s)" % (index + 1, p.name, foreign))
-        ok, why = _ensure_nation(frame, ask, wait, index, p, foreign, "소득자를 고른 뒤")
+        ok, why = _ensure_nation(frame, ask, wait, index, p, foreign, "소득자를 고른 뒤", result)
         if not ok:
             return False, why
         result.lines.append("✓ 국적 " + why)
@@ -650,7 +660,7 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         result.review.append(item)
         log("신청 전 확인: %d. %s — %s" % (index + 1, p.name, item))
     if foreign:
-        ok, why = _ensure_nation(frame, ask, wait, index, p, foreign, "저장 직전")
+        ok, why = _ensure_nation(frame, ask, wait, index, p, foreign, "저장 직전", result)
         if not ok:
             return False, why
     s = read_state(frame, ["PAY_EXP_CD", "INCM_DIV_CD", "REQ_AMT", "REQ_PTCL", "RCV_NM"])
@@ -746,8 +756,20 @@ def _use_document_account(frame, job: Job, index: int, s: dict, log, ask: Ask, w
     return True, "", True          # 바꾼 계좌는 예금주조회가 새로 필요하다 — 부르는 쪽이 [예금주조회] 를 누른다
 
 
-def _ensure_nation(frame, ask: Ask, wait, index: int, p, foreign: str, when: str) -> tuple[bool, str]:
-    """외국인 학생의 국적(#NATION_CD)이 KR 이 아닐 때까지 사람에게 묻는다. (됐는지, '국가이름(코드)' 또는 멈춘 이유)."""
+def same_country(a: str, b: str) -> bool:
+    """'우즈베키스탄' == '우즈베키스탄 공화국' — 공백 · '공화국' 같은 꼬리를 떼고 한쪽이 다른 쪽을 담으면 같다고 본다."""
+    def core(text: str) -> str:
+        t = re.sub(r"\s+|\(.*?\)", "", str(text or "")).lower()
+        return re.sub(r"(인민공화국|민주공화국|공화국|연방|왕국)$", "", t)
+    x, y = core(a), core(b)
+    return bool(x and y) and (x in y or y in x)
+
+
+def _ensure_nation(frame, ask: Ask, wait, index: int, p, foreign: str, when: str, result: PersonResult) -> tuple[bool, str]:
+    """외국인 학생의 국적(#NATION_CD)이 KR 이 아닐 때까지 사람에게 묻는다. (됐는지, '국가이름(코드)' 또는 멈춘 이유).
+
+    명단에 국적이 있으면 띠에 그 나라를 보여 주고, 고른 국적이 명단과 다르면 멈추지 않고 '신청 전 확인할 것' 으로 남긴다
+    (ERP 의 나라 이름 표기를 아직 모른다 — 국적 팝업 미실측)."""
     def nation_ok() -> tuple[bool, str]:
         s = _state(frame, ["NATION_CD", "NATION_NM"])
         code = s["NATION_CD"].strip().upper()
@@ -755,11 +777,20 @@ def _ensure_nation(frame, ask: Ask, wait, index: int, p, foreign: str, when: str
             return True, f"{s['NATION_NM'] or '?'}({code})"
         return False, f"국적이 '{s['NATION_NM'] or code or '비어 있음'}' 입니다"
 
+    hint = f"명단 국적: {p.nation}. " if p.foreign_nation else "개별증빙의 신분증(외국인등록증)을 보고 "
+
     def message(w: str) -> str:
-        return ("%d. %s — 외국인 학생입니다(%s, %s). 개별증빙의 신분증(외국인등록증)을 보고 ERP 의 국적 돋보기로 국적을 고른 뒤 [계속]. "
-                "(%s — %s)" % (index + 1, p.name, foreign, when, w, "앱은 국적 팝업을 아직 누르지 않습니다"))
+        return ("%d. %s — 외국인 학생입니다(%s, %s). %sERP 의 국적 돋보기로 국적을 고른 뒤 [계속]. (%s — %s)"
+                % (index + 1, p.name, foreign, when, hint, w, "앱은 국적 팝업을 아직 누르지 않습니다"))
     ok, why = _ask_until(nation_ok, ask, message, wait)
-    return (True, why) if ok else (False, "외국인 학생의 국적을 고르지 못함 — " + why)
+    if not ok:
+        return False, "외국인 학생의 국적을 고르지 못함 — " + why
+    chosen = _state(frame, ["NATION_NM"])["NATION_NM"]
+    if p.foreign_nation and not same_country(p.foreign_nation, chosen):
+        item = f"ERP 국적 '{chosen or why}' 가 명단 국적 '{p.nation}' 과 다름 — 같은 나라인지 확인한 뒤 [신청]"
+        if item not in result.review:
+            result.review.append(item)
+    return True, why
 
 
 def _owner_result_ok(value: str, name: str) -> tuple[bool, str]:

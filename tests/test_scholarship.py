@@ -70,6 +70,44 @@ def make_na(path):
     return path
 
 
+def add_nation(path, values, header="국   적", col="K"):
+    """명단에 국적 열을 더한다 — 담당자가 외국인 학생 칸만 채우기로 함(2026-10-14). values: 엑셀 행 → 국적."""
+    wb = openpyxl.load_workbook(path)
+    ws = wb.active
+    ws[f"{col}3"] = header
+    ws.merge_cells(f"{col}3:{col}4")
+    for row, value in values.items():
+        ws[f"{col}{row}"] = value
+    wb.save(path)
+    return path
+
+
+def test_roster_reads_nation_column_and_fills_merged_rows(tmp_path):
+    r = roster.read(add_nation(make_ga(tmp_path / "가.xlsx"), {6: "우즈베키스탄"}))
+    assert [p.nation for p in r.people] == ["", "우즈베키스탄"]
+    assert [p.foreign_nation for p in r.people] == ["", "우즈베키스탄"] and not r.problems()
+    path = make_na(tmp_path / "나.xlsx")
+    wb = openpyxl.load_workbook(path)
+    ws = wb.active
+    ws["K3"], ws["K5"], ws["K7"] = "국적", "베트남", "대한민국"
+    ws.merge_cells("K5:K6")                                   # 두 강좌 학생 — 국적 칸도 세로 병합
+    wb.save(path)
+    r = roster.read(path)
+    assert [p.nation for p in r.people] == ["베트남", "베트남", "대한민국"]
+    assert [p.foreign_nation for p in r.people] == ["베트남", "베트남", ""]       # 한국은 외국인이 아니다
+
+
+def test_nation_header_is_not_confused_with_other_columns():
+    assert roster._header_key("국적") == "nation" and roster._header_key("국적(국가/지역)") == "nation"
+    assert roster._header_key("국가장학금") is None
+
+
+def test_same_country_ignores_spaces_and_republic():
+    assert scholarship.same_country("우즈베키스탄", "우즈베키스탄 공화국")
+    assert scholarship.same_country("중국", "중화인민공화국") is False          # 다르게 적으면 사람이 본다(신청 전 확인)
+    assert not scholarship.same_country("베트남", "") and not scholarship.same_country("베트남", "몽골")
+
+
 def test_roster_reads_ga_layout_by_header_words(tmp_path):
     r = roster.read(make_ga(tmp_path / "명단.xlsx"))
     assert r.title == "2026년도 7월 (가)형 근로장학금 지급내역" and r.kind == "가"
@@ -527,6 +565,48 @@ def test_foreign_student_asks_for_nationality_then_saves_with_review(monkeypatch
     assert len(review) == 1 and "라마바" in review[0] and "SUNATULLAEV GO" in review[0]
     assert any("외국인 학생으로 봄: 2. 라마바 (외국인등록번호)" in line for line in logs)
     assert not any("######" in line for line in logs)                  # 주민번호 칸 값은 로그에 남기지 않는다
+
+
+def _nation_job(tmp_path, nation):
+    folder = tmp_path / "국적"
+    folder.mkdir()
+    add_nation(make_ga(folder / "명단.xlsx"), {6: nation})
+    return scholarship.load_job(str(folder))
+
+
+def test_roster_nation_marks_foreign_student_even_with_korean_looking_number(monkeypatch, tmp_path):
+    """명단에 국적을 적으면 주민번호 칸이 내국인처럼 보여도 외국인으로 보고, 띠에 그 나라를 보여 준다."""
+    job = _nation_job(tmp_path, "우즈베키스탄")
+    plan = scholarship.plan_person(job, 1)
+    assert "외국인(우즈베키스탄)" in plan.note and any("국적 우즈베키스탄" in line for line in plan.lines)
+    assert not scholarship.plan_person(job, 0).note
+    frame = FakeForm()                                           # 주민번호 칸은 '-3' (내국인처럼)
+    _patch_popups(monkeypatch, frame)
+    asked = []
+
+    def ask(message):
+        asked.append(message)
+        frame.v.update(NATION_CD="UZ", NATION_NM="우즈베키스탄 공화국")
+        return True
+
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=ask, wait=lambda s: None, dry_run=False)
+    assert report.saved == 2 and len(asked) == 1
+    assert "명단 국적: 우즈베키스탄" in asked[0] and "명단 국적 우즈베키스탄" in asked[0]
+    assert report.review_items() == []                            # 고른 국적이 명단과 같다
+
+
+def test_nation_different_from_roster_is_saved_with_review(monkeypatch, tmp_path):
+    job = _nation_job(tmp_path, "베트남")
+    frame = FakeForm()
+    _patch_popups(monkeypatch, frame)
+
+    def ask(message):
+        frame.v.update(NATION_CD="CN", NATION_NM="중국")
+        return True
+
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=ask, wait=lambda s: None, dry_run=False)
+    review = report.review_items()
+    assert report.saved == 2 and len(review) == 1 and "중국" in review[0] and "베트남" in review[0]
 
 
 def test_foreign_student_stops_when_nationality_is_left_korean(monkeypatch, job):

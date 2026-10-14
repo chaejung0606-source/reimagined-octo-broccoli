@@ -23,7 +23,10 @@ HEADERS = {
     "account": ("계좌", "계좌번호"),
     "amount": ("금액(C=A*B)", "지급금액", "지급액", "금액", "청구액"),
     "course": ("강좌명", "강좌", "교과목명", "교과목", "과목명", "과목"),
+    # 외국인 학생의 국적 — 담당자가 명단에 열을 더하기로 함(2026-10-14). 비어 있으면 내국인으로 본다
+    "nation": ("국적", "국가", "국적(국가)", "국가/지역", "국적(국가/지역)"),
 }
+HOME_NATIONS = ("", "한국", "대한민국", "kr", "kor", "korea", "southkorea", "republicofkorea")
 TOTAL_WORDS = ("합계", "총계", "계")
 MAX_HEADER_SCAN = 12          # 머리글은 위쪽 열두 줄 안에 있다
 
@@ -36,12 +39,18 @@ class Person:
     bank: str = ""
     account: str = ""             # 적힌 그대로(하이픈 포함). 대조는 digits() 로
     course: str = ""              # (나)형 TA 의 강좌명(교과목) — 행 적요에 들어간다
+    nation: str = ""              # 국적 열(있으면) — 외국인 학생만 적는다
     row: int = 0                  # 엑셀 행 번호 (사람에게 알려 줄 때)
     note: str = ""                # 이 사람 줄의 문제 (학번 없음 등)
 
     @property
     def account_digits(self) -> str:
         return re.sub(r"\D", "", self.account)
+
+    @property
+    def foreign_nation(self) -> str:
+        """명단 국적이 외국이면 그 글자, 비었거나 한국이면 ''."""
+        return self.nation if norm(self.nation).lower() not in HOME_NATIONS else ""
 
 
 @dataclass
@@ -139,6 +148,10 @@ def _header_key(label: str) -> str | None:
     for key, words in HEADERS.items():
         if key == "amount" and ("단가" in label or "시간" in label):
             continue
+        if key == "nation":
+            if "국적" in label:          # '국가' 를 담은 다른 머리글(국가장학금 등)과 헷갈리지 않게 담기 비교는 '국적' 만
+                return key
+            continue
         if any(w in label for w in words):
             return key
     return None
@@ -218,11 +231,13 @@ def read(path, sheet: str | None = None) -> Roster:
                             student_no=digits(cells.get("student_no")),
                             bank=str(cells.get("bank") or "").strip(),
                             account=str(cells.get("account") or "").strip(),
-                            course=str(cells.get("course") or "").strip())
+                            course=str(cells.get("course") or "").strip(),
+                            nation=str(cells.get("nation") or "").strip())
             if not name and last is not None:
-                # 병합된 둘째 줄 — 이름·학번·은행·계좌를 앞 줄에서 내려받는다 ((나)형 TA: 한 학생이 두 강좌)
+                # 병합된 둘째 줄 — 이름·학번·은행·계좌(·국적)를 앞 줄에서 내려받는다 ((나)형 TA: 한 학생이 두 강좌)
                 person.name, person.student_no = last.name, last.student_no
                 person.bank, person.account = person.bank or last.bank, person.account or last.account
+                person.nation = person.nation or last.nation
             if not person.name:
                 continue
             if not person.student_no:
