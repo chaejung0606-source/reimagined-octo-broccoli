@@ -39,19 +39,22 @@ EXCEL_SUFFIXES = kinds.EXCEL_SUFFIXES
 MAX_ASKS = 3                          # 한 단계에서 사람에게 묻는 횟수
 
 # 적요 규칙 — 담당자가 고칠 수 있다(~/.claim-downloader/장학금규칙.txt). {제목}=명단 B2 제목, {대표적요}, {이름}, {학번}, {강좌명}, {금액}
-# TA 근로장학금은 한 학생이 여러 교과목을 맡으면 줄이 교과목마다 하나라, 개별 적요에 교과목을 넣어 줄을 구분한다 —
-# '대표적요_(이름_교과목명)' (담당자 지정 2026-10-14). 그 전 기본값 '행적요(나): {대표적요}({이름}_{학번}_{강좌명})' 은 지난 청구서 PDF 에서 읽은 꼴이었다.
+# TA 근로장학금은 한 학생이 여러 교과목을 맡으면 줄이 교과목마다 하나라, 개별 적요에 교과목을 넣어 줄을 구분한다.
+# 담당자 지정(2026-10-14): 대표적요에서 명단 제목 끝의 '지급내역' 을 빼고(…근로장학금), TA 줄은 '대표적요(이름_교과목명)'.
+# 예: 02_2026년도 9월 (나)형 근로장학금(홍길동_자료구조). 그 전 기본값 '행적요(나): {대표적요}({이름}_{학번}_{강좌명})' 은 지난 청구서 PDF 에서 읽은 꼴이었다.
 RULES_HEADER = (
     "# 장학금 청구 적요 규칙\n"
     "# 대표적요·행 적요를 어떻게 만들지 정합니다. 저장만 하면 다음 [폴더 읽기] 부터 반영됩니다.\n"
     "# 쓸 수 있는 자리표: {제목} {대표적요} {이름} {학번} {강좌명} {금액}   ({강좌명} = 명단의 강좌명 · 교과목 열)\n"
+    "# '제목에서 뺄 말' 은 {제목}(명단 B2 제목)에서 지울 말입니다. 쉼표로 여럿. 비우면 제목 그대로 씁니다.\n"
     "# '행적요(강좌)' 는 명단에 강좌명(교과목) 이 적힌 줄(TA 근로장학금)에 쓰입니다.\n"
     "# '행적요(나)' 처럼 괄호 안이 한 글자면 명단 제목의 '(나)형' 유형에만 쓰입니다(있으면 가장 먼저). 둘 다 아니면 '행적요' 를 씁니다.\n"
     "# 기본값으로 되돌리려면 이 파일을 지우고 프로그램을 다시 켜세요.\n\n"
 )
 RULES_DEFAULT = """대표적요: 02_{제목}
+제목에서 뺄 말: 지급내역, 지급 내역
 행적요: {대표적요}_{이름}
-행적요(강좌): {대표적요}_({이름}_{강좌명})"""
+행적요(강좌): {대표적요}({이름}_{강좌명})"""
 
 # 저장 뒤 '청구내역' 표 — 줄 수(행 라디오 CUR_REQ)와 '합계' 줄의 숫자(청구액 · 실지급액 · 공제합계 순, 실측 ⑤)
 SUMMARY_JS = """() => {
@@ -107,9 +110,19 @@ def _render(template: str, values: dict) -> str:
     return re.sub(r"\s+", " ", out).strip()
 
 
+def clean_title(title: str, rules: dict[str, str] | None = None) -> str:
+    """명단 B2 제목에서 '제목에서 뺄 말' 을 지운다 — '…근로장학금 지급내역' → '…근로장학금'."""
+    rules = rules or parse_rules(RULES_DEFAULT)
+    out = str(title or "")
+    for word in (w.strip() for w in rules.get("제목에서뺄말", "").split(",")):
+        if word:
+            out = out.replace(word, " ")
+    return re.sub(r"\s+", " ", out).strip()
+
+
 def main_summary(title: str, rules: dict[str, str] | None = None) -> str:
     rules = rules or parse_rules(RULES_DEFAULT)
-    return _render(rules.get("대표적요", "02_{제목}"), {"제목": title})
+    return _render(rules.get("대표적요", "02_{제목}"), {"제목": clean_title(title, rules)})
 
 
 def row_summary(main: str, p: roster_mod.Person, kind: str, rules: dict[str, str] | None = None) -> str:

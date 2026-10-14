@@ -117,18 +117,21 @@ def test_roster_flags_total_mismatch_and_missing_student_no(tmp_path):
 def test_summaries_follow_type_rules():
     rules = scholarship.parse_rules(scholarship.RULES_DEFAULT)
     main = scholarship.main_summary("2026년도 7월 (가)형 근로장학금 지급내역", rules)
-    assert main == "02_2026년도 7월 (가)형 근로장학금 지급내역"
+    assert main == "02_2026년도 7월 (가)형 근로장학금"             # '지급내역' 은 뺀다 (담당자 지정 2026-10-14)
+    assert scholarship.main_summary("2026년도 7월 (가)형 근로장학금 지급 내역", rules) == main
     ga = roster.Person(name="가나다", student_no="202600001", amount=1)
     assert scholarship.row_summary(main, ga, "가", rules) == main + "_가나다"
-    # TA 근로장학금: 대표적요_(이름_교과목명) — 담당자 지정 2026-10-14. 제목에 '(나)형' 이 없어도 교과목이 있으면 이 꼴
+    # TA 근로장학금: 대표적요(이름_교과목명) — 담당자 지정 2026-10-14. 제목에 '(나)형' 이 없어도 교과목이 있으면 이 꼴
     na = roster.Person(name="사아자", student_no="202600010", course="자료구조", amount=1)
-    assert scholarship.row_summary("02_X", na, "나", rules) == "02_X_(사아자_자료구조)"
-    assert scholarship.row_summary("02_X", na, "", rules) == "02_X_(사아자_자료구조)"
+    ta_main = scholarship.main_summary("2026년도 9월 (나)형 근로장학금 지급내역", rules)
+    assert scholarship.row_summary(ta_main, na, "나", rules) == "02_2026년도 9월 (나)형 근로장학금(사아자_자료구조)"
+    assert scholarship.row_summary("02_X", na, "", rules) == "02_X(사아자_자료구조)"
     # 유형 글자 규칙을 담당자가 따로 적었으면 그것이 먼저
     typed = scholarship.parse_rules(scholarship.RULES_DEFAULT + "\n행적요(나): {대표적요}({이름}_{학번}_{강좌명})")
     assert scholarship.row_summary("02_X", na, "나", typed) == "02_X(사아자_202600010_자료구조)"
     custom = scholarship.parse_rules("대표적요: 02_[선지원금] {제목}\n행적요: {대표적요}-{이름}")
     assert scholarship.main_summary("T", custom) == "02_[선지원금] T"
+    assert scholarship.main_summary("T 지급내역", custom) == "02_[선지원금] T 지급내역"   # '뺄 말' 이 없는 규칙이면 제목 그대로
 
 
 def test_load_job_splits_common_and_person_files(tmp_path):
@@ -166,6 +169,7 @@ def test_old_default_rules_file_is_upgraded_but_edited_one_is_kept():
     base.write_text(old, encoding="utf-8")
     rules = scholarship.load_rules()                      # 손대지 않은 옛 기본값 → 새 기본값으로
     assert "행적요(강좌)" in rules and "행적요(나)" not in rules
+    assert rules["행적요(강좌)"] == "{대표적요}({이름}_{강좌명})" and "지급내역" in rules["제목에서뺄말"]
     path.write_text(old.replace("02_{제목}", "02_[선지원금] {제목}"), encoding="utf-8")
     rules = scholarship.load_rules()                      # 담당자가 고친 것 → 그대로
     assert rules["대표적요"] == "02_[선지원금] {제목}" and "행적요(나)" in rules
