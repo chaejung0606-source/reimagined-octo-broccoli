@@ -392,6 +392,7 @@ class FakeForm:
         self.owner_check = owner_check        # [예금주조회] 를 누르면 나오는 결과. None 이면 아무 일도 안 일어난다
         self.clear_owner_on_account = clear_owner_on_account     # 계좌를 고치면 예금주조회 결과가 지워지는 ERP(미실측 — 두 경우 다 본다)
         self.foreign = set(foreign)           # 외국인 학생의 학번 — 외국인등록번호(뒷자리 7) · 영문 예금주
+        self.sheet: list[str] = []            # 청구내역 표에 저장된 줄의 적요 (SHEET_ROWS_JS)
 
     def pick_person(self, name, no):
         # ERP 가 소득자를 고르면 채우는 계좌 — 기본은 명단(make_ga)과 같은 계좌
@@ -441,11 +442,14 @@ class FakeForm:
             self.clicks.append("저장:" + arg)
             if self.save_works:
                 self.saved.append(dict(self.v))
+                self.sheet.append(str(self.v.get("REQ_PTCL", "")))
                 self.rows += 1
                 self.v.update(REQ_CNT="322", APPR_DIV_CD="40", REQ_SEQ_NO=f"TMP_REQ_{self.rows + 1}", TAB_GB="10",
                               RCV_CD="", RCV_NM="", OWNR_INQ_RSLT="", ACCT_NO="", REQ_AMT="", REQ_PTCL="")
                 self.text.clear()
             return {"ok": True}
+        if js is scholarship.SHEET_ROWS_JS:
+            return list(self.sheet)
         if js is scholarship.SUMMARY_JS:
             return {"rows": self.rows, "totals": [1, 1, self.deduction] if self.rows else []}
         raise AssertionError("모르는 JS: " + str(js)[:60])
@@ -680,6 +684,70 @@ def test_foreign_student_stops_when_nationality_is_left_korean(monkeypatch, job)
                              wait=lambda s: None, dry_run=False)
     assert report.saved == 0 and report.stopped and frame.saved == []
     assert "국적" in asked[0] and "대한민국" in asked[0]
+
+
+def test_run_refuses_to_mix_folders_into_another_sheet(monkeypatch, job):
+    """담당자 2026-10-14: 폴더가 여럿이면 하나를 끝내고 다음으로 — 앞 폴더의 청구서에 다음 폴더 사람이 섞이면 안 된다."""
+    frame = FakeForm()
+    frame.v["REQ_CNT"], frame.sheet = "500", ["02_2026년도 8월 (다)형 근로장학금_홍길동"]     # 앞 폴더를 넣은 청구서가 떠 있다
+    _patch_popups(monkeypatch, frame)
+    asked = []
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or False,
+                             wait=lambda s: None, dry_run=False)
+    assert report.saved == 0 and report.stopped and frame.saved == [] and "다른 청구서" in report.blocked
+    assert "새 청구서" in asked[0] and "결의번호 500" in asked[0]
+
+
+def test_run_continues_after_person_opens_a_new_sheet(monkeypatch, job):
+    frame = FakeForm()
+    frame.v["REQ_CNT"], frame.sheet = "500", ["02_다른 청구서_홍길동"]
+    _patch_popups(monkeypatch, frame)
+
+    def ask(message):
+        frame.v["REQ_CNT"], frame.sheet = "", []                  # 사람이 [새 청구서] 를 띄움
+        return True
+
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=ask, wait=lambda s: None, dry_run=False)
+    assert report.saved == 2 and job.req_cnt == "322"              # 첫 [저장] 뒤 결의번호를 기억한다
+
+
+def test_run_continues_in_this_folders_own_sheet(monkeypatch, job):
+    """멈춘 뒤 남은 사람만 다시 넣을 때 — 화면의 청구서가 이 폴더 것이면(적요가 대표적요로 시작) 묻지 않고 이어 간다."""
+    frame = FakeForm()
+    frame.v["REQ_CNT"], frame.sheet = "777", [job.row_summary(0)]
+    job.selected = [False, True]
+    _patch_popups(monkeypatch, frame)
+    asked = []
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or False,
+                             wait=lambda s: None, dry_run=False)
+    assert report.saved == 1 and asked == []
+    other = scholarship.load_job(job.folder)
+    assert scholarship.sheet_owner(other, "", []) == (True, "새 청구서")
+    assert scholarship.sheet_owner(other, "900", ["03_다른 대표적요_가나다"])[0] is False
+
+
+def test_find_form_prefers_the_visible_sheet():
+    """앞 폴더의 청구서 탭이 남은 채 새 청구서를 띄우면 작성 화면이 둘 — 보이는 쪽을 고른다."""
+    class Frame:
+        def __init__(self, visible):
+            self.visible = visible
+
+        def evaluate(self, js, arg=None):
+            if js is form.PROBE_JS:
+                return True
+            if js is form.FRAME_VISIBLE_JS:
+                return self.visible
+            raise AssertionError(js[:30])
+
+    hidden, shown = Frame(False), Frame(True)
+
+    class Page:
+        frames = [hidden, shown]
+
+    class Context:
+        pages = [Page()]
+
+    assert form.find_form(Context())[1] is shown
 
 
 def test_run_stops_and_asks_when_unsure(monkeypatch, job):

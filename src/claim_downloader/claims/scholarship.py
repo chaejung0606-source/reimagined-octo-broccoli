@@ -198,6 +198,7 @@ class Job:
     rules: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     kind: str = kinds.SCHOLARSHIP          # 장학금 · 혁신인재지원금 — 비목 · 규칙 파일이 갈린다(Spec)
+    req_cnt: str = ""                       # 이 폴더를 넣은 ERP 청구서의 결의번호(#REQ_CNT) — 첫 [저장] 뒤에 생긴다
 
     @property
     def spec(self) -> Spec:
@@ -527,6 +528,13 @@ def run(page, frame, job: Job, log: Callable[[str], None], ask: Ask, wait: Calla
         report.results = [plan_person(job, i) for i in chosen]
         return report
     notify = on_person or (lambda _i, _s, _d: None)
+    # 폴더마다 청구서 하나 — 작성 화면이 다른 폴더의 청구서(이미 저장된 줄이 있는)면 섞이지 않게 새 청구서를 띄우게 한다
+    ok, frame, why = _ensure_own_sheet(page, frame, job, ask, wait, log)
+    if not ok:
+        report.blocked = why
+        report.stopped = True
+        log("%s 청구 멈춤 — %s" % (job.spec.name, why))
+        return report
     for index in chosen:
         if should_stop():
             report.stopped = True
@@ -554,6 +562,60 @@ def run(page, frame, job: Job, log: Callable[[str], None], ask: Ask, wait: Calla
     for item in report.review_items():
         log("  신청 전 확인: " + item)
     return report
+
+
+# 청구내역 표의 저장된 줄(행마다 CUR_REQ 라디오, 실측 ⑤)의 글자 — 읽기만. 적요가 그 줄에 들어 있다.
+SHEET_ROWS_JS = """() => Array.from(document.querySelectorAll('input[name=CUR_REQ]')).map(r => {
+  const tr = r.closest('tr'); return tr ? (tr.innerText || tr.textContent || '').replace(/\\s+/g, ' ').trim() : ''; })"""
+
+
+def sheet_owner(job: Job, req_cnt: str, rows: list[str]) -> tuple[bool, str]:
+    """작성 화면의 청구서가 이 폴더 것인지(또는 새 청구서인지). (이어도 되는지, 근거)."""
+    req_cnt = (req_cnt or "").strip()
+    if not req_cnt and not rows:
+        return True, "새 청구서"
+    from . import record
+    known = job.req_cnt or str((record.previous(job.folder) or {}).get("req_cnt") or "")
+    if req_cnt and known and req_cnt == known:
+        return True, f"이 폴더의 청구서(결의번호 {req_cnt})에 이어서"
+    main = re.sub(r"\s+", "", job.main_summary or "")
+    if rows and main and all(main in re.sub(r"\s+", "", t) for t in rows):
+        return True, f"이 폴더의 청구서(청구내역 {len(rows)}줄의 적요가 대표적요와 같음)에 이어서"
+    return False, f"작성 화면이 이미 저장된 다른 청구서입니다(결의번호 {req_cnt or '?'} · 청구내역 {len(rows)}줄)"
+
+
+def _read_sheet(frame) -> tuple[str, list[str]]:
+    try:
+        rows = [str(t) for t in (frame.evaluate(SHEET_ROWS_JS) or [])]
+    except Exception:  # noqa: BLE001 — 읽지 못하면 줄 없음으로
+        rows = []
+    return _state(frame, ["REQ_CNT"])["REQ_CNT"], rows
+
+
+def _ensure_own_sheet(page, frame, job: Job, ask: Ask, wait, log) -> tuple[bool, object, str]:
+    """넣기 전에 — 작성 화면이 새 청구서이거나 이 폴더의 청구서인지. 아니면 새 청구서를 띄우게 묻고, 띄운 화면을 다시 찾는다."""
+    if not wait_until(lambda: frame.evaluate(PROBE_JS) is True, wait, tries=20):
+        return True, frame, ""                                    # 화면을 못 읽으면 사람 단계(_run_person)가 알린다
+    ok, why = sheet_owner(job, *_read_sheet(frame))
+    asks = 0
+    while not ok and asks < MAX_ASKS:
+        asks += 1
+        log("%s — %s" % (job.spec.name, why))
+        if not ask(f"{job.spec.name} '{job.main_summary}' — {why}. 이 폴더의 사람이 다른 청구서에 섞이지 않게, ERP 에서 새 청구서"
+                   "(작성 화면의 [새 청구서] 또는 결의서내역 → [일반청구])를 띄운 뒤 [계속]."):
+            return False, frame, why + " — 멈춤"
+        wait(0.5)
+        try:
+            from .form import find_form
+            _page, found = find_form(page.context)
+            frame = found or frame
+        except Exception:  # noqa: BLE001 — 가짜 창(테스트) · 닫힌 창이면 그대로
+            pass
+        ok, why = sheet_owner(job, *_read_sheet(frame))
+    if not ok:
+        return False, frame, why + " — 새 청구서를 띄운 뒤 다시 누르세요"
+    log("%s — %s" % (job.spec.name, why))
+    return True, frame, why
 
 
 def _ask_until(check: Callable[[], tuple[bool, str]], ask: Ask, message_for: Callable[[str], str],
@@ -735,6 +797,8 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         if int(after.get("rows") or 0) > int(before.get("rows") or 0):
             break
         wait(0.5)
+    if not job.req_cnt:
+        job.req_cnt = _state(frame, ["REQ_CNT"])["REQ_CNT"].strip()       # 다음 폴더가 이 청구서에 섞이지 않게(_ensure_own_sheet)
     rows_before, rows_after = int(before.get("rows") or 0), int(after.get("rows") or 0)
     if not saved.ok and rows_after <= rows_before:
         return False, saved.note or "저장이 확인되지 않음"
@@ -895,5 +959,5 @@ def record_job(job: Job, report: ScholarshipReport) -> None:
     """채운 기록(_청구입력기록.json) — 같은 폴더를 다시 넣으려 하면 묻는 근거."""
     from . import record
     record.remember(job.folder, {"amount": sum(job.people[r.index].amount or 0 for r in report.results if r.status == "saved"),
-                                 "summary": job.main_summary + f" ({report.saved}명)"})
+                                 "summary": job.main_summary + f" ({report.saved}명)", "req_cnt": job.req_cnt})
 

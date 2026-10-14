@@ -227,13 +227,26 @@ def frame_matches(frame) -> bool:
         return False
 
 
+# 작성 프레임이 지금 화면에 보이는지 — ERP 는 상단 탭마다 iframe 을 두고 안 보이는 탭은 숨긴다(같은 출처라 frameElement 를 읽을 수 있다)
+FRAME_VISIBLE_JS = """() => { try { const f = window.frameElement; if (!f) return true;
+  const r = f.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (e) { return true; } }"""
+
+
 def find_form(context):
-    """열린 모든 창에서 일반청구 작성 프레임을 찾는다. (창, 프레임) 또는 (None, None)."""
-    for page in context.pages:
-        for frame in page.frames:
-            if frame_matches(frame):
+    """열린 모든 창에서 일반청구 작성 프레임을 찾는다. (창, 프레임) 또는 (None, None).
+
+    작성 화면이 둘 이상 열려 있으면(앞 폴더의 청구서 탭이 남은 채 새 청구서를 띄운 경우) **화면에 보이는 것**을 고른다 —
+    첫째 것을 고르면 앞 청구서에 다음 폴더의 사람이 들어갈 수 있다(담당자 요청 2026-10-14: 폴더를 하나씩 끝내고 다음으로)."""
+    found = [(page, frame) for page in context.pages for frame in page.frames if frame_matches(frame)]
+    if not found:
+        return None, None
+    for page, frame in found:
+        try:
+            if frame.evaluate(FRAME_VISIBLE_JS) is True:
                 return page, frame
-    return None, None
+        except Exception:  # noqa: BLE001 — 읽지 못하면 다음 것
+            continue
+    return found[0]
 
 
 def read_state(frame, ids=None) -> dict:

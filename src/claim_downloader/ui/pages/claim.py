@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import re
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -1093,7 +1093,24 @@ class ClaimPage(QWidget):
         self._show_form(row)
         self._sync_buttons()
 
-    def _fill_scholarship(self, row: int) -> None:
+    def _is_pending_roster(self, r: int) -> bool:
+        """아직 넣지 않은 명단 폴더(장학금 · 혁신인재지원금) — 읽음 상태이고 넣을 사람이 있는 것."""
+        job = self._jobs[r] if 0 <= r < len(self._jobs) else None
+        return job is not None and kinds.uses_roster(self._kinds[r]) and self._status[r] == "read" and bool(job.chosen())
+
+    def _next_roster_row(self, after: int) -> int | None:
+        """다음에 넣을 명단 폴더 — 아래 줄부터, 그다음 위 줄."""
+        order = list(range(after + 1, len(self._dirs))) + list(range(0, max(after, 0)))
+        return next((r for r in order if self._is_pending_roster(r)), None)
+
+    def _start_next(self, row: int, previous) -> None:
+        """한 폴더를 끝내면 다음 폴더로 — 담당자 요청(2026-10-14). 새 청구서는 사람이 띄우고, 앱은 그 화면이 새 것인지 넣기 전에 본다."""
+        if self._erp_running or not (0 <= row < len(self._jobs)):
+            return
+        self.table.selectRow(row)
+        self._fill_scholarship(row, previous=previous)
+
+    def _fill_scholarship(self, row: int, previous=None) -> None:
         if not (0 <= row < len(self._jobs)) or self._jobs[row] is None or self._erp_running or self._browser_busy:
             return
         self.scholarship_panel.apply_options()
@@ -1114,13 +1131,21 @@ class ClaimPage(QWidget):
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
         # 미리 보기는 ERP 를 건드리지 않으니 바로 결과 표를 보인다. 실제로 넣을 때만 같은 표로 한 번 더 묻는다.
+        # 폴더마다 청구서 하나 — 앞 폴더를 끝내고 이어지는 폴더면 새 청구서를 띄우라고 먼저 말한다(앱은 넣기 전에 화면이 새 것인지 본다)
+        waiting = [r for r in range(len(self._dirs)) if r != row and self._is_pending_roster(r)]
+        if previous is not None:
+            heading = f"다음 폴더 — {job.spec.name} {job.count_text()}을 새 청구서에 넣습니다 · [신청] 은 누르지 않습니다"
+            footer = (f"앞 폴더의 청구서(결의번호 {previous.req_cnt or '?'})는 그대로 두고, ERP 에서 새 청구서(작성 화면의 [새 청구서] 또는 "
+                      "결의서내역 → [일반청구])를 띄운 뒤 누르세요. 여기서 그만하려면 [취소].")
+        else:
+            heading = f"학생 한 명씩 넣고 [저장](임시저장) 합니다 — {job.count_text()} · [신청] 은 누르지 않습니다"
+            footer = ("앱이 확신하지 못하는 단계에서는 멈추고 위의 노란 띠로 묻습니다. 브라우저에 새 청구서 작성 화면이 떠 있어야 합니다."
+                      + (f" 이 폴더를 끝내면 남은 명단 폴더 {len(waiting)}개도 하나씩 이어서 묻습니다." if waiting else ""))
         if not dry and not show_report(
-                self, title="ERP 에 넣기", tone="warning",
-                heading=f"학생 한 명씩 넣고 [저장](임시저장) 합니다 — {job.count_text()} · [신청] 은 누르지 않습니다",
+                self, title="ERP 에 넣기", tone="warning", heading=heading,
                 summary=job.summary_lines(), columns=SCH_COLUMNS,
                 rows=scholarship_rows(job, [sch.plan_person(job, i) for i in job.chosen()]), notes=problems,
-                footer="앱이 확신하지 못하는 단계에서는 멈추고 위의 노란 띠로 묻습니다. 브라우저에 새 청구서 작성 화면이 떠 있어야 합니다.",
-                accept_text=f"ERP 에 넣기 ({job.count_text()})"):
+                footer=footer, accept_text=f"ERP 에 넣기 ({job.count_text()})"):
             return
         self._erp_row = row
         if not dry:
@@ -1194,6 +1219,8 @@ class ClaimPage(QWidget):
             saved = [r.index for r in report.results if r.status == "saved"]
             if saved and job is not None:
                 sch.record_job(job, report)
+            # 다 넣었으면(멈추지 않았으면) 남은 명단 폴더로 이어 간다 — 담당자 요청(2026-10-14) '하나를 끝내고 다음으로'
+            nxt = self._next_roster_row(row) if saved and not report.stopped else None
             if 0 <= row < len(self._status):
                 self._set_status(row, "partial" if report.stopped and saved else "saved" if saved else "read")
             if self._current == row:
@@ -1231,7 +1258,10 @@ class ClaimPage(QWidget):
                             columns=SCH_COLUMNS, rows=scholarship_rows(job, report.results),
                             notes=review or alerts, notes_title="신청 전 확인할 것" if review else "ERP 알림",
                             footer="ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요 — 앱은 누르지 않습니다."
-                                   + (" 위 '신청 전 확인할 것' 을 먼저 고치세요." if review else ""))
+                                   + (" 위 '신청 전 확인할 것' 을 먼저 고치세요." if review else "")
+                                   + (" 이 창을 닫으면 다음 폴더로 넘어갑니다." if nxt is not None else ""))
+            if nxt is not None and job is not None:
+                QTimer.singleShot(0, lambda: self._start_next(nxt, job))
         self._sync_buttons()
 
     # ── 신호 ────────────────────────────────────────────────────────────

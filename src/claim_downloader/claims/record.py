@@ -35,6 +35,7 @@ def remember(folder, data: dict) -> None:
         "when": time.strftime("%Y-%m-%d %H:%M"),
         "amount": data.get("amount"),
         "summary": data.get("summary", ""),
+        "req_cnt": data.get("req_cnt", ""),          # 장학금 등 — 그 폴더를 넣은 ERP 청구서의 결의번호
     }
     settings.claim_record_path().write_text(
         json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
