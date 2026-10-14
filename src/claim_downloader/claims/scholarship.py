@@ -32,8 +32,8 @@ from .payee import CLICK_ID_JS, wait_until
 
 TAB_ID = "20"                         # 작성 화면 서브탭 '인건비(소득성 경비)' — <a id="20">
 TAB_VALUE = "20"                      # 숨은 #TAB_GB 가 이 값이면 인건비 탭
-CATEGORY = "장학금"                    # 비목 보기 글자
-INCOME_KIND = "장학금"                 # 소득구분 보기 글자 — 비목이 장학금이면 소득구분도 장학금(담당자 확정 2026-10-14)
+CATEGORY = "장학금"                    # 비목 보기 글자 (장학금)
+INCOME_KIND = "장학금"                 # 소득구분 보기 글자 — 비목이 장학금이면 소득구분도 장학금(담당자 확정 2026-10-14). 혁신인재지원금도 장학금(공제 0)
 # [예금주조회] — 담당자 결정(2026-10-14): 앱이 누르고, 새 결과가 '성공:학생이름' 이 아니면 사람에게 맡긴다.
 # 계좌 예금주를 확인만 하는 조회다(돈이 나가지 않는다). '일괄예금주조회' 는 누르지 않는다.
 OWNER_CHECK_ID = "btn_ownrInq"
@@ -84,6 +84,38 @@ SUMMARY_JS = """() => {
 }"""
 
 
+@dataclass(frozen=True)
+class Spec:
+    """명단으로 사람마다 인건비 탭에 넣는 청구 종류마다 다른 것 — 담당자(2026-10-14): 혁신인재지원금은 장학금과 ERP 쓰는 법이 같고 비목만 다르다.
+    (청구서 PDF 로도 확인: 혁신인재지원금도 인건비 탭 · 소득구분 장학금 · 공제 0 — CLAUDE.md 14절 '장학금 밖의 청구')"""
+    kind: str
+    name: str                    # 화면 · 로그에 보이는 이름
+    category: str                # ERP 비목(#PAY_EXP_CD) 보기 글자 — 실측 그대로
+    code: str                    # 대표적요 앞의 비목 번호(8절)
+    rules_path: Callable[[], object]
+    rules_base_path: Callable[[], object]
+
+    @property
+    def rules_file(self) -> str:
+        return os.path.basename(str(self.rules_path()))
+
+    @property
+    def rules_default(self) -> str:
+        return RULES_DEFAULT.replace("02_", f"{self.code}_", 1)
+
+
+SPECS = {
+    kinds.SCHOLARSHIP: Spec(kinds.SCHOLARSHIP, "장학금", CATEGORY, "02",
+                            settings.scholarship_rules_path, settings.scholarship_rules_base_path),
+    kinds.INNOVATION: Spec(kinds.INNOVATION, "혁신인재지원금", "교육·연구프로그램개발·운영비", "03",
+                           settings.innovation_rules_path, settings.innovation_rules_base_path),
+}
+
+
+def spec_for(kind: str) -> Spec:
+    return SPECS.get(kind, SPECS[kinds.SCHOLARSHIP])
+
+
 # ── 규칙 ─────────────────────────────────────────────────────────────────
 def parse_rules(text: str) -> dict[str, str]:
     rules: dict[str, str] = {}
@@ -96,9 +128,12 @@ def parse_rules(text: str) -> dict[str, str]:
     return rules
 
 
-def load_rules() -> dict[str, str]:
-    """장학금규칙.txt(담당자) · 장학금규칙.기본값.txt(기준) 쌍 — 회의록·일반청구 규칙과 같은 방식."""
-    path, base = str(settings.scholarship_rules_path()), str(settings.scholarship_rules_base_path())
+def load_rules(spec: Spec | None = None) -> dict[str, str]:
+    """장학금규칙.txt(담당자) · 장학금규칙.기본값.txt(기준) 쌍 — 회의록·일반청구 규칙과 같은 방식. 혁신인재지원금은 그 이름의 파일 쌍."""
+    spec = spec or SPECS[kinds.SCHOLARSHIP]
+    default = spec.rules_default
+    header = RULES_HEADER.replace("# 장학금 청구 적요 규칙", f"# {spec.name} 청구 적요 규칙", 1)
+    path, base = str(spec.rules_path()), str(spec.rules_base_path())
     try:
         if os.path.exists(path):
             cur = _read_text(path)
@@ -109,10 +144,10 @@ def load_rules() -> dict[str, str]:
                     return parsed
         for p in (path, base):
             with open(p, "w", encoding="utf-8") as f:
-                f.write(RULES_HEADER + RULES_DEFAULT + "\n")
+                f.write(header + default + "\n")
     except Exception:  # noqa: BLE001
-        file_log("장학금 규칙 파일 처리 실패\n" + traceback.format_exc())
-    return parse_rules(RULES_DEFAULT)
+        file_log(f"{spec.name} 규칙 파일 처리 실패\n" + traceback.format_exc())
+    return parse_rules(default)
 
 
 def _render(template: str, values: dict) -> str:
@@ -162,6 +197,11 @@ class Job:
     selected: list[bool] = field(default_factory=list)
     rules: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    kind: str = kinds.SCHOLARSHIP          # 장학금 · 혁신인재지원금 — 비목 · 규칙 파일이 갈린다(Spec)
+
+    @property
+    def spec(self) -> Spec:
+        return spec_for(self.kind)
 
     @property
     def people(self) -> list[roster_mod.Person]:
@@ -194,13 +234,14 @@ class Job:
         summaries = [self.row_summary(i) for i in range(len(self.people))]
         same = sorted({t for t in summaries if t and summaries.count(t) > 1})
         for text in same:
-            out.append(f"개별 적요가 같은 줄이 둘 이상입니다: {text} — 장학금규칙.txt 로 구분되게 고치세요")
+            out.append(f"개별 적요가 같은 줄이 둘 이상입니다: {text} — {self.spec.rules_file} 로 구분되게 고치세요")
         return out
 
     def summary_lines(self) -> list[str]:
         chosen = self.chosen()
         total = sum(self.people[i].amount or 0 for i in chosen)
-        return [f"폴더: {self.folder}", f"명단: {os.path.basename(self.roster.path)} — {self.roster.title or '제목 없음'}",
+        return [f"종류: {self.spec.name} (비목 {self.spec.category})",
+                f"폴더: {self.folder}", f"명단: {os.path.basename(self.roster.path)} — {self.roster.title or '제목 없음'}",
                 f"대표적요: {self.main_summary}", f"지급예정년월: {self.pay_ym} · 소득자 구분: {self.tab}",
                 f"넣을 사람 {self.count_text(chosen)} / 명단 {self.count_text(list(range(len(self.people))))} · 합계 {total:,}원",
                 f"공통증빙 {len(self.common_files)}개 · 개별증빙 {sum(len(v) for v in self.person_files.values())}개"]
@@ -258,9 +299,11 @@ def assign_person_files(files: list[str], base: str, people: list[roster_mod.Per
     return assigned, unmatched
 
 
-def load_job(folder: str, excel: str | None = None, rules: dict[str, str] | None = None) -> Job:
-    """폴더를 읽어 Job 을 만든다. 엑셀이 둘 이상이면 excel 로 고른다(없으면 warnings 에 알리고 첫째)."""
-    rules = rules or load_rules()
+def load_job(folder: str, excel: str | None = None, rules: dict[str, str] | None = None,
+             kind: str = kinds.SCHOLARSHIP) -> Job:
+    """폴더를 읽어 Job 을 만든다. 엑셀이 둘 이상이면 excel 로 고른다(없으면 warnings 에 알리고 첫째).
+    kind 는 장학금 · 혁신인재지원금 — 규칙 파일과 비목이 갈린다."""
+    rules = rules or load_rules(spec_for(kind))
     folder = str(folder)
     try:
         entries = sorted(os.listdir(folder))
@@ -270,7 +313,7 @@ def load_job(folder: str, excel: str | None = None, rules: dict[str, str] | None
                   if n.lower().endswith(EXCEL_SUFFIXES) and not n.startswith(("~$", "."))]
     chosen = excel if excel and os.path.isfile(excel) else (candidates[0] if candidates else "")
     roster = roster_mod.read(chosen) if chosen else roster_mod.Roster(path="", warnings=["폴더 바로 아래에 명단 엑셀(.xlsx)이 없습니다"])
-    job = Job(folder=folder, roster=roster, excel_candidates=candidates, rules=rules)
+    job = Job(folder=folder, roster=roster, excel_candidates=candidates, rules=rules, kind=spec_for(kind).kind)
     if len(candidates) > 1 and not excel:
         job.warnings.append("엑셀이 %d개 있어 첫 것을 읽었습니다: %s" % (len(candidates), os.path.basename(chosen)))
     for d in _subdirs_with(folder, COMMON_DIR_WORD):
@@ -477,7 +520,7 @@ def run(page, frame, job: Job, log: Callable[[str], None], ask: Ask, wait: Calla
     live = messages if messages is not None else []
     report = ScholarshipReport(dry_run=dry_run)
     chosen = job.chosen()
-    log("장학금 청구 %s — %d명" % ("미리 보기" if dry_run else "시작", len(chosen)))
+    log("%s 청구 %s — %d명" % (job.spec.name, "미리 보기" if dry_run else "시작", len(chosen)))
     for line in job.summary_lines():
         log("  " + line)
     if dry_run:
@@ -495,7 +538,7 @@ def run(page, frame, job: Job, log: Callable[[str], None], ask: Ask, wait: Calla
         try:
             ok, note = _run_person(page, frame, job, index, log, ask, wait, live, result, auto_pick)
         except Exception as error:  # noqa: BLE001 — 한 사람에서 터져도 어디까지 됐는지는 알려 준다
-            log("장학금 청구 오류(%s)\n%s" % (p.name, traceback.format_exc()))
+            log("%s 청구 오류(%s)\n%s" % (job.spec.name, p.name, traceback.format_exc()))
             ok, note = False, "오류: " + (str(error).splitlines()[0][:100] if str(error) else type(error).__name__)
         report.messages.extend(live)
         live.clear()
@@ -505,9 +548,9 @@ def run(page, frame, job: Job, log: Callable[[str], None], ask: Ask, wait: Calla
         notify(index, "review" if ok and result.review else result.status, note)     # 저장했지만 신청 전 확인할 것이 있다
         if not ok:
             report.stopped = True
-            log("장학금 청구 멈춤 — %d. %s: %s" % (index + 1, p.name, note))
+            log("%s 청구 멈춤 — %d. %s: %s" % (job.spec.name, index + 1, p.name, note))
             break
-    log("장학금 청구 끝 — 임시저장 %d명%s" % (report.saved, " (멈춤)" if report.stopped else ""))
+    log("%s 청구 끝 — 임시저장 %d명%s" % (job.spec.name, report.saved, " (멈춤)" if report.stopped else ""))
     for item in report.review_items():
         log("  신청 전 확인: " + item)
     return report
@@ -546,14 +589,15 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
     wait(0.3)
 
     # 2. 비목 → 소득구분 (인건비구분 라디오는 건드리지 않는다)
-    r = _set(frame, "select", "PAY_EXP_CD", CATEGORY)
+    category = job.spec.category
+    r = _set(frame, "select", "PAY_EXP_CD", category)
     if not r.get("ok"):
-        return False, "비목을 '장학금' 으로 고르지 못함: " + str(r.get("why", ""))
+        return False, f"비목을 '{category}' 으로 고르지 못함: " + str(r.get("why", ""))
     wait(0.6)                                                   # 비목을 고르면 잔액·인건비구분이 다시 그려진다
     r = _set(frame, "select", "INCM_DIV_CD", INCOME_KIND)
     if not r.get("ok"):
         return False, "소득구분을 '장학금' 으로 고르지 못함: " + str(r.get("why", ""))
-    result.lines.append("✓ 비목 장학금 · 소득구분 장학금")
+    result.lines.append(f"✓ 비목 {category} · 소득구분 {INCOME_KIND}")
 
     # 3. 소득자 — 학번이 맞는 행 하나면 앱이, 아니면 사람
     def person_ok() -> tuple[bool, str]:
@@ -669,7 +713,7 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
     income = (s.get("INCM_DIV_CD") or {}).get("text", "")
     amount = (s.get("REQ_AMT") or {}).get("value", "")
     checks = {
-        f"비목(지금: {pay or '비어 있음'})": _same(pay, CATEGORY),
+        f"비목(지금: {pay or '비어 있음'})": _same(pay, category),
         f"소득구분(지금: {income or '비어 있음'})": _same(income, INCOME_KIND) or not income_ok,   # 못 바꾼 것은 위에서 확인 목록으로
         f"청구액(지금: {amount or '비어 있음'})": _digits(amount) == str(p.amount or ""),
         "적요(비어 있음)": bool((s.get("REQ_PTCL") or {}).get("value", "").strip()),

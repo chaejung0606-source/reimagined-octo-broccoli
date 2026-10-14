@@ -55,7 +55,7 @@ from ..widgets import Card, EmptyState, Field, Pill, PillDelegate, WrapLabel, mu
 from ..worker import SessionWorker
 from .scholarship import ScholarshipPanel
 
-COLUMNS = [("상태", 96), ("종류", 64), ("지출 (폴더)", 230), ("적요", 280), ("청구액", 110), ("입금처", None)]
+COLUMNS = [("상태", 96), ("종류", 108), ("지출 (폴더)", 200), ("적요", 280), ("청구액", 110), ("입금처", None)]
 COL_STATUS, COL_KIND, COL_DIR, COL_SUMMARY, COL_AMOUNT, COL_PAYEE = 0, 1, 2, 3, 4, 5
 
 ROW_STATUS = {
@@ -72,11 +72,11 @@ ROW_STATUS = {
     "partial": ("일부 저장", "warning"),
 }
 
-GUIDE_START = "청구 종류를 고르고 지출 폴더를 추가하세요. 일반은 [내용 읽기], 장학금은 바로 오른쪽에 학생 명단이 나옵니다."
+GUIDE_START = "청구 종류를 고르고 지출 폴더를 추가하세요. 일반은 [내용 읽기], 장학금 · 혁신인재지원금은 바로 오른쪽에 학생 명단이 나옵니다."
 GUIDE_SCHOLARSHIP = ("학생 표를 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [ERP 에 넣기] 를 누르세요. "
                      "인건비 탭은 앱이 누릅니다.")
 GUIDE_READ = "값을 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [ERP 에 채우기] 를 누르세요."
-NO_BACKEND = ("일반 폴더의 [내용 읽기] 는 Claude Code 가 필요합니다(장학금은 AI 없이 됩니다). Claude Code 를 설치한 뒤 "
+NO_BACKEND = ("일반 폴더의 [내용 읽기] 는 Claude Code 가 필요합니다(장학금 · 혁신인재지원금은 AI 없이 됩니다). Claude Code 를 설치한 뒤 "
               "[다시 확인] 을 누르세요. 설치했는데도 이 안내가 보이면 컴퓨터를 다시 시작해 보세요.")
 
 
@@ -278,7 +278,7 @@ class ClaimPage(QWidget):
         hint = QLabel("여기에 지출 폴더를 끌어다 놓으세요")
         hint.setObjectName("cardTitle")
         texts.addWidget(hint)
-        texts.addWidget(muted_label("폴더 1개 = 청구 1건. '자동' 이면 명단 엑셀 + 공통·개별증빙 폴더는 장학금으로 봅니다."))
+        texts.addWidget(muted_label("폴더 1개 = 청구 1건. '자동' 이면 명단 엑셀 + 공통·개별증빙 폴더는 장학금(이름에 '혁신인재' 가 있으면 혁신인재지원금)으로 봅니다."))
         row.addLayout(texts, 1)
         kind_label = QLabel("청구 종류")
         kind_label.setObjectName("fieldLabel")
@@ -548,7 +548,7 @@ class ClaimPage(QWidget):
         self.open_button.setEnabled(not self._browser_busy)
         self.row_kind.setEnabled(can_edit and 0 <= self._current < len(self._dirs))
         dry = self.dry_run.isChecked()
-        is_sch = self._kind(self._current) == kinds.SCHOLARSHIP and 0 <= self._current < len(self._dirs)
+        is_sch = kinds.uses_roster(self._kind(self._current)) and 0 <= self._current < len(self._dirs)
         if is_sch:
             job = self._jobs[self._current]
             chosen = len(job.chosen()) if job is not None else 0
@@ -604,7 +604,7 @@ class ClaimPage(QWidget):
                     "payeeName": f"학생 {job.count_text(chosen)}" + (f" / 명단 {job.count_text(list(range(len(job.people))))}"
                                                                         if len(chosen) != len(job.people) else "")}
         kind_item = QTableWidgetItem(kinds.name_of(self._kind(row)))
-        kind_item.setToolTip(kinds.find(self._kind(row)).hint)
+        kind_item.setToolTip(kinds.name_of(self._kind(row)) + " — " + kinds.find(self._kind(row)).hint)
         self.table.setItem(row, COL_KIND, kind_item)
         for col, value in ((COL_SUMMARY, data.get("summary", "")), (COL_AMOUNT, _money(data.get("amount"))),
                            (COL_PAYEE, data.get("payeeName", ""))):
@@ -622,7 +622,7 @@ class ClaimPage(QWidget):
             remaining = sum(1 for s in self._status if s in ("waiting", "running"))
             return True, f"읽는 중 · 남은 {remaining}건"
         if self._erp_running:
-            return True, "장학금을 ERP 에 넣는 중"
+            return True, "명단 청구(장학금 등)를 ERP 에 넣는 중"
         return False, ""
 
     # ── 폴더 목록 ────────────────────────────────────────────────────────
@@ -648,7 +648,7 @@ class ClaimPage(QWidget):
         name.setToolTip(path)
         self.table.setItem(row, COL_DIR, name)
         self._set_status(row, "waiting")
-        if kind == kinds.SCHOLARSHIP:
+        if kinds.uses_roster(kind):
             self._load_scholarship(row)
         self._refresh_row(row)
         self._set_progress(self._done_count, len(self._dirs))
@@ -719,10 +719,10 @@ class ClaimPage(QWidget):
         self.row_kind.blockSignals(True)
         self.row_kind.setCurrentIndex(max(self.row_kind.findData(kind), 0))
         self.row_kind.blockSignals(False)
-        if kind == kinds.SCHOLARSHIP and 0 <= row < len(self._jobs):
+        if kinds.uses_roster(kind) and 0 <= row < len(self._jobs):
             self.form_stack.setCurrentWidget(self.scholarship_scroll)
             self.scholarship_panel.set_job(self._jobs[row])
-            self.form_card.title_label.setText("장학금 청구")
+            self.form_card.title_label.setText(f"{kinds.name_of(kind)} 청구")
             self.form_card.hint_label.setText("학생마다 인건비 탭에 넣고 [저장] 합니다. 빼고 싶은 학생은 체크를 푸세요.")
             self._set_wide_form(True)
             self.form_card.setEnabled(True)
@@ -898,7 +898,7 @@ class ClaimPage(QWidget):
     # ── ERP 에 채우기 ────────────────────────────────────────────────────
     def _fill(self) -> None:
         row = self._current
-        if self._kind(row) == kinds.SCHOLARSHIP:
+        if kinds.uses_roster(self._kind(row)):
             self._fill_scholarship(row)
             return
         if not (0 <= row < len(self._data)) or not self._browser_open or self._browser_busy:
@@ -1043,7 +1043,7 @@ class ClaimPage(QWidget):
     def _load_scholarship(self, row: int, excel: str | None = None) -> None:
         """장학금 폴더를 읽는다(명단 엑셀 · 공통/개별증빙). AI 를 쓰지 않으니 넣자마자 끝난다."""
         old = self._jobs[row]
-        job = sch.load_job(self._dirs[row], excel=excel)
+        job = sch.load_job(self._dirs[row], excel=excel, kind=self._kinds[row])
         if old is not None:
             # 다시 읽어도 담당자가 고친 값은 남긴다
             if old.pay_ym and re.fullmatch(r"\d{4}-\d{2}", old.pay_ym):
@@ -1053,7 +1053,7 @@ class ClaimPage(QWidget):
         self._problems[row] = job.problems()
         self._set_status(row, "read" if job.people and not any("합계" in p for p in self._problems[row])
                          else "problem" if job.people else "failed")
-        self._append_log("장학금 폴더 읽음: " + " / ".join(job.summary_lines()))
+        self._append_log(f"{job.spec.name} 폴더 읽음: " + " / ".join(job.summary_lines()))
         for problem in self._problems[row]:
             self._append_log("  확인: " + problem)
 
@@ -1065,7 +1065,7 @@ class ClaimPage(QWidget):
         if kind == self._kinds[row] or not kinds.find(kind).ready:
             return
         self._kinds[row] = kind
-        if kind == kinds.SCHOLARSHIP:
+        if kinds.uses_roster(kind):
             self._load_scholarship(row)
         else:
             # 일반으로 바꾸면 AI 로 다시 읽어야 한다
@@ -1086,7 +1086,7 @@ class ClaimPage(QWidget):
 
     def _reload_scholarship(self, excel: str) -> None:
         row = self._current
-        if not (0 <= row < len(self._jobs)) or self._kinds[row] != kinds.SCHOLARSHIP or self._erp_running:
+        if not (0 <= row < len(self._jobs)) or not kinds.uses_roster(self._kinds[row]) or self._erp_running:
             return
         self._load_scholarship(row, excel=excel or None)
         self._refresh_row(row)
@@ -1217,13 +1217,13 @@ class ClaimPage(QWidget):
             else:
                 self._set_state("임시저장", "success", f"{report.saved}명을 임시저장했습니다. ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요.")
             if job is None:
-                QMessageBox.information(self, "장학금 청구", "\n".join(report.lines()[:40]))
+                QMessageBox.information(self, "명단 청구", "\n".join(report.lines()[:40]))
             else:
                 saved_text = job.count_text(saved) if saved else "0명"
                 # 같은 ERP 알림이 파일마다 되풀이된다('파일명의 특수문자는 제거됩니다.') — 한 줄로 모아 몇 번인지만
                 alerts = [f"{m} (×{report.messages.count(m)})" if report.messages.count(m) > 1 else m
                           for m in dict.fromkeys(report.messages)]
-                show_report(self, title="장학금 청구", tone="warning" if report.stopped or review else "success",
+                show_report(self, title=f"{job.spec.name} 청구", tone="warning" if report.stopped or review else "success",
                             heading=f"임시저장 {saved_text}" + (" — 중간에 멈췄습니다" if report.stopped else "")
                                     + (f" · 신청 전 확인할 것 {len(review)}건" if review else ""),
                             summary=[f"대표적요: {job.main_summary}", f"지급예정년월: {job.pay_ym}"]

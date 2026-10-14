@@ -196,7 +196,8 @@ class SessionWorker(QObject):
         return self._resume_ok and not self._stop.is_set()
 
     def _do_fill_scholarship(self, session: ErpSession, job, dry_run: bool) -> None:
-        self.busy.emit(True, "장학금 계획을 만드는 중…" if dry_run else "장학금 청구를 넣는 중… (멈추면 안내를 따라 주세요)")
+        name = job.spec.name if hasattr(job, "spec") else "장학금"
+        self.busy.emit(True, f"{name} 계획을 만드는 중…" if dry_run else f"{name} 청구를 넣는 중… (멈추면 안내를 따라 주세요)")
         report = session.fill_scholarship(job, dry_run=dry_run, ask=self._ask_person, on_person=self.scholarship_person.emit)
         self.scholarship_done.emit(report)
 

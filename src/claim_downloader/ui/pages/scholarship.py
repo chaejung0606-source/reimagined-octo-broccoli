@@ -24,7 +24,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import settings
 from ...claims import person, scholarship
 from ..widgets import Field, PillDelegate, WrapLabel, muted_label
 
@@ -129,7 +128,7 @@ class ScholarshipPanel(QWidget):
         self.reload_button.setToolTip("폴더 안 파일이나 명단을 고친 뒤 누르세요.")
         self.reload_button.clicked.connect(lambda: self.reload_requested.emit(""))
         foot.addWidget(self.reload_button)
-        rules_button = QPushButton("적요 규칙 열기")
+        rules_button = self.rules_button = QPushButton("적요 규칙 열기")
         rules_button.setObjectName("ghost")
         rules_button.setToolTip("대표적요 · 행 적요를 만드는 규칙(장학금규칙.txt). 저장한 뒤 [다시 읽기].")
         rules_button.clicked.connect(self._open_rules)
@@ -152,6 +151,10 @@ class ScholarshipPanel(QWidget):
             self.excel_box.setCurrentIndex(max(self.excel_box.findData(job.roster.path), 0))
         self.excel_box.blockSignals(False)
         self.excel_field.setVisible(bool(job) and len(job.excel_candidates) > 1)
+        spec = job.spec if job else scholarship.SPECS[scholarship.kinds.SCHOLARSHIP]
+        # 혁신인재지원금은 비목 번호(03_)와 규칙 파일만 다르다 — 보기 · 도움말이 그 종류를 가리키게
+        self.main_summary.setPlaceholderText(f"예: {spec.code}_2026년도 7월 (가)형 근로장학금")
+        self.rules_button.setToolTip(f"대표적요 · 행 적요를 만드는 규칙({spec.rules_file}). 저장한 뒤 [다시 읽기].")
         self._loading = False
         self._fill_table()
         self._sync()
@@ -291,5 +294,6 @@ class ScholarshipPanel(QWidget):
         self.changed.emit()
 
     def _open_rules(self) -> None:
-        scholarship.load_rules()
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(settings.scholarship_rules_path())))
+        spec = self.job.spec if self.job is not None else scholarship.SPECS[scholarship.kinds.SCHOLARSHIP]
+        scholarship.load_rules(spec)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(spec.rules_path())))

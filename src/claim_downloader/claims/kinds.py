@@ -14,6 +14,7 @@ from dataclasses import dataclass
 AUTO = "auto"
 GENERAL = "general"
 SCHOLARSHIP = "scholarship"
+INNOVATION = "innovation"      # 혁신인재지원금 — 장학금과 ERP 흐름이 같고 비목만 다르다(담당자 2026-10-14)
 TRAVEL = "travel"
 CARD = "card"
 
@@ -30,10 +31,13 @@ class Kind:
 KINDS: tuple[Kind, ...] = (
     Kind(GENERAL, "일반", "세금계산서 · 물품 · 용역 등 — AI 가 폴더의 서류를 읽어 값을 뽑습니다", "claim", True),
     Kind(SCHOLARSHIP, "장학금", "명단 엑셀 + '공통증빙' · '개별증빙' 폴더 — 학생마다 인건비 탭에 넣고 저장합니다", "scholarship", True),
+    Kind(INNOVATION, "혁신인재지원금", "장학금과 같은 폴더 모양 · 같은 흐름(인건비 탭, 소득구분 장학금) — 비목만 교육·연구프로그램개발·운영비",
+         "scholarship", True),
     Kind(TRAVEL, "출장비", "출장명령부 · 여비 블록 자동화는 준비 중입니다", "travel", False),
     Kind(CARD, "카드", "ERP 카드청구 화면을 실측한 뒤 만듭니다", "card", False),
 )
 
+ROSTER_KINDS = (SCHOLARSHIP, INNOVATION)     # 명단 엑셀 + 공통/개별증빙 폴더로 사람마다 인건비 탭에 넣는 종류
 COMMON_WORD = "공통"      # 장학금 폴더의 공통증빙 하위 폴더 이름에 든 글자
 PERSON_WORD = "개별"      # 장학금 폴더의 개별증빙 하위 폴더 이름에 든 글자
 EXCEL_SUFFIXES = (".xlsx", ".xlsm")
@@ -64,9 +68,33 @@ def looks_like_scholarship(folder: str) -> bool:
     return has_excel and has_split
 
 
+def uses_roster(key: str) -> bool:
+    """명단 엑셀로 사람마다 넣는 종류(장학금 · 혁신인재지원금) — 화면은 같은 학생 표 패널을 쓴다."""
+    return key in ROSTER_KINDS
+
+
+def roster_kind(folder: str) -> str:
+    """명단 폴더가 장학금인지 혁신인재지원금인지 — 명단 엑셀 이름 → 폴더 이름 → 위 폴더 이름(세 칸까지) 순으로
+    '혁신인재' 나 '장학금' 이 든 첫 이름을 따른다. 둘 다 든 이름('4. 장학금 및 혁신인재지원금' 같은 묶음 폴더)은 건너뛴다. 못 정하면 장학금."""
+    try:
+        excels = sorted(n for n in os.listdir(folder) if n.lower().endswith(EXCEL_SUFFIXES) and not n.startswith(("~$", ".")))
+    except OSError:
+        excels = []
+    names = excels + [os.path.basename(os.path.normpath(folder))]
+    up = os.path.normpath(folder)
+    for _ in range(3):
+        up = os.path.dirname(up)
+        names.append(os.path.basename(up))
+    for name in names:
+        innovation, scholarship = "혁신인재" in name, "장학금" in name
+        if innovation != scholarship:
+            return INNOVATION if innovation else SCHOLARSHIP
+    return SCHOLARSHIP
+
+
 def guess(folder: str) -> str:
-    """'자동' 으로 넣었을 때의 종류. 확실한 모양(장학금)만 알아보고 나머지는 일반 — 담당자가 표에서 바꿀 수 있다."""
-    return SCHOLARSHIP if looks_like_scholarship(folder) else GENERAL
+    """'자동' 으로 넣었을 때의 종류. 확실한 모양(명단 폴더)만 알아보고 나머지는 일반 — 담당자가 표에서 바꿀 수 있다."""
+    return roster_kind(folder) if looks_like_scholarship(folder) else GENERAL
 
 
 def resolve(chosen: str, folder: str) -> str:

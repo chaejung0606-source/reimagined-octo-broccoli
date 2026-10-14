@@ -873,4 +873,52 @@ def test_kind_resolve_honors_choice_and_refuses_unready(tmp_path):
         assert not kinds.find(key).ready
         with pytest.raises(ValueError):
             kinds.resolve(key, str(folder))
-    assert [k.name for k in kinds.KINDS] == ["일반", "장학금", "출장비", "카드"]
+    assert [k.name for k in kinds.KINDS] == ["일반", "장학금", "혁신인재지원금", "출장비", "카드"]
+    assert kinds.resolve(kinds.INNOVATION, str(folder)) == kinds.INNOVATION and kinds.uses_roster(kinds.INNOVATION)
+
+
+def _roster_folder(base, *parts, excel="명단.xlsx"):
+    folder = base.joinpath(*parts)
+    (folder / "공통증빙").mkdir(parents=True)
+    make_ga(folder / excel)
+    return folder
+
+
+def test_auto_kind_tells_innovation_from_scholarship_by_names(tmp_path):
+    """담당자 2026-10-14: 혁신인재지원금은 장학금과 같은 폴더 모양 · 같은 흐름이고 비목만 다르다. '자동' 은 이름으로 가른다 —
+    둘을 함께 담은 묶음 폴더('4. 장학금 및 혁신인재지원금')는 건너뛴다."""
+    from claim_downloader.claims import kinds
+
+    top = "4. 장학금 및 혁신인재지원금"
+    sch_dir = _roster_folder(tmp_path, top, "근로장학금", "(나) TA", "9월", excel="2026학년도 (나)형 근로장학금 지급내역.xlsx")
+    inn_dir = _roster_folder(tmp_path, top, "혁신인재지원금", "진행요원비", "9월")
+    inn_named = _roster_folder(tmp_path, "a", "b", "c", "9월", excel="2026년도 9월 진행요원비 혁신인재지원금.xlsx")
+    plain = _roster_folder(tmp_path, "x", "y", "z", "9월")
+    assert kinds.guess(str(sch_dir)) == kinds.SCHOLARSHIP
+    assert kinds.guess(str(inn_dir)) == kinds.INNOVATION          # 위 폴더 이름에서
+    assert kinds.guess(str(inn_named)) == kinds.INNOVATION        # 명단 엑셀 이름에서
+    assert kinds.guess(str(plain)) == kinds.SCHOLARSHIP           # 못 정하면 장학금
+
+
+def test_innovation_job_uses_its_own_category_and_rules(monkeypatch, tmp_path):
+    from claim_downloader import settings
+    from claim_downloader.claims import kinds
+
+    folder = _roster_folder(tmp_path, "혁신")
+    job = scholarship.load_job(str(folder), kind=kinds.INNOVATION)
+    assert job.spec.category == "교육·연구프로그램개발·운영비" and job.spec.code == "03"
+    assert job.main_summary == "03_2026년도 7월 (가)형 근로장학금"            # 대표적요의 비목 번호만 03
+    assert job.row_summary(0) == "03_2026년도 7월 (가)형 근로장학금_가나다"
+    assert settings.innovation_rules_path().exists() and "# 혁신인재지원금 청구 적요 규칙" in settings.innovation_rules_path().read_text(encoding="utf-8")
+    assert scholarship.load_job(str(folder)).main_summary.startswith("02_")     # 장학금은 그대로
+    assert job.summary_lines()[0].startswith("종류: 혁신인재지원금")
+
+    frame = FakeForm(reset_income=True)
+    _patch_popups(monkeypatch, frame)
+    logs = []
+    report = scholarship.run(object(), frame, job, logs.append, ask=lambda m: False, wait=lambda s: None, dry_run=False)
+    assert report.saved == 2 and not report.stopped
+    assert [row["PAY_EXP_CD"] for row in frame.saved] == ["교육·연구프로그램개발·운영비"] * 2
+    assert all(row["INCM_DIV_CD"] == "장학금" for row in frame.saved)         # 소득구분은 장학금 그대로(공제 0)
+    assert any("혁신인재지원금 청구 시작" in line for line in logs)
+    assert any("✓ 비목 교육·연구프로그램개발·운영비 · 소득구분 장학금" in line for line in report.results[0].lines)

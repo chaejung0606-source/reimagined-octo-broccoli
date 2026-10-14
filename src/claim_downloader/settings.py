@@ -13,6 +13,7 @@
       _화면구조.txt     진단 모드 결과 — 열린 ERP 화면의 입력 요소 (새 화면 실측용)
       일반청구규칙.txt  일반청구 추출 규칙 (claims/rules.py) · _청구입력기록.json 채운 폴더 기록
       장학금규칙.txt    장학금 청구 대표적요·행 적요 규칙 (claims/scholarship.py)
+      혁신인재지원금규칙.txt  혁신인재지원금 청구 규칙 (같은 모양, 대표적요 03_)
 
 개인 경로를 기본값으로 넣지 않는다. 동료에게 그대로 공유할 수 있어야 한다.
 """
@@ -97,6 +98,15 @@ def scholarship_rules_path() -> Path:
 
 def scholarship_rules_base_path() -> Path:
     return data_dir() / "장학금규칙.기본값.txt"
+
+
+def innovation_rules_path() -> Path:
+    """혁신인재지원금 청구 적요 규칙 — 장학금과 같은 모양, 대표적요의 비목 번호만 03."""
+    return data_dir() / "혁신인재지원금규칙.txt"
+
+
+def innovation_rules_base_path() -> Path:
+    return data_dir() / "혁신인재지원금규칙.기본값.txt"
 
 
 def claim_record_path() -> Path:
