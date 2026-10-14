@@ -336,6 +336,34 @@ def _digits(text: str) -> str:
     return re.sub(r"\D", "", str(text or ""))
 
 
+def _same(a, b) -> bool:
+    return re.sub(r"\s+", "", str(a or "")) == re.sub(r"\s+", "", str(b or ""))
+
+
+def _select_text(frame, element_id: str) -> str:
+    return ((read_state(frame, [element_id]).get(element_id) or {}).get("text", "")) or ""
+
+
+def _ensure_income(frame, wait, log, result: PersonResult, when: str) -> tuple[bool, str]:
+    """소득구분이 '장학금' 이 아니면 다시 고른다.
+
+    담당자 첫 시험(2026-10-14 15:34): 비목 다음에 '장학금' 으로 골랐는데(✓) 첨부까지 마친 뒤 저장 전 검사에서는 다른 값이었다.
+    소득자를 고르면 ERP 가 소득구분을 그 사람의 기본값으로 되돌리는 것으로 보인다(추정 — 어느 단계인지는 로그의 이 줄로 본다).
+    그래서 소득자를 고른 뒤와 저장 직전에 다시 보고 고친다. 고쳐지지 않으면 사람에게 묻는다(_ask_until)."""
+    now = _select_text(frame, "INCM_DIV_CD")
+    if _same(now, INCOME_KIND):
+        return True, now
+    log("소득구분이 '%s' 로 바뀌어 있어 다시 '%s' 로 고릅니다 (%s)" % (now or "비어 있음", INCOME_KIND, when))
+    r = _set(frame, "select", "INCM_DIV_CD", INCOME_KIND)
+    wait(0.4)
+    after = _select_text(frame, "INCM_DIV_CD")
+    if _same(after, INCOME_KIND):
+        result.lines.append(f"✓ 소득구분 장학금 ({when} '{now or '비어 있음'}' 이어서 다시 고름)")
+        return True, after
+    return False, (f"소득구분이 '{after or now or '비어 있음'}' 입니다"
+                   + ("" if r.get("ok") else f" — 다시 고르지 못함: {r.get('why', '')}"))
+
+
 def new_result(job: Job, index: int, status: str = "waiting") -> PersonResult:
     p = job.people[index]
     return PersonResult(index=index, name=p.name, status=status, student_no=p.student_no, course=p.course,
@@ -458,6 +486,14 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         return False, "소득자를 고르지 못함"
     wait(0.5)
 
+    def income_message(why: str) -> str:
+        return ("%d. %s — ERP 작성 화면의 소득구분을 '장학금' 으로 골라 주세요 (%s). 고른 뒤 [계속], 아니면 [멈추기]."
+                % (index + 1, p.name, why))
+
+    ok, why = _ask_until(lambda: _ensure_income(frame, wait, log, result, "소득자를 고른 뒤"), ask, income_message, wait)
+    if not ok:
+        return False, why + " — 저장하지 않았습니다"
+
     # 4. 계좌 대조 · 예금주조회 결과
     s = _state(frame, ["ACCT_NO", "BNK_CD", "OWNR", "OWNR_INQ_RSLT"])
     if p.account_digits and _digits(s["ACCT_NO"]) and p.account_digits != _digits(s["ACCT_NO"]):
@@ -509,17 +545,24 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
     else:
         result.lines.append("· 첨부 없음")
 
-    # 7. 저장 전 검사
+    # 7. 저장 전 검사 — 소득구분은 첨부 뒤에도 한 번 더 보고 고친다(위 _ensure_income)
+    ok, why = _ask_until(lambda: _ensure_income(frame, wait, log, result, "저장 직전"), ask, income_message, wait)
+    if not ok:
+        return False, why + " — 저장하지 않았습니다"
     s = read_state(frame, ["PAY_EXP_CD", "INCM_DIV_CD", "REQ_AMT", "REQ_PTCL", "RCV_NM"])
+    pay = (s.get("PAY_EXP_CD") or {}).get("text", "")
+    income = (s.get("INCM_DIV_CD") or {}).get("text", "")
+    amount = (s.get("REQ_AMT") or {}).get("value", "")
     checks = {
-        "비목": (s.get("PAY_EXP_CD") or {}).get("text", "") == CATEGORY,
-        "소득구분": (s.get("INCM_DIV_CD") or {}).get("text", "") == INCOME_KIND,
-        "청구액": _digits((s.get("REQ_AMT") or {}).get("value", "")) == str(p.amount or ""),
-        "적요": bool((s.get("REQ_PTCL") or {}).get("value", "").strip()),
-        "소득자": bool((s.get("RCV_NM") or {}).get("value", "").strip()),
+        f"비목(지금: {pay or '비어 있음'})": _same(pay, CATEGORY),
+        f"소득구분(지금: {income or '비어 있음'})": _same(income, INCOME_KIND),
+        f"청구액(지금: {amount or '비어 있음'})": _digits(amount) == str(p.amount or ""),
+        "적요(비어 있음)": bool((s.get("REQ_PTCL") or {}).get("value", "").strip()),
+        "소득자(비어 있음)": bool((s.get("RCV_NM") or {}).get("value", "").strip()),
     }
     bad = [k for k, v in checks.items() if not v]
     if bad:
+        log("저장 전 검사 어긋남: " + " · ".join(bad))
         return False, "저장 전 검사에서 어긋남: " + " · ".join(bad) + " — 저장하지 않았습니다"
 
     # 8. [저장]

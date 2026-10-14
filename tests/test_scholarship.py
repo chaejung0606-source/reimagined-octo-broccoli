@@ -236,7 +236,8 @@ def test_attachable_skips_archives_and_temp_files(tmp_path):
 class FakeForm:
     """인건비 탭 작성 화면 — 탭 클릭 · select/text · 저장(청구내역 한 줄 + REQ_CNT)을 흉내."""
 
-    def __init__(self, owner_result="성공:이름", save_works=True, deduction=0, account=None):
+    def __init__(self, owner_result="성공:이름", save_works=True, deduction=0, account=None,
+                 reset_income=False, lock_income=False):
         self.v = {"TAB_GB": "10", "APPR_DIV_CD": "", "REQ_CNT": "", "REQ_SEQ_NO": "TMP_REQ_1", "MOD_YN": "N",
                   "OWNR_INQ_RSLT": "", "ACCT_NO": "", "RCV_CD": "", "RCV_NM": "", "fileList": 0}
         self.text = {}
@@ -247,11 +248,15 @@ class FakeForm:
         self.save_works = save_works
         self.deduction = deduction
         self.account = account
+        self.reset_income = reset_income      # 소득자를 고르면 ERP 가 소득구분을 기타소득으로 되돌린다(담당자 첫 시험에서 본 것)
+        self.lock_income = lock_income        # 소득구분을 바꿔도 그대로 — 사람이 고쳐야 하는 경우
 
     def pick_person(self, name, no):
         # ERP 가 소득자를 고르면 채우는 계좌 — 기본은 명단(make_ga)과 같은 계좌
         acct = self.account or {"202600001": "12345678901", "202600002": "100000000001"}.get(no, "")
         self.v.update(RCV_CD=no, RCV_NM=name, ACCT_NO=acct, OWNR_INQ_RSLT=self.owner_result)
+        if self.reset_income:
+            self.v["INCM_DIV_CD"] = self.text["INCM_DIV_CD"] = "기타소득"
 
     def evaluate(self, js, arg=None):
         if js is form.PROBE_JS:
@@ -273,6 +278,8 @@ class FakeForm:
             return out
         if js is form.SET_SELECT_JS:
             element_id, wanted = arg
+            if element_id == "INCM_DIV_CD" and self.lock_income and self.text.get(element_id):
+                return {"ok": True, "now": self.text[element_id]}
             self.v[element_id], self.text[element_id] = wanted, wanted
             return {"ok": True, "now": wanted}
         if js is form.SET_TEXT_JS:
@@ -342,6 +349,30 @@ def test_run_puts_each_student_and_saves_without_pressing_apply(monkeypatch, job
     assert all(c in (scholarship.TAB_ID, "저장:저장") for c in frame.clicks)     # 누른 것은 탭과 [저장] 뿐
     assert calls["attach"][0] == job.files_for(0)
     assert "[신청]" in report.lines()[-1]
+
+
+def test_income_kind_is_picked_again_when_erp_resets_it_after_person(monkeypatch, job):
+    """담당자 첫 시험(2026-10-14): 소득구분을 '장학금' 으로 골랐는데 저장 전에는 다른 값 — 소득자를 고른 뒤 다시 고른다."""
+    frame = FakeForm(reset_income=True)
+    _patch_popups(monkeypatch, frame)
+    logs, asked = [], []
+    report = scholarship.run(object(), frame, job, logs.append, ask=lambda m: asked.append(m) or False,
+                             wait=lambda s: None, dry_run=False)
+    assert report.saved == 2 and asked == []
+    assert all(row["INCM_DIV_CD"] == "장학금" for row in frame.saved)
+    assert any("다시 고름" in line for line in report.results[0].lines)
+    assert any("기타소득" in line and "다시" in line for line in logs)            # 무엇으로 바뀌어 있었는지 로그에 남긴다
+
+
+def test_income_kind_that_will_not_change_asks_and_says_what_it_saw(monkeypatch, job):
+    frame = FakeForm(reset_income=True, lock_income=True)
+    _patch_popups(monkeypatch, frame)
+    asked = []
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or False,
+                             wait=lambda s: None, dry_run=False)
+    assert report.saved == 0 and report.stopped and frame.saved == []           # 저장하지 않는다
+    assert asked and "소득구분" in asked[0] and "기타소득" in asked[0]
+    assert "기타소득" in report.results[0].note
 
 
 def test_run_stops_and_asks_when_unsure(monkeypatch, job):
