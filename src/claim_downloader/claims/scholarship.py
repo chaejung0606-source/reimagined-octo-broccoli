@@ -673,10 +673,10 @@ def _use_document_account(frame, job: Job, index: int, s: dict, log, ask: Ask, w
     p = job.people[index]
     erp_acct, erp_digits = s["ACCT_NO"], _digits(s["ACCT_NO"])
     found, read = accounts_in_files(job.person_files.get(index, []))
-    log("계좌 불일치: 명단 %s %s / ERP %s — 개별증빙 PDF %d개에서 계좌 %s" % (
+    log("계좌 불일치: 명단 %s %s / ERP %s — 개별증빙 PDF %d개에서 %s" % (
         p.bank or "", p.account, erp_acct, read,
-        "명단과 같은 것을 찾음" if p.account_digits in found else
-        "ERP 와 같은 것만 찾음" if erp_digits in found else "를 찾지 못함"))
+        "명단과 같은 계좌를 찾음" if p.account_digits in found else
+        "ERP 와 같은 계좌만 찾음" if erp_digits in found else "계좌를 찾지 못함"))
     if erp_digits in found and p.account_digits not in found:
         result.lines.append(f"! 명단 계좌({p.account})가 첨부서류와 다름 — 첨부서류 · ERP 계좌({erp_acct}) 그대로 둠(명단 엑셀을 확인하세요)")
         return True, "", False

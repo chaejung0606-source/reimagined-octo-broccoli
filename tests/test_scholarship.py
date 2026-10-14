@@ -226,6 +226,81 @@ def test_person_match_uses_student_number_not_name():
     assert index is None and "이름이 다름" in why
 
 
+def test_person_search_tries_student_number_before_name():
+    """담당자 요청(2026-10-14): 학번/사번으로 먼저 검색하고, 결과가 없으면 이름으로."""
+    assert person.queries_for("가나다", "2026-00001") == [("학번", "202600001"), ("이름", "가나다")]
+    assert person.queries_for("가나다", "123456", person.TAB_STAFF) == [("사번", "123456"), ("이름", "가나다")]
+    assert person.queries_for("가나다", "") == [("이름", "가나다")]
+
+
+class FakeGrid:
+    """가상 스크롤 결과 목록 — 한 줄 20px, 보이는 곳 근처 21줄만 그린다(실측: 흔한 이름 검색이 늘 '21행')."""
+    LINE, RENDER = 20, 21
+
+    def __init__(self, people, visible=10):
+        self.people = people
+        self.top = 0
+        self.height = visible * self.LINE
+        self.picked = None
+
+    def _first(self):
+        return max(0, self.top // self.LINE - 2)
+
+    def _drawn(self):
+        first = self._first()
+        return self.people[first:first + self.RENDER]
+
+    def evaluate(self, js, arg=None):
+        if js is payee.RESULT_COUNT_JS:
+            return {"rows": len(self._drawn()), "kind": "grid"}
+        if js is payee.ROWS_JS:
+            rows = _grid(*self._drawn())
+            for row in rows:
+                row["r"] = str(self._first() + row["index"])         # JGM 줄 번호 — 같은 글자의 두 줄도 구분된다
+            return {"kind": "grid", "rows": rows}
+        if js is person.SCROLL_JS:
+            total = len(self.people) * self.LINE
+            if arg == "top":
+                self.top = 0
+            elif isinstance(arg, int):
+                self.top = arg
+            elif arg == "next":
+                self.top += max(40, self.height - 60)
+            self.top = max(0, min(self.top, total - self.height))       # 브라우저처럼 끝에서 멈춤
+            return {"ok": True, "top": self.top, "h": self.height, "sh": total}
+        if js is payee.PICK_ROW_JS:
+            self.picked = self._first() + arg
+            return {"ok": True}
+        raise AssertionError(js[:40])
+
+
+def _crowd(n, hits):
+    return [("가나다", "202600001" if i in hits else str(202500100 + i)) for i in range(n)]
+
+
+def test_person_scan_scrolls_past_the_drawn_rows():
+    """실제 ERP 18:10 — '김형준' 검색이 21행만 읽혀 학번을 못 찾고 멈췄다. 끝까지 내려가 찾는다."""
+    grid, logs = FakeGrid(_crowd(30, {25})), []
+    index, why, where = person._scan(grid, "가나다", "202600001", logs.append, lambda s: None)
+    assert index is not None and why == "학번 일치" and where is grid
+    assert grid._drawn()[index] == ("가나다", "202600001")
+    assert any("30행 중 학번 202600001 인 행 1개" in line for line in logs)
+
+
+def test_person_scan_checks_the_whole_list_for_a_second_match():
+    """처음 그려진 줄에 하나 보여도, 아래에 같은 학번이 또 있으면 사람에게."""
+    index, why, _ = person._scan(FakeGrid(_crowd(30, {3, 27})), "가나다", "202600001", lambda m: None, lambda s: None)
+    assert index is None and "2개" in why
+    index, why, _ = person._scan(FakeGrid(_crowd(30, set())), "가나다", "202600001", lambda m: None, lambda s: None)
+    assert index is None and why == "30행 중 학번 202600001 인 행이 없음"
+
+
+def test_person_scan_short_list_needs_no_scrolling():
+    grid = FakeGrid(_crowd(3, {1}))
+    index, why, _ = person._scan(grid, "가나다", "202600001", lambda m: None, lambda s: None)
+    assert (index, why, grid.top) == (1, "학번 일치", 0)
+
+
 def test_attachable_skips_archives_and_temp_files(tmp_path):
     keep = tmp_path / "a.pdf"
     keep.write_bytes(b"%PDF")

@@ -71,7 +71,8 @@ ROWS_JS = "() => {" + _ROWS_SNIPPET + """
     });
     return out;
   };
-  return {kind, rows: rows.map((r, i) => ({index: i, text: txt(r).slice(0, 300),
+  // r — JGM 행의 줄 번호 속성(실측: 결의서 목록 .jgrid-row[r]). 가상 스크롤로 다시 그려져도 같은 줄을 알아보는 데 쓴다(person._scan)
+  return {kind, rows: rows.map((r, i) => ({index: i, r: r.getAttribute('r'), text: txt(r).slice(0, 300),
     titles: Array.from(r.querySelectorAll('[title]')).map(e => e.getAttribute('title') || '').join(' ').slice(0, 300),
     pick: !!r.querySelector('input[type=radio], input[type=checkbox]'), cells: cells(r)}))};
 }"""
