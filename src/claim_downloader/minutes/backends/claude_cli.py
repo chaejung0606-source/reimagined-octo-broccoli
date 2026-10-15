@@ -16,6 +16,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -55,9 +56,42 @@ def find_claude():
     return ""
 
 
+def npm_shim_target(cmd_path):
+    """npm 이 만든 claude.cmd 가 실제로 부르는 [node, …/cli.js](새 판은 [실행 파일]) — 못 알아보면 None.
+
+    cmd.exe 로 감싸면 여러 줄 프롬프트가 첫 줄에서 잘리고 따옴표가 뒤섞여 회의록 · 일반청구 읽기가 '데이터 없음' 으로 끝날 수 있다
+    (2026-10-14 점검 — 담당자 PC 는 설치본(claude.exe)이라 괜찮았지만 npm 으로 깐 동료 PC 가 걸린다). 그래서 .cmd 안에 적힌
+    자바스크립트 파일을 찾아 node 로 바로 띄운다. 시간 초과 때도 node 를 바로 끝낼 수 있다(cmd.exe 만 끝나 기다림이 남지 않게).
+    """
+    try:
+        with open(cmd_path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
+    # 첫 줄의 "%dp0%\\node.exe"(옆에 node 가 있는지 보는 줄)는 건너뛴다
+    targets = [t for t in re.findall(r'"%~?dp0%?\\?([^"%]+?\.(?:js|mjs|cjs|exe))"', text, re.I)
+               if os.path.basename(t.replace("\\", "/")).lower() != "node.exe"]
+    if not targets:
+        return None
+    base = os.path.dirname(cmd_path)
+    script = os.path.normpath(os.path.join(base, targets[0].replace("\\", os.sep)))
+    if not os.path.isfile(script):
+        return None
+    if script.lower().endswith(".exe"):
+        return [script]                    # 새 npm 판은 .cmd 가 실행 파일을 바로 부른다 — node 가 필요 없다
+    local_node = os.path.join(base, "node.exe")
+    node = local_node if os.path.isfile(local_node) else shutil.which("node")
+    if not node:
+        return None
+    return [node, script]
+
+
 def claude_command(exe, cli_args):
-    """.cmd/.bat 은 CreateProcess 로 직접 실행할 수 없으므로 cmd.exe 로 감싼다."""
+    """.cmd/.bat 은 CreateProcess 로 직접 실행할 수 없다 — npm 설치본이면 node 로 바로, 못 알아보면 전처럼 cmd.exe 로 감싼다."""
     if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
+        direct = npm_shim_target(exe)
+        if direct:
+            return direct + cli_args
         return ["cmd.exe", "/d", "/c", exe] + cli_args
     return [exe] + cli_args
 

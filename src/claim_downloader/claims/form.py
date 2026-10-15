@@ -109,13 +109,36 @@ SET_SELECT_JS = """([id, wanted]) => {
   const el = pickEl(id);
   if (!el) return {ok: false, why: '칸이 없음'};
   if (el.disabled) return {ok: false, why: '비활성'};
-  const norm = s => (s || '').replace(/[\\s·ㆍ・.,\\-()\\[\\]{}_/\\\\]/g, '');
-  const want = norm(wanted);
+  const norm = s => (s || '').replace(/[\\s·ㆍ・.,\\-()\\[\\]{}_/\\\\]/g, '').toLowerCase();
+  // 은행 이름의 앞뒤 꾸밈(KB국민은행 · NH농협은행 · 카카오뱅크)을 뗀 몸통 — 명단의 짧은 이름(국민 · 카카오)과 맞춘다
+  const ALIAS = {'sc제일': '스탠다드차타드', '제일': '스탠다드차타드', '씨티': '한국씨티'};
+  const core = s => {
+    let c = norm(s).replace(/^(kb|nh|ibk|keb|sc|bnk|dgb|im)(?=[가-힣])/, '').replace(/(은행|뱅크)$/, '');
+    return Object.prototype.hasOwnProperty.call(ALIAS, c) ? ALIAS[c] : c;
+  };
+  const want = norm(wanted), wantCore = core(wanted);
   const opts = Array.from(el.options);
+  const label = o => (o.textContent || '').trim();
+  const options = opts.map(label);
+  if (!want) return {ok: false, why: '보기에 없음', options};
+  // 정확히 같은 보기가 먼저. 그다음 단계는 맞는 보기가 **하나일 때만** 고른다 — 전에는 첫 보기를 골라
+  // '농협' 이 농협은행 · 지역농축협 중 앞의 것으로, '수협' 이 수협은행 · 수협중앙회 중 앞의 것으로 갈 수 있었다(2026-10-14 점검)
   let hit = opts.find(o => norm(o.textContent) === want);
-  if (!hit) hit = opts.find(o => want && norm(o.textContent).startsWith(want));
-  if (!hit) hit = opts.find(o => want && norm(o.textContent).includes(want));
-  if (!hit) return {ok: false, why: '보기에 없음', options: opts.map(o => (o.textContent || '').trim())};
+  if (!hit && /^(농협|수협)$/.test(wantCore) && !/(은행|뱅크)$/.test(want)) {
+    // 명단의 '농협' · '수협' 은 은행(011 · 007)인지 지역 조합(012 · 030)인지 알 수 없다 — 보기에 둘 다 있으면 사람이 고른다
+    const family = opts.filter(o => norm(o.textContent).includes(wantCore) || (wantCore === '농협' && /농축협|단위농/.test(norm(o.textContent))));
+    if (family.length > 1) return {ok: false, why: '보기가 여럿(' + family.map(label).join(' · ') + ') — 명단에 은행 이름을 정확히', options};
+  }
+  for (const test of [o => wantCore && core(o.textContent) === wantCore,
+                      o => norm(o.textContent).startsWith(want),
+                      o => wantCore.length > 1 && core(o.textContent).startsWith(wantCore),
+                      o => norm(o.textContent).includes(want)]) {
+    if (hit) break;
+    const found = opts.filter(test);
+    if (found.length > 1) return {ok: false, why: '보기가 여럿(' + found.map(label).join(' · ') + ')', options};
+    hit = found[0];
+  }
+  if (!hit) return {ok: false, why: '보기에 없음', options};
   if (el.value === hit.value) return {ok: true, now: (hit.textContent || '').trim(), same: true};
   el.focus();
   el.value = hit.value;

@@ -364,3 +364,48 @@ def test_minutes_package_is_independent_of_erp_code():
         text = path.read_text(encoding="utf-8")
         assert not pattern.search(text), path.name
         assert "from ..erp" not in text and "from ..session" not in text, path.name
+
+
+NPM_SHIM = r"""@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+
+IF EXIST "%dp0%\node.exe" (
+  SET "_prog=%dp0%\node.exe"
+) ELSE (
+  SET "_prog=node"
+  SET PATHEXT=%PATHEXT:;.JS;=;%
+)
+
+endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\node_modules\@anthropic-ai\claude-code\cli.js" %*
+"""
+
+
+def test_npm_claude_cmd_runs_node_directly(tmp_path, monkeypatch):
+    """npm 으로 깐 claude.cmd 는 cmd.exe 를 거치면 여러 줄 프롬프트가 첫 줄에서 잘린다 — node 로 cli.js 를 바로 부른다."""
+    shim = tmp_path / "claude.cmd"
+    shim.write_text(NPM_SHIM, encoding="utf-8")
+    script = tmp_path / "node_modules" / "@anthropic-ai" / "claude-code" / "cli.js"
+    script.parent.mkdir(parents=True)
+    script.write_text("// cli", encoding="utf-8")
+    node = tmp_path / "node.exe"
+    node.write_text("", encoding="utf-8")
+    assert claude_cli.npm_shim_target(str(shim)) == [str(node), str(script)]
+    node.unlink()
+    monkeypatch.setattr(claude_cli.shutil, "which", lambda name: "/usr/bin/node" if name == "node" else None)
+    assert claude_cli.npm_shim_target(str(shim)) == ["/usr/bin/node", str(script)]
+    monkeypatch.setattr(claude_cli.os, "name", "nt")
+    assert claude_cli.claude_command(str(shim), ["-p", "줄1\n줄2"]) == ["/usr/bin/node", str(script), "-p", "줄1\n줄2"]
+    script.unlink()                                       # 알아보지 못하면 전처럼 cmd.exe 로
+    assert claude_cli.claude_command(str(shim), ["-p", "x"])[:3] == ["cmd.exe", "/d", "/c"]
+    # 새 npm 판은 .cmd 가 실행 파일을 바로 부른다 — node 없이 그 파일을
+    native = tmp_path / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+    native.parent.mkdir(parents=True)
+    native.write_text("", encoding="utf-8")
+    shim.write_text('@ECHO off\r\n"%~dp0\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe" %*\r\n', encoding="utf-8")
+    assert claude_cli.claude_command(str(shim), ["-p", "x"]) == [str(native), "-p", "x"]
