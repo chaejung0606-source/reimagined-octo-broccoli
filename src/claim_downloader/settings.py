@@ -44,6 +44,8 @@ class Settings:
     name_date_first: bool = False
     wait_sec: float = 2.0          # 건당 여유(초)
     freeze_reload: bool = True     # 상세화면 멈춤 시 새로고침 후 이어받기
+    # 받기 화면에서 브라우저를 연 뒤 결의서내역 목록이 보이면 [목록 읽기] 를 저절로 — 읽기만 한다(2026-10-15 추가 기능)
+    auto_read_list: bool = True
     auto_update_check: bool = True
     # 회의록 생성 (minutes/). 이메일은 Claude 로그인 화면에 미리 채워 넣는 용도 — 비밀번호는 없다.
     claude_email: str = ""

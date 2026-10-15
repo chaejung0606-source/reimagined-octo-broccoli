@@ -57,7 +57,8 @@ ROW_STATUS = {
 }
 
 GUIDE_START = "① 브라우저 열기를 누르면 ERP 창이 열립니다. 그 창에서 로그인하고 결의서내역 목록을 띄우세요."
-GUIDE_BROWSER = "열린 브라우저에서 로그인 → [과제관리 → 과제정보 → 청구서] → '결의서내역' 목록을 띄운 뒤 ② 목록 읽기를 누르세요."
+GUIDE_BROWSER = ("열린 브라우저에서 로그인 → [과제관리 → 과제정보 → 청구서] → '결의서내역' 목록을 띄우세요. "
+                 "목록이 보이면 앱이 ② 목록 읽기를 저절로 합니다(안 되면 직접 누르세요).")
 GUIDE_LISTED = "받을 건을 확인하고 ③ 받기를 누르세요. 처음이라면 '앞 1건만 시험'으로 흐름부터 확인하세요."
 GUIDE_DETAIL = (
     "• ① ERP 열기 — 앱이 새 브라우저 창을 엽니다. 평소 쓰는 Edge/크롬이 아니라 이 창에서 로그인해야 합니다. "
@@ -170,6 +171,7 @@ class DownloadPage(QWidget):
         w.failed.connect(self._on_failed)
         w.browser_state.connect(self._on_browser_state)
         w.structure_saved.connect(self._on_structure_saved)
+        w.list_ready.connect(self._on_list_ready)
 
         self.refresh_counts()
         self._sync_buttons()
@@ -436,7 +438,7 @@ class DownloadPage(QWidget):
                 "받은 청구서를 넣을 폴더를 먼저 지정해 주세요.\n비목 폴더(01. 인건비 …)가 바로 아래 있는 폴더입니다.")
             self.need_settings.emit()
             return
-        self.worker.open_browser()
+        self.worker.open_browser(watch=bool(settings.load().auto_read_list))
 
     def _read_list(self) -> None:
         self.worker.read_list()
@@ -524,6 +526,13 @@ class DownloadPage(QWidget):
         self._browser_open = True
         self._set_state("로그인 대기", "warning", GUIDE_BROWSER)
         self._sync_buttons()
+
+    def _on_list_ready(self) -> None:
+        """브라우저를 연 뒤 결의서내역 목록이 보인다 — 아직 안 읽었고 다른 일이 없으면 [목록 읽기] 를 대신 누른다(읽기만)."""
+        if self._listed or self._busy or not self._browser_open or not settings.load().auto_read_list:
+            return
+        self._set_state("목록 발견", "info", "결의서내역 목록이 보여 저절로 읽습니다…")
+        self._read_list()
 
     def _on_browser_state(self, alive: bool) -> None:
         """사용자가 브라우저 창을 닫아 버렸으면 ① 부터 다시 하게 한다."""

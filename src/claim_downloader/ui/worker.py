@@ -17,8 +17,12 @@ import traceback
 
 from PySide6.QtCore import QObject, Signal
 
+from .. import erp
 from ..session import BrowserClosed, ErpSession, ListNotFound, file_logger
 
+
+
+WATCH_SECONDS = 20 * 60            # 브라우저를 연 뒤 결의서내역 목록이 뜨기를 지켜보는 시간(로그인 · 화면 이동은 사람)
 
 class SessionWorker(QObject):
     log = Signal(str)
@@ -43,6 +47,7 @@ class SessionWorker(QObject):
     scholarship_ask = Signal(str)       # 장학금: 앱이 확신 못 하는 단계 — 사람이 [계속]/[멈추기]
     scholarship_done = Signal(object)   # 장학금: claims.scholarship.ScholarshipReport
     sheet_checked = Signal(object)      # 신청 전 대조: claims.sheet_check.SheetCheck
+    list_ready = Signal()               # 받기: 브라우저를 연 뒤 결의서내역 목록이 보인다 — 화면이 [목록 읽기] 를 저절로
 
     def __init__(self) -> None:
         super().__init__()
@@ -63,9 +68,10 @@ class SessionWorker(QObject):
         # 풀렸다(2026-10-14 점검) — 명령마다 넣은 화면을 붙여 오류는 그 화면만 받는다(failed).
         self._queue.put((name, args, owner))
 
-    def open_browser(self, scan: bool = True, owner: str = "download") -> None:
-        """scan=False 면 보관 폴더를 읽지 않고 브라우저만 연다 — 일반청구는 보관 폴더가 필요 없다(받기 전에는 _ensure_scanned 가 읽는다)."""
-        self._put("open", (scan,), owner)
+    def open_browser(self, scan: bool = True, owner: str = "download", watch: bool = False) -> None:
+        """scan=False 면 보관 폴더를 읽지 않고 브라우저만 연다 — 일반청구는 보관 폴더가 필요 없다(받기 전에는 _ensure_scanned 가 읽는다).
+        watch 면 연 뒤 결의서내역 목록이 뜨기를 지켜보다 list_ready 를 알린다(받기 화면)."""
+        self._put("open", (scan, watch), owner)
 
     def fill_claim(self, data: dict, dry_run: bool = True) -> None:
         self._put("fill_claim", (data, dry_run), "claim")
@@ -177,13 +183,38 @@ class SessionWorker(QObject):
                 self.browser_state.emit(session.browser_open)
                 self.busy.emit(False, "")
 
-    def _do_open(self, session: ErpSession, scan: bool = True) -> None:
+    def _do_open(self, session: ErpSession, scan: bool = True, watch: bool = False) -> None:
         if scan:
             self.busy.emit(True, "보관 폴더를 읽는 중…")
             self.prepared.emit(session.prepare())
         self.busy.emit(True, "브라우저를 여는 중…")
         session.open_browser()
         self.browser_opened.emit()
+        if watch:
+            self.busy.emit(False, "")          # 지켜보는 동안에도 화면의 단추는 눌린다 — 누르면 아래 고리가 바로 끝난다
+            self._watch_for_list(session)
+
+    def _watch_for_list(self, session: ErpSession) -> None:
+        """사람이 로그인하고 결의서내역을 띄우면(그리드에 행이 두 번 연달아 보이면) list_ready 를 알린다. 읽기만 한다.
+
+        로그인은 사람이 한다(9절) — 앱은 화면을 들여다보기만 하고 아무것도 누르지 않는다. 다른 명령이 오거나(사람이 단추를 누름 ·
+        일반청구가 브라우저를 씀) 브라우저가 닫히거나 WATCH_SECONDS 가 지나면 그만 본다. 이 스레드가 지켜보는 동안 다른 명령은
+        길어야 한 번 쉬는 만큼(1.5초) 기다린다."""
+        deadline = time.monotonic() + WATCH_SECONDS
+        seen = 0
+        while time.monotonic() < deadline:
+            if not self._queue.empty() or not session.browser_open:
+                return
+            try:
+                session.page.wait_for_timeout(1500)
+                rows = erp.grid_rows_shown(session.page.context)
+            except Exception:  # noqa: BLE001 — 창이 닫히는 중 등: 지켜보기만 그만둔다
+                return
+            seen = seen + 1 if rows > 0 else 0
+            if seen >= 2:                        # 그려지는 중에 읽지 않게 — 두 번 연달아 보이면
+                session.log("결의서내역 목록이 보여 저절로 읽습니다 (설정에서 끌 수 있습니다)")
+                self.list_ready.emit()
+                return
 
     def _do_fill_claim(self, session: ErpSession, data: dict, dry_run: bool) -> None:
         self.busy.emit(True, "일반청구 화면을 확인하는 중…" if dry_run

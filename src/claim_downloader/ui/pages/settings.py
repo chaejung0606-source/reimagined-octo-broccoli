@@ -145,6 +145,10 @@ class SettingsPage(QWidget):
         self.freeze.setChecked(cfg.freeze_reload)
         self.freeze.toggled.connect(lambda v: self._save(freeze_reload=v))
         behave.add(self.freeze)
+        self.auto_list = QCheckBox("브라우저를 연 뒤 결의서내역 목록이 보이면 [목록 읽기] 를 저절로 하기 (읽기만 합니다)")
+        self.auto_list.setChecked(cfg.auto_read_list)
+        self.auto_list.toggled.connect(lambda v: self._save(auto_read_list=v))
+        behave.add(self.auto_list)
         self.wait = QDoubleSpinBox()
         # 화살표는 스타일시트에서 폭 0 으로 숨긴다(theme.py). setButtonSymbols(NoButtons) 를 쓰면
         # 스타일시트가 걸린 칸에서 Qt 가 글자 칸 폭을 1px 로 잡아 값이 안 보인다.

@@ -62,6 +62,20 @@ def find_grid(context):
     return None, None
 
 
+GRID_ROWS_JS = "() => document.querySelectorAll('.jgrid-row').length"
+
+
+def grid_rows_shown(context) -> int:
+    """결의서내역 목록(그리드)에 그려진 행 수 — 목록이 없으면 0. 읽기만 한다(목록이 뜨기를 기다릴 때)."""
+    _page, fr = find_grid(context)
+    if fr is None:
+        return 0
+    try:
+        return int(fr.evaluate(GRID_ROWS_JS) or 0)
+    except Exception:  # noqa: BLE001 — 그리는 중 · 프레임이 바뀌는 중
+        return 0
+
+
 def wait_for_grid(context, tries: int = 40, interval_ms: int = 500):
     """목록이 눈에 보여도 첫 evaluate 는 실패할 수 있다. 한 번 보고 포기하지 않는다."""
     for _ in range(tries):
