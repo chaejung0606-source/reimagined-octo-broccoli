@@ -295,6 +295,17 @@ class ErpSession:
         finally:
             page.remove_listener("dialog", on_dialog)
 
+    def check_scholarship_sheet(self, job):
+        """신청 전 대조 — 작성 화면의 청구내역 표를 읽어 명단과 맞춘다(claims/sheet_check.py). 읽기만 한다."""
+        from .claims import sheet_check
+        if not self.browser_open:
+            raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
+        page, frame = claim_form.find_form(self.page.context)
+        if frame is None:
+            self.log("신청 전 대조: 작성 화면을 찾지 못했습니다")
+            return sheet_check.SheetCheck()
+        return claim_scholarship.check_sheet(frame, job, self.log, wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)))
+
     # ── 목록 ─────────────────────────────────────────────────────────────
     def read_list(self) -> Selection:
         if not self.browser_open:

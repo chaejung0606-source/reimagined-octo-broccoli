@@ -42,6 +42,7 @@ class SessionWorker(QObject):
     scholarship_person = Signal(int, str, str)   # 장학금: 명단 번호, 상태, 설명
     scholarship_ask = Signal(str)       # 장학금: 앱이 확신 못 하는 단계 — 사람이 [계속]/[멈추기]
     scholarship_done = Signal(object)   # 장학금: claims.scholarship.ScholarshipReport
+    sheet_checked = Signal(object)      # 신청 전 대조: claims.sheet_check.SheetCheck
 
     def __init__(self) -> None:
         super().__init__()
@@ -68,6 +69,9 @@ class SessionWorker(QObject):
 
     def fill_claim(self, data: dict, dry_run: bool = True) -> None:
         self._put("fill_claim", (data, dry_run), "claim")
+
+    def check_sheet(self, job) -> None:
+        self._put("check_sheet", (job,), "claim")
 
     def check_claim_form(self, owner: str = "claim") -> None:
         self._put("check_claim_form", (), owner)
@@ -214,6 +218,10 @@ class SessionWorker(QObject):
         self.busy.emit(True, f"{name} 계획을 만드는 중…" if dry_run else f"{name} 청구를 넣는 중… (멈추면 안내를 따라 주세요)")
         report = session.fill_scholarship(job, dry_run=dry_run, ask=self._ask_person, on_person=self.scholarship_person.emit)
         self.scholarship_done.emit(report)
+
+    def _do_check_sheet(self, session: ErpSession, job) -> None:
+        self.busy.emit(True, "청구내역 표를 읽어 명단과 맞추는 중…")
+        self.sheet_checked.emit(session.check_scholarship_sheet(job))
 
     def _do_check_claim_form(self, session: ErpSession) -> None:
         self.claim_form_state.emit(session.claim_form_open())

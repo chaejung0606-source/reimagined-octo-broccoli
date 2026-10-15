@@ -371,6 +371,7 @@ class ScholarshipReport:
     blocked: str = ""
     stopped: bool = False
     messages: list[str] = field(default_factory=list)
+    check: object = None                 # 신청 전 대조(sheet_check.SheetCheck) — 넣기를 마친 뒤 청구내역 표를 다시 읽은 것
 
     @property
     def saved(self) -> int:
@@ -388,6 +389,9 @@ class ScholarshipReport:
         if review:
             out.append(f"신청 전 확인할 것 {len(review)}건:")
             out.extend("  ! " + item for item in review)
+        if self.check is not None:
+            out.append("신청 전 대조: " + self.check.heading())
+            out.extend("  ! " + item for item in self.check.problems)
         for r in self.results:
             mark = {"saved": "✓", "planned": "·", "stopped": "■", "failed": "✗"}.get(r.status, "·")
             out.append(f"{mark} {r.index + 1}. {r.name}" + (f" — {r.note}" if r.note else ""))
@@ -579,7 +583,21 @@ def run(page, frame, job: Job, log: Callable[[str], None], ask: Ask, wait: Calla
     log("%s 청구 끝 — 임시저장 %d명%s" % (job.spec.name, report.saved, " (멈춤)" if report.stopped else ""))
     for item in report.review_items():
         log("  신청 전 확인: " + item)
+    if report.saved:
+        report.check = check_sheet(frame, job, log, wait, partial=report.stopped)
     return report
+
+
+def check_sheet(frame, job: Job, log: Callable[[str], None], wait=None, partial: bool = False):
+    """신청 전 대조 — 청구내역 표를 다시 읽어 명단과 맞춘다(sheet_check.py). 읽기만 한다."""
+    from . import sheet_check
+    check = sheet_check.read_and_compare(frame, job, wait, partial=partial)
+    log("신청 전 대조: " + check.heading())
+    for line in check.lines:
+        log("  " + line)
+    for item in check.problems:
+        log("  ! " + item)
+    return check
 
 
 # 청구내역 표의 저장된 줄(행마다 CUR_REQ 라디오, 실측 ⑤)의 글자 — 읽기만. 적요가 그 줄에 들어 있다.
@@ -1047,9 +1065,37 @@ def _summary(frame) -> dict:
         return {}
 
 
+def record_warning(job: Job) -> str:
+    """명단 폴더를 넣기 전 — 이 폴더 · 이 대표적요로 넣은 이력(_청구입력기록.json). 없으면 ''.
+
+    이번에 체크한 사람 중 이미 임시저장한 사람 · 전에 다른 청구 종류로 넣은 것(결의번호 324: 장학금 → 혁신인재지원금이 한 청구서에 섞임) ·
+    다른 폴더에서 같은 대표적요로 넣은 것을 한 창에 모은다. 기록은 '앱이 임시저장했다' 까지라 ERP 에서 지웠으면 다시 넣어도 된다 — 막지 않고 묻는다."""
+    from . import record
+    names = {k.key: k.name for k in kinds.KINDS}
+    before = record.previous(job.folder)
+    parts = []
+    if before:
+        parts.append("이 폴더를 넣은 이력:\n" + "\n".join("  · " + line for line in record.history_lines(before, names)))
+        again = record.already_saved(job.folder, [job.people[i] for i in job.chosen()])
+        if again:
+            shown = ", ".join(s.get("name", "") for s in again[:8]) + (" …" if len(again) > 8 else "")
+            parts.append(f"이번에 체크한 사람 중 {len(again)}명은 이미 임시저장했습니다: {shown}\n"
+                         "  ERP 청구내역에 그대로 있으면 다시 넣지 마세요 — 두 번 들어갑니다. [청구내역 대조] 로 확인할 수 있습니다.")
+        old_kind = before.get("kind", "")
+        if old_kind and old_kind != job.spec.kind:
+            parts.append(f"전에는 '{names.get(old_kind, old_kind)}' 으로 넣었는데 지금은 '{job.spec.name}' 입니다 — "
+                         "같은 청구서에 넣으면 비목이 다른 줄이 섞입니다. 전 것을 ERP 에서 지웠는지 확인하세요.")
+    for folder, entry in record.same_summary_elsewhere(job.folder, job.main_summary)[:3]:
+        parts.append(f"다른 폴더에서 같은 대표적요로 넣은 적이 있습니다: {folder}\n"
+                     + "\n".join("  · " + line for line in record.history_lines(entry, names)[-2:]))
+    return "\n\n".join(parts)
+
+
 def record_job(job: Job, report: ScholarshipReport) -> None:
     """채운 기록(_청구입력기록.json) — 같은 폴더를 다시 넣으려 하면 묻는 근거."""
     from . import record
-    record.remember(job.folder, {"amount": sum(job.people[r.index].amount or 0 for r in report.results if r.status == "saved"),
-                                 "summary": job.main_summary + f" ({report.saved}명)", "req_cnt": job.req_cnt})
+    saved = [job.people[r.index] for r in report.results if r.status == "saved"]
+    record.remember(job.folder, {"amount": sum(p.amount or 0 for p in saved),
+                                 "summary": job.main_summary + f" ({report.saved}명)", "req_cnt": job.req_cnt},
+                    kind=job.spec.kind, people=[{"name": p.name, "no": p.student_no, "course": p.course} for p in saved])
 

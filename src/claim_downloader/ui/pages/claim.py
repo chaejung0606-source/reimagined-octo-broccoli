@@ -92,6 +92,16 @@ SCH_STATUS = {"planned": ("넣을 것", "neutral"), "saved": ("임시저장", "s
               "failed": ("실패", "danger"), "waiting": ("대기", "neutral")}
 
 
+def sheet_check_rows(check) -> list[ReportRow]:
+    """신청 전 대조의 줄(사람마다 · 합계) — '✓ …' 맞음, '! …' 확인(두 번 · 금액 다름), '· …' 청구내역에 없음."""
+    rows = []
+    for line in check.lines:
+        mark, _, text = line.partition(" ")
+        status, tone = {"✓": ("맞음", "success"), "!": ("확인", "warning")}.get(mark, ("없음", "neutral"))
+        rows.append(ReportRow(status, tone, [text], tips={0: text}))
+    return rows
+
+
 def scholarship_rows(job, results) -> list[ReportRow]:
     """결과(PersonResult)마다 표 한 줄. 긴 값(첨부 목록 · 진행 단계)은 '자세히' 칸으로."""
     rows = []
@@ -193,6 +203,7 @@ class ClaimPage(QWidget):
         b.scholarship_person.connect(self._on_sch_person)
         b.scholarship_ask.connect(self._on_sch_ask)
         b.scholarship_done.connect(self._on_sch_done)
+        b.sheet_checked.connect(self._on_sheet_checked)
         b.structure_saved.connect(self._on_structure_saved)
         b.failed.connect(self._on_browser_failed)
 
@@ -529,6 +540,12 @@ class ClaimPage(QWidget):
         self.fill_button.setObjectName("primary")
         self.fill_button.clicked.connect(self._fill)
         row.addWidget(self.fill_button)
+        # 명단 줄 — [신청] 전에 ERP 청구내역 표를 다시 읽어 명단과 맞춰 본다(읽기만). 넣기를 마치면 저절로도 한 번 한다.
+        self.sheet_button = QPushButton("청구내역 대조")
+        self.sheet_button.setToolTip("ERP 작성 화면의 청구내역 표를 읽어 명단과 맞춰 봅니다 — 두 번 들어간 사람 · 빠진 사람 · 다른 금액 ·\n"
+                                     "명단에 없는 줄 · 합계와 공제합계. 읽기만 하고 아무것도 누르지 않습니다.")
+        self.sheet_button.clicked.connect(self._check_sheet)
+        row.addWidget(self.sheet_button)
         # 채운 뒤 팝업을 닫아 버렸을 때 — 증빙 [선택] 팝업을 다시 열어 사업자번호로 조회해 둔다(고르기는 사람)
         self.taxbill_button = QPushButton("세금계산서 찾기")
         self.taxbill_button.setToolTip("증빙 [선택] 팝업을 열어 거래처 사업자번호로 조회해 둡니다. 계산서를 고르고 [확인] 은 직접 누르세요.")
@@ -584,12 +601,14 @@ class ClaimPage(QWidget):
             count = job.count_text() if job is not None else "0명"
             self.fill_button.setText(f"미리 보기 ({count})" if dry else f"ERP 에 넣기 ({count})")
             self.fill_button.setToolTip("" if dry or self._browser_open else "먼저 [브라우저 열기] 로 ERP 를 열고 새 청구서 화면을 띄우세요.")
+            self.sheet_button.setEnabled(job is not None and self._browser_open and not busy and not self._browser_busy)
         else:
             has_row = 0 <= self._current < len(self._dirs) and self._status[self._current] in ("read", "filled", "saved")
             self.fill_button.setEnabled(has_row and self._browser_open and not self._browser_busy and not busy)
             self.fill_button.setText("미리 보기" if dry else "ERP 에 채우기")
             self.fill_button.setToolTip("" if self._browser_open else
                                         "일반 줄은 미리 보기도 ERP 작성 화면을 봅니다 — 먼저 [브라우저 열기] 로 새 청구서 화면을 띄우세요.")
+        self.sheet_button.setVisible(is_sch)
         filled = (not is_sch and 0 <= self._current < len(self._dirs)
                   and self._status[self._current] in ("filled", "saved"))
         self.save_button.setVisible(filled)
@@ -977,7 +996,7 @@ class ClaimPage(QWidget):
             QMessageBox.information(self, "미리 보기", text + "\n\n실제로 넣으려면 '미리 보기만' 체크를 풀고 다시 누르세요.")
             return
         if 0 <= row < len(self._dirs) and report.ok:
-            record.remember(self._dirs[row], self._data[row])
+            record.remember(self._dirs[row], self._data[row], kind=kinds.GENERAL)
             self._set_status(row, "filled")
             payee_ok = report.payee is not None and report.payee.ok
             payee_done = payee_ok and report.payee.picked
@@ -1158,11 +1177,9 @@ class ClaimPage(QWidget):
             if hard:
                 QMessageBox.warning(self, "넣기 전에 고칠 것", "\n".join("· " + p for p in hard))
                 return
-            before = record.previous(job.folder)
-            if before and QMessageBox.question(
-                    self, "이미 넣은 폴더",
-                    f"이 폴더는 {before.get('when')} 에 넣은 적이 있습니다 ({before.get('summary')}).\n\n다시 넣을까요?",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            warning = sch.record_warning(job)
+            if warning and QMessageBox.warning(self, "이미 넣은 적이 있습니다", warning + "\n\n그래도 넣을까요?",
+                                               QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
         # 미리 보기는 ERP 를 건드리지 않으니 바로 결과 표를 보인다. 실제로 넣을 때만 같은 표로 한 번 더 묻는다.
         # 폴더마다 청구서 하나 — 앞 폴더를 끝내고 이어지는 폴더면 새 청구서를 띄우라고 먼저 말한다(앱은 넣기 전에 화면이 새 것인지 본다)
@@ -1274,6 +1291,9 @@ class ClaimPage(QWidget):
             review = report.review_items()
             for item in review:
                 self._append_log("신청 전 확인: " + item)
+            # 넣기를 마친 뒤 청구내역 표를 다시 읽어 명단과 맞춘 것(sheet_check) — 확인할 것은 같은 목록에 붙인다
+            if report.check is not None:
+                review = review + ["청구내역 대조: " + item for item in report.check.problems]
             check = f" 신청 전 확인할 것 {len(review)}건 — 결과 창과 [진행 기록] 에 있습니다." if review else ""
             if report.stopped:
                 self._set_state("멈춤", "warning", f"{report.saved}명까지 임시저장했습니다. 남은 학생만 체크돼 있으니 고친 뒤 다시 누르면 이어집니다." + check)
@@ -1292,6 +1312,7 @@ class ClaimPage(QWidget):
                             heading=f"임시저장 {saved_text}" + (" — 중간에 멈췄습니다" if report.stopped else "")
                                     + (f" · 신청 전 확인할 것 {len(review)}건" if review else ""),
                             summary=[f"대표적요: {job.main_summary}", f"지급예정년월: {job.pay_ym}"]
+                                    + ([f"신청 전 대조: {report.check.heading()}"] if report.check is not None else [])
                                     + (["ERP 알림: " + " · ".join(alerts)] if alerts and review else []),
                             columns=SCH_COLUMNS, rows=scholarship_rows(job, report.results),
                             notes=review or alerts, notes_title="신청 전 확인할 것" if review else "ERP 알림",
@@ -1301,6 +1322,35 @@ class ClaimPage(QWidget):
             if nxt is not None and job is not None:
                 QTimer.singleShot(0, lambda: self._start_next(nxt, job))
         self._sync_buttons()
+
+    def _check_sheet(self) -> None:
+        row = self._current
+        job = self._jobs[row] if 0 <= row < len(self._jobs) else None
+        if job is None or not self._browser_open:
+            return
+        self._sheet_row = row
+        self._set_state("대조 중", "info", "ERP 작성 화면의 청구내역 표를 읽어 명단과 맞추는 중입니다 (읽기만 합니다).")
+        self.browser.check_sheet(job)
+
+    def _on_sheet_checked(self, check) -> None:
+        row = getattr(self, "_sheet_row", -1)
+        job = self._jobs[row] if 0 <= row < len(self._jobs) else None
+        name = job.spec.name if job is not None else "명단"
+        if not check.read:
+            self._set_state("대조 못 함", "warning", "작성 화면을 찾지 못했습니다. 넣은 청구서(작성 화면)를 띄운 뒤 다시 누르세요.")
+            QMessageBox.warning(self, "청구내역 대조", "ERP 작성 화면(청구내역 표)을 찾지 못했습니다.\n"
+                                "결의서내역에서 넣은 청구서를 열어 작성 화면을 띄운 뒤 다시 누르세요.")
+            return
+        if check.problems:
+            self._set_state("확인 필요", "warning", f"청구내역 대조 — 확인할 것 {len(check.problems)}건. 고친 뒤 [신청] 을 직접 누르세요.")
+        else:
+            self._set_state("대조 맞음", "success", check.heading() + ". ERP 에서 검토하고 [신청] 을 직접 누르세요.")
+        show_report(self, title="청구내역 대조", tone="warning" if check.problems else "success",
+                    heading=f"{name} — {check.heading()}",
+                    summary=[f"대표적요: {job.main_summary}"] if job is not None else None,
+                    columns=[("결과", 104), ("내용", None)], rows=sheet_check_rows(check),
+                    notes=check.problems, notes_title="신청 전 확인할 것",
+                    footer="읽기만 했습니다 — ERP 에서 아무것도 누르지 않았습니다. [삭제] · [신청] 은 직접 하세요.")
 
     # ── 신호 ────────────────────────────────────────────────────────────
     def _append_log(self, text: str) -> None:

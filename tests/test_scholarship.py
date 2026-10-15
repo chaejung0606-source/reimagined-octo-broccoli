@@ -392,7 +392,8 @@ class FakeForm:
         self.owner_check = owner_check        # [예금주조회] 를 누르면 나오는 결과. None 이면 아무 일도 안 일어난다
         self.clear_owner_on_account = clear_owner_on_account     # 계좌를 고치면 예금주조회 결과가 지워지는 ERP(미실측 — 두 경우 다 본다)
         self.foreign = set(foreign)           # 외국인 학생의 학번 — 외국인등록번호(뒷자리 7) · 영문 예금주
-        self.sheet: list[str] = []            # 청구내역 표에 저장된 줄의 적요 (SHEET_ROWS_JS)
+        self.sheet: list[str] = []            # 청구내역 표에 저장된 줄의 글자 (SHEET_ROWS_JS)
+        self.total = 0                        # 합계 줄의 청구액
 
     def pick_person(self, name, no):
         # ERP 가 소득자를 고르면 채우는 계좌 — 기본은 명단(make_ga)과 같은 계좌
@@ -445,7 +446,9 @@ class FakeForm:
             self.clicks.append("저장:" + arg)
             if self.save_works:
                 self.saved.append(dict(self.v))
-                self.sheet.append(str(self.v.get("REQ_PTCL", "")))
+                # 실측 ⑤ 처럼 줄 글자에 적요와 금액(콤마)이 함께 있다
+                self.sheet.append("%d %s %s" % (self.rows + 1, self.v.get("REQ_PTCL", ""), f"{int(self.v.get('REQ_AMT') or 0):,}"))
+                self.total += int(self.v.get("REQ_AMT") or 0)
                 self.rows += 1
                 self.v.update(REQ_CNT="322", APPR_DIV_CD="40", REQ_SEQ_NO=f"TMP_REQ_{self.rows + 1}", TAB_GB="10",
                               RCV_CD="", RCV_NM="", OWNR_INQ_RSLT="", ACCT_NO="", REQ_AMT="", REQ_PTCL="")
@@ -454,7 +457,7 @@ class FakeForm:
         if js is scholarship.SHEET_ROWS_JS:
             return list(self.sheet)
         if js is scholarship.SUMMARY_JS:
-            return {"rows": self.rows, "totals": [1, 1, self.deduction] if self.rows else []}
+            return {"rows": self.rows, "totals": [self.total, self.total - self.deduction, self.deduction] if self.rows else []}
         raise AssertionError("모르는 JS: " + str(js)[:60])
 
 
@@ -518,6 +521,9 @@ def test_run_puts_each_student_and_saves_without_pressing_apply(monkeypatch, job
     assert all(c in (scholarship.TAB_ID, "저장:저장") for c in frame.clicks)     # 누른 것은 탭과 [저장] 뿐
     assert calls["attach"][0] == job.files_for(0)
     assert "[신청]" in report.lines()[-1]
+    # 넣기를 마치면 청구내역 표를 다시 읽어 명단과 맞춘다(신청 전 대조) — 읽기만 하므로 누른 것은 그대로
+    assert report.check is not None and report.check.ok, report.check.problems
+    assert "신청 전 대조: 청구내역 2줄 — 명단과 맞습니다" in report.lines()
 
 
 def test_income_kind_is_picked_again_when_erp_resets_it_after_person(monkeypatch, job):
@@ -1168,3 +1174,94 @@ def test_attachment_failure_is_not_uploaded_twice(monkeypatch, job):
 
     report = scholarship.run(object(), frame, job, lambda m: None, ask=ask, wait=lambda s: None, dry_run=False)
     assert report.saved == 2 and len(calls["attach"]) == 2           # 학생마다 한 번씩만
+
+
+# ── 신청 전 대조 (sheet_check.py) ─────────────────────────────────────────
+
+def test_sheet_check_finds_duplicates_strangers_and_wrong_amounts(job):
+    from claim_downloader.claims import sheet_check
+    a, b = job.row_summary(0), job.row_summary(1)
+    rows = [f"1 {a} 300,000", f"2 {b} 250,000", f"3 {a} 300,000", "4 02_2026년도 6월 (가)형 근로장학금_가나다 300,000"]
+    check = sheet_check.compare(job, rows, [1150000, 1150000, 0])
+    text = "\n".join(check.problems)
+    assert "1. 가나다 — 청구내역에 2번 들어가 있습니다(줄 1, 3)" in text
+    assert "2. 라마바 — 청구내역 줄 2 의 금액이 명단(240,000원)과 다릅니다" in text
+    assert "명단에 없는 줄 4" in text
+    assert not check.ok
+
+
+def test_sheet_check_totals_deduction_and_missing(job):
+    from claim_downloader.claims import sheet_check
+    a = job.row_summary(0)
+    check = sheet_check.compare(job, [f"1 {a} 300,000"], [300000, 273600, 26400])
+    assert any("공제합계가 26,400원" in p for p in check.problems)
+    assert any("청구내역에 없는 사람 1명: 라마바" in p for p in check.problems)
+    # 넣다가 멈췄으면 빠진 사람은 당연하다 — 확인할 것이 아니라 줄로만
+    partial = sheet_check.compare(job, [f"1 {a} 300,000"], [300000, 300000, 0], partial=True)
+    assert partial.ok and any("라마바" in line for line in partial.lines)
+    assert any("합계 줄 청구액 300,000원 = 명단" in line for line in partial.lines)
+
+
+def test_sheet_check_does_not_list_every_row_when_nothing_matches(job):
+    from claim_downloader.claims import sheet_check
+    check = sheet_check.compare(job, ["1 03_소학회 진행요원비_가나다 300,000", "2 03_소학회 진행요원비_라마바 240,000"], [540000, 540000, 0])
+    assert len(check.problems) == 1 and "하나도 맞추지 못했습니다" in check.problems[0]
+
+
+def test_sheet_check_prefers_longest_summary(job):
+    """'…_김민' 과 '…_김민수' 처럼 한 적요가 다른 적요를 품으면 긴 쪽에만 붙는다."""
+    from claim_downloader.claims import sheet_check
+    job.people[1].name = job.people[0].name + "수"
+    a, b = job.row_summary(0), job.row_summary(1)
+    check = sheet_check.compare(job, [f"1 {a} 300,000", f"2 {b} 240,000"], [540000, 540000, 0])
+    assert check.ok, check.problems
+
+
+# ── 중복 임시저장 알림 (record.py 이력) ───────────────────────────────────
+
+def test_record_warning_names_people_already_saved_and_kind_change(isolated_home, job):
+    from claim_downloader.claims import kinds
+    from claim_downloader.claims import record
+    assert scholarship.record_warning(job) == ""                     # 처음 넣는 폴더는 묻지 않는다
+    report = scholarship.ScholarshipReport(dry_run=False)
+    report.results = [scholarship.new_result(job, 0)]
+    report.results[0].status = "saved"
+    job.req_cnt = "324"
+    scholarship.record_job(job, report)
+    warning = scholarship.record_warning(job)
+    assert "결의번호 324" in warning and "장학금" in warning and "1명" in warning
+    assert "이번에 체크한 사람 중 1명은 이미 임시저장했습니다: 가나다" in warning
+    # 같은 폴더를 다른 종류로 — 324 처럼 한 청구서에 비목이 섞이는 것을 미리 알린다
+    other = scholarship.load_job(job.folder, kind=kinds.INNOVATION)
+    assert "전에는 '장학금' 으로 넣었는데 지금은 '혁신인재지원금'" in scholarship.record_warning(other)
+    # 두 번째로 넣으면 이력이 쌓이고(마지막 하나만 남던 옛 판과 달리) 저장한 사람도 합쳐진다
+    report.results = [scholarship.new_result(job, 1)]
+    report.results[0].status = "saved"
+    scholarship.record_job(job, report)
+    entry = record.previous(job.folder)
+    assert len(entry["runs"]) == 2 and {s["name"] for s in entry["saved"]} == {"가나다", "라마바"}
+    assert "2명은 이미 임시저장" in scholarship.record_warning(job)
+
+
+def test_record_warning_finds_same_summary_in_another_folder(isolated_home, job, tmp_path):
+    from claim_downloader.claims import kinds
+    import shutil
+    from claim_downloader.claims import record
+    record.remember(job.folder, {"summary": job.main_summary + " (2명)", "req_cnt": "322"}, kind=kinds.SCHOLARSHIP)
+    copy = tmp_path / "복사본"
+    shutil.copytree(job.folder, copy)
+    warning = scholarship.record_warning(scholarship.load_job(str(copy)))
+    assert "다른 폴더에서 같은 대표적요로 넣은 적이 있습니다" in warning and "결의번호 322" in warning
+
+
+def test_record_keeps_old_single_entry_as_history(isolated_home, tmp_path):
+    """옛 판이 남긴 기록(마지막 하나뿐)도 이력의 첫 줄로 남는다."""
+    import json
+    from claim_downloader import settings
+    from claim_downloader.claims import record
+    folder = tmp_path / "옛"
+    settings.claim_record_path().write_text(json.dumps({record._key(folder): {"when": "2026-10-13 10:00", "summary": "옛 것"}}),
+                                            encoding="utf-8")
+    record.remember(folder, {"summary": "새 것"})
+    lines = record.history_lines(record.previous(folder))
+    assert lines[0].startswith("2026-10-13 10:00") and len(lines) == 2
