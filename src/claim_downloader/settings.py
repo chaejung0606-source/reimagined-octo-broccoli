@@ -46,6 +46,8 @@ class Settings:
     freeze_reload: bool = True     # 상세화면 멈춤 시 새로고침 후 이어받기
     # 받기 화면에서 브라우저를 연 뒤 결의서내역 목록이 보이면 [목록 읽기] 를 저절로 — 읽기만 한다(2026-10-15 추가 기능)
     auto_read_list: bool = True
+    # 홈의 '처음 쓰시나요?' 안내를 닫았는지 — 동료 PC 에 처음 깔았을 때만 보이게(사용자 메뉴에서 다시 볼 수 있다)
+    welcome_dismissed: bool = False
     auto_update_check: bool = True
     # 회의록 생성 (minutes/). 이메일은 Claude 로그인 화면에 미리 채워 넣는 용도 — 비밀번호는 없다.
     claude_email: str = ""

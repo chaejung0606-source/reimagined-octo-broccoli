@@ -122,6 +122,9 @@ class HomePage(QWidget):
         self.ai_banner.hide()
         layout.addWidget(self.ai_banner)
 
+        self.welcome = self._build_welcome()
+        layout.addWidget(self.welcome)
+
         title = QLabel("어떤 업무를 시작할까요?")
         title.setObjectName("homeTitle")
         layout.addWidget(title)
@@ -172,6 +175,10 @@ class HomePage(QWidget):
     # ── AI 플랫폼 ────────────────────────────────────────────────────
     def show_ai(self, status: "ai.Status | None", checking: bool = False) -> None:
         """로그인이 필요하거나 쓸 수 없을 때만 띠를 보인다. 확인 중에는 이전 상태를 그대로 둔다."""
+        if status is not None and not (checking and status.state == ai.CHECKING):
+            self._ai_state = status
+            if self.welcome.isVisible():
+                self.refresh_welcome()
         if status is None or status.state in (ai.OK, ai.CHECKING):
             if not checking:
                 self.ai_banner.hide()
@@ -190,6 +197,87 @@ class HomePage(QWidget):
         self.ai_check_button.setEnabled(not checking)
         self.ai_check_button.setText("확인 중…" if checking else "다시 확인")
         self.ai_banner.show()
+
+    # ── 처음 쓰시나요? ───────────────────────────────────────────────
+    def _build_welcome(self) -> QFrame:
+        """동료 PC 에 처음 깔았을 때 — 무엇을 준비해야 하고 무엇은 몰라도 되는지. 닫으면 다시 안 보인다(사용자 메뉴에서 다시 볼 수 있다).
+        자리 채우기 카드가 아니다: 할 일이 남았는지(저장 폴더 · AI) 실제 상태를 보여 준다."""
+        box = QFrame()
+        box.setObjectName("card")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(18, 14, 14, 14)
+        layout.setSpacing(8)
+        head = QHBoxLayout()
+        title = QLabel("처음 쓰시나요?")
+        title.setObjectName("cardTitle")
+        head.setSpacing(10)
+        head.addWidget(title, 0, Qt.AlignVCenter)
+        head.addWidget(muted_label("준비할 것은 저장 폴더 하나뿐입니다. 나머지는 쓰는 업무에 따라 필요할 때만."), 1, Qt.AlignVCenter)
+        close = QPushButton("다시 보지 않기")
+        close.setObjectName("ghost")
+        close.clicked.connect(self._dismiss_welcome)
+        head.addWidget(close)
+        layout.addLayout(head)
+        self._welcome_rows: dict[str, tuple[Pill, QPushButton | None]] = {}
+        rows = (
+            ("folder", "저장 폴더", "받은 청구서를 넣을 폴더 — 01. 인건비 · 02. 장학금 … 이 바로 아래 있는 폴더를 고릅니다.",
+             "설정 열기", lambda: self.open_task.emit("settings")),
+            ("ai", "AI 로그인", "회의록 생성 · 일반청구 [내용 읽기] 에만 씁니다. 청구서 받기 · 장학금 · 혁신인재지원금에는 필요 없습니다.",
+             "로그인", self.ai_login.emit),
+            ("erp", "ERP 로그인", "앱이 연 브라우저에서 직접 합니다 — 아이디 · 비밀번호는 어디에도 저장하지 않습니다. "
+             "결의서내역 목록을 띄우면 앱이 목록을 읽습니다. 처음 받을 때는 '앞 1건만 시험'.", "", None),
+            ("help", "막히면", "오른쪽 위 사용자 메뉴 → [문제 보내기] 를 누르면 개인정보를 가린 실행 기록이 복사됩니다. 채팅에 붙여 넣어 물어보세요.",
+             "", None),
+        )
+        for key, name, text, button_text, action in rows:
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            pill = Pill("안내", "neutral")
+            pill.setFixedWidth(72)
+            row.addWidget(pill, 0, Qt.AlignVCenter)
+            label = WrapLabel(f"<b>{name}</b> — {text}")
+            label.setObjectName("body")
+            row.addWidget(label, 1)
+            button = None
+            if button_text:
+                button = QPushButton(button_text)
+                button.clicked.connect(action)
+                row.addWidget(button, 0, Qt.AlignVCenter)
+            layout.addLayout(row)
+            self._welcome_rows[key] = (pill, button)
+        self._ai_state = None
+        box.hide()
+        return box
+
+    def _dismiss_welcome(self) -> None:
+        settings.update(welcome_dismissed=True)
+        self._welcome_forced = False
+        self.welcome.hide()
+
+    def refresh_welcome(self, force: bool = False) -> None:
+        """force 는 사용자 메뉴의 '처음 안내 다시 보기'. 이미 청구서를 받아 본 PC(받은 기록이 있음)에는 저절로 띄우지 않는다 —
+        이 안내가 들어오기 전부터 쓰던 담당자 PC 에 업데이트 뒤 갑자기 뜨지 않게."""
+        cfg = settings.load()
+        self._welcome_forced = force or getattr(self, "_welcome_forced", False)
+        if cfg.welcome_dismissed or (not self._welcome_forced and settings.done_path().exists()):
+            self.welcome.hide()
+            return
+        folder_ok = bool(cfg.out_root) and Path(cfg.out_root).is_dir()
+        pill, button = self._welcome_rows["folder"]
+        pill.set_status("완료" if folder_ok else "할 일", "success" if folder_ok else "warning")
+        button.setVisible(not folder_ok)
+        pill, button = self._welcome_rows["ai"]
+        state = self._ai_state
+        if state is None or state.state == ai.CHECKING:
+            pill.set_status("확인 중", "neutral")
+            button.hide()
+        elif state.state == ai.OK:
+            pill.set_status("완료", "success")
+            button.hide()
+        else:
+            pill.set_status("필요할 때", "neutral")
+            button.setVisible(state.state == ai.NO_LOGIN and ai.can_login(state.key))
+        self.welcome.show()
 
     # ── 업무 카드 배열 ───────────────────────────────────────────────
     def _relayout(self, columns: int) -> None:

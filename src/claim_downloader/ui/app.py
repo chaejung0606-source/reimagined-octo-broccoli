@@ -293,6 +293,7 @@ class MainWindow(QMainWindow):
                 items.append((task.id, task.art, task.name, text))
         self.home.set_resumable(items)
         self.home.refresh_recent()
+        self.home.refresh_welcome()
 
     def _on_update_status(self, status) -> None:
         self.home.show_update(status.behind if status.can_apply else 0, status.messages)
@@ -341,7 +342,13 @@ class MainWindow(QMainWindow):
             menu.addAction(task.name, lambda t=task.id: self.open(t))
         menu.addSeparator()
         menu.addAction("문제 보내기 (기록 복사)", self._share_log)
+        menu.addAction("처음 안내 다시 보기", self._show_welcome)
         menu.addAction("앱 새로고침", self.restart)
+
+    def _show_welcome(self) -> None:
+        settings.update(welcome_dismissed=False)
+        self.open(HOME_ID)
+        self.home.refresh_welcome(force=True)
 
     def _share_log(self) -> None:
         """최근 실행 기록을 개인정보를 가려 복사한다(share_log.py) — 담당자가 기록을 손으로 가려 붙여 넣던 것을 대신."""
