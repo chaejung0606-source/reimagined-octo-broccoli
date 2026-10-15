@@ -21,8 +21,8 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QFontDatabase, QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import ai, settings, shortcuts, updater
+from .. import ai, settings, share_log, shortcuts, updater
 from . import ai_status
 from .pages.home import HomePage
 from .shell import Dock, DockOverlay, TopBar, WorkTabs
@@ -340,7 +340,39 @@ class MainWindow(QMainWindow):
         for task in UTILITIES:
             menu.addAction(task.name, lambda t=task.id: self.open(t))
         menu.addSeparator()
+        menu.addAction("문제 보내기 (기록 복사)", self._share_log)
         menu.addAction("앱 새로고침", self.restart)
+
+    def _share_log(self) -> None:
+        """최근 실행 기록을 개인정보를 가려 복사한다(share_log.py) — 담당자가 기록을 손으로 가려 붙여 넣던 것을 대신."""
+        names: set[str] = set()
+        claim = self._pages.get("claim")
+        for job in getattr(claim, "_jobs", None) or []:
+            if job is not None:
+                names.update(p.name for p in job.people)
+        try:
+            from ..claims import record
+            names.update(record.saved_names())
+        except Exception:  # noqa: BLE001 — 기록 파일을 못 읽어도 규칙으로 찾는 이름은 가린다
+            pass
+        try:
+            text, path = share_log.build(names, version=updater.current_version())
+        except OSError as error:
+            QMessageBox.warning(self, "문제 보내기", f"기록 사본을 만들지 못했습니다.\n{error}")
+            return
+        if not text:
+            QMessageBox.information(self, "문제 보내기", "아직 남은 실행 기록이 없습니다.")
+            return
+        QApplication.clipboard().setText(text)
+        answer = QMessageBox.question(
+            self, "문제 보내기",
+            f"최근 실행 기록 {share_log.TAIL_LINES}줄을 개인정보(이름 · 학번 · 계좌 · 주민번호 · 전화 · 메일)를 가려 복사했습니다.\n"
+            "채팅에 붙여 넣어 보내 주세요.\n\n"
+            "규칙으로 가리는 것이라 모든 이름을 찾지는 못합니다 — 보내기 전에 한 번 훑어보세요.\n"
+            f"같은 내용의 파일: {path}\n\n파일을 열어 볼까요?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if answer == QMessageBox.Yes:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _search(self, text: str) -> None:
         """업무 이름으로 찾아 연다. 못 찾으면 상태줄에 알린다."""

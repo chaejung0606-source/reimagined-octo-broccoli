@@ -93,6 +93,16 @@ def already_saved(folder, people) -> list[dict]:
     return out
 
 
+def saved_names() -> set[str]:
+    """임시저장한 사람 이름 전부 — 문제 보내기(share_log)가 기록에서 가릴 이름으로 쓴다."""
+    names = set()
+    for entry in _load().values():
+        if isinstance(entry, dict):
+            names.update(str(s.get("name", "")) for s in (entry.get("saved") or []) if isinstance(s, dict))
+    names.discard("")
+    return names
+
+
 def same_summary_elsewhere(folder, summary: str) -> list[tuple[str, dict]]:
     """다른 폴더에서 같은 대표적요로 넣은 기록 — 폴더를 복사해 두고 둘 다 넣는 것을 막으려고."""
     want = re.sub(r"\s+", "", summary or "")

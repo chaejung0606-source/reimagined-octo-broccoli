@@ -110,7 +110,6 @@ class DownloadPage(QWidget):
         self._run_ok = 0
         self._run_failed = 0
         self._attempted = False               # 한 번이라도 받기를 시작했는지 (이어서 작업하기 판단)
-        self._form_check_limit: int | None = None   # 받기 전 일반청구 작성 화면 확인을 기다리는 중이면 그 limit
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 18, 24, 26)
@@ -171,7 +170,6 @@ class DownloadPage(QWidget):
         w.failed.connect(self._on_failed)
         w.browser_state.connect(self._on_browser_state)
         w.structure_saved.connect(self._on_structure_saved)
-        w.claim_form_state.connect(self._on_claim_form_state)
 
         self.refresh_counts()
         self._sync_buttons()
@@ -443,16 +441,11 @@ class DownloadPage(QWidget):
     def _read_list(self) -> None:
         self.worker.read_list()
 
-    def _download(self, limit: int, form_checked: bool = False) -> None:
+    def _download(self, limit: int) -> None:
         rows = self._remaining()
         if limit:
             rows = rows[:limit]
         if not rows:
-            return
-        if not form_checked:
-            # 일반청구 작성 화면에도 '청구서출력' 이 있어 상세 화면으로 잘못 볼 수 있다(7절 8번) — 받기 전에 브라우저 스레드가 보고 답한다
-            self._form_check_limit = limit
-            self.worker.check_claim_form(owner="download")
             return
         if not self._archive_ok:
             answer = QMessageBox.warning(
@@ -486,22 +479,6 @@ class DownloadPage(QWidget):
             self._set_status(row, "waiting")
         self._set_state("받는 중", "info", f"{len(rows)}건을 받고 있습니다. 브라우저 창은 닫지 마세요.")
         self.worker.download([self._targets[i] for i in rows])
-
-    def _on_claim_form_state(self, form_open: bool) -> None:
-        """받기 전 확인의 답. 일반청구 화면이 물어본 것이면(_form_check_limit 없음) 받기 화면은 아무것도 하지 않는다."""
-        limit, self._form_check_limit = self._form_check_limit, None
-        if limit is None:
-            return
-        if form_open:
-            answer = QMessageBox.warning(
-                self, "일반청구 작성 화면이 열려 있습니다",
-                "브라우저에 일반청구 작성 화면('청구서(일반)' 탭)이 열려 있습니다.\n"
-                "그 화면에도 '청구서출력' 이 있어, 받기가 그것을 청구서 상세 화면으로 잘못 볼 수 있습니다.\n\n"
-                "ERP 에서 그 탭을 닫고 다시 누르는 것을 권합니다. 그래도 받을까요?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if answer != QMessageBox.Yes:
-                return
-        self._download(limit, form_checked=True)
 
     def _stop(self) -> None:
         self.worker.request_stop()
