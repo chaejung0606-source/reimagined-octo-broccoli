@@ -69,8 +69,8 @@ class SessionWorker(QObject):
     def fill_claim(self, data: dict, dry_run: bool = True) -> None:
         self._put("fill_claim", (data, dry_run), "claim")
 
-    def check_claim_form(self) -> None:
-        self._put("check_claim_form", (), "claim")
+    def check_claim_form(self, owner: str = "claim") -> None:
+        self._put("check_claim_form", (), owner)
 
     def save_claim_draft(self) -> None:
         self._put("save_claim_draft", (), "claim")
