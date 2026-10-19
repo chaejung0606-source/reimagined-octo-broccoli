@@ -471,32 +471,52 @@ def _digits(text: str) -> str:
 _ACCOUNT_RE = re.compile(r"(?<![\d-])\d{2,6}(?:-\d{2,8}){1,4}(?![\d-])|(?<!\d)\d{10,14}(?!\d)")
 
 
+def _pdf_texts(paths: list[str], pages: int = 8) -> list[str]:
+    """PDF 글자(pypdf — AI 를 쓰지 않는다). 그림으로만 된 PDF(스캔)는 글자가 없어 빈 글. 깨진 PDF · PDF 가 아닌 파일은 뺀다."""
+    try:
+        import pypdf
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for path in paths:
+        if not str(path).lower().endswith(".pdf"):
+            continue
+        try:
+            reader = pypdf.PdfReader(str(path))
+            out.append("\n".join((page.extract_text() or "") for page in reader.pages[:pages]))
+        except Exception:  # noqa: BLE001 — 깨진 PDF 는 건너뛴다
+            continue
+    return out
+
+
 def accounts_in_files(paths: list[str], pages: int = 8) -> tuple[set[str], int]:
     """개별증빙 PDF 글자에서 계좌처럼 생긴 숫자를 모은다(숫자만). (찾은 것, 글자를 읽을 수 있었던 PDF 수).
 
     학생이 낸 '근로장학금 지출자료' 에 계좌가 적혀 있다. 그림으로만 된 PDF(스캔)는 글자가 없어 못 읽는다 — 그때는 읽은 수가 0.
     전화번호 · 주민번호도 섞여 들어오지만 특정 계좌가 '들어 있는지' 만 보므로 상관없다."""
     found: set[str] = set()
-    read = 0
-    try:
-        import pypdf
-    except Exception:  # noqa: BLE001
-        return found, 0
-    for path in paths:
-        if not str(path).lower().endswith(".pdf"):
-            continue
-        try:
-            reader = pypdf.PdfReader(str(path))
-            text = "\n".join((page.extract_text() or "") for page in reader.pages[:pages])
-        except Exception:  # noqa: BLE001 — 깨진 PDF 는 건너뛴다
-            continue
-        if text.strip():
-            read += 1
+    texts = [t for t in _pdf_texts(paths, pages) if t.strip()]
+    for text in texts:
         for hit in _ACCOUNT_RE.finditer(text):
             digits = re.sub(r"\D", "", hit.group())
             if 10 <= len(digits) <= 16:
                 found.add(digits)
-    return found, read
+    return found, len(texts)
+
+
+# 학번 — 9자리, 20 으로 시작(입학 연도). 명단 학번이 9자리다(CLAUDE.md 14절 '명단 엑셀 모양')
+_STUDENT_NO_RE = re.compile(r"(?<![\d-])(20\d{7})(?![\d-])")
+
+
+def student_numbers_in_files(paths: list[str], pages: int = 8) -> tuple[list[str], int]:
+    """개별증빙 PDF 글자에서 학번처럼 생긴 9자리 숫자 — 많이 나온 것부터. (학번 후보, 글자를 읽을 수 있었던 PDF 수).
+    학생이 낸 장학금 지급 청구서 · 지원금 신청서에 학번이 있다. 다른 학생 학번이 섞일 수 있어 부르는 쪽이 이름까지 맞는 줄만 고른다."""
+    counts: dict[str, int] = {}
+    texts = [t for t in _pdf_texts(paths, pages) if t.strip()]
+    for text in texts:
+        for hit in _STUDENT_NO_RE.finditer(text):
+            counts[hit.group(1)] = counts.get(hit.group(1), 0) + 1
+    return sorted(counts, key=lambda n: (-counts[n], n)), len(texts)
 
 
 _HANGUL_RE = re.compile(r"[가-힣]")
@@ -755,16 +775,20 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
     result.lines.append(f"✓ 비목 {category} · 소득구분 {INCOME_KIND}")
 
     # 3. 소득자 — 학번이 맞는 행 하나면 앱이, 아니면 사람
+    want = {"no": p.student_no}                  # 개별증빙의 학번으로 고르면 그 학번(_recheck_student_no)
+
     def person_ok() -> tuple[bool, str]:
         s = _state(frame, ["RCV_CD", "RCV_NM"])
-        if p.student_no and _digits(s["RCV_CD"]) == p.student_no:
+        if want["no"] and _digits(s["RCV_CD"]) == want["no"]:
             return True, ""
-        if not p.student_no and _squash(s["RCV_NM"]) == _squash(p.name):
+        if not want["no"] and _squash(s["RCV_NM"]) == _squash(p.name):
             return True, ""
-        return False, f"작성 화면의 소득자가 {p.name}({p.student_no or '학번 없음'}) 이 아님 (지금: {s['RCV_NM'] or '—'} {s['RCV_CD'] or ''})"
+        return False, f"작성 화면의 소득자가 {p.name}({want['no'] or '학번 없음'}) 이 아님 (지금: {s['RCV_NM'] or '—'} {s['RCV_CD'] or ''})"
 
     found = person.search(page, frame, p.name, p.student_no, log, wait=wait, messages=messages, tab=job.tab, auto_pick=auto_pick)
     result.lines.extend(found.lines())
+    if auto_pick and not found.picked and _not_found(found.pick_note) and not person_ok()[0]:
+        found = _recheck_student_no(page, frame, job, index, log, wait, messages, result, want) or found
     ok, why = _ask_until(person_ok, ask, lambda w: ("%d. %s — 소득자 팝업에서 %s 을(를) 고르고 [확인] 을 누른 뒤 [계속] 을 누르세요.\n(%s)"
                                                     % (index + 1, p.name, p.name, found.pick_note or found.note or w)), wait)
     if not ok:
@@ -936,6 +960,41 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         result.lines.extend("! " + item for item in result.review)
         return True, "임시저장 — 신청 전 확인: " + " / ".join(result.review)
     return True, "임시저장"
+
+
+def _not_found(pick_note: str) -> bool:
+    """명단 학번과 같은 줄이 목록에 없었다(아무것도 고르지 않음) — 학번이 틀렸을 수 있다. 여럿 · 이름 다름 · 팝업 실패는 아니다."""
+    note = str(pick_note or "")
+    return note.endswith("인 행이 없음") or note == "검색 결과가 없음" or note.startswith("명단에 학번이 없어")
+
+
+def _recheck_student_no(page, frame, job: Job, index: int, log, wait, messages: list[str], result: PersonResult,
+                        want: dict):
+    """명단 학번으로 소득자를 못 찾았을 때 — 그 학생 개별증빙 PDF 의 학번으로 다시 찾는다(담당자 요청 2026-10-19: "오류가 생기면
+    개별증빙에 있는 자료로 지급대상의 정보를 재확인"). 명단은 담당자가 첨부서류를 보고 옮긴 것이라 옮기다 틀릴 수 있다.
+
+    고르는 것은 person.search 그대로 — 목록의 학번이 그 후보와 같고 **이름도 명단과 같은** 줄이 하나일 때만(person.match). 그래서 PDF 에
+    다른 학생 학번이 섞여 있어도 엉뚱한 사람을 고르지 않는다. 명단의 다른 학생 학번은 후보에서 뺀다. 학번(인적정보) 탭에서만 —
+    참여인력 사번(6자리)은 PDF 의 다른 숫자와 가르기 어렵다. 고르면 '신청 전 확인할 것' 에 남긴다(명단을 고치시라고)."""
+    if job.tab != person.TAB_STUDENT:
+        return None
+    p = job.people[index]
+    others = {q.student_no for i, q in enumerate(job.people) if i != index and q.student_no}
+    numbers, read = student_numbers_in_files(job.person_files.get(index, []))
+    candidates = [n for n in numbers if n != p.student_no and n not in others][:3]
+    log("소득자 재확인: 명단 학번 %s 로 못 찾음 — 개별증빙 PDF %d개(글자 있는 것)에서 학번 후보 %d개"
+        % (p.student_no or "(없음)", read, len(candidates)))
+    for no in candidates:
+        again = person.search(page, frame, p.name, no, log, wait=wait, messages=messages, tab=job.tab, auto_pick=True)
+        if again.picked:
+            want["no"] = no
+            result.lines.extend(again.lines())
+            item = (f"명단 학번({p.student_no or '없음'})으로는 소득자를 찾지 못해 개별증빙의 학번 {no} 로 골랐습니다(이름도 같음) — "
+                    "명단 엑셀의 학번을 고치세요")
+            result.review.append(item)
+            log("신청 전 확인: %d. %s — %s" % (index + 1, p.name, item))
+            return again
+    return None
 
 
 def _use_document_account(frame, job: Job, index: int, s: dict, log, ask: Ask, wait,

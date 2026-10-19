@@ -27,7 +27,63 @@ from .rules import load_rules
 from .schema import EVIDENCE_KINDS, EXP_CATEGORIES, SETTLE_METHODS
 
 
-def build_prompt(folder: str, json_path: str, rules: str | None = None) -> str:
+EXCEL_CHARS = 6000           # 프롬프트에 넣는 엑셀 글자 상한 — 명령 줄 길이(윈도우 32,767자) 안에 넉넉히
+EXCEL_SUFFIXES = (".xlsx", ".xlsm")
+
+
+def excel_digest(folder: str, limit: int = EXCEL_CHARS) -> tuple[str, list[str]]:
+    """폴더 바로 아래 엑셀의 셀 값을 앱이 먼저 읽어 글로 만든다(openpyxl — AI 를 쓰지 않는다). (글, 엑셀과 이름이 같은 PDF 들).
+
+    담당자 요청(2026-10-19): 지급내역 · 구매의뢰서처럼 PDF 의 원본이 엑셀이면 엑셀을 먼저 읽는 것이 사용량이 적다. AI 가 PDF 를 그림으로
+    읽으면 쪽마다 사용량이 들지만, 셀 값 글은 몇천 자다. 그래서 엑셀 내용을 프롬프트에 넣고, 같은 이름의 PDF(엑셀을 찍은 것)는 엑셀과
+    다른 점을 볼 때만 읽게 한다. 옛 .xls 는 openpyxl 이 못 읽어 AI 가 직접 읽는다."""
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return "", []
+    excels = [n for n in names if n.lower().endswith(EXCEL_SUFFIXES) and not n.startswith(("~$", "."))]
+    if not excels:
+        return "", []
+    try:
+        import openpyxl
+    except Exception:  # noqa: BLE001 — 엑셀 묶음이 없는 설치본이면 AI 가 직접 읽는다
+        return "", []
+    stems = {os.path.splitext(n)[0].replace(" ", "") for n in excels}
+    twins = [n for n in names if n.lower().endswith(".pdf") and os.path.splitext(n)[0].replace(" ", "") in stems]
+    out: list[str] = []
+    size = 0
+    for name in excels:
+        try:
+            book = openpyxl.load_workbook(os.path.join(folder, name), read_only=True, data_only=True)
+        except Exception:  # noqa: BLE001 — 열려 있거나 깨진 파일
+            continue
+        try:
+            for sheet in book.worksheets[:3]:
+                out.append(f"=== {name} · 시트 '{sheet.title}' ===")
+                for r, row in enumerate(sheet.iter_rows(values_only=True), 1):
+                    cells = [str(v).strip() for v in row if v is not None and str(v).strip()]
+                    if not cells:
+                        continue
+                    line = f"{r}행: " + " | ".join(c.replace("\n", " ")[:60] for c in cells)
+                    size += len(line) + 1
+                    if size > limit:
+                        out.append("(이하 줄임 — 필요하면 엑셀 파일을 직접 읽으세요)")
+                        return "\n".join(out), twins
+                    out.append(line)
+        finally:
+            book.close()
+    return "\n".join(out), twins
+
+
+def build_prompt(folder: str, json_path: str, rules: str | None = None, excel: tuple[str, list[str]] | None = None) -> str:
+    text, twins = excel or ("", [])
+    excel_part = ""
+    if text:
+        excel_part = (
+            "[엑셀 내용 — 앱이 미리 읽음]\n"
+            "아래는 폴더 바로 아래 엑셀 파일의 셀 값입니다. 이 엑셀 파일은 다시 열지 말고 아래 글을 먼저 쓰세요.\n"
+            + (("이 PDF 는 같은 이름의 엑셀을 찍은 것이니 엑셀과 다른 점을 확인할 때만 읽으세요: " + ", ".join(twins) + "\n") if twins else "")
+            + text + "\n\n")
     return (
         "당신은 대학 사업단의 ERP '일반청구' 작성을 돕는 도구입니다.\n"
         "'" + folder + "' 폴더 바로 아래의 지출 자료 파일을 모두 읽으세요(하위 폴더는 보지 마세요).\n"
@@ -52,7 +108,8 @@ def build_prompt(folder: str, json_path: str, rules: str | None = None) -> str:
         "}\n"
         "위 JSON 파일 하나만 저장하고 다른 파일은 만들지 마세요. 폴더 안의 파일을 고치거나 지우지 마세요. "
         "반드시 한국어로 작성하세요.\n\n"
-        "[규칙]\n" + (rules if rules is not None else load_rules())
+        + excel_part
+        + "[규칙]\n" + (rules if rules is not None else load_rules())
     )
 
 
@@ -81,7 +138,7 @@ class ClaudeCliExtractor:
         tmp = tempfile.mkdtemp(prefix="cl_")
         json_path = os.path.join(tmp, "claim.json")
         cli_args = [
-            "-p", build_prompt(folder, json_path, rules),
+            "-p", build_prompt(folder, json_path, rules, excel_digest(folder)),
             "--output-format", "json",
             "--permission-mode", "acceptEdits",
             "--allowedTools", "Read,Glob,Grep,Write,Edit,Bash,PowerShell",

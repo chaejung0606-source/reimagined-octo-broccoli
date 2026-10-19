@@ -844,6 +844,19 @@ class ClaimPage(QWidget):
         if self._running or self._available is not True:
             return
         rows = self._unread_rows()
+        # '지급내역' 엑셀이 있는 폴더는 명단 청구(장학금 · 혁신인재지원금)일 가능성이 크다 — 그 종류는 AI 없이 엑셀에서 바로 읽는다.
+        # 일반으로 두면 AI 가 그 엑셀을 찍은 PDF 까지 읽어 사용량이 많이 든다(담당자 요청 2026-10-19: 원본이 엑셀이면 엑셀을 먼저).
+        rosters = [i for i in rows if kinds.roster_excels(self._dirs[i])]
+        if rosters:
+            names = "\n".join(f"· {os.path.basename(self._dirs[i])} — {kinds.roster_excels(self._dirs[i])[0]}" for i in rosters[:6])
+            answer = QMessageBox.question(
+                self, "지급내역 엑셀이 있는 폴더",
+                f"아래 {len(rosters)}개 폴더에는 지급내역 엑셀이 있습니다.\n{names}\n\n"
+                "장학금 · 혁신인재지원금이면 표 위 '청구 종류' 를 바꾸세요 — AI 없이 엑셀에서 바로 읽습니다.\n"
+                "[예] 이 폴더들은 AI 로 읽지 않고 건너뜀 · [아니요] 그래도 AI 로 읽기",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if answer == QMessageBox.Yes:
+                rows = [i for i in rows if i not in rosters]
         if not rows:
             return
         if self._backend_state == ai.NO_LOGIN:

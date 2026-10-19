@@ -76,9 +76,27 @@ def uses_roster(key: str) -> bool:
 INNOVATION_WORDS = ("혁신인재", "진행요원")
 
 
+ROSTER_EXCEL_WORD = "지급내역"     # 장학금 · 혁신인재지원금 명단 엑셀 이름에 늘 든 말(2026학년도 (가)형 근로장학금 지급내역.xlsx)
+
+
+def roster_excels(folder: str) -> list[str]:
+    """폴더 바로 아래의 '지급내역' 엑셀 이름들 — 명단 청구의 원본 자료. AI 로 PDF 를 읽기 전에 이것부터 본다."""
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return []
+    return [n for n in names if n.lower().endswith(EXCEL_SUFFIXES) and not n.startswith(("~$", "."))
+            and ROSTER_EXCEL_WORD in n.replace(" ", "")]
+
+
 def roster_kind(folder: str) -> str:
     """명단 폴더가 장학금인지 혁신인재지원금인지 — 명단 엑셀 이름 → 폴더 이름 → 위 폴더 이름(세 칸까지) 순으로
     '혁신인재' 나 '장학금' 이 든 첫 이름을 따른다. 둘 다 든 이름('4. 장학금 및 혁신인재지원금' 같은 묶음 폴더)은 건너뛴다. 못 정하면 장학금."""
+    return named_kind(folder) or SCHOLARSHIP
+
+
+def named_kind(folder: str) -> str:
+    """roster_kind 와 같은 순서로 이름에서만 정한다 — 이름에 '장학금' · '혁신인재' · '진행요원' 이 없으면 ''."""
     try:
         excels = sorted(n for n in os.listdir(folder) if n.lower().endswith(EXCEL_SUFFIXES) and not n.startswith(("~$", ".")))
     except OSError:
@@ -95,12 +113,20 @@ def roster_kind(folder: str) -> str:
         scholarship = "장학금" in name or "근로장학" in name
         if innovation != scholarship:
             return INNOVATION if innovation else SCHOLARSHIP
-    return SCHOLARSHIP
+    return ""
 
 
 def guess(folder: str) -> str:
-    """'자동' 으로 넣었을 때의 종류. 확실한 모양(명단 폴더)만 알아보고 나머지는 일반 — 담당자가 표에서 바꿀 수 있다."""
-    return roster_kind(folder) if looks_like_scholarship(folder) else GENERAL
+    """'자동' 으로 넣었을 때의 종류. 확실한 모양(명단 폴더)만 알아보고 나머지는 일반 — 담당자가 표에서 바꿀 수 있다.
+
+    공통/개별 하위 폴더가 없어도 '지급내역' 엑셀이 있고 이름(엑셀 · 폴더 · 위 폴더)에 장학금 · 혁신인재지원금 말이 있으면 명단 청구로 본다
+    (담당자 요청 2026-10-19: 원본이 엑셀이면 엑셀을 먼저). 그런 폴더가 일반으로 들어가 AI 가 PDF 를 읽은 적이 있다(2026-10-13 (나)형 TA).
+    '지원내역' (프로그램참여지원비 · 재직자 교육 지원)이나 이름에 그 말이 없는 '자문료 지급내역' 은 일반청구라 그대로 둔다."""
+    if looks_like_scholarship(folder):
+        return roster_kind(folder)
+    if roster_excels(folder):
+        return named_kind(folder) or GENERAL
+    return GENERAL
 
 
 def resolve(chosen: str, folder: str) -> str:

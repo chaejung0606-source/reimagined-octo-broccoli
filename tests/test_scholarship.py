@@ -895,6 +895,59 @@ def _mismatch_job(tmp_path, pdf_lines=None):
     return scholarship.load_job(str(folder))
 
 
+def test_student_numbers_are_read_from_person_pdfs(tmp_path):
+    pdf = _text_pdf(tmp_path / "a.pdf", "ID 202600009", "Again 202600009", "Bank 110-594-395796", "Date 20261019", "Other 202600001")
+    numbers, read = scholarship.student_numbers_in_files([pdf])
+    assert read == 1 and numbers == ["202600009", "202600001"]           # 많이 나온 것부터 · 날짜(8자리) · 계좌는 아님
+
+
+def test_person_not_found_by_roster_number_is_rechecked_with_document_number(monkeypatch, tmp_path):
+    """명단 학번으로 소득자를 못 찾으면 개별증빙의 학번으로 다시 찾는다(담당자 요청 2026-10-19). 고르면 신청 전 확인에 남긴다."""
+    job = _mismatch_job(tmp_path, ["Student 202600009"])
+    frame = FakeForm(account="110594395796")
+    _patch_popups(monkeypatch, frame)
+    searched = []
+
+    def fake_search(page, fr, name, no, log, wait=None, messages=None, tab=None, auto_pick=True):
+        searched.append(no)
+        if no == "202600009":                                          # ERP 에 있는 진짜 학번 — 이름도 같다
+            frame.pick_person(name, no)
+            return person.PersonReport(ok=True, name=name, student_no=no, picked=True, chosen_no=no, pick_note="학번 일치")
+        return person.PersonReport(ok=True, name=name, student_no=no, rows=1, pick_note=f"1행 중 학번 {no} 인 행이 없음")
+
+    monkeypatch.setattr(person, "search", fake_search)
+    asked = []
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or False,
+                             wait=lambda s: None, dry_run=False)
+    assert searched == ["202600001", "202600009"] and asked == []
+    assert report.saved == 1 and frame.saved[0]["RCV_CD"] == "202600009"
+    assert any("개별증빙의 학번 202600009 로 골랐습니다" in item for item in report.review_items())
+
+
+def test_person_recheck_skips_numbers_of_other_students_and_asks_when_nothing_fits(monkeypatch, tmp_path):
+    """개별증빙에 명단의 다른 학생 학번만 있으면 다시 찾지 않고 사람에게 — 여럿 · 이름 다름이면 처음부터 재확인하지 않는다."""
+    folder = tmp_path / "건"
+    folder.mkdir()
+    make_ga(folder / "명단.xlsx")
+    (folder / "개별증빙").mkdir()
+    _text_pdf(folder / "개별증빙" / "가나다 신청서.pdf", "Member 202600002")
+    job = scholarship.load_job(str(folder))
+    job.selected = [True, False]
+    frame = FakeForm()
+    _patch_popups(monkeypatch, frame)
+    searched = []
+
+    def fake_search(page, fr, name, no, log, wait=None, messages=None, tab=None, auto_pick=True):
+        searched.append(no)
+        return person.PersonReport(ok=True, name=name, student_no=no, rows=1, pick_note=f"1행 중 학번 {no} 인 행이 없음")
+
+    monkeypatch.setattr(person, "search", fake_search)
+    asked = []
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: asked.append(m) or False,
+                             wait=lambda s: None, dry_run=False)
+    assert searched == ["202600001"] and report.saved == 0 and asked and "소득자" in asked[0]
+
+
 def test_account_mismatch_puts_the_document_account_then_presses_owner_check(monkeypatch, tmp_path):
     """담당자 결정(2026-10-14): ERP 계좌가 다르면 첨부서류의 계좌를 넣고, 앱이 [예금주조회] 를 눌러 '성공' 이면 이어 간다."""
     job = _mismatch_job(tmp_path, ["Account 110-594-395796"])
@@ -1112,6 +1165,25 @@ def test_kind_guess_recognizes_scholarship_folder_shape(tmp_path):
     assert kinds.guess(str(sch_dir)) == kinds.SCHOLARSHIP
     (sch_dir / "~$명단.xlsx").write_bytes(b"x")                  # 엑셀이 열려 있을 때 생기는 임시 파일은 엑셀로 치지 않는다
     assert kinds.looks_like_scholarship(str(sch_dir))
+
+
+def test_kind_guess_reads_payment_excel_without_evidence_folders(tmp_path):
+    """공통/개별 폴더가 없어도 '지급내역' 엑셀 + 장학금 · 혁신인재지원금 이름이면 명단 청구 — AI 가 PDF 를 읽지 않게(2026-10-19)."""
+    from claim_downloader.claims import kinds
+
+    def folder(name, excel):
+        d = tmp_path / name
+        d.mkdir(parents=True)
+        (d / excel).write_bytes(b"x")
+        (d / (excel.rsplit(".", 1)[0] + ".pdf")).write_bytes(b"%PDF")
+        return str(d)
+
+    assert kinds.guess(folder("9월", "2026학년도 (나)형 근로장학금 지급내역.xlsx")) == kinds.SCHOLARSHIP
+    assert kinds.guess(folder("소학회/9월", "진행요원비(소학회 회장) 혁신인재지원금 지급내역.xlsx")) == kinds.INNOVATION
+    # 이름에 그 말이 없는 지급내역(자문료) · '지원내역'(프로그램참여지원비)은 일반청구라 그대로
+    assert kinds.guess(folder("전문가/자문", "자문료 지급내역.xlsx")) == kinds.GENERAL
+    assert kinds.guess(folder("학회", "(양식) 프로그램참여지원비 지원내역.xlsx")) == kinds.GENERAL
+    assert kinds.roster_excels(str(tmp_path / "9월")) == ["2026학년도 (나)형 근로장학금 지급내역.xlsx"]
 
 
 def test_kind_resolve_honors_choice_and_refuses_unready(tmp_path):

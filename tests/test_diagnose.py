@@ -79,3 +79,30 @@ def test_grids_are_listed_with_columns_and_masked_first_row():
     text = diagnose.format_report(windows, when="x")
     assert "    그리드: 행 3" in text
     assert "\\d{6,}" in diagnose._GRID_JS                    # 긴 숫자(계좌·사업자번호)는 가린다
+
+
+def test_menu_text_without_link_is_marked_pressable():
+    """메뉴 · 탭 글자(li · span — a · button 이 아님)도 적는다 — 로그인 뒤 메뉴 이동을 실측하려고(2026-10-19)."""
+    line = diagnose._element_line(_el(tag="span", type="", id="menu_1", text="과제관리", pointer=True))
+    assert "'과제관리'" in line and "#menu_1" in line and "[누를 수 있음]" in line
+
+
+def test_probe_finds_menu_text_in_a_real_browser():
+    """실제 Chromium 이 있을 때만 — 손가락 커서 글자는 가장 안쪽 하나만, 긴 묶음 · 링크 안의 글자는 빼고."""
+    import os
+    import pytest
+    sync_api = pytest.importorskip("playwright.sync_api")
+    html = ("<ul id='gnb' style='cursor:pointer'><li id='m1'><span>과제관리</span><ul><li id='m11'>과제정보</li></ul></li></ul>"
+            "<div style='cursor:pointer' class='tab'>청구서</div><a href='#'><span>목록</span></a><span>보통 글자</span>")
+    try:
+        with sync_api.sync_playwright() as p:
+            path = "/opt/pw-browsers/chromium"
+            browser = p.chromium.launch(executable_path=path if os.path.exists(path) else None)
+            page = browser.new_page()
+            page.set_content(html)
+            got = page.evaluate(diagnose._PROBE_JS)["elements"]
+            browser.close()
+    except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
+        pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
+    pressable = {(e["tag"], e["id"], e["text"]) for e in got if e.get("pointer")}
+    assert pressable == {("span", "", "과제관리"), ("li", "m11", "과제정보"), ("div", "", "청구서")}, pressable

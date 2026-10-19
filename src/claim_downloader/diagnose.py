@@ -48,8 +48,9 @@ _PROBE_JS = r"""() => {
   };
   const SAFE_TYPES = ['', 'text', 'number', 'tel', 'search', 'email', 'url', 'date', 'datetime-local',
                       'month', 'week', 'time', 'hidden', 'button', 'submit', 'reset', 'image'];
-  const out = [];
+  const out = [], picked = new Set();
   document.querySelectorAll('input,select,textarea,button,a,[role=button],[onclick]').forEach(e => {
+    picked.add(e);
     const tag = e.tagName.toLowerCase();
     const type = (e.getAttribute('type') || '').toLowerCase();
     let value = '', options = null;
@@ -81,6 +82,21 @@ _PROBE_JS = r"""() => {
       href: tag === 'a' ? (e.getAttribute('href') || '') : '',
       disabled: !!e.disabled, readonly: !!e.readOnly, visible: visible(e),
     });
+  });
+  // 메뉴 · 탭 — a · button · onclick 속성 없이 스크립트로만 누르는 글자(li · span · div …). 손가락 커서(cursor: pointer)로 알아본다.
+  // 로그인 뒤 메뉴(과제관리 → 과제정보 → 청구서)를 앱이 누르려면 그 글자와 id · class 를 먼저 알아야 한다(담당자 허락 2026-10-19, 실측 전).
+  // 겹친 요소는 가장 안쪽(글자 든 손가락 자식이 없는 것)만 적는다. 글자가 긴 것(메뉴 묶음 전체)도 뺀다.
+  const pointer = e => { try { return getComputedStyle(e).cursor === 'pointer'; } catch (err) { return false; } };
+  let pointers = 0;
+  document.querySelectorAll('li,span,div,td,th,img,em,strong,b,p,dt,dd,label,i,font,ul').forEach(e => {
+    if (pointers >= 300 || picked.has(e) || e.closest('a,button,[role=button],[onclick]') || !pointer(e)) return;
+    const t = txt(e) || e.getAttribute('alt') || e.getAttribute('title') || '';
+    if (!t || t.length > 30) return;
+    if (Array.from(e.children).some(c => pointer(c) && txt(c))) return;      // 글자 든 손가락 자식이 있으면 묶음 — 자식을 적는다
+    pointers += 1;
+    out.push({tag: e.tagName.toLowerCase(), type: '', id: e.id || '', name: '',
+              cls: (typeof e.className === 'string' ? e.className : '').trim(), label: '', text: t, value: '', options: null,
+              onclick: '', href: '', disabled: false, readonly: false, visible: visible(e), pointer: true});
   });
   return {title: document.title || '', elements: out};
 }"""
@@ -210,7 +226,8 @@ def _element_line(el: dict) -> str:
         parts.append("href=" + el["href"][:80])
     if el.get("cls"):
         parts.append("class=" + el["cls"][:60])
-    flags = [f for f, on in (("비활성", el.get("disabled")), ("읽기전용", el.get("readonly"))) if on]
+    flags = [f for f, on in (("비활성", el.get("disabled")), ("읽기전용", el.get("readonly")),
+                             ("누를 수 있음", el.get("pointer"))) if on]
     if flags:
         parts.append("[" + " · ".join(flags) + "]")
     return "  ".join(parts)
@@ -260,6 +277,7 @@ def format_report(windows: list[dict], when: str | None = None) -> str:
         f"COSS 업무데스크 화면 구조  ({when})",
         "읽기만 했습니다. 아무것도 누르거나 넣지 않았습니다. 비밀번호 칸의 값은 기록하지 않습니다.",
         "보이는 요소를 먼저, 숨은 요소는 뒤에 '[숨김]' 으로 적습니다.",
+        "a · button 이 아닌데 손가락 커서가 뜨는 글자(메뉴 · 탭)는 '[누를 수 있음]' 으로 적습니다.",
         "",
     ]
     if not windows:

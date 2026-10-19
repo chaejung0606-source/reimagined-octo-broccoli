@@ -98,6 +98,30 @@ def test_prompt_names_folder_json_and_rules(tmp_path):
     assert "폴더 안의 파일을 고치거나 지우지 마세요" in prompt
 
 
+def test_excel_is_read_by_the_app_and_put_in_the_prompt(tmp_path):
+    """원본이 엑셀이면 앱이 셀 값을 먼저 읽어 프롬프트에 넣고, 같은 이름의 PDF 는 다를 때만 보게 한다(담당자 요청 2026-10-19)."""
+    openpyxl = pytest.importorskip("openpyxl")
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "생협"
+    sheet["A1"] = "담당자"
+    sheet.append([])
+    sheet.append(["연번", "품명", "수량", "금액"])
+    sheet.append([1, "A4 용지", 3, 51900])
+    book.save(tmp_path / "사무용품 구매의뢰.xlsx")
+    (tmp_path / "사무용품 구매의뢰.pdf").write_bytes(b"%PDF")
+    (tmp_path / "세금계산서.pdf").write_bytes(b"%PDF")
+    (tmp_path / "~$사무용품 구매의뢰.xlsx").write_bytes(b"x")             # 엑셀이 열려 있을 때의 임시 파일
+    text, twins = extract.excel_digest(str(tmp_path))
+    assert "=== 사무용품 구매의뢰.xlsx · 시트 '생협' ===" in text and "4행: 1 | A4 용지 | 3 | 51900" in text
+    assert twins == ["사무용품 구매의뢰.pdf"]
+    prompt = extract.build_prompt(str(tmp_path), str(tmp_path / "claim.json"), "규칙 ABC", (text, twins))
+    assert "[엑셀 내용 — 앱이 미리 읽음]" in prompt and "사무용품 구매의뢰.pdf" in prompt and prompt.endswith("[규칙]\n규칙 ABC")
+    short, _ = extract.excel_digest(str(tmp_path), limit=20)
+    assert short.endswith("(이하 줄임 — 필요하면 엑셀 파일을 직접 읽으세요)")
+    assert extract.excel_digest(str(tmp_path / "없음")) == ("", [])
+
+
 def test_extractor_registry_and_missing_claude(monkeypatch):
     assert extract.keys() == ["claude-cli"]
     assert isinstance(extract.get("없는키"), extract.ClaudeCliExtractor)
