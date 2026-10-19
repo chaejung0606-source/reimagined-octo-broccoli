@@ -20,6 +20,7 @@ import re
 import time
 import traceback
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from .. import settings
@@ -183,6 +184,30 @@ def clean_title(title: str, rules: dict[str, str] | None = None) -> str:
     return re.sub(r"\s+", " ", out).strip()
 
 
+TEST_PREFIX = "[시험] "
+
+
+@contextmanager
+def marked(job: "Job"):
+    """시험이면 넣는 동안만 대표적요 앞에 [시험] 을 붙인다 — ERP 결의서내역에서 시험 청구서를 바로 알아보고 지우게, 그리고 이미 올린
+    진짜 청구서와 대표적요가 같아지지 않게(담당자 요청 2026-10-19: 이미 올린 폴더로 시험). 화면의 대표적요 칸은 그대로 둔다.
+
+    결의번호도 시험 것과 진짜 것을 따로 둔다 — 진짜로 넣은 청구서(job.req_cnt)가 작성 화면에 떠 있을 때 시험 줄이 그 청구서에
+    '이어서' 들어가면 안 된다(sheet_owner 가 결의번호로 이 폴더의 청구서를 알아본다)."""
+    original, real_req = job.main_summary, job.req_cnt
+    test = job.test_mode
+    if test:
+        if not original.startswith(TEST_PREFIX.strip()):
+            job.main_summary = TEST_PREFIX + original
+        job.req_cnt = job.test_req_cnt
+    try:
+        yield job
+    finally:
+        if test:
+            job.test_req_cnt, job.req_cnt = job.req_cnt, real_req
+        job.main_summary = original
+
+
 def main_summary(title: str, rules: dict[str, str] | None = None) -> str:
     rules = rules or parse_rules(RULES_DEFAULT)
     return _render(rules.get("대표적요", "02_{제목}"), {"제목": clean_title(title, rules)})
@@ -215,6 +240,9 @@ class Job:
     warnings: list[str] = field(default_factory=list)
     kind: str = kinds.SCHOLARSHIP          # 장학금 · 혁신인재지원금 — 비목 · 규칙 파일이 갈린다(Spec)
     req_cnt: str = ""                       # 이 폴더를 넣은 ERP 청구서의 결의번호(#REQ_CNT) — 첫 [저장] 뒤에 생긴다
+    project_no: str = ""                    # 이 폴더를 넣을 ERP 과제 — 일반청구 화면에서 폴더를 넣을 때 고른다(담당자 2026-10-19)
+    test_mode: bool = False                 # 시험 — 이미 올린 폴더로 시험할 때(중복 확인 건너뜀 · 대표적요 앞 [시험] · 기록 안 남김)
+    test_req_cnt: str = ""                  # 시험으로 넣은 청구서의 결의번호 — 진짜 것(req_cnt)과 섞지 않는다(marked)
 
     @property
     def spec(self) -> Spec:
@@ -255,10 +283,17 @@ class Job:
             out.append(f"개별 적요가 같은 줄이 둘 이상입니다: {text} — {self.spec.rules_file} 로 구분되게 고치세요")
         return out
 
+    def _project_text(self) -> str:
+        if not self.project_no:
+            return "—"
+        from .. import navigate                 # 과제현황에서 읽어 둔 과제명 · 기간 (없으면 번호만)
+        return navigate.label_of(self.project_no)
+
     def summary_lines(self) -> list[str]:
         chosen = self.chosen()
         total = sum(self.people[i].amount or 0 for i in chosen)
-        return [f"종류: {self.spec.name} (비목 {self.spec.category})",
+        return [f"종류: {self.spec.name} (비목 {self.spec.category})" + (" · 시험(대표적요 앞에 [시험])" if self.test_mode else ""),
+                f"ERP 과제: {self._project_text()}",
                 f"폴더: {self.folder}", f"명단: {os.path.basename(self.roster.path)} — {self.roster.title or '제목 없음'}",
                 f"대표적요: {self.main_summary}", f"지급예정년월: {self.pay_ym} · 소득자 구분: {self.tab}",
                 f"넣을 사람 {self.count_text(chosen)} / 명단 {self.count_text(list(range(len(self.people))))} · 합계 {total:,}원",
@@ -688,10 +723,15 @@ def sheet_owner(job: Job, req_cnt: str, rows: list[str], appr: str = "") -> tupl
     if not req_cnt and (appr or "").strip() != "40":
         return True, "새 청구서"
     from . import record
-    known = job.req_cnt or str((record.previous(job.folder) or {}).get("req_cnt") or "")
+    # 앱 기록의 결의번호는 진짜로 넣은 것 — 시험일 때는 이번 시험에서 저장한 결의번호(marked 가 바꿔 넣은 job.req_cnt)만 본다
+    known = job.req_cnt or ("" if job.test_mode else str((record.previous(job.folder) or {}).get("req_cnt") or ""))
     if req_cnt and known and req_cnt == known:
         return True, f"이 폴더의 청구서(결의번호 {req_cnt})에 이어서"
     main = re.sub(r"\s+", "", job.main_summary or "")
+    test_mark = re.sub(r"\s+", "", TEST_PREFIX)
+    if not job.test_mode and any(test_mark in re.sub(r"\s+", "", t) for t in rows):
+        # 시험 청구서의 줄 '[시험] 02_…' 에도 진짜 대표적요 '02_…' 가 들어 있다 — 진짜 줄을 시험 청구서에 잇지 않는다
+        return False, f"작성 화면이 시험 청구서입니다(결의번호 {req_cnt or '?'} · 청구내역 {len(rows)}줄)"
     if rows and main and all(main in re.sub(r"\s+", "", t) for t in rows):
         return True, f"이 폴더의 청구서(청구내역 {len(rows)}줄의 적요가 대표적요와 같음)에 이어서"
     return False, f"작성 화면이 이미 저장된 다른 청구서입니다(결의번호 {req_cnt or '?'} · 청구내역 {len(rows)}줄)"
@@ -1210,7 +1250,7 @@ def record_warning(job: Job) -> str:
             shown = ", ".join(s.get("name", "") for s in again[:8]) + (" …" if len(again) > 8 else "")
             parts.append(f"이번에 체크한 사람 중 {len(again)}명은 이미 임시저장했습니다: {shown}\n"
                          "  ERP 청구내역에 그대로 있으면 다시 넣지 마세요 — 두 번 들어갑니다. [청구내역 대조] 로 확인할 수 있습니다.\n"
-                         "  그 청구서를 ERP 에서 지우고 다시 넣는 것이면 [예] 를 누르면 됩니다.")
+                         "  그 청구서를 ERP 에서 지우고 다시 넣는 것이면 그대로 이어 가면 됩니다.")
         old_kind = before.get("kind", "")
         if old_kind and old_kind != job.spec.kind:
             parts.append(f"전에는 '{names.get(old_kind, old_kind)}' 으로 넣었는데 지금은 '{job.spec.name}' 입니다 — "

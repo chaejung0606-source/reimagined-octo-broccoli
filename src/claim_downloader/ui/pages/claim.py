@@ -8,8 +8,9 @@
     → ERP 에서 사람이 검토하고 [신청]
 
 담당자 결정(2026-10-13): 내역 작성 후 임시저장까지 앱이, 그 뒤는 사람이. 기본은 '미리 보기만'(dry-run) — 체크를
-풀어야 실제로 넣는다. 신청·삭제·초기화는 코드가 절대 누르지 않는다(claims/form.py). 같은 폴더를 두 번 채우려
-하면 묻는다(claims/record.py).
+풀어야 실제로 넣는다. 신청·삭제·초기화는 코드가 절대 누르지 않는다(claims/form.py). 넣기 전에 그 폴더의 과제(폴더마다 고름)의
+ERP 결의서내역에서 대표적요가 같은 청구서를 찾아 있으면 묻는다 — 앱 기록(claims/record.py)은 결의서내역을 못 읽을 때만(담당자 요청 2026-10-19).
+[시험] 을 켜면 대표적요 앞에 [시험] 을 붙이고 그 확인과 기록을 건너뛴다(이미 올린 폴더로 시험).
 
 브라우저는 청구서 받기와 같은 스레드(app.session_worker)를 쓴다 — ERP 로그인은 한 번이면 된다.
 """
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -43,7 +45,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import ai, settings
+from ... import ai, navigate, settings
 from ...claims import kinds, record, rules, schema
 from ...claims import scholarship as sch
 from ...minutes.backends import claude_cli
@@ -75,6 +77,9 @@ ROW_STATUS = {
 GUIDE_START = "청구 종류를 고르고 지출 폴더를 추가하세요. 일반은 [내용 읽기], 장학금 · 혁신인재지원금은 바로 오른쪽에 학생 명단이 나옵니다."
 GUIDE_SCHOLARSHIP = ("학생 표를 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [ERP 에 넣기] 를 누르세요. "
                      "인건비 탭은 앱이 누릅니다.")
+# 새 청구서를 앱이 띄울 때(설정 auto_new_sheet, 기본) — 사람은 로그인만 하면 된다
+GUIDE_SCHOLARSHIP_AUTO = ("학생 표와 위의 과제를 확인한 뒤 [ERP 에 넣기] 를 누르세요. 그 과제의 결의서내역에 같은 청구서가 있는지 보고, "
+                          "새 청구서 · 인건비 탭은 앱이 띄웁니다. 이미 올린 폴더로 시험하려면 [시험] 을 켜세요.")
 GUIDE_READ = ("값을 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [미리 보기] 로 확인하세요. "
               "실제로 넣으려면 '미리 보기만' 체크를 풀고 [ERP 에 채우기].")
 NO_BACKEND = ("일반 폴더의 [내용 읽기] 는 Claude Code 가 필요합니다(장학금 · 혁신인재지원금은 AI 없이 됩니다). Claude Code 를 설치한 뒤 "
@@ -154,6 +159,7 @@ class ClaimPage(QWidget):
         self._problems: list[list[str]] = []
         self._kinds: list[str] = []                      # 폴더마다 청구 종류 (kinds.GENERAL · SCHOLARSHIP)
         self._jobs: list[sch.Job | None] = []            # 장학금 폴더의 명단 · 증빙
+        self._projects: list[str] = []                   # 폴더마다 ERP 과제번호 — 폴더를 넣을 때 고른다(담당자 2026-10-19)
         self._running = False
         self._erp_running = False                        # 장학금을 ERP 에 넣는 중 (브라우저 스레드)
         self._stopping = False
@@ -204,6 +210,7 @@ class ClaimPage(QWidget):
         b.scholarship_ask.connect(self._on_sch_ask)
         b.scholarship_done.connect(self._on_sch_done)
         b.sheet_checked.connect(self._on_sheet_checked)
+        b.projects_read.connect(self._refresh_projects)
         b.structure_saved.connect(self._on_structure_saved)
         b.failed.connect(self._on_browser_failed)
 
@@ -281,6 +288,60 @@ class ClaimPage(QWidget):
                 box.model().item(index).setEnabled(False)
         return box
 
+    @staticmethod
+    def _project_box() -> QComboBox:
+        """ERP 과제 고르기 칸 — 좁게 두고(과제번호 + 과제명 앞부분) 전체는 말풍선."""
+        box = QComboBox()
+        box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        box.setMinimumContentsLength(13)
+        return box
+
+    @staticmethod
+    def _last_project() -> str:
+        return str(getattr(settings.load(), "project_no", "") or settings.DEFAULT_PROJECT_NO)
+
+    @staticmethod
+    def _fill_project_box(box: QComboBox, selected: str) -> None:
+        box.blockSignals(True)
+        box.clear()
+        for no, text in navigate.choices(selected, short=True):
+            box.addItem(text, no)
+            box.setItemData(box.count() - 1, navigate.label_of(no), Qt.ToolTipRole)
+        index = box.findData(selected)
+        box.setCurrentIndex(index if index >= 0 else 0)
+        box.setToolTip("ERP 과제: " + navigate.label_of(str(box.currentData() or selected))
+                       + "\n보기는 로그인 뒤 메인화면 과제현황에서 읽은 과제 중 과제기간에 오늘이 든 것입니다.")
+        box.blockSignals(False)
+
+    def _refresh_projects(self) -> None:
+        """로그인 뒤 과제현황을 새로 읽었으면(worker.projects_read) 고르기 칸 둘을 다시 채운다 — 폴더에 붙은 과제는 그대로."""
+        self._fill_project_box(self.add_project, str(self.add_project.currentData() or self._last_project()))
+        self._show_row_project(self._current)
+
+    def _show_row_project(self, row: int) -> None:
+        if 0 <= row < len(self._projects):
+            self._fill_project_box(self.row_project, self._projects[row])
+            self.row_project.show()
+        else:
+            self.row_project.hide()
+
+    def _add_project_changed(self, _index: int) -> None:
+        no = str(self.add_project.currentData() or "")
+        self.add_project.setToolTip("ERP 과제: " + navigate.label_of(no))
+        if no and no != self._last_project():
+            settings.update(project_no=no)          # 마지막으로 고른 과제 — 로그인 뒤 그 과제의 청구서 화면으로 간다
+
+    def _row_project_changed(self, _index: int) -> None:
+        row = self._current
+        no = str(self.row_project.currentData() or "")
+        if self._loading_form or not no or not (0 <= row < len(self._projects)) or self.is_running():
+            return
+        self._projects[row] = no
+        self.row_project.setToolTip("ERP 과제: " + navigate.label_of(no))
+        if no != self._last_project():
+            settings.update(project_no=no)
+        self._refresh_row(row)
+
     def _build_drop_zone(self) -> QFrame:
         self.drop_zone = QFrame()
         self.drop_zone.setObjectName("dropZone")
@@ -290,7 +351,9 @@ class ClaimPage(QWidget):
         row.setSpacing(12)
         self.drop_art = Art("archive", 52)
         row.addWidget(self.drop_art, 0, Qt.AlignVCenter)
-        texts = QVBoxLayout()
+        self.drop_texts = QWidget()
+        texts = QVBoxLayout(self.drop_texts)
+        texts.setContentsMargins(0, 0, 0, 0)
         texts.setSpacing(1)
         hint = QLabel("여기에 지출 폴더를 끌어다 놓으세요")
         hint.setObjectName("cardTitle")
@@ -299,14 +362,26 @@ class ClaimPage(QWidget):
         detail = muted_label("폴더 1개 = 청구 1건. '자동' 은 폴더 모양과 이름으로 종류를 정합니다.")
         detail.setToolTip("명단 엑셀 + 공통·개별증빙 폴더가 있으면 장학금, 이름에 '혁신인재' 가 있으면 혁신인재지원금, 아니면 일반으로 봅니다.")
         texts.addWidget(detail)
-        row.addLayout(texts, 1)
+        row.addWidget(self.drop_texts, 1)
         kind_label = QLabel("청구 종류")
         kind_label.setObjectName("fieldLabel")
+        kind_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         row.addWidget(kind_label, 0, Qt.AlignVCenter)
         self.add_kind = self._kind_box(with_auto=True)
         self.add_kind.setToolTip("다음에 넣는 폴더의 청구 종류. 넣은 뒤에도 오른쪽 칸 위에서 바꿀 수 있습니다.")
         kind_label.setBuddy(self.add_kind)
         row.addWidget(self.add_kind, 0, Qt.AlignVCenter)
+        # ERP 과제 — 폴더를 넣을 때 고른다(담당자 2026-10-19: 설정이 아니라 여기서). 보기는 메인화면 과제현황에서 읽은 과제 중
+        # 과제기간에 오늘이 든 것만, 기본은 202408470003(navigate.choices). 마지막으로 고른 과제로 로그인 뒤 이동도 한다.
+        project_label = QLabel("과제")
+        project_label.setObjectName("fieldLabel")
+        project_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        row.addWidget(project_label, 0, Qt.AlignVCenter)
+        self.add_project = self._project_box()
+        self.add_project.currentIndexChanged.connect(self._add_project_changed)
+        project_label.setBuddy(self.add_project)
+        row.addWidget(self.add_project, 0, Qt.AlignVCenter)
+        self._fill_project_box(self.add_project, self._last_project())
         self.add_one_button = QPushButton("지출 폴더 추가")
         self.add_one_button.clicked.connect(self._add_one)
         self.add_parent_button = QPushButton("상위 폴더 추가")
@@ -413,6 +488,10 @@ class ClaimPage(QWidget):
         self.row_kind = self._kind_box(with_auto=False)
         self.row_kind.setToolTip("이 지출 폴더의 청구 종류")
         self.row_kind.currentIndexChanged.connect(self._row_kind_changed)
+        # 고른 폴더의 ERP 과제 — 넣은 뒤에도 여기서 바꾼다
+        self.row_project = self._project_box()
+        self.row_project.currentIndexChanged.connect(self._row_project_changed)
+        card.add_header_widget(self.row_project)
         card.add_header_widget(self.row_kind)
         self.form_stack = QStackedWidget()
         scroll = QScrollArea()
@@ -529,6 +608,14 @@ class ClaimPage(QWidget):
         self.dry_run.setToolTip("체크돼 있으면 ERP 에 넣지 않고 무엇을 넣을지만 보여 줍니다. 풀면 실제로 채웁니다 (저장·신청은 그래도 직접).")
         self.dry_run.toggled.connect(lambda _c: self._sync_buttons())
         row.addWidget(self.dry_run)
+        # 시험 — 이미 올린 폴더로 시험해 보려면 같은 대표적요가 ERP 에 이미 있다(담당자 요청 2026-10-19). 켜면 대표적요 앞에 [시험] 을
+        # 붙여 진짜 청구서와 구분하고, 넣기 전 ERP 중복 확인과 앱 이력 남기기를 건너뛴다. 앱을 다시 켜면 꺼진다(남겨 두지 않는다).
+        self.test_mode = QCheckBox("시험")
+        self.test_mode.setToolTip("이미 올린 폴더로 시험할 때 켭니다. 대표적요(일반은 적요) 앞에 [시험] 을 붙여 넣고,\n"
+                                  "ERP 결의서내역의 같은 청구서 확인과 앱의 넣은 기록 남기기를 건너뜁니다.\n"
+                                  "시험으로 임시저장한 청구서는 ERP 에서 직접 지우세요. 앱을 다시 켜면 꺼집니다.")
+        self.test_mode.toggled.connect(lambda _c: self._sync_buttons())
+        row.addWidget(self.test_mode)
         # 팝업(세금계산서·입금처)에서 결과가 하나로 확실하면 앱이 골라 [확인] 까지 — 애매하면 사람 (담당자 결정 2026-10-13)
         self.auto_pick = QCheckBox("팝업 자동 선택")
         self.auto_pick.setChecked(bool(settings.load().claim_auto_pick))
@@ -577,7 +664,7 @@ class ClaimPage(QWidget):
         running = self._running
         busy = running or self._erp_running
         can_edit = not busy
-        for widget in (self.add_one_button, self.add_parent_button, self.add_kind):
+        for widget in (self.add_one_button, self.add_parent_button, self.add_kind, self.add_project):
             widget.setEnabled(can_edit)
         self.platform.set_enabled_for_run(not running)
         self.clear_button.setEnabled(can_edit and bool(self._dirs))
@@ -592,6 +679,7 @@ class ClaimPage(QWidget):
         self.open_button.setVisible(not self._browser_open)
         self.open_button.setEnabled(not self._browser_busy)
         self.row_kind.setEnabled(can_edit and 0 <= self._current < len(self._dirs))
+        self.row_project.setEnabled(can_edit and not self._browser_busy and 0 <= self._current < len(self._dirs))
         dry = self.dry_run.isChecked()
         is_sch = kinds.uses_roster(self._kind(self._current)) and 0 <= self._current < len(self._dirs)
         if is_sch:
@@ -654,7 +742,9 @@ class ClaimPage(QWidget):
                     "payeeName": f"학생 {job.count_text(chosen)}" + (f" / 명단 {job.count_text(list(range(len(job.people))))}"
                                                                         if len(chosen) != len(job.people) else "")}
         kind_item = QTableWidgetItem(kinds.name_of(self._kind(row)))
-        kind_item.setToolTip(kinds.name_of(self._kind(row)) + " — " + kinds.find(self._kind(row)).hint)
+        project = self._projects[row] if row < len(self._projects) else ""
+        kind_item.setToolTip(kinds.name_of(self._kind(row)) + " — " + kinds.find(self._kind(row)).hint
+                             + (f"\nERP 과제: {navigate.label_of(project)}" if project else ""))
         self.table.setItem(row, COL_KIND, kind_item)
         for col, value in ((COL_SUMMARY, data.get("summary", "")), (COL_AMOUNT, _money(data.get("amount"))),
                            (COL_PAYEE, data.get("payeeName", ""))):
@@ -692,6 +782,7 @@ class ClaimPage(QWidget):
         self._problems.append([])
         self._kinds.append(kind)
         self._jobs.append(None)
+        self._projects.append(str(self.add_project.currentData() or self._last_project()))
         row = self.table.rowCount()
         self.table.setRowCount(row + 1)
         name = QTableWidgetItem(f"{os.path.basename(path)}  ·  {os.path.dirname(path)}")
@@ -729,7 +820,7 @@ class ClaimPage(QWidget):
         if self._erp_running:
             return
         self._dirs, self._status, self._data, self._problems = [], [], [], []
-        self._kinds, self._jobs = [], []
+        self._kinds, self._jobs, self._projects = [], [], []
         self._current = -1
         self._done_count = 0
         self.table.setRowCount(0)
@@ -769,6 +860,7 @@ class ClaimPage(QWidget):
         self.row_kind.blockSignals(True)
         self.row_kind.setCurrentIndex(max(self.row_kind.findData(kind), 0))
         self.row_kind.blockSignals(False)
+        self._show_row_project(row)
         if kinds.uses_roster(kind) and 0 <= row < len(self._jobs):
             self.form_stack.setCurrentWidget(self.scholarship_scroll)
             self.scholarship_panel.set_job(self._jobs[row])
@@ -778,7 +870,7 @@ class ClaimPage(QWidget):
             self.form_card.setEnabled(True)
             self._loading_form = False
             if not self.is_running():
-                self.guide.setText(GUIDE_SCHOLARSHIP)
+                self.guide.setText(GUIDE_SCHOLARSHIP_AUTO if settings.load().auto_new_sheet else GUIDE_SCHOLARSHIP)
             return
         self.form_stack.setCurrentIndex(0)
         self.form_card.title_label.setText("청구 내용")
@@ -976,40 +1068,43 @@ class ClaimPage(QWidget):
             QMessageBox.warning(self, "값이 모자랍니다", "오른쪽 칸을 채운 뒤 다시 누르세요.\n\n· " + "\n· ".join(missing))
             return
         dry_run = self.dry_run.isChecked()
-        if not dry_run:
-            before = record.previous(self._dirs[row])
-            if before and QMessageBox.question(
-                    self, "이미 채운 폴더",
-                    f"이 폴더는 {before.get('when')} 에 이미 채웠습니다 (적요 '{before.get('summary')}', "
-                    f"청구액 {_money(before.get('amount')) or '—'}).\n\n다시 채울까요?",
-                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
-                return
+        test = self.test_mode.isChecked()
+        project = self._projects[row] if row < len(self._projects) else self._last_project()
+        # 같은 청구서가 이미 있는지는 넣을 때 ERP 결의서내역에서 본다(session._duplicate_check) — 앱 기록은 그것을 못 읽을 때만
+        # (담당자 요청 2026-10-19: 앱에 넣은 이력보다 실제 ERP 내역이 먼저)
         lines = "\n".join("· " + line for line in schema.summary_lines(data))
         warn = ("\n\n확인: " + " · ".join(found)) if found else ""
+        where = (f"ERP 과제: {navigate.label_of(project)}\n"
+                 + ("시험 — 적요 앞에 [시험] 을 붙이고, ERP 의 같은 청구서 확인을 건너뜁니다. 끝나면 ERP 에서 지우세요.\n" if test else ""))
         answer = QMessageBox.question(
             self, "미리 보기" if dry_run else "ERP 에 채우기",
             (("무엇을 넣을지 확인만 합니다. ERP 에는 넣지 않습니다.\n\n" if dry_run
-              else "브라우저의 일반청구 작성 화면에 아래 값을 넣습니다. 입금처·첨부·저장·신청은 직접 합니다.\n\n")
+              else "그 과제의 결의서내역에 적요가 같은 청구서가 있는지 먼저 보고, 새 청구서 작성 화면에 아래 값을 넣습니다. "
+                   "입금처·첨부·저장·신청은 직접 합니다.\n\n" + where + "\n")
              + lines + warn + "\n\n진행할까요?"),
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if answer != QMessageBox.Yes:
             return
         self._fill_row = row
-        self.browser.fill_claim(dict(data), dry_run)
+        self._fill_test = test
+        self.browser.fill_claim(dict(data), dry_run, project_no=project, folder=self._dirs[row], test_mode=test)
 
     def _on_claim_filled(self, report) -> None:
         text = "\n".join(report.lines())
         self._append_log(text)
         row = getattr(self, "_fill_row", -1)
+        self.ask_banner.hide()
         if report.blocked:
-            self._set_state("화면 없음", "warning", report.blocked)
+            self._set_state("넣지 않음", "warning", report.blocked)
             QMessageBox.warning(self, "채우지 못했습니다", report.blocked)
+            self._sync_buttons()
             return
         if report.dry_run:
             QMessageBox.information(self, "미리 보기", text + "\n\n실제로 넣으려면 '미리 보기만' 체크를 풀고 다시 누르세요.")
             return
         if 0 <= row < len(self._dirs) and report.ok:
-            record.remember(self._dirs[row], self._data[row], kind=kinds.GENERAL)
+            if not getattr(self, "_fill_test", False):         # 시험으로 넣은 것은 기록하지 않는다
+                record.remember(self._dirs[row], self._data[row], kind=kinds.GENERAL)
             self._set_status(row, "filled")
             payee_ok = report.payee is not None and report.payee.ok
             payee_done = payee_ok and report.payee.picked
@@ -1182,6 +1277,8 @@ class ClaimPage(QWidget):
         self.scholarship_panel.apply_options()
         job = self._jobs[row]
         dry = self.dry_run.isChecked()
+        job.project_no = self._projects[row] if row < len(self._projects) else self._last_project()
+        job.test_mode = self.test_mode.isChecked()
         problems = job.problems()
         if not dry:
             if not self._browser_open:
@@ -1201,10 +1298,8 @@ class ClaimPage(QWidget):
                       "고친 뒤 [다시 읽기] 를 누르세요.\n\n그래도 이대로(그 파일 없이) 넣을까요?",
                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
-            warning = sch.record_warning(job)
-            if warning and QMessageBox.warning(self, "이미 넣은 적이 있습니다", warning + "\n\n그래도 넣을까요?",
-                                               QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
-                return
+            # 같은 청구서가 이미 있는지는 넣을 때 ERP 결의서내역에서 본다(session._duplicate_check, 담당자 요청 2026-10-19) —
+            # 앱 기록(sch.record_warning)은 결의서내역을 못 읽을 때만 노란 띠로 묻는다
         # 미리 보기는 ERP 를 건드리지 않으니 바로 결과 표를 보인다. 실제로 넣을 때만 같은 표로 한 번 더 묻는다.
         # 폴더마다 청구서 하나 — 앞 폴더를 끝내고 이어지는 폴더면 새 청구서를 띄우라고 먼저 말한다(앱은 넣기 전에 화면이 새 것인지 본다)
         waiting = [r for r in range(len(self._dirs)) if r != row and self._is_pending_roster(r)]
@@ -1297,7 +1392,7 @@ class ClaimPage(QWidget):
             QMessageBox.warning(self, "넣지 못했습니다", report.blocked)
         else:
             saved = [r.index for r in report.results if r.status == "saved"]
-            if saved and job is not None:
+            if saved and job is not None and not job.test_mode:      # 시험으로 넣은 것은 기록하지 않는다
                 try:
                     sch.record_job(job, report)
                 except Exception as error:  # noqa: BLE001 — 기록을 못 남겨도 저장된 학생의 체크는 풀어야 다시 넣지 않는다
@@ -1443,6 +1538,9 @@ class ClaimPage(QWidget):
         self.head_title.setVisible(not low)
         self.drop_art.setVisible(not low)
         self.drop_zone.setFixedHeight(58 if low else 76)
+        # 좁은 창(1024)에서는 안내 글을 접어 청구 종류 · 과제 고르기 칸에 자리를 준다 — 둘 다 잘려 과제번호가 안 보였다(2026-10-19).
+        # 칸 테두리(점선)와 [지출 폴더 추가] 가 남으므로 끌어다 놓기는 그대로 된다.
+        self.drop_texts.setVisible(self.width() >= 1180)
         self.form_card.hint_label.setVisible(not low)
 
     def shutdown(self) -> None:

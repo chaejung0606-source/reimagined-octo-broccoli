@@ -740,6 +740,33 @@ def test_run_continues_in_this_folders_own_sheet(monkeypatch, job):
     assert scholarship.sheet_owner(other, "", ["03_다른 대표적요_가나다"], "40")[0] is False
 
 
+def test_test_mode_marks_summary_and_keeps_test_and_real_sheets_apart(isolated_home, monkeypatch, job):
+    """시험(담당자 요청 2026-10-19: 이미 올린 폴더로 시험) — 넣는 동안만 대표적요 앞에 [시험]. 진짜로 넣은 청구서(결의번호 · 적요)에
+    시험 줄을 잇지 않고, 시험 청구서에 진짜 줄을 잇지 않는다."""
+    real = job.main_summary
+    job.req_cnt = "324"                                             # 앞서 진짜로 넣은 청구서
+    job.test_mode = True
+    with scholarship.marked(job):
+        assert job.main_summary == "[시험] " + real and job.req_cnt == ""
+        assert job.row_summary(0).startswith("[시험] " + real)
+        # 진짜 청구서가 떠 있으면 이 폴더 것으로 보지 않는다(결의번호도 · 적요도)
+        assert scholarship.sheet_owner(job, "324", [real + "_가나다"])[0] is False
+        job.req_cnt = "330"                                         # 시험으로 저장했다
+    assert job.main_summary == real and job.req_cnt == "324" and job.test_req_cnt == "330"
+    with scholarship.marked(job):
+        assert scholarship.sheet_owner(job, "330", [])[0] is True   # 멈췄다 이어 넣는 시험은 시험 청구서로
+    job.test_mode = False
+    # 진짜로 넣을 때 시험 청구서('[시험] 02_…' 줄에도 진짜 대표적요가 들어 있다)를 이 폴더 것으로 보지 않는다
+    ok, why = scholarship.sheet_owner(job, "330", ["[시험] " + job.row_summary(0)])
+    assert not ok and "시험 청구서" in why
+    # 미리 보기 계획에도 [시험] 이 보인다
+    job.test_mode = True
+    with scholarship.marked(job):
+        report = scholarship.run(None, None, job, lambda m: None, ask=lambda m: False, dry_run=True)
+    assert all(r.summary.startswith("[시험] ") for r in report.results)
+    assert any("시험" in line for line in job.summary_lines())
+
+
 def test_other_saved_sheet_is_replaced_by_a_new_one_the_app_opens(job):
     """다른 폴더의 저장된 청구서가 떠 있으면 open_sheet(결의서 목록의 [일반청구])로 새 청구서를 띄우고 묻지 않는다(담당자 허락 2026-10-19).
     띄우지 못하면 전처럼 사람에게 묻는다."""

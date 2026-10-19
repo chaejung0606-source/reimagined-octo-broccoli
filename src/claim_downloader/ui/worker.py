@@ -48,7 +48,7 @@ class SessionWorker(QObject):
     scholarship_done = Signal(object)   # 장학금: claims.scholarship.ScholarshipReport
     sheet_checked = Signal(object)      # 신청 전 대조: claims.sheet_check.SheetCheck
     list_ready = Signal()               # 받기: 브라우저를 연 뒤 결의서내역 목록이 보인다 — 화면이 [목록 읽기] 를 저절로
-    projects_read = Signal()            # 로그인 뒤 메인화면 과제현황에서 과제 목록을 읽어 _과제목록.json 에 남겼다 — 설정 화면이 다시 읽는다
+    projects_read = Signal()            # 로그인 뒤 메인화면 과제현황에서 과제 목록을 읽어 _과제목록.json 에 남겼다 — 일반청구의 과제 고르기 칸이 다시 읽는다
 
     def __init__(self) -> None:
         super().__init__()
@@ -75,8 +75,10 @@ class SessionWorker(QObject):
         로그인을 기다렸다가 고른 과제의 청구서 탭까지 간다(navigate.py)."""
         self._put("open", (scan, watch), owner)
 
-    def fill_claim(self, data: dict, dry_run: bool = True) -> None:
-        self._put("fill_claim", (data, dry_run), "claim")
+    def fill_claim(self, data: dict, dry_run: bool = True, project_no: str = "", folder: str = "", test_mode: bool = False) -> None:
+        """project_no 는 그 폴더에 고른 과제(일반청구 화면), test_mode 면 적요 앞에 [시험] 을 붙이고 ERP 중복 확인을 건너뛴다."""
+        self._stop.clear()
+        self._put("fill_claim", (data, dry_run, project_no, folder, test_mode), "claim")
 
     def check_sheet(self, job) -> None:
         self._put("check_sheet", (job,), "claim")
@@ -241,10 +243,12 @@ class SessionWorker(QObject):
                     % (len(projects), len(now), ", ".join(p.no for p in now) or "없음"))
         self.projects_read.emit()
 
-    def _do_fill_claim(self, session: ErpSession, data: dict, dry_run: bool) -> None:
+    def _do_fill_claim(self, session: ErpSession, data: dict, dry_run: bool, project_no: str = "", folder: str = "",
+                       test_mode: bool = False) -> None:
         self.busy.emit(True, "일반청구 화면을 확인하는 중…" if dry_run
-                       else "일반청구 화면에 채우는 중… (팝업이 뜨면 고르고 [확인] 을 누르세요)")
-        self.claim_filled.emit(session.fill_claim(data, dry_run))
+                       else "ERP 결의서내역을 확인하고 일반청구 화면에 채우는 중… (팝업이 뜨면 고르고 [확인] 을 누르세요)")
+        self.claim_filled.emit(session.fill_claim(data, dry_run, project_no=project_no, folder=folder, test_mode=test_mode,
+                                                  ask=self._ask_person))
 
     def _do_save_claim_draft(self, session: ErpSession) -> None:
         self.busy.emit(True, "ERP 에 임시저장하는 중…")
@@ -259,7 +263,7 @@ class SessionWorker(QObject):
         self.payee_searched.emit(session.search_payee(data))
 
     def _ask_person(self, message: str) -> bool:
-        """장학금 — 앱이 확신하지 못하는 단계. 재로그인 띠와 같은 방식으로 이 스레드가 [계속]/[멈추기] 를 기다린다."""
+        """앱이 확신하지 못하는 단계(장학금 · 넣기 전 ERP 중복 확인). 재로그인 띠와 같은 방식으로 이 스레드가 [계속]/[멈추기] 를 기다린다."""
         if self._stop.is_set():
             return False
         self._resume.clear()

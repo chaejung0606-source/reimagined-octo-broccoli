@@ -118,6 +118,11 @@ class Project:
         period = f"{self.start} ~ {self.end}" if self.start and self.end else "기간 모름"
         return f"{self.no}  {self.name}  ({period})" if self.name else f"{self.no}  ({period})"
 
+    def short(self) -> str:
+        """일반청구 화면의 좁은 고르기 칸 — 과제번호와 과제명 앞부분. 전체는 말풍선(label)."""
+        name = self.name if len(self.name) <= 16 else self.name[:15] + "…"
+        return f"{self.no} {name}" if name else self.no
+
 
 def _frames(context):
     for page in list(getattr(context, "pages", []) or []):
@@ -166,17 +171,67 @@ def load_projects() -> tuple[list[Project], str]:
         return [], ""
 
 
-def choices(selected: str, today: dt.date | None = None) -> list[tuple[str, str]]:
-    """설정 화면의 과제 고르기 칸 — (과제번호, 보이는 글). 과제기간에 오늘이 든 과제만, 읽은 목록이 없으면 기본 과제번호 하나.
-    지금 고른 번호는 목록에 없어도 남긴다(설정 값이 칸에서 사라지지 않게)."""
+def choices(selected: str, today: dt.date | None = None, short: bool = False) -> list[tuple[str, str]]:
+    """일반청구 화면의 과제 고르기 칸 — (과제번호, 보이는 글). 과제기간에 오늘이 든 과제만(담당자 요청 2026-10-19), 읽은 목록이 없으면
+    기본 과제번호 하나. 지금 고른 번호는 목록에 없어도 남긴다(폴더에 붙은 과제가 칸에서 사라지지 않게). short 면 좁은 칸용 글."""
     projects, _when = load_projects()
-    out = [(p.no, p.label()) for p in running(projects, today)]
+    out = [(p.no, p.short() if short else p.label()) for p in running(projects, today)]
     if not out:
         out = [(settings.DEFAULT_PROJECT_NO, settings.DEFAULT_PROJECT_NO)]
     if selected and selected not in {no for no, _ in out}:
         known = {p.no: p for p in projects}
-        out.append((selected, (known[selected].label() + " — 과제기간 아님") if selected in known else selected))
+        text = (known[selected].short() if short else known[selected].label()) if selected in known else selected
+        out.append((selected, text + (" — 과제기간 아님" if selected in known else "")))
     return out
+
+
+def label_of(project_no: str) -> str:
+    """과제번호의 긴 글(말풍선 · 확인 창). 읽은 목록에 없으면 번호만."""
+    for p in load_projects()[0]:
+        if p.no == project_no:
+            return p.label()
+    return project_no
+
+
+# 작성 화면 · 결의서 목록 · 과제정보 프레임 모두 숨은 #PRJ_NO 에 과제번호가 있다(실측 2026-10-19 2 · 4 · 5번). 읽기만 한다.
+PRJ_JS = "() => { const e = document.getElementById('PRJ_NO'); return e ? String(e.value || '') : null; }"
+# 위쪽 탭 '메인화면'(틀 프레임의 a.mul_txt) — 다른 과제의 과제정보 · 청구서 탭이 앞에 있어 과제현황이 가려졌을 때만 누른다.
+CLICK_MAIN_TAB_JS = r"""() => {
+  const txt = e => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim();
+  const shown = Array.from(document.querySelectorAll('a.mul_txt')).filter(a => {
+    const r = a.getBoundingClientRect();
+    return txt(a) === '메인화면' && r.width > 0 && r.height > 0;
+  });
+  if (shown.length !== 1) return {ok: false, why: "위쪽 '메인화면' 탭이 보이지 않음"};
+  shown[0].click();
+  return {ok: true};
+}"""
+
+
+# 위쪽 탭 '과제정보' — 결의서 목록이 다른 탭(청구서(일반)) 뒤에 가려졌을 때 앞으로. 목록은 가상 스크롤이라 가려진 채로는 끝까지 못 읽는다.
+CLICK_PROJECT_TAB_JS = r"""() => {
+  const txt = e => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim();
+  const shown = Array.from(document.querySelectorAll('a.mul_txt')).filter(a => {
+    const r = a.getBoundingClientRect();
+    return txt(a) === '과제정보' && r.width > 0 && r.height > 0;
+  });
+  if (shown.length !== 1) return {ok: false, why: "위쪽 '과제정보' 탭이 하나가 아님"};
+  shown[0].click();
+  return {ok: true};
+}"""
+
+
+def frame_project(frame) -> str:
+    """이 프레임의 과제번호(숨은 #PRJ_NO, 숫자만). 없으면 ''."""
+    return re.sub(r"\D", "", str(_evaluate(frame, PRJ_JS) or ""))
+
+
+def list_frame(context, project_no: str = ""):
+    """결의서 목록 프레임(erp 의 그리드 확인과 같은 기준). project_no 를 주면 그 과제의 것만. 없으면 None."""
+    for _page, frame in _frames(context):
+        if _evaluate(frame, erp._GRID_PROBE) is True and (not project_no or frame_project(frame) == project_no):
+            return frame
+    return None
 
 
 def _toolbar(context, project_no: str):
@@ -198,26 +253,39 @@ def _wait(check: Callable[[], object], wait: Callable[[float], None], tries: int
     return check()
 
 
-def go_to_claims(context, project_no: str, log: Callable[[str], None], wait: Callable[[float], None]) -> tuple[bool, str]:
-    """결의서내역 목록까지 간다. (됐는지, 글). 이미 목록이 떠 있으면 아무것도 누르지 않는다."""
-    project_no = re.sub(r"\D", "", str(project_no or ""))      # 메모장으로 고친 설정에 빈칸 · 글자가 섞여도 JS 정규식이 깨지지 않게
-    if not project_no:
-        return False, "설정에 과제번호가 없습니다 — 설정 → ERP 과제에서 고르세요"
-    if erp.grid_rows_shown(context) > 0:
-        return True, "결의서내역 목록이 이미 떠 있습니다"
-    toolbar = _toolbar(context, project_no)
-    if toolbar is None:
-        clicked = None
+def _click_project(context, project_no: str) -> tuple[bool, str]:
+    """과제현황의 과제명 링크를 누른다. 과제현황이 가려져 있으면(다른 과제의 과제정보 · 청구서 탭이 앞) '메인화면' 탭을 먼저 누른다."""
+    for attempt in range(2):
         for _page, frame in _frames(context):
             result = _evaluate(frame, CLICK_PROJECT_JS, project_no)
             if result and result.get("ok"):
-                clicked = frame
-                break
+                return True, ""
             if result and result.get("why") == "과제명 링크가 여럿":
                 return False, f"과제현황에 과제 {project_no} 링크가 여럿이라 누르지 않았습니다 — 직접 여세요"
-        if clicked is None:
-            return False, (f"메인화면 과제현황에 과제 {project_no} 가 보이지 않습니다 — 다음 쪽에 있거나 다른 화면이 떠 있으면 "
-                           "직접 과제정보 → 청구서를 여세요")
+        if attempt == 0:
+            # 과제현황이 이미 보이면(이 과제가 다음 쪽에 있는 것) 탭을 누를 까닭이 없다
+            shown = any(r.get("visible") for _p, f in _frames(context) for r in (_evaluate(f, PROJECTS_JS) or []))
+            tab = None if shown else next(
+                (r for r in (_evaluate(f, CLICK_MAIN_TAB_JS) for _p, f in _frames(context)) if r and r.get("ok")), None)
+            if tab is None:
+                break
+    return False, (f"메인화면 과제현황에 과제 {project_no} 가 보이지 않습니다 — 다음 쪽에 있거나 다른 화면이 떠 있으면 "
+                   "직접 과제정보 → 청구서를 여세요")
+
+
+def go_to_claims(context, project_no: str, log: Callable[[str], None], wait: Callable[[float], None]) -> tuple[bool, str]:
+    """그 과제의 결의서내역 목록까지 간다. (됐는지, 글). 그 과제의 목록이 이미 있으면 아무것도 누르지 않는다.
+    폴더마다 과제가 다를 수 있어(담당자 2026-10-19 — 일반청구에서 폴더를 넣을 때 과제를 고른다) 목록의 #PRJ_NO 로 그 과제 것인지 본다."""
+    project_no = re.sub(r"\D", "", str(project_no or ""))      # 메모장으로 고친 설정에 빈칸 · 글자가 섞여도 JS 정규식이 깨지지 않게
+    if not project_no:
+        return False, "과제번호가 없습니다 — 일반청구 화면에서 폴더의 과제를 고르세요"
+    if list_frame(context, project_no) is not None:
+        return True, f"과제 {project_no} 의 결의서내역 목록이 이미 떠 있습니다"
+    toolbar = _toolbar(context, project_no)
+    if toolbar is None:
+        ok, why = _click_project(context, project_no)
+        if not ok:
+            return False, why
         log(f"과제 {project_no} 를 엽니다 (과제현황의 과제명)")
         toolbar = _wait(lambda: _toolbar(context, project_no), wait, tries=30)
         if toolbar is None:
@@ -226,9 +294,56 @@ def go_to_claims(context, project_no: str, log: Callable[[str], None], wait: Cal
     if not result.get("ok"):
         return False, f"과제정보의 청구서 탭을 누르지 못했습니다({result.get('why', '화면을 읽지 못함')}) — 직접 누르세요"
     log("과제정보 → 청구서 탭을 눌렀습니다")
-    if _wait(lambda: erp.grid_rows_shown(context) > 0, wait, tries=40):
+    if _wait(lambda: list_frame(context, project_no) is not None, wait, tries=40):
         return True, f"과제 {project_no} 의 결의서내역 목록까지 왔습니다"
     return False, "청구서 탭을 눌렀지만 결의서내역 목록이 보이지 않습니다 — 직접 결의서내역을 띄우세요"
+
+
+def _shown(frame) -> bool:
+    from .claims.form import FRAME_VISIBLE_JS
+    return _evaluate(frame, FRAME_VISIBLE_JS) is True
+
+
+def show_list(context, project_no: str, log: Callable[[str], None], wait: Callable[[float], None]):
+    """그 과제의 결의서 목록을 화면 앞으로 — (프레임 또는 None, 못 한 까닭). 목록이 다른 탭 뒤에 있으면 위쪽 '과제정보' 탭을 누르고,
+    없으면 과제현황에서 연다(go_to_claims)."""
+    project_no = re.sub(r"\D", "", str(project_no or ""))
+    frame = list_frame(context, project_no)
+    if frame is not None and _shown(frame):
+        return frame, ""
+    if frame is not None:
+        if any((r or {}).get("ok") for r in (_evaluate(f, CLICK_PROJECT_TAB_JS) for _p, f in _frames(context))):
+            log("결의서 목록을 보려고 위쪽 '과제정보' 탭을 앞으로 가져옵니다")
+            frame = _wait(lambda: next((f for f in [list_frame(context, project_no)] if f is not None and _shown(f)), None), wait, tries=20)
+            if frame is not None:
+                return frame, ""
+    ok, why = go_to_claims(context, project_no, log, wait)
+    frame = list_frame(context, project_no) if ok else None
+    if frame is not None and _shown(frame):
+        return frame, ""
+    return None, why or "결의서 목록이 화면에 보이지 않습니다"
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or ""))
+
+
+def existing_claims(context, project_no: str, summary: str, log: Callable[[str], None], wait: Callable[[float], None],
+                    move: bool = True):
+    """그 과제의 결의서내역에서 대표적요가 summary 와 같은 청구서들 — ([행], 읽은 줄 수, 까닭). 목록을 못 읽으면 (None, 0, 까닭).
+    담당자 요청(2026-10-19): 앱에 넣은 이력보다 실제 ERP 내역에 같은 것이 있는지가 먼저다. 읽기만 한다(가상 스크롤을 내리기만).
+    move=False 면 화면을 옮기지 않는다 — 목록이 이미 앞에 있을 때만 읽는다(새 청구서를 앱이 띄우지 않을 때 사람이 띄운 작성 화면을 가리지 않게)."""
+    if move:
+        frame, why = show_list(context, project_no, log, wait)
+    else:
+        frame = list_frame(context, re.sub(r"\D", "", str(project_no or "")))
+        frame, why = (frame, "") if frame is not None and _shown(frame) else (None, "결의서 목록이 화면 앞에 없음")
+    if frame is None:
+        return None, 0, why
+    _wait(lambda: (_evaluate(frame, erp.GRID_ROWS_JS) or 0) > 0, wait, tries=10)     # 목록이 그려질 때까지(빈 과제면 ~5초 뒤 0줄)
+    rows = erp.collect_all(frame)
+    want = _squash(summary)
+    return [r for r in rows if want and _squash(r.get("cont", "")) == want], len(rows), ""
 
 
 def _sheet_state(frame) -> dict:
@@ -240,28 +355,39 @@ def _sheet_state(frame) -> dict:
     return {key: str((state.get(key) or {}).get("value", "") or "").strip() for key in state}
 
 
-def open_new_sheet(context, log: Callable[[str], None], wait: Callable[[float], None]):
-    """결의서 목록의 [일반청구](#P10)로 새 일반청구 작성 화면을 띄운다. (됐는지, 글, 새 작성 프레임 또는 None).
+def typed_fields(state: dict) -> list[str]:
+    """작성 화면에 저장하지 않은 입력이 남은 칸 — 새 청구서를 띄우면 날아간다."""
+    return [label for key, label in (("REQ_AMT", "청구액"), ("REQ_PTCL", "적요"), ("RCV_NM", "입금처"))
+            if state.get(key) and state.get(key) not in ("0",)]
 
-    지금 작성 화면이 있으면 **저장된 청구서이고 입력 칸(청구액 · 적요 · 입금처)이 비었을 때만** 누른다 — 같은 탭 자리를 새 화면이 차지하므로
-    저장 전 입력은 날아간다. 저장 전(결의번호 없음) 화면은 이미 새 청구서라 누를 까닭이 없다."""
+
+def open_new_sheet(context, log: Callable[[str], None], wait: Callable[[float], None], project_no: str = "",
+                   replace_empty: bool = False):
+    """결의서 목록의 [일반청구](#P10)로 새 일반청구 작성 화면을 띄운다. (됐는지, 글, 새 작성 프레임 또는 None).
+    project_no 를 주면 그 과제의 결의서 목록에서 누르고, 새 작성 화면이 그 과제 것인지 본다.
+
+    지금 작성 화면이 있으면 **저장된 청구서이거나 다른 과제의 것이고, 입력 칸(청구액 · 적요 · 입금처)이 비었을 때만** 누른다 — 같은 탭 자리를
+    새 화면이 차지하므로 저장 전 입력은 날아간다. 같은 과제의 저장 전(결의번호 없음) 빈 화면은 이미 새 청구서라 누르지 않는다 —
+    replace_empty 면(결의서 목록을 읽느라 그 화면이 뒤로 갔을 때) 빈 화면이니 새로 띄워 앞으로 가져온다."""
     from .claims import form
+    project_no = re.sub(r"\D", "", str(project_no or ""))
     _page, current = form.find_form(context)
     before = _sheet_state(current) if current is not None else {}
     if current is not None:
-        if not (before.get("REQ_CNT") or before.get("APPR_DIV_CD") == "40"):
+        other = bool(project_no) and frame_project(current) not in ("", project_no)
+        if not other and not replace_empty and not (before.get("REQ_CNT") or before.get("APPR_DIV_CD") == "40"):
             return False, "작성 화면이 아직 저장 전인 청구서입니다 — 새로 띄우지 않았습니다", None
-        typed = [label for key, label in (("REQ_AMT", "청구액"), ("REQ_PTCL", "적요"), ("RCV_NM", "입금처"))
-                 if before.get(key) and before.get(key) not in ("0",)]
+        typed = typed_fields(before)
         if typed:
             return False, f"작성 화면에 저장하지 않은 입력({' · '.join(typed)})이 있어 새 청구서를 띄우지 않았습니다", None
-    _gpage, grid = erp.find_grid(context)
+    grid = list_frame(context, project_no)
     if grid is None:
-        return False, "결의서 목록(과제정보 → 청구서)이 열려 있지 않아 새 청구서를 띄우지 못했습니다", None
+        return False, (f"과제 {project_no} 의 " if project_no else "") + "결의서 목록(과제정보 → 청구서)이 열려 있지 않아 새 청구서를 띄우지 못했습니다", None
     result = _evaluate(grid, CLICK_NEW_SHEET_JS) or {}
     if not result.get("ok"):
         return False, str(result.get("why") or "결의서 목록을 읽지 못했습니다"), None
-    log("결의서 목록의 [일반청구] 로 새 청구서를 띄웁니다" + (f" (앞 청구서 결의번호 {before.get('REQ_CNT')})" if before.get("REQ_CNT") else ""))
+    log("결의서 목록의 [일반청구] 로 새 청구서를 띄웁니다" + (f" — 과제 {project_no}" if project_no else "")
+        + (f" (앞 청구서 결의번호 {before.get('REQ_CNT')})" if before.get("REQ_CNT") else ""))
 
     def fresh():
         _p, frame = form.find_form(context)
@@ -269,7 +395,8 @@ def open_new_sheet(context, log: Callable[[str], None], wait: Callable[[float], 
             return None
         now = _sheet_state(frame)
         new = now and not now.get("REQ_CNT") and now.get("APPR_DIV_CD") != "40"
-        return frame if new and now.get("REQ_SEQ_NO") != before.get("REQ_SEQ_NO") else None
+        mine = not project_no or frame_project(frame) in ("", project_no)
+        return frame if new and mine and now.get("REQ_SEQ_NO") != before.get("REQ_SEQ_NO") else None
 
     frame = _wait(fresh, wait, tries=30)
     if frame is None:

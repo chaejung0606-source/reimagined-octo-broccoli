@@ -51,6 +51,7 @@ class Settings:
     auto_read_list: bool = True
     # 로그인하면 메인화면 과제현황에서 이 과제를 열고 과제정보 → 청구서 탭(결의서내역)까지 앱이 간다(담당자 허락 2026-10-19, navigate.py)
     auto_open_project: bool = True
+    # 마지막으로 고른 ERP 과제 — 과제는 일반청구 화면에서 폴더마다 고르고(담당자 2026-10-19), 로그인 뒤 이동 · 과제 없는 폴더가 이것을 쓴다
     project_no: str = DEFAULT_PROJECT_NO
     # 명단 폴더를 넣을 때 다른(저장된) 청구서가 떠 있으면 결의서 목록의 [일반청구] 로 새 청구서를 앱이 띄운다(담당자 허락 2026-10-19)
     auto_new_sheet: bool = True

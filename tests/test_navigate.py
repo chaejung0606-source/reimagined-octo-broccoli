@@ -21,16 +21,19 @@ ROWS = [
 
 
 class Screen:
-    """ERP 한 창 — 대시보드 · 과제정보 · 결의서 목록 · 작성 화면 프레임의 상태를 함께 들고 있다."""
+    """ERP 한 창 — 위쪽 탭(메인화면 · 과제정보 · 청구서(일반)) 중 하나만 앞에 보인다(실측 2026-10-19).
+    과제정보 · 결의서 목록 · 작성 화면 프레임은 숨은 #PRJ_NO 에 과제번호를 든다."""
 
     def __init__(self, dashboard=True, visible_projects=True):
-        self.dashboard = dashboard
+        self.dashboard = dashboard     # 로그인됨
         self.visible = visible_projects
+        self.active = "main"           # 앞에 있는 위쪽 탭: main · project · sheet
         self.toolbar_prj = ""          # 열린 과제정보의 과제번호
-        self.grid = False              # 결의서 목록이 떴는지
-        self.form = None               # 작성 화면 값 {REQ_CNT, APPR_DIV_CD, REQ_SEQ_NO, REQ_AMT, REQ_PTCL, RCV_NM}
+        self.grid_prj = ""             # 결의서 목록의 과제번호(청구서 탭을 누른 과제)
+        self.form = None               # 작성 화면 값 {PRJ_NO, REQ_CNT, APPR_DIV_CD, REQ_SEQ_NO, REQ_AMT, REQ_PTCL, RCV_NM}
         self.clicks: list[str] = []
         self.sheets = 0
+        self.list_rows: list[dict] = []  # 결의서내역 그리드의 행 (erp._PARSE_ROWS_JS 모양)
 
 
 class Frame:
@@ -40,42 +43,68 @@ class Frame:
     def evaluate(self, js, *args):
         s = self.s
         if js is navigate.PROJECTS_JS:
-            return [dict(r, visible=s.visible) for r in ROWS] if self.kind == "dash" and s.dashboard else []
+            # 과제현황은 메인화면 탭이 앞일 때만 보인다. visible_projects=False 는 "고른 과제가 다음 쪽에 있음"
+            return [dict(r, visible=s.active == "main") for r in ROWS] if self.kind == "dash" and s.dashboard else []
         if js is navigate.CLICK_PROJECT_JS:
-            if self.kind != "dash" or not s.dashboard:
+            # 과제현황은 메인화면 탭이 앞에 있을 때만 보인다
+            if self.kind != "dash" or not s.dashboard or s.active != "main":
                 return {"ok": False, "why": "과제현황에 이 과제가 보이지 않음"}
             if not s.visible or args[0] not in {r["no"] for r in ROWS}:
                 return {"ok": False, "why": "과제현황에 이 과제가 보이지 않음"}
             s.clicks.append("project:" + args[0])
-            s.toolbar_prj = args[0]
+            s.toolbar_prj, s.grid_prj, s.active = args[0], "", "project"     # 과제정보 탭을 그 과제로 다시 연다
+            return {"ok": True}
+        if js is navigate.CLICK_PROJECT_TAB_JS:
+            if self.kind != "layout" or not s.toolbar_prj:
+                return {"ok": False, "why": "위쪽 '과제정보' 탭이 보이지 않음"}
+            s.clicks.append("과제정보")
+            s.active = "project"
+            return {"ok": True}
+        if js is navigate.CLICK_MAIN_TAB_JS:
+            if self.kind != "layout" or not s.dashboard:
+                return {"ok": False, "why": "위쪽 '메인화면' 탭이 보이지 않음"}
+            s.clicks.append("메인화면")
+            s.active = "main"
             return {"ok": True}
         if js is navigate.TOOLBAR_JS:
-            return {"prj": s.toolbar_prj, "shown": True} if self.kind == "toolbar" and s.toolbar_prj else None
+            return {"prj": s.toolbar_prj, "shown": s.active == "project"} if self.kind == "toolbar" and s.toolbar_prj else None
         if js is navigate.CLICK_CLAIM_TAB_JS:
             s.clicks.append("청구서")
-            s.grid = True
+            s.grid_prj = s.toolbar_prj
             return {"ok": True}
         if js is navigate.CLICK_NEW_SHEET_JS:
-            s.clicks.append("P10")
+            s.clicks.append("P10:" + s.grid_prj)
             s.sheets += 1
-            s.form = {"REQ_CNT": "", "APPR_DIV_CD": "", "REQ_SEQ_NO": f"TMP_REQ_{s.sheets}", "REQ_AMT": "0", "REQ_PTCL": "", "RCV_NM": ""}
+            s.active = "sheet"
+            s.form = {"PRJ_NO": s.grid_prj, "REQ_CNT": "", "APPR_DIV_CD": "", "REQ_SEQ_NO": f"TMP_REQ_{s.sheets}",
+                      "REQ_AMT": "0", "REQ_PTCL": "", "RCV_NM": ""}
             return {"ok": True}
+        if js is navigate.PRJ_JS:
+            return {"toolbar": s.toolbar_prj or None, "grid": s.grid_prj or None,
+                    "form": (s.form or {}).get("PRJ_NO")}.get(self.kind)
         if js is erp._GRID_PROBE:
-            return self.kind == "grid" and s.grid
+            return self.kind == "grid" and bool(s.grid_prj)
         if js is erp.GRID_ROWS_JS:
-            return 26 if self.kind == "grid" and s.grid else 0
+            return 26 if self.kind == "grid" and s.grid_prj else 0
         if js is form.PROBE_JS:
             return self.kind == "form" and s.form is not None
         if js is form.FRAME_VISIBLE_JS:
-            return True
+            # 위쪽 탭 중 앞에 있는 것의 프레임만 크기가 있다 — 결의서 목록은 과제정보 탭, 작성 화면은 청구서(일반) 탭
+            return {"toolbar": "project", "grid": "project", "form": "sheet"}.get(self.kind, s.active) == s.active
+        if js is erp._PARSE_ROWS_JS:
+            return [dict(r) for r in s.list_rows] if self.kind == "grid" and s.grid_prj else []
+        if js in (erp._SCROLL_TOP_JS, erp._SCROLL_INFO_JS):
+            return None                  # 한 화면에 다 보인다 — 내리지 않는다
         if js is form.STATE_JS:
             return {key: {"value": (s.form or {}).get(key, "")} for key in args[0]}
+        if self.kind == "layout":
+            return None
         raise AssertionError("모르는 JS: " + str(js)[:60])
 
 
 class Page:
     def __init__(self, screen: Screen):
-        self.frames = [Frame(screen, k) for k in ("dash", "toolbar", "grid", "form")]
+        self.frames = [Frame(screen, k) for k in ("layout", "dash", "toolbar", "grid", "form")]
 
     def wait_for_timeout(self, ms):
         pass
@@ -130,7 +159,7 @@ def test_go_to_claims_opens_project_then_claim_tab():
 
 def test_go_to_claims_uses_an_open_project_page_without_touching_the_dashboard():
     screen = Screen()
-    screen.toolbar_prj = "202408470003"
+    screen.toolbar_prj, screen.active = "202408470003", "project"
     ok, _ = navigate.go_to_claims(Context(screen), "202408470003", lambda m: None, no_wait)
     assert ok and screen.clicks == ["청구서"]
 
@@ -143,22 +172,22 @@ def test_go_to_claims_leaves_it_to_a_person_when_the_project_is_not_shown():
 
 def test_new_sheet_is_opened_from_the_list_only_over_a_saved_empty_sheet():
     screen = Screen()
-    screen.grid = True
+    screen.toolbar_prj = screen.grid_prj = "202408470003"
     ctx = Context(screen)
     # 작성 화면이 없으면 띄운다
     ok, _note, frame = navigate.open_new_sheet(ctx, lambda m: None, no_wait)
-    assert ok and frame is not None and screen.clicks == ["P10"]
+    assert ok and frame is not None and screen.clicks == ["P10:202408470003"]
     # 저장 전(결의번호 없음) 화면이면 이미 새 청구서 — 누르지 않는다
     ok, note, _ = navigate.open_new_sheet(ctx, lambda m: None, no_wait)
-    assert not ok and "저장 전" in note and screen.clicks == ["P10"]
+    assert not ok and "저장 전" in note and screen.clicks == ["P10:202408470003"]
     # 저장된 청구서인데 입력이 남아 있으면 날아가므로 누르지 않는다
     screen.form.update(REQ_CNT="327", APPR_DIV_CD="40", REQ_PTCL="03_적요_가나다")
     ok, note, _ = navigate.open_new_sheet(ctx, lambda m: None, no_wait)
-    assert not ok and "저장하지 않은 입력(적요)" in note and screen.clicks == ["P10"]
+    assert not ok and "저장하지 않은 입력(적요)" in note and screen.clicks == ["P10:202408470003"]
     # 저장된 청구서이고 칸이 비었으면(저장 뒤 실측 ⑤) 새로 띄운다
     screen.form.update(REQ_PTCL="")
     ok, _note, frame = navigate.open_new_sheet(ctx, lambda m: None, no_wait)
-    assert ok and screen.clicks == ["P10", "P10"] and screen.form["REQ_SEQ_NO"] == "TMP_REQ_2"
+    assert ok and screen.clicks == ["P10:202408470003"] * 2 and screen.form["REQ_SEQ_NO"] == "TMP_REQ_2"
 
 
 def test_new_sheet_needs_the_list():
@@ -209,3 +238,131 @@ def test_watcher_reads_projects_and_goes_to_claims_after_login(isolated_home, mo
     assert session.went == ["202408470003"] and screen.clicks == ["project:202408470003", "청구서"]
     assert read == [1] and ready == [1]
     assert [p.no for p in navigate.load_projects()[0]][:2] == ["202408470003", "202409710003"]
+
+
+def test_folder_project_switches_from_another_projects_screen():
+    """폴더마다 과제가 다르다(담당자 2026-10-19) — 다른 과제의 작성 화면이 앞에 있으면 메인화면 탭 → 그 과제 → 청구서 → [일반청구]."""
+    screen = Screen()
+    ctx = Context(screen)
+    ok, _ = navigate.go_to_claims(ctx, "202408470003", lambda m: None, no_wait)
+    ok, _note, _ = navigate.open_new_sheet(ctx, lambda m: None, no_wait, "202408470003")
+    assert ok and screen.active == "sheet"
+    screen.form.update(REQ_CNT="327", APPR_DIV_CD="40")            # 앞 폴더를 저장했다
+    # 이번 폴더는 다른 과제 — 그 과제의 목록이 없으니 메인화면으로 돌아가 연다
+    assert navigate.list_frame(ctx, "202409710003") is None
+    ok, message = navigate.go_to_claims(ctx, "202409710003", lambda m: None, no_wait)
+    assert ok, message
+    ok, _note, frame = navigate.open_new_sheet(ctx, lambda m: None, no_wait, "202409710003")
+    assert ok and navigate.frame_project(frame) == "202409710003"
+    assert screen.clicks == ["project:202408470003", "청구서", "P10:202408470003",
+                             "메인화면", "project:202409710003", "청구서", "P10:202409710003"]
+
+
+def test_unsaved_empty_sheet_of_another_project_is_replaced_but_typed_one_is_not():
+    screen = Screen()
+    ctx = Context(screen)
+    navigate.go_to_claims(ctx, "202408470003", lambda m: None, no_wait)
+    navigate.open_new_sheet(ctx, lambda m: None, no_wait, "202408470003")
+    navigate.go_to_claims(ctx, "202409710003", lambda m: None, no_wait)
+    # 저장 전이어도 다른 과제의 빈 작성 화면이면 바꾼다
+    ok, _note, frame = navigate.open_new_sheet(ctx, lambda m: None, no_wait, "202409710003")
+    assert ok and navigate.frame_project(frame) == "202409710003"
+    # 입력이 남은 화면이면 과제가 달라도 누르지 않는다
+    screen.form.update(REQ_PTCL="03_적요")
+    ok, note, _ = navigate.open_new_sheet(ctx, lambda m: None, no_wait, "202408470003")
+    assert not ok and "저장하지 않은 입력" in note
+
+
+def _row(seq, cont, state="임시저장", amt="300000"):
+    return {"r": seq, "no": seq, "seq": seq, "gubun": "일반청구", "cont": cont, "amt": amt, "state": state,
+            "docNo": "", "expDt": ""}
+
+
+SUMMARY = "02_2026년도 9월 (가)형 근로장학금"
+
+
+def test_existing_claims_reads_the_project_list_and_matches_whole_summary():
+    """넣기 전 ERP 결의서내역 확인(담당자 요청 2026-10-19) — 작성 화면이 앞에 있으면 '과제정보' 탭으로 목록을 앞에 두고 읽기만 한다.
+    대표적요가 통째로 같은 줄만(공백 무시) — [시험] 청구서 · 다른 달은 같은 것이 아니다."""
+    screen = Screen()
+    ctx = Context(screen)
+    navigate.go_to_claims(ctx, "202408470003", lambda m: None, no_wait)
+    navigate.open_new_sheet(ctx, lambda m: None, no_wait, "202408470003")
+    screen.list_rows = [_row("324", SUMMARY.replace(" ", "  ")), _row("325", "[시험] " + SUMMARY),
+                        _row("310", "02_2026년도 8월 (가)형 근로장학금", state="승인")]
+    clicks = list(screen.clicks)
+    rows, total, why = navigate.existing_claims(ctx, "202408470003", SUMMARY, lambda m: None, no_wait)
+    assert [r["seq"] for r in rows] == ["324"] and total == 3 and why == ""
+    assert screen.clicks == clicks + ["과제정보"]                       # 읽으려고 탭만 옮겼다 — 목록에서 아무것도 누르지 않는다
+    # 시험 청구서는 [시험] 이 붙은 대표적요로만 같다
+    rows, _total, _why = navigate.existing_claims(ctx, "202408470003", "[시험] " + SUMMARY, lambda m: None, no_wait)
+    assert [r["seq"] for r in rows] == ["325"]
+
+
+def test_existing_claims_without_moving_reads_only_a_list_in_front():
+    screen = Screen()
+    ctx = Context(screen)
+    navigate.go_to_claims(ctx, "202408470003", lambda m: None, no_wait)
+    navigate.open_new_sheet(ctx, lambda m: None, no_wait, "202408470003")
+    rows, _total, why = navigate.existing_claims(ctx, "202408470003", SUMMARY, lambda m: None, no_wait, move=False)
+    assert rows is None and "앞에 없음" in why and screen.active == "sheet"       # 사람이 띄운 작성 화면을 가리지 않는다
+
+
+def test_existing_claims_opens_the_project_from_the_dashboard():
+    screen = Screen()
+    screen.list_rows = [_row("324", SUMMARY)]
+    rows, total, _why = navigate.existing_claims(Context(screen), "202408470003", SUMMARY, lambda m: None, no_wait)
+    assert [r["seq"] for r in rows] == ["324"] and total == 1
+    assert screen.clicks == ["project:202408470003", "청구서"]
+    # 과제가 과제현황에 안 보이면 읽지 못한 것(None) — 앱 기록으로 넘어간다
+    rows, _total, why = navigate.existing_claims(Context(Screen(visible_projects=False)), "202408470003", SUMMARY,
+                                                 lambda m: None, no_wait)
+    assert rows is None and why
+
+
+def _session(screen, auto_new_sheet=True):
+    from claim_downloader.session import ErpSession
+
+    logs = []
+    s = ErpSession(logs.append, lambda m: True,
+                   load_settings=lambda: settings.Settings(auto_new_sheet=auto_new_sheet))
+    s.page = Page(screen)
+    s.page.context = Context(screen)
+    return s, logs
+
+
+def test_duplicate_check_asks_when_erp_has_the_same_summary(isolated_home):
+    screen = Screen()
+    screen.list_rows = [_row("324", SUMMARY, amt="5100000")]
+    s, logs = _session(screen)
+    asked = []
+    stop = s._duplicate_check(SUMMARY, "202408470003", lambda m: asked.append(m) or False, False)
+    assert stop and "같은 청구서" in stop
+    assert "결의번호 324(임시저장 · 5,100,000원)" in asked[0] and "[시험]" in asked[0]
+    # [계속] 하면 이어 간다
+    assert s._duplicate_check(SUMMARY, "202408470003", lambda m: True, False) == ""
+    # 같은 것이 없으면 묻지 않는다 — 앱 기록에 넣은 이력이 있어도(ERP 에서 지웠으면 다시 넣는다)
+    screen.list_rows = [_row("324", "[시험] " + SUMMARY)]
+    asked.clear()
+    assert s._duplicate_check(SUMMARY, "202408470003", lambda m: asked.append(m) or False, False,
+                              lambda: "이 폴더를 넣은 이력") == ""
+    assert asked == [] and any("같은 청구서 없음" in line for line in logs)
+
+
+def test_duplicate_check_falls_back_to_app_record_only_when_the_list_cannot_be_read(isolated_home):
+    s, logs = _session(Screen(visible_projects=False))
+    asked = []
+    stop = s._duplicate_check(SUMMARY, "202408470003", lambda m: asked.append(m) or False, False,
+                              lambda: "이 폴더를 넣은 이력: 10-14")
+    assert stop and "앱 기록" in asked[0] and "이 폴더를 넣은 이력" in asked[0]
+    asked.clear()
+    assert s._duplicate_check(SUMMARY, "202408470003", lambda m: asked.append(m) or False, False, lambda: "") == ""
+    assert asked == []
+
+
+def test_test_mode_skips_the_erp_check(isolated_home):
+    screen = Screen()
+    screen.list_rows = [_row("324", SUMMARY)]
+    s, logs = _session(screen)
+    assert s._duplicate_check(SUMMARY, "202408470003", lambda m: False, True) == ""
+    assert screen.clicks == [] and any("시험" in line for line in logs)

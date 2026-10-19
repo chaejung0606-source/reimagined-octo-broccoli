@@ -11,6 +11,7 @@ Playwright 동기 API 는 시작한 스레드에서만 써야 한다. 그래서 
 """
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from collections.abc import Callable
@@ -179,22 +180,67 @@ class ErpSession:
         self.log(("✓ " if ok else "⚠ ") + message)
         return ok, message
 
-    def _new_sheet_if_needed(self, page, frame):
-        """작성 화면이 없거나 이미 저장된 청구서면 결의서 목록의 [일반청구] 로 새 청구서를 띄운다(설정 auto_new_sheet, 담당자 허락 2026-10-19).
-        저장된 청구서에 일반 건을 채우면 그 청구서에 줄이 더해진다(17절) — 전에는 막고 사람에게 띄우라고만 했다. 못 띄우면 받은 그대로 돌려준다."""
+    def _wait(self, seconds: float) -> None:
+        self.page.wait_for_timeout(int(seconds * 1000))
+
+    def _project(self, project_no: str = "") -> str:
+        """폴더에 붙은 과제(일반청구 화면에서 고름) — 없으면 마지막으로 고른 과제, 그것도 없으면 담당자가 정한 기본 과제."""
+        cfg = self._load_settings()
+        return re.sub(r"\D", "", project_no or getattr(cfg, "project_no", "") or settings_mod.DEFAULT_PROJECT_NO)
+
+    def _duplicate_check(self, summary: str, project: str, ask, test_mode: bool, fallback=None) -> str:
+        """넣기 전 — 그 과제의 ERP 결의서내역에 대표적요가 같은 청구서가 있으면 묻는다. 멈추면 그 까닭, 이어 가면 ''.
+
+        담당자 요청(2026-10-19): 앱에 넣은 이력보다 실제 ERP 내역에 같은 것이 있는지가 먼저다 — ERP 에서 지운 청구서를 앱 이력 때문에
+        다시 넣지 못하게 막던 창을 걷어냈다. 결의서내역을 못 읽을 때만 앱 이력(fallback() 의 글)으로 묻는다. 시험이면 묻지 않는다."""
+        if test_mode:
+            self.log("시험 — ERP 결의서내역 중복 확인을 건너뜁니다 (대표적요 앞에 [시험])")
+            return ""
+        move = bool(getattr(self._load_settings(), "auto_new_sheet", True))     # 새 청구서를 앱이 띄울 때만 화면을 옮겨 읽는다
+        rows, total, why = navigate.existing_claims(self.page.context, project, summary, self.log, self._wait, move=move)
+        if rows is None:
+            self.log("ERP 결의서내역을 읽지 못해 앱 기록으로 봅니다: " + why)
+            warning = fallback() if fallback else ""
+            if warning and not ask("ERP 결의서내역을 읽지 못해 앱 기록으로 봅니다(%s).\n%s\n그래도 넣으려면 [계속], 아니면 [멈추기]."
+                                   % (why, warning)):
+                return "앱 기록에 넣은 이력이 있어 멈춤"
+            return ""
+        if not rows:
+            self.log("✓ ERP 결의서내역(과제 %s, %d건)에 대표적요가 같은 청구서 없음" % (project, total))
+            return ""
+        found = ", ".join("결의번호 %s(%s%s)" % (r.get("seq") or "?", r.get("state") or "진행구분 모름",
+                                                f" · {int(r['amt']):,}원" if str(r.get("amt", "")).lstrip("-").isdigit() else "")
+                          for r in rows[:5]) + (" 외" if len(rows) > 5 else "")
+        self.log("ERP 결의서내역에 대표적요가 같은 청구서가 있습니다: " + found)
+        if not ask(f"ERP 결의서내역에 대표적요 '{summary}' 청구서가 이미 있습니다 — {found}.\n"
+                   "또 넣으면 같은 지출이 두 번 청구됩니다. 다시 넣는 것이면 ERP 에서 그 청구서를 지운 뒤 다시 누르고, 이미 올린 폴더로 "
+                   "시험하는 것이면 아래 [시험] 을 켜고 다시 누르세요.\n그래도 새 청구서에 넣으려면 [계속], 아니면 [멈추기]."):
+            return "ERP 결의서내역에 대표적요가 같은 청구서가 있어 멈춤"
+        return ""
+
+    def _fresh_sheet(self, page, frame, project: str):
+        """이 과제의 새 작성 화면을 결의서 목록의 [일반청구] 로 띄워 앞에 둔다(설정 auto_new_sheet, 담당자 허락 2026-10-19).
+        저장된 청구서 · 다른 과제의 청구서 · (결의서내역을 읽느라 뒤로 간) 빈 새 청구서를 새 것으로 바꾼다. 입력이 남은 화면은 바꾸지 않는다.
+        끄면 · 못 띄우면 받은 그대로 돌려준다(사람이 띄운 화면을 쓴다)."""
         cfg = self._load_settings()
         if not getattr(cfg, "auto_new_sheet", True):
             return page, frame
-        if frame is not None and not claim_form.saved_sheet(claim_form.read_state(frame, ["REQ_CNT", "APPR_DIV_CD"])):
-            return page, frame
-        wait = lambda seconds: self.page.wait_for_timeout(int(seconds * 1000))  # noqa: E731
-        if frame is None and erp.grid_rows_shown(self.page.context) == 0 and getattr(cfg, "auto_open_project", True):
-            self.go_to_claims(getattr(cfg, "project_no", "") or settings_mod.DEFAULT_PROJECT_NO)
-        opened, note, _fresh = navigate.open_new_sheet(self.page.context, self.log, wait)
+        if navigate.list_frame(self.page.context, project) is None:
+            self.go_to_claims(project)
+        opened, note, _fresh = navigate.open_new_sheet(self.page.context, self.log, self._wait, project, replace_empty=True)
         if not opened:
             self.log("새 청구서를 앱이 띄우지 못함: " + note)
             return page, frame
         return claim_form.wait_for_form(self.page.context, log=self.log)
+
+    def _typed_sheet(self, frame) -> list[str]:
+        """사람이 입력하다 만 저장 전 작성 화면이면 그 칸들 — 앱이 새 청구서로 바꾸면 날아가므로 손대지 않는다."""
+        if frame is None:
+            return []
+        state = navigate._sheet_state(frame)
+        if state.get("REQ_CNT") or state.get("APPR_DIV_CD") == "40":
+            return []
+        return navigate.typed_fields(state)
 
     # ── 일반청구 ─────────────────────────────────────────────────────────
     def claim_form_open(self) -> bool:
@@ -204,13 +250,38 @@ class ErpSession:
         _page, frame = claim_form.find_form(self.page.context)
         return frame is not None
 
-    def fill_claim(self, data: dict, dry_run: bool = True) -> claim_form.FillReport:
-        """일반청구 작성 화면에 값을 채운다(claims/form.py). 저장·신청은 사람이."""
+    def fill_claim(self, data: dict, dry_run: bool = True, project_no: str = "", folder: str = "", test_mode: bool = False,
+                   ask=None) -> claim_form.FillReport:
+        """일반청구 작성 화면에 값을 채운다(claims/form.py). 저장·신청은 사람이.
+        실제로 넣을 때는 먼저 그 과제의 ERP 결의서내역에서 적요가 같은 청구서를 찾고(_duplicate_check), 결의서 목록의 [일반청구] 로
+        새 청구서를 띄워 넣는다(_fresh_sheet). 시험이면 적요 앞에 [시험] 을 붙이고 중복 확인을 건너뛴다."""
         if not self.browser_open:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
+        if test_mode and not str(data.get("summary", "")).startswith(claim_scholarship.TEST_PREFIX.strip()):
+            data = dict(data, summary=claim_scholarship.TEST_PREFIX + str(data.get("summary", "")))
         page, frame = claim_form.wait_for_form(self.page.context, log=self.log)
         if not dry_run:
-            page, frame = self._new_sheet_if_needed(page, frame)
+            typed = self._typed_sheet(frame)
+            if typed:
+                report = claim_form.FillReport(dry_run=dry_run)
+                report.blocked = (f"작성 화면에 저장하지 않은 입력({' · '.join(typed)})이 있습니다 — 그 청구서를 [저장] 하거나 비운 뒤 다시 누르세요. "
+                                  "앱은 그 화면을 바꾸지 않습니다.")
+                self.log(report.blocked)
+                return report
+            project = self._project(project_no)
+
+            def history() -> str:
+                from .claims import record
+                before = record.previous(folder) if folder else None
+                return (f"이 폴더는 {before.get('when')} 에 적요 '{before.get('summary')}' 로 넣은 적이 있습니다."
+                        if before else "")
+
+            stop = self._duplicate_check(str(data.get("summary", "")), project, ask or (lambda _m: False), test_mode, history)
+            if stop:
+                report = claim_form.FillReport(dry_run=dry_run)
+                report.blocked = stop
+                return report
+            page, frame = self._fresh_sheet(page, frame, project)
         if frame is None:
             report = claim_form.FillReport(dry_run=dry_run)
             report.blocked = ("일반청구 작성 화면을 찾지 못했습니다. 앱이 연 브라우저에서 결의서내역 → [일반청구] 를 눌러 "
@@ -306,26 +377,54 @@ class ErpSession:
 
         ask(문구) 는 앱이 확신하지 못하는 단계에서 사람에게 묻는다 — True 면 [계속], False 면 [멈추기]. 이 스레드에서 기다린다.
         """
-        if dry_run:
-            # 미리 보기는 ERP 화면 없이 계획만 — 브라우저가 없어도 된다
-            return claim_scholarship.run(None, None, job, self.log, ask=lambda _m: False, dry_run=True)
+        with claim_scholarship.marked(job):                    # 시험이면 넣는 동안만 대표적요 앞에 [시험]
+            if dry_run:
+                # 미리 보기는 ERP 화면 없이 계획만 — 브라우저가 없어도 된다
+                return claim_scholarship.run(None, None, job, self.log, ask=lambda _m: False, dry_run=True)
+            return self._fill_scholarship(job, ask or (lambda _m: False), on_person)
+
+    def _fill_scholarship(self, job, ask, on_person) -> claim_scholarship.ScholarshipReport:
         if not self.browser_open:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
         cfg = self._load_settings()
-        wait = lambda seconds: self.page.wait_for_timeout(int(seconds * 1000))  # noqa: E731
+        project = self._project(getattr(job, "project_no", ""))
         page, frame = claim_form.wait_for_form(self.page.context, log=self.log)
+        # 이 폴더의 청구서(멈췄다가 이어 넣기 — 결의번호 · 대표적요로 알아본다)가 앞에 있으면 그대로. 아니면 그 과제의 ERP 결의서내역에서
+        # 대표적요가 같은 청구서를 먼저 찾고(담당자 요청 2026-10-19), 결의서 목록의 [일반청구] 로 새 청구서를 띄운다.
+        continuing = False
+        if frame is not None and navigate.frame_project(frame) in ("", project):
+            own, why = claim_scholarship.sheet_owner(job, *claim_scholarship._read_sheet(frame))
+            continuing = own and why != "새 청구서"
+        if not continuing:
+            report = claim_scholarship.ScholarshipReport(dry_run=False)
+            typed = self._typed_sheet(frame)
+            if typed:
+                report.blocked = (f"작성 화면에 저장하지 않은 입력({' · '.join(typed)})이 있습니다 — 그 청구서를 [저장] 하거나 비운 뒤 다시 누르세요. "
+                                  "앱은 그 화면을 바꾸지 않습니다.")
+                self.log(report.blocked)
+                return report
+            stop = self._duplicate_check(job.main_summary, project, ask, getattr(job, "test_mode", False),
+                                         lambda: claim_scholarship.record_warning(job))
+            if stop:
+                report.blocked = stop
+                self.log(f"{job.spec.name} 청구 멈춤 — {stop}")
+                return report
+            page, frame = self._fresh_sheet(page, frame, project)
         if frame is None:
-            # 작성 화면이 없으면 앱이 띄운다. 저장된 다른 청구서가 떠 있는 경우는 scholarship._ensure_own_sheet 가 이 폴더의 청구서인지
-            # (결의번호 · 대표적요) 먼저 보고 아닐 때만 띄운다 — 멈췄다가 같은 폴더를 이어 넣을 때 새로 띄우지 않게
-            page, frame = self._new_sheet_if_needed(page, frame)
-        if frame is None:
-            report = claim_scholarship.ScholarshipReport(dry_run=dry_run)
+            report = claim_scholarship.ScholarshipReport(dry_run=False)
             report.blocked = ("작성 화면을 찾지 못했습니다. 앱이 연 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄운 뒤 "
                               "다시 누르세요. (인건비 탭은 앱이 누릅니다)")
             self.log(report.blocked)
             return report
-        open_sheet = ((lambda: navigate.open_new_sheet(self.page.context, self.log, wait))
-                      if getattr(cfg, "auto_new_sheet", True) else None)
+
+        def open_sheet():
+            # 넣는 도중 다른 청구서가 떠 있으면(_ensure_own_sheet) — 그 과제의 결의서 목록에서 새로 띄운다
+            if navigate.list_frame(self.page.context, project) is None:
+                self.go_to_claims(project)
+            return navigate.open_new_sheet(self.page.context, self.log, self._wait, project)
+
+        open_sheet = open_sheet if getattr(cfg, "auto_new_sheet", True) else None
+        dry_run = False
         messages: list[str] = []
 
         def on_dialog(dialog) -> None:
@@ -355,7 +454,8 @@ class ErpSession:
         if frame is None:
             self.log("신청 전 대조: 작성 화면을 찾지 못했습니다")
             return sheet_check.SheetCheck()
-        return claim_scholarship.check_sheet(frame, job, self.log, wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)))
+        with claim_scholarship.marked(job):                    # 시험으로 넣은 줄은 [시험] 대표적요로 맞춘다
+            return claim_scholarship.check_sheet(frame, job, self.log, wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)))
 
     # ── 목록 ─────────────────────────────────────────────────────────────
     def read_list(self) -> Selection:
