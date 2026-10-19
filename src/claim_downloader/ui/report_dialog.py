@@ -198,7 +198,9 @@ def show_structure_saved(parent: QWidget | None, path: str) -> None:
         parent, "화면 구조 저장",
         f"지금 열린 화면의 구조를 저장했습니다.\n{path}\n\n"
         "이 파일을 담당자(Claude)에게 보내면 그 화면의 자동화를 설계할 수 있습니다. "
-        "계좌번호 같은 값이 섞일 수 있으니 빈 작성 화면에서 저장한 것인지 확인하세요.\n\n지금 열어 볼까요?",
+        "계좌번호 같은 값이 섞일 수 있으니 빈 작성 화면에서 저장한 것인지 확인하세요.\n"
+        "화면 여러 개를 차례로 저장했으면 같은 폴더의 _화면구조_모음.txt 에 모두 모여 있습니다 — 그 파일 하나만 보내셔도 됩니다.\n\n"
+        "지금 열어 볼까요?",
         QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
     if answer == QMessageBox.Yes:
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))

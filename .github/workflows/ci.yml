@@ -41,7 +41,7 @@ jobs:
       # 실제로 올라간 파일을 확인한다. 한 번 올라가면 이력에서 지우기 어렵다.
       - name: 개인정보 파일 혼입 검사
         run: |
-          found=$(git ls-files '*.pdf' '*.hwp' '*.hwpx' '*.jpg' '*.jpeg' '*.xls' '*.xlsx' 'samples/*' '서류/*' '*_받은기록.json' '*_보관목록.json' '*_실행로그.txt' '*_화면구조.txt' '*_공유용로그.txt' '*_청구입력기록.json' 'config.json')
+          found=$(git ls-files '*.pdf' '*.hwp' '*.hwpx' '*.jpg' '*.jpeg' '*.xls' '*.xlsx' 'samples/*' '서류/*' '*_받은기록.json' '*_보관목록.json' '*_실행로그.txt' '*_화면구조.txt' '*_화면구조_모음.txt' '*_공유용로그.txt' '*_청구입력기록.json' 'config.json')
           if [ -n "$found" ]; then
             echo "중단: 청구서·기록 파일이 저장소에 올라가 있습니다."
             echo "$found"

@@ -17,6 +17,7 @@ Playwright 를 들여오지 않는다(브라우저를 띄우는 곳은 session.p
 """
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 
@@ -309,3 +310,19 @@ def format_report(windows: list[dict], when: str | None = None) -> str:
                 out.append(f"    [숨김] … 외 {len(hidden) - budget}개")
         out.append("")
     return "\n".join(out).rstrip("\n") + "\n"
+
+
+BOOK_LIMIT = 3_000_000      # 모음이 이보다 커지면 새로 시작한다(지난 실측이 끝없이 쌓이지 않게)
+
+
+def append_to_book(path, report: str) -> int:
+    """저장한 화면 구조를 모음 파일 끝에 붙인다. 몇 번째인지 돌려준다. 메뉴 이동처럼 화면을 차례로 실측할 때 담당자가 마지막에
+    모음 하나만 보내면 된다(2026-10-19). 쓰지 못하면 0 — 모음은 덤이라 저장 자체를 실패로 두지 않는다."""
+    try:
+        old = path.read_text(encoding="utf-8") if path.exists() and path.stat().st_size < BOOK_LIMIT else ""
+        number = len(re.findall(r"^════ 화면 구조 \d+번째", old, re.M)) + 1
+        head = f"════ 화면 구조 {number}번째 ════\n"
+        path.write_text(old + ("\n" if old and not old.endswith("\n\n") else "") + head + report, encoding="utf-8")
+        return number
+    except OSError:
+        return 0

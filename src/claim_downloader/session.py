@@ -151,9 +151,11 @@ class ErpSession:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
         windows = diagnose.capture(self.page.context, frame_kind=erp.frame_kind)
         path = settings_mod.structure_path()
-        path.write_text(diagnose.format_report(windows), encoding="utf-8")
+        report = diagnose.format_report(windows)
+        path.write_text(report, encoding="utf-8")
+        number = diagnose.append_to_book(settings_mod.structure_book_path(), report)
         count = sum(len(fr.get("elements", [])) for win in windows for fr in win["frames"])
-        self.log("화면 구조 저장: 창 %d · 요소 %d개 → %s" % (len(windows), count, path))
+        self.log("화면 구조 저장: 창 %d · 요소 %d개 → %s (모음 %d번째)" % (len(windows), count, path, number))
         return path
 
     # ── 일반청구 ─────────────────────────────────────────────────────────

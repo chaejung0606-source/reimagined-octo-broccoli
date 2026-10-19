@@ -10,7 +10,7 @@
       _보관목록.json    보관 PDF 경로 → 문서번호 캐시 (지우면 다시 전체 스캔)
       _실행로그.txt     실행 로그. 문제가 생기면 여기부터 본다. 회의록 생성 기록도 여기에.
       회의록규칙.txt    회의록 작성 규칙 (minutes/rules.py). 기본값 파일과 쌍으로.
-      _화면구조.txt     진단 모드 결과 — 열린 ERP 화면의 입력 요소 (새 화면 실측용)
+      _화면구조.txt     진단 모드 결과 — 열린 ERP 화면의 입력 요소 (새 화면 실측용) · _화면구조_모음.txt 저장할 때마다 쌓은 것
       일반청구규칙.txt  일반청구 추출 규칙 (claims/rules.py) · _청구입력기록.json 채운 폴더 기록
       장학금규칙.txt    장학금 청구 대표적요·행 적요 규칙 (claims/scholarship.py)
       혁신인재지원금규칙.txt  혁신인재지원금 청구 규칙 (같은 모양, 대표적요 03_)
@@ -88,6 +88,11 @@ def log_path() -> Path:
 def structure_path() -> Path:
     """진단 모드(diagnose.py)가 남기는 화면 구조. 계좌번호 같은 값이 섞일 수 있어 저장소·배포에서 뺀다."""
     return data_dir() / "_화면구조.txt"
+
+
+def structure_book_path() -> Path:
+    """[화면 구조 저장] 을 누를 때마다 차례로 쌓는 모음 — 메뉴 이동처럼 화면 여러 개를 실측할 때 마지막에 이 파일 하나만 보내면 된다."""
+    return data_dir() / "_화면구조_모음.txt"
 
 
 def claims_rules_path() -> Path:

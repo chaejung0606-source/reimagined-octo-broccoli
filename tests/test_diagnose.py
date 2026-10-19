@@ -106,3 +106,12 @@ def test_probe_finds_menu_text_in_a_real_browser():
         pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
     pressable = {(e["tag"], e["id"], e["text"]) for e in got if e.get("pointer")}
     assert pressable == {("span", "", "과제관리"), ("li", "m11", "과제정보"), ("div", "", "청구서")}, pressable
+
+
+def test_each_save_is_added_to_the_book(tmp_path):
+    """[화면 구조 저장] 을 여러 번 누르면 모음 파일에 차례로 쌓인다 — 메뉴 이동처럼 화면 여러 개를 실측할 때 하나만 보내면 되게."""
+    book = tmp_path / "_화면구조_모음.txt"
+    assert diagnose.append_to_book(book, "첫 화면\n") == 1
+    assert diagnose.append_to_book(book, "둘째 화면\n") == 2
+    text = book.read_text(encoding="utf-8")
+    assert text.index("════ 화면 구조 1번째 ════\n첫 화면") < text.index("════ 화면 구조 2번째 ════\n둘째 화면")
