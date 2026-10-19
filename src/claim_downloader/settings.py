@@ -136,6 +136,15 @@ def innovation_rules_base_path() -> Path:
     return data_dir() / "혁신인재지원금규칙.기본값.txt"
 
 
+def personal_rules_path() -> Path:
+    """개인 지급(일반청구 탭 · 증빙 기타) 적요 규칙 — 장학금과 같은 모양, 대표적요의 바탕이 지급 공문 제목."""
+    return data_dir() / "개인지급규칙.txt"
+
+
+def personal_rules_base_path() -> Path:
+    return data_dir() / "개인지급규칙.기본값.txt"
+
+
 def claim_record_path() -> Path:
     """ERP 에 채운 지출 폴더의 기록 — 같은 건을 두 번 채우지 않게 묻는 근거."""
     return data_dir() / "_청구입력기록.json"

@@ -3,6 +3,7 @@
 담당자 제안(2026-10-14): 장학금을 홈에 따로 두지 않고 일반청구 화면에서 폴더마다 종류를 고른다(claims/kinds.py).
 이 패널은 한 폴더(claims.scholarship.Job)를 보여 주고 고치게 할 뿐이다 — 대표적요 · 지급예정년월 · 소득자 찾기 구분 · 명단 엑셀 ·
 학생 표(넣을 사람 체크). ERP 에 넣는 것은 화면(pages/claim.py)이 브라우저 스레드에 맡긴다.
+개인 지급(일반청구 탭 · 증빙 기타, 2026-10-19)은 같은 패널에서 지급예정년월 대신 비목(지급 공문에서 찾은 것)을 고친다.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...claims import person, scholarship
+from ...claims.schema import EXP_CATEGORIES
 from ..widgets import Field, PillDelegate, WrapLabel, muted_label
 
 COLUMNS = [("", 30), ("상태", 84), ("이름", 76), ("학번", 104), ("금액", 84), ("첨부", 44), ("행 적요", None)]
@@ -77,14 +79,33 @@ class ScholarshipPanel(QWidget):
         self.pay_ym.setPlaceholderText("YYYY-MM")
         self.pay_ym.setToolTip("지급예정년월 — 청구하는 달")
         self.pay_ym.editingFinished.connect(self._options_changed)
-        row.addWidget(Field("지급예정년월", self.pay_ym), 1)
+        self.pay_ym_field = Field("지급예정년월", self.pay_ym)
+        row.addWidget(self.pay_ym_field, 1)
+        # 개인 지급 — 비목은 지급 공문에서 찾고(못 찾으면 빈칸) 여기서 고친다. 장학금 · 혁신인재지원금은 종류에 정해져 있어 숨긴다
+        self.category_box = QComboBox()
+        # 보기 글자가 길다('교육·연구프로그램개발·운영비') — 좁은 창(1024)에서 대표적요 칸을 밀어내지 않게 줄어들 수 있게 둔다
+        self.category_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.category_box.setMinimumContentsLength(8)
+        self.category_box.addItem("비목 고르기", "")
+        for name in EXP_CATEGORIES:
+            self.category_box.addItem(name, name)
+        self.category_box.setToolTip("ERP 비목 — 공통증빙의 지급 공문에서 찾은 것. 고르면 대표적요 앞 번호도 바뀝니다")
+        self.category_box.currentIndexChanged.connect(self._category_changed)
+        self.category_field = Field("비목", self.category_box)
+        row.addWidget(self.category_field, 2)
         self.tab_box = QComboBox()
         self.tab_box.addItem("인적정보 (학번)", person.TAB_STUDENT)
         self.tab_box.addItem("참여인력 (사번)", person.TAB_STAFF)
         self.tab_box.setToolTip("소득자 돋보기 팝업에서 찾을 구분 — 학생은 인적정보")
         self.tab_box.currentIndexChanged.connect(lambda _i: self._options_changed())
-        row.addWidget(Field("소득자 찾기", self.tab_box), 2)
+        self.tab_field = Field("소득자 찾기", self.tab_box)
+        row.addWidget(self.tab_field, 2)
         layout.addLayout(row)
+
+        # 개인 지급 — 지급 공문을 어디서 찾았는지(제목 · 비목 · 금액). 장학금은 숨긴다
+        self.notice_note = muted_label("")
+        self.notice_note.setWordWrap(True)
+        layout.addWidget(self.notice_note)
 
         self.excel_box = QComboBox()
         self.excel_box.setToolTip("폴더에 엑셀이 여럿이면 명단 엑셀을 고르세요")
@@ -153,7 +174,24 @@ class ScholarshipPanel(QWidget):
         self.excel_field.setVisible(bool(job) and len(job.excel_candidates) > 1)
         spec = job.spec if job else scholarship.SPECS[scholarship.kinds.SCHOLARSHIP]
         # 혁신인재지원금은 비목 번호(03_)와 규칙 파일만 다르다 — 보기 · 도움말이 그 종류를 가리키게
-        self.main_summary.setPlaceholderText(f"예: {spec.code}_2026년도 7월 (가)형 근로장학금")
+        self.main_summary.setPlaceholderText(f"예: {spec.code}_2026년도 7월 (가)형 근로장학금" if spec.payroll else
+                                             "예: 07_2026년도 9월 재직자 역량 강화 프로그램 지원금")
+        self.main_summary.setToolTip("명단 제목에 비목 번호를 붙인 것. 고치면 행 적요도 바뀝니다" if spec.payroll else
+                                     "지급 공문 제목에 비목 번호를 붙인 것. 고치면 행 적요도 바뀝니다")
+        self.pay_ym_field.setVisible(spec.payroll)
+        self.category_field.setVisible(not spec.payroll)
+        self.category_box.blockSignals(True)
+        self.category_box.setCurrentIndex(max(self.category_box.findData(job.category if job else ""), 0))
+        self.category_box.blockSignals(False)
+        self.tab_field.label.setText("소득자 찾기" if spec.payroll else "입금처 찾기")
+        notice = getattr(job, "notice", None) if job else None
+        self.notice_note.setVisible(not spec.payroll)
+        if notice is not None:
+            # 한 줄로 — 제목은 대표적요 칸에 이미 들어 있다. 전체는 말풍선
+            self.notice_note.setText("지급 공문: " + (f"{os.path.basename(notice.path)} · 비목 {notice.category or '못 찾음'}"
+                                                    + (f" · 금액 {notice.amount:,}원" if notice.amount else "")
+                                                    if notice.path else "공통증빙에서 찾지 못함 — 비목 · 대표적요를 직접 확인하세요"))
+            self.notice_note.setToolTip("\n".join(notice.lines()))
         self.rules_button.setToolTip(f"대표적요 · 행 적요를 만드는 규칙({spec.rules_file}). 저장한 뒤 [다시 읽기].")
         self._loading = False
         self._fill_table()
@@ -166,7 +204,7 @@ class ScholarshipPanel(QWidget):
 
     def _sync(self) -> None:
         editable = self.job is not None and not self._locked
-        for widget in (self.main_summary, self.pay_ym, self.tab_box, self.excel_box, self.reload_button):
+        for widget in (self.main_summary, self.pay_ym, self.category_box, self.tab_box, self.excel_box, self.reload_button):
             widget.setEnabled(editable)
         self.table.setEnabled(self.job is not None)
 
@@ -273,6 +311,17 @@ class ScholarshipPanel(QWidget):
         self.apply_options()
         if self.pay_ym.text().strip() and not re.fullmatch(r"\d{4}-\d{2}", self.pay_ym.text().strip()):
             self.pay_ym.setToolTip("YYYY-MM 꼴로 적어 주세요")
+        self._fill_table()
+        self.changed.emit()
+
+    def _category_changed(self, _index: int) -> None:
+        if self._loading or self.job is None:
+            return
+        self.apply_options()                       # 대표적요 칸에서 고친 것을 먼저 옮기고
+        self.job.set_category(self.category_box.currentData() or "")
+        self._loading = True
+        self.main_summary.setText(self.job.main_summary)
+        self._loading = False
         self._fill_table()
         self.changed.emit()
 

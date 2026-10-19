@@ -151,7 +151,11 @@ def test_scholarship_presses_only_tab_save_person_and_attach_buttons():
     claims = SRC / "claims"
     sch = (claims / "scholarship.py").read_text(encoding="utf-8")
     assert ".click(" not in sch
-    assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", sch)) == {"TAB_ID", "OWNER_CHECK_ID"} and 'TAB_ID = "20"' in sch
+    # 탭은 서브탭 둘뿐 — 인건비(소득성 경비) #20, 개인 지급(2026-10-19)은 일반청구 #10. 청구구분 라디오(REQ_DIV_CD)는 읽기만 한다
+    assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_.]+)\)", sch)) == {"spec.tab_id", "OWNER_CHECK_ID"}
+    assert 'TAB_ID = "20"' in sch and 'GENERAL_TAB_ID = "10"' in sch
+    assert set(re.findall(r"tab_id=([A-Z_]+)", sch)) <= {"TAB_ID", "GENERAL_TAB_ID"}
+    assert "REQ_DIV_CD" not in "".join(_click_lines(sch))
     assert 'OWNER_CHECK_ID = "btn_ownrInq"' in sch and all("일괄" not in line for line in _click_lines(sch))
     press = sch.split("def _press_owner_check(", 1)[1]
     assert press.index("VISIBLE_ID_JS") < press.index("CLICK_ID_JS, OWNER_CHECK_ID")      # 보이는 단추가 있을 때만

@@ -80,6 +80,8 @@ GUIDE_SCHOLARSHIP = ("학생 표를 확인한 뒤, 브라우저에서 결의서�
 # 새 청구서를 앱이 띄울 때(설정 auto_new_sheet, 기본) — 사람은 로그인만 하면 된다
 GUIDE_SCHOLARSHIP_AUTO = ("학생 표와 위의 과제를 확인한 뒤 [ERP 에 넣기] 를 누르세요. 그 과제의 결의서내역에 같은 청구서가 있는지 보고, "
                           "새 청구서 · 인건비 탭은 앱이 띄웁니다. 이미 올린 폴더로 시험하려면 [시험] 을 켜세요.")
+GUIDE_PERSONAL = ("사람 표와 비목 · 대표적요(공통증빙의 지급 공문에서 찾음)를 확인한 뒤 [ERP 에 넣기] 를 누르세요. 일반청구 탭에 사람마다 "
+                  "입금처를 고르고 증빙 기타로 넣어 [저장] 합니다. 이미 올린 폴더로 시험하려면 [시험] 을 켜세요.")
 GUIDE_READ = ("값을 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [미리 보기] 로 확인하세요. "
               "실제로 넣으려면 '미리 보기만' 체크를 풀고 [ERP 에 채우기].")
 NO_BACKEND = ("일반 폴더의 [내용 읽기] 는 Claude Code 가 필요합니다(장학금 · 혁신인재지원금은 AI 없이 됩니다). Claude Code 를 설치한 뒤 "
@@ -739,7 +741,8 @@ class ClaimPage(QWidget):
             chosen = job.chosen()
             data = {"summary": job.main_summary or "(대표적요 없음)",
                     "amount": sum(job.people[i].amount or 0 for i in chosen),
-                    "payeeName": f"학생 {job.count_text(chosen)}" + (f" / 명단 {job.count_text(list(range(len(job.people))))}"
+                    "payeeName": ("학생 " if job.spec.payroll else "사람 ") + job.count_text(chosen)
+                                 + (f" / 명단 {job.count_text(list(range(len(job.people))))}"
                                                                         if len(chosen) != len(job.people) else "")}
         kind_item = QTableWidgetItem(kinds.name_of(self._kind(row)))
         project = self._projects[row] if row < len(self._projects) else ""
@@ -771,11 +774,14 @@ class ClaimPage(QWidget):
         path = os.path.abspath(path)
         if not os.path.isdir(path) or path in self._dirs or self._running or self._erp_running:
             return False
+        chosen = kind or self.add_kind.currentData() or kinds.AUTO
         try:
-            kind = kinds.resolve(kind or self.add_kind.currentData() or kinds.AUTO, path)
+            kind = kinds.resolve(chosen, path)
         except ValueError as error:
             QMessageBox.information(self, "청구 종류", str(error))
             return False
+        if chosen == kinds.GENERAL and kind == kinds.PERSONAL:
+            self._append_log(f"'{os.path.basename(path)}' — 지급내역 엑셀이 있어 개인 지급(기타)으로 넣습니다(표 위에서 바꿀 수 있습니다)")
         self._dirs.append(path)
         self._status.append("waiting")
         self._data.append(schema.normalize({}))
@@ -865,12 +871,16 @@ class ClaimPage(QWidget):
             self.form_stack.setCurrentWidget(self.scholarship_scroll)
             self.scholarship_panel.set_job(self._jobs[row])
             self.form_card.title_label.setText(f"{kinds.name_of(kind)} 청구")
-            self.form_card.hint_label.setText("학생마다 인건비 탭에 넣고 [저장] 합니다. 빼고 싶은 학생은 체크를 푸세요.")
+            personal = kind == kinds.PERSONAL
+            self.form_card.hint_label.setText(
+                "사람마다 일반청구 탭에 입금처 · 증빙 기타 · 청구구분 (90) 기타로 넣고 [저장] 합니다. 빼고 싶은 사람은 체크를 푸세요." if personal else
+                "학생마다 인건비 탭에 넣고 [저장] 합니다. 빼고 싶은 학생은 체크를 푸세요.")
             self._set_wide_form(True)
             self.form_card.setEnabled(True)
             self._loading_form = False
             if not self.is_running():
-                self.guide.setText(GUIDE_SCHOLARSHIP_AUTO if settings.load().auto_new_sheet else GUIDE_SCHOLARSHIP)
+                self.guide.setText(GUIDE_PERSONAL if personal else
+                                   GUIDE_SCHOLARSHIP_AUTO if settings.load().auto_new_sheet else GUIDE_SCHOLARSHIP)
             return
         self.form_stack.setCurrentIndex(0)
         self.form_card.title_label.setText("청구 내용")
@@ -1283,7 +1293,9 @@ class ClaimPage(QWidget):
         if not dry:
             if not self._browser_open:
                 return
-            hard = [p for p in problems if "대표적요" in p or "지급예정년월" in p or "표의 합계" in p or "사람이 없" in p]
+            # 넣기를 막는 것만(17절): 대표적요 없음 · 지급예정년월 꼴 · 표의 합계 불일치 · 사람 없음 · 비목 없음(개인 지급).
+            # '…대표적요를 확인하세요' 같은 알림 글은 막지 않는다 — 전에는 '대표적요' 글자만 봐서 대표적요를 적은 뒤에도 막혔다
+            hard = [p for p in problems if p.startswith(("대표적요가 비어", "지급예정년월", "비목")) or "표의 합계" in p or "사람이 없" in p]
             if hard:
                 QMessageBox.warning(self, "넣기 전에 고칠 것", "\n".join("· " + p for p in hard))
                 return
@@ -1310,7 +1322,8 @@ class ClaimPage(QWidget):
                       (f"앞 폴더의 청구서(결의번호 {previous.req_cnt or '?'})는 그대로 두고, ERP 에서 새 청구서(결의서내역 → [일반청구])를 "
                        "띄운 뒤 누르세요. 여기서 그만하려면 [취소]."))
         else:
-            heading = f"학생 한 명씩 넣고 [저장](임시저장) 합니다 — {job.count_text()} · [신청] 은 누르지 않습니다"
+            heading = (f"{'학생' if job.spec.payroll else '사람'} 한 명씩 넣고 [저장](임시저장) 합니다 — {job.count_text()} · "
+                       "[신청] 은 누르지 않습니다")
             footer = ("앱이 확신하지 못하는 단계에서는 멈추고 위의 노란 띠로 묻습니다. "
                       + ("새 청구서 작성 화면이 없거나 다른 청구서가 떠 있으면 앱이 결의서내역의 [일반청구] 로 새로 띄웁니다."
                          if settings.load().auto_new_sheet else "브라우저에 새 청구서 작성 화면이 떠 있어야 합니다.")

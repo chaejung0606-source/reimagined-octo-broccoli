@@ -21,7 +21,7 @@ HEADERS = {
     "student_no": ("학번", "사번", "학번/사번", "학번(사번)", "직번"),
     "bank": ("은행", "은행명", "금융기관"),
     "account": ("계좌", "계좌번호"),
-    "amount": ("금액(C=A*B)", "지급금액", "지급액", "금액", "청구액"),
+    "amount": ("금액(C=A*B)", "지급금액", "지급액", "금액", "청구액", "지원금액", "지원액", "합계금액", "지급총액", "총지급액", "총액"),
     "course": ("강좌명", "강좌", "교과목명", "교과목", "과목명", "과목"),
     # 외국인 학생의 국적 — 담당자가 명단에 열을 더하기로 함(2026-10-14). 비어 있으면 내국인으로 본다
     "nation": ("국적", "국가", "국적(국가)", "국가/지역", "국적(국가/지역)"),
@@ -38,6 +38,8 @@ TOTAL_RE = re.compile(r"^(총)?(합계|총계|계)(\(.*\))?$|합계|총계")
 SUBTOTAL_RE = re.compile(r"소계")
 # 머리글 윗줄이 이 글자면 묶음 머리 — 아래 줄 글자로 열을 정한다('산출내역' 아래 단가 · 시간 · 금액)
 GROUP_HEADERS = ("산출내역", "지급내역", "지급액내역", "세부내역")
+# 가로로 묶은 머리 아래의 '합계' 칸은 금액 열이다 — 프로그램참여지원비 명단의 '활동비/여비(교통비 · 일비 · 식비 · 숙박비 · 합계)'(14절)
+GROUP_TOTAL_HEADERS = ("합계", "합계(원)", "계")
 MAX_HEADER_SCAN = 12          # 머리글은 위쪽 열두 줄 안에 있다
 
 
@@ -175,19 +177,36 @@ def _header_key(label: str) -> str | None:
     return None
 
 
+def _spans(ws) -> set[tuple[int, int]]:
+    """가로로 여러 열을 묶은 칸이 덮는 (행, 열) — 묶음 머리('산출내역' · '결제자 정보(이름·은행·계좌)' · '활동비/여비') 줄의 칸들."""
+    try:
+        return {(m.min_row, c) for m in ws.merged_cells.ranges if m.max_col > m.min_col
+                for c in range(m.min_col, m.max_col + 1)}
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def _find_header(ws) -> tuple[int, dict]:
-    """(머리글 행 번호, 열 뜻 → 열 번호). 이름 열과 학번 열이 함께 있는 첫 줄을 머리글로 본다."""
+    """(머리글 행 번호, 열 뜻 → 열 번호). 이름 열과 학번(또는 금액) 열이 함께 있는 첫 줄을 머리글로 본다.
+    개인 지급 명단(재직자 · 외부 참가자)에는 학번이 없을 수 있다 — 그 사람은 입금처를 사람이 고른다(Person.note)."""
+    spans = _spans(ws)
     for r in range(1, min(ws.max_row, MAX_HEADER_SCAN) + 1):
         columns: dict[str, int] = {}
         for c in range(1, ws.max_column + 1):
             top = norm(ws.cell(r, c).value)
             below = norm(ws.cell(r + 1, c).value) if r < ws.max_row else ""
-            # 윗줄 글자가 먼저. 윗줄이 비었거나(세로 병합 아래 칸) '산출내역' 같은 묶음 머리면 둘째 줄 글자를 본다
-            # 윗줄이 머리글이 아닌 글자면(한 줄 머리글의 '비고' 등) 아래 줄은 자료다 — 첫 학생의 비고를 열 이름으로 보던 것을 막는다
-            key = _header_key(top) or (_header_key(below) if below and (not top or top in GROUP_HEADERS) else None)
+            if (r, c) in spans and below:
+                # 가로 묶음 머리 — 아래 줄 글자가 열 이름이다. '결제자 정보(이름·은행·계좌)' 는 윗줄에 '이름' 이 들어 있어
+                # 윗줄로 보면 은행 · 계좌 열을 놓친다. 아래 줄이 자료(한 줄 머리글을 가로로 묶은 칸)면 윗줄로 돌아간다.
+                key = _header_key(below) or ("amount" if below in GROUP_TOTAL_HEADERS else None) or _header_key(top)
+            else:
+                # 윗줄 글자가 먼저. 윗줄이 비었거나(세로 병합 아래 칸) '산출내역' 같은 묶음 머리면 둘째 줄 글자를 본다
+                # 윗줄이 머리글이 아닌 글자면(한 줄 머리글의 '비고' 등) 아래 줄은 자료다 — 첫 학생의 비고를 열 이름으로 보던 것을 막는다
+                key = _header_key(top) or (_header_key(below) if below and (not top or top in GROUP_HEADERS) else None)
             if key and key not in columns:
                 columns[key] = c
-        if "name" in columns and "student_no" in columns and _header_key(norm(ws.cell(r, columns["name"]).value)) == "name":
+        if ("name" in columns and ("student_no" in columns or "amount" in columns)
+                and _header_key(norm(ws.cell(r, columns["name"]).value)) == "name"):
             return r, columns
     return 0, {}
 
@@ -234,11 +253,19 @@ def read(path, sheet: str | None = None) -> Roster:
         roster.warnings.append("엑셀을 열지 못했습니다: " + (str(error).splitlines()[0][:100] if str(error) else "오류"))
         return roster
     try:
-        ws = wb[sheet] if sheet else wb[wb.sheetnames[0]]
-        header_row, columns = _find_header(ws)
-        if not header_row:
-            roster.warnings.append("머리글(이름 · 학번)이 있는 줄을 찾지 못했습니다. 첫 시트에 명단 표가 있어야 합니다")
+        names = [sheet] if sheet else list(wb.sheetnames)
+        found = [(name, _find_header(wb[name])) for name in names]
+        found = [(name, hit) for name, hit in found if hit[0]]
+        if not found:
+            roster.warnings.append("머리글(이름 · 학번)이 있는 줄을 찾지 못했습니다. 시트에 명단 표가 있어야 합니다")
             return roster
+        # 시트가 여럿이면(프로그램참여지원비 명단: 국외 · 국내) 사람이 있는 첫 시트 — 둘 다 있으면 알린다(폴더 1개 = 청구서 1개)
+        filled = [(name, hit) for name, hit in found if _has_people(wb[name], *hit)] or found
+        if len(filled) > 1:
+            roster.warnings.append("시트 %d개(%s)에 명단이 있어 '%s' 만 읽었습니다 — 다른 시트는 폴더를 나눠 넣으세요"
+                                   % (len(filled), ", ".join(n for n, _ in filled), filled[0][0]))
+        name, (header_row, columns) = filled[0]
+        ws = wb[name]
         roster.columns = columns
         roster.title = _title_above(ws, header_row)
         roster.kind = kind_of(roster.title)
@@ -297,6 +324,15 @@ def read(path, sheet: str | None = None) -> Roster:
     if not roster.title:
         roster.warnings.append("표 위에 제목(예: 2026년도 7월 (가)형 근로장학금 지급내역)이 없습니다 — 대표적요를 직접 적으세요")
     return roster
+
+
+def _has_people(ws, header_row: int, columns: dict) -> bool:
+    """머리글 아래에 이름과 금액이 있는 줄이 하나라도 있는지 — 빈 양식 시트를 건너뛰려고."""
+    for r in range(header_row + 1, min(ws.max_row, header_row + 60) + 1):
+        name = norm(ws.cell(r, columns["name"]).value)
+        if name and name not in TOTAL_WORDS and ("amount" not in columns or _to_int(ws.cell(r, columns["amount"]).value)):
+            return True
+    return False
 
 
 def summary_lines(roster: Roster) -> list[str]:

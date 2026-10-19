@@ -413,14 +413,16 @@ class FakeForm:
             return True
         if js is payee.CLICK_ID_JS:
             self.clicks.append(arg)
-            if arg == scholarship.TAB_ID:
-                self.v["TAB_GB"] = "20"
+            if arg in (scholarship.TAB_ID, scholarship.GENERAL_TAB_ID):
+                self.v["TAB_GB"] = arg
             # 은행 · 계좌가 비어 있으면 ERP 는 '예금주조회시 은행/계좌번호는 필수입력입니다.' 알림만 띄우고 결과를 안 바꾼다
             if arg == scholarship.OWNER_CHECK_ID and self.owner_check is not None and self.v.get("ACCT_NO"):
                 self.v["OWNR_INQ_RSLT"] = self.owner_check.format(name=self.v["RCV_NM"])
             return {"ok": True}
         if js is scholarship.VISIBLE_ID_JS:
             return True
+        if js is scholarship.REQ_DIV_JS:
+            return self.v.get("REQ_DIV", "90")      # 청구구분 라디오 — 새 청구서는 (90) 기타
         if js is form.STATE_JS:
             out = {}
             for i in arg:
@@ -1233,9 +1235,10 @@ def test_kind_guess_reads_payment_excel_without_evidence_folders(tmp_path):
 
     assert kinds.guess(folder("9월", "2026학년도 (나)형 근로장학금 지급내역.xlsx")) == kinds.SCHOLARSHIP
     assert kinds.guess(folder("소학회/9월", "진행요원비(소학회 회장) 혁신인재지원금 지급내역.xlsx")) == kinds.INNOVATION
-    # 이름에 그 말이 없는 지급내역(자문료) · '지원내역'(프로그램참여지원비)은 일반청구라 그대로
+    # 자문료 지급내역은 자문료 증빙 창이 따로 있어 아직 일반 그대로. '지원내역'(프로그램참여지원비)은 개인 지급(일반청구 탭 · 증빙 기타,
+    # 담당자 2026-10-19 "개인 계좌이체의 경우는 지급내역 서류가 있습니다")
     assert kinds.guess(folder("전문가/자문", "자문료 지급내역.xlsx")) == kinds.GENERAL
-    assert kinds.guess(folder("학회", "(양식) 프로그램참여지원비 지원내역.xlsx")) == kinds.GENERAL
+    assert kinds.guess(folder("학회", "(양식) 프로그램참여지원비 지원내역.xlsx")) == kinds.PERSONAL
     assert kinds.roster_excels(str(tmp_path / "9월")) == ["2026학년도 (나)형 근로장학금 지급내역.xlsx"]
 
 
@@ -1250,7 +1253,7 @@ def test_kind_resolve_honors_choice_and_refuses_unready(tmp_path):
         assert not kinds.find(key).ready
         with pytest.raises(ValueError):
             kinds.resolve(key, str(folder))
-    assert [k.name for k in kinds.KINDS] == ["일반", "장학금", "혁신인재지원금", "출장비", "카드"]
+    assert [k.name for k in kinds.KINDS] == ["일반", "장학금", "혁신인재지원금", "개인 지급(기타)", "출장비", "카드"]
     assert kinds.resolve(kinds.INNOVATION, str(folder)) == kinds.INNOVATION and kinds.uses_roster(kinds.INNOVATION)
 
 
