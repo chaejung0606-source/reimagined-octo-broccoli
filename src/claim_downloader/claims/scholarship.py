@@ -70,8 +70,11 @@ RULES_DEFAULT = """대표적요: 02_{제목}
 
 # 저장 뒤 '청구내역' 표 — 줄 수(행 라디오 CUR_REQ)와 '합계' 줄의 숫자(청구액 · 실지급액 · 공제합계 순, 실측 ⑤)
 SUMMARY_JS = """() => {
-  const rows = document.querySelectorAll('input[name=CUR_REQ]').length;
   const txt = e => (e.innerText || e.textContent || '').replace(/\\s+/g, ' ').trim();
+  // 저장된 줄만 센다 — 새 청구서의 빈 줄(선택 칸만, 글자 없음)은 빼고(SHEET_ROWS_JS 와 같은 규칙, 2026-10-19)
+  const rows = Array.from(document.querySelectorAll('input[name=CUR_REQ]')).filter(r => {
+    const t = r.closest('tr') ? txt(r.closest('tr')) : '';
+    return /[가-힣A-Za-z]/.test(t) && !/조회된.*없|내역이 없|데이터가 없/.test(t); }).length;
   // 청구내역 표(CUR_REQ 가 든 표)의 합계 줄을 먼저 본다 — 숨은 탭의 다른 '합계' 줄을 읽지 않게. 거기 없으면 문서 전체에서.
   const radio = document.querySelector('input[name=CUR_REQ]');
   const own = radio && radio.closest('table');
@@ -642,14 +645,21 @@ def check_sheet(frame, job: Job, log: Callable[[str], None], wait=None, partial:
 
 
 # 청구내역 표의 저장된 줄(행마다 CUR_REQ 라디오, 실측 ⑤)의 글자 — 읽기만. 적요가 그 줄에 들어 있다.
+# 새 청구서의 표에도 선택 칸만 있는 빈 줄이 하나 있다(실측 ① '행 1 = 빈 행') — 글자(한글 · 영문)가 없는 줄은 저장된 줄이 아니다.
+# 저장된 줄에는 청구종류 · 소득구분 · 비목 · 적요 글자가 늘 있다. 담당자 실제 시험(2026-10-19)에서 이 빈 줄을 '청구내역 1줄' 로 세어
+# 새로 띄운 청구서를 '이미 저장된 다른 청구서' 로 보고 넣지 않았다.
 SHEET_ROWS_JS = """() => Array.from(document.querySelectorAll('input[name=CUR_REQ]')).map(r => {
-  const tr = r.closest('tr'); return tr ? (tr.innerText || tr.textContent || '').replace(/\\s+/g, ' ').trim() : ''; })"""
+  const tr = r.closest('tr'); return tr ? (tr.innerText || tr.textContent || '').replace(/\\s+/g, ' ').trim() : ''; })
+  .filter(t => /[가-힣A-Za-z]/.test(t) && !/조회된.*없|내역이 없|데이터가 없/.test(t))"""
 
 
-def sheet_owner(job: Job, req_cnt: str, rows: list[str]) -> tuple[bool, str]:
-    """작성 화면의 청구서가 이 폴더 것인지(또는 새 청구서인지). (이어도 되는지, 근거)."""
+def sheet_owner(job: Job, req_cnt: str, rows: list[str], appr: str = "") -> tuple[bool, str]:
+    """작성 화면의 청구서가 이 폴더 것인지(또는 새 청구서인지). (이어도 되는지, 근거).
+
+    결의번호(#REQ_CNT)는 첫 [저장] 에 생긴다(실측 ⑤) — 결의번호가 없고 진행구분이 임시저장(40)이 아니면 아직 저장되지 않은 새 청구서다.
+    표의 줄 수만 보고 판단하지 않는다(새 청구서의 빈 줄을 저장된 줄로 센 적이 있다, 2026-10-19)."""
     req_cnt = (req_cnt or "").strip()
-    if not req_cnt and not rows:
+    if not req_cnt and (appr or "").strip() != "40":
         return True, "새 청구서"
     from . import record
     known = job.req_cnt or str((record.previous(job.folder) or {}).get("req_cnt") or "")
@@ -661,12 +671,13 @@ def sheet_owner(job: Job, req_cnt: str, rows: list[str]) -> tuple[bool, str]:
     return False, f"작성 화면이 이미 저장된 다른 청구서입니다(결의번호 {req_cnt or '?'} · 청구내역 {len(rows)}줄)"
 
 
-def _read_sheet(frame) -> tuple[str, list[str]]:
+def _read_sheet(frame) -> tuple[str, list[str], str]:
     try:
         rows = [str(t) for t in (frame.evaluate(SHEET_ROWS_JS) or [])]
     except Exception:  # noqa: BLE001 — 읽지 못하면 줄 없음으로
         rows = []
-    return _state(frame, ["REQ_CNT"])["REQ_CNT"], rows
+    state = _state(frame, ["REQ_CNT", "APPR_DIV_CD"])
+    return state["REQ_CNT"], rows, state["APPR_DIV_CD"]
 
 
 def _ensure_own_sheet(page, frame, job: Job, ask: Ask, wait, log) -> tuple[bool, object, str]:
@@ -1121,7 +1132,8 @@ def record_warning(job: Job) -> str:
         if again:
             shown = ", ".join(s.get("name", "") for s in again[:8]) + (" …" if len(again) > 8 else "")
             parts.append(f"이번에 체크한 사람 중 {len(again)}명은 이미 임시저장했습니다: {shown}\n"
-                         "  ERP 청구내역에 그대로 있으면 다시 넣지 마세요 — 두 번 들어갑니다. [청구내역 대조] 로 확인할 수 있습니다.")
+                         "  ERP 청구내역에 그대로 있으면 다시 넣지 마세요 — 두 번 들어갑니다. [청구내역 대조] 로 확인할 수 있습니다.\n"
+                         "  그 청구서를 ERP 에서 지우고 다시 넣는 것이면 [예] 를 누르면 됩니다.")
         old_kind = before.get("kind", "")
         if old_kind and old_kind != job.spec.kind:
             parts.append(f"전에는 '{names.get(old_kind, old_kind)}' 으로 넣었는데 지금은 '{job.spec.name}' 입니다 — "

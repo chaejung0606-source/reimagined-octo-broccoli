@@ -734,6 +734,31 @@ def test_run_continues_in_this_folders_own_sheet(monkeypatch, job):
     other = scholarship.load_job(job.folder)
     assert scholarship.sheet_owner(other, "", []) == (True, "새 청구서")
     assert scholarship.sheet_owner(other, "900", ["03_다른 대표적요_가나다"])[0] is False
+    # 결의번호가 없으면 아직 저장 전인 새 청구서다 — 표에 줄이 보여도(새 청구서의 빈 줄, 담당자 실제 시험 2026-10-19)
+    assert scholarship.sheet_owner(other, "", ["1"]) == (True, "새 청구서")
+    # 결의번호를 못 읽었어도 진행구분이 임시저장(40)이면 저장된 청구서로 본다
+    assert scholarship.sheet_owner(other, "", ["03_다른 대표적요_가나다"], "40")[0] is False
+
+
+def test_sheet_rows_skip_the_empty_row_of_a_new_sheet():
+    """새 청구서의 청구내역 표에는 선택 칸만 있는 빈 줄이 있다 — 저장된 줄로 세지 않는다(실제 Chromium 이 있을 때만)."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    html = ("<table><tr><th>○</th><th>NO</th><th>적요</th></tr>"
+            "<tr><td><input type=radio name=CUR_REQ></td><td></td><td></td></tr>"
+            "<tr><td><input type=radio name=CUR_REQ></td><td>1</td><td></td></tr>"
+            "<tr><td><input type=radio name=CUR_REQ></td><td colspan=2>조회된 데이터가 없습니다.</td></tr>"
+            "<tr><td><input type=radio name=CUR_REQ></td><td>2</td><td>03_진행요원비_가나다 240,000</td></tr></table>")
+    try:
+        with sync_api.sync_playwright() as p:
+            path = "/opt/pw-browsers/chromium"
+            browser = p.chromium.launch(executable_path=path if os.path.exists(path) else None)
+            page = browser.new_page()
+            page.set_content(html)
+            rows = page.evaluate(scholarship.SHEET_ROWS_JS)
+            browser.close()
+    except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
+        pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
+    assert rows == ["2 03_진행요원비_가나다 240,000"]
 
 
 def test_find_form_prefers_the_visible_sheet():
