@@ -290,24 +290,37 @@ def _rows_of_student(key: str, indexes: list[int], people: list[roster_mod.Perso
     return by_course if len(by_course) == 1 else indexes
 
 
+def _group_aliases(text: str) -> set[str]:
+    """소학회명 칸의 부르는 이름들 — 칸이 `BFS` + 줄바꿈 + `(BlockChain Fianacial Security)` 처럼 두 줄이면 칸 전체는 파일 이름
+    (`BFS_9월 …`)에 없다(담당자 실제 시험 2026-10-19). 칸 전체 · 첫 줄 · 괄호 밖 · 괄호 안을 모두 본다(공백 무시 · 대소문자 무시)."""
+    raw = str(text or "").strip()
+    names = {raw, raw.splitlines()[0] if raw else "", re.sub(r"[(（\[].*?[)）\]]", " ", raw, flags=re.S)}
+    names.update(re.findall(r"[(（\[](.*?)[)）\]]", raw, flags=re.S))
+    return {a for a in (_squash(n).casefold() for n in names) if len(a) >= 2}
+
+
 def _rows_of_group(key: str, people: list[roster_mod.Person]) -> list[int]:
     """경로에 이름이 없을 때 — 명단의 소학회명(동아리 · 팀)이 들어 있으면 그 소학회의 줄. 담당자 실제 시험(2026-10-19): 진행요원비 개별증빙이
     `BFS_9월 지원금 신청서.pdf` 처럼 소학회명으로만 돼 있어 하나도 붙지 않았다. 가장 긴 소학회명 하나만 본다('구름' 과 '구름자물쇠').
     그 소학회에 학생이 둘 이상이면 누구 것인지 모르므로 고르지 않는다."""
     folded = key.casefold()
     by_group: dict[str, list[int]] = {}
+    aliases: dict[str, set[str]] = {}          # 부르는 이름 → 소학회
     for i, p in enumerate(people):
         group = _squash(p.group).casefold()
-        if len(group) >= 2:
-            by_group.setdefault(group, []).append(i)
-    hits = [g for g in by_group if g in folded]
+        if len(group) < 2:
+            continue
+        by_group.setdefault(group, []).append(i)
+        for alias in _group_aliases(p.group):
+            aliases.setdefault(alias, set()).add(group)
+    hits = [(len(a), groups) for a, groups in aliases.items() if a in folded]
     if not hits:
         return []
-    longest = max(len(g) for g in hits)
-    best = [g for g in hits if len(g) == longest]
+    longest = max(n for n, _ in hits)
+    best = set().union(*(groups for n, groups in hits if n == longest))
     if len(best) != 1:
         return []
-    rows = by_group[best[0]]
+    rows = by_group[best.pop()]
     students = {(_squash(people[i].name), people[i].student_no) for i in rows}
     return rows if len(students) == 1 else []
 

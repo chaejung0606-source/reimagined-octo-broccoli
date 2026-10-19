@@ -1291,7 +1291,7 @@ def test_person_files_found_by_club_name(tmp_path):
     (folder / "공통증빙").mkdir(parents=True)
     (folder / "개별증빙").mkdir()
     make_club_roster(folder / "진행요원비 지급내역.xlsx",
-                     [("ALLERGY", "가나다", 202600001), ("BFS", "라마바", 202600002),
+                     [("ALLERGY", "가나다", 202600001), ("BFS\n(BlockChain Fianacial Security)", "라마바", 202600002),
                       ("구름", "사아자", 202600003), ("구름자물쇠", "차카타", 202600004)])
     (folder / "공통증빙" / "공문.pdf").write_bytes(b"%PDF")
     names = ["AlLerGy_9월 근무상황부.pdf", "AlLerGy_9월 지원금 신청서.pdf", "BFS_9월 활동보고서.pdf",
@@ -1301,7 +1301,7 @@ def test_person_files_found_by_club_name(tmp_path):
     job = scholarship.load_job(str(folder))
     got = {job.people[i].group: sorted(os.path.basename(f) for f in files) for i, files in job.person_files.items()}
     assert got == {"ALLERGY": ["AlLerGy_9월 근무상황부.pdf", "AlLerGy_9월 지원금 신청서.pdf"],    # 대소문자는 가리지 않는다
-                   "BFS": ["BFS_9월 활동보고서.pdf"],
+                   "BFS\n(BlockChain Fianacial Security)": ["BFS_9월 활동보고서.pdf"],    # 칸이 두 줄이어도 첫 줄로
                    "구름": ["구름_9월 근무상황부.pdf"], "구름자물쇠": ["구름자물쇠_9월 근무상황부.pdf"]}  # 긴 이름이 먼저
     assert [os.path.basename(f) for f in job.unmatched] == ["모르는팀_9월 근무상황부.pdf"]
     assert any("어느 학생 것인지 모르는 개별증빙 1개" in p for p in job.problems())
