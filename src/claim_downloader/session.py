@@ -20,7 +20,7 @@ from .claims import form as claim_form
 from .claims import payee as claim_payee
 from .claims import scholarship as claim_scholarship
 from .claims import taxbill as claim_taxbill
-from . import archive, diagnose, erp, settings as settings_mod
+from . import archive, diagnose, erp, navigate, settings as settings_mod
 from .reconcile import reconcile
 from .targets import Selection, select_targets
 
@@ -129,7 +129,12 @@ class ErpSession:
             self.browser = self._pw.chromium.launch(headless=False, channel="msedge")
         self.page = self.browser.new_page(accept_downloads=True)
         self.page.goto(settings_mod.ERP_URL, wait_until="domcontentloaded")
-        self.log("브라우저를 열었습니다. 로그인 → [과제관리 → 과제정보 → 청구서] → 결의서내역 목록을 띄우세요.")
+        cfg = self._load_settings()
+        if getattr(cfg, "auto_open_project", False):
+            self.log("브라우저를 열었습니다. 로그인만 하세요 — 그 뒤 과제 %s 의 청구서(결의서내역)까지 앱이 갑니다."
+                     % (getattr(cfg, "project_no", "") or settings_mod.DEFAULT_PROJECT_NO))
+        else:
+            self.log("브라우저를 열었습니다. 로그인 → [과제관리 → 과제정보 → 청구서] → 결의서내역 목록을 띄우세요.")
 
     def close(self) -> None:
         try:
@@ -158,6 +163,39 @@ class ErpSession:
         self.log("화면 구조 저장: 창 %d · 요소 %d개 → %s (모음 %d번째)" % (len(windows), count, path, number))
         return path
 
+    # ── 로그인 뒤 청구서 화면까지 (navigate.py) ────────────────────────────
+    def read_projects(self) -> list:
+        """메인화면 과제현황의 과제들 — 로그인 전이면 빈 목록. 읽기만 한다."""
+        if not self.browser_open:
+            return []
+        return navigate.read_projects(self.page.context)
+
+    def go_to_claims(self, project_no: str) -> tuple[bool, str]:
+        """고른 과제의 과제정보 → 청구서 탭 → 결의서내역 목록까지. 누르는 것은 과제명 링크와 '청구서' 탭뿐."""
+        if not self.browser_open:
+            return False, "브라우저가 닫혀 있습니다"
+        ok, message = navigate.go_to_claims(self.page.context, project_no, self.log,
+                                            lambda seconds: self.page.wait_for_timeout(int(seconds * 1000)))
+        self.log(("✓ " if ok else "⚠ ") + message)
+        return ok, message
+
+    def _new_sheet_if_needed(self, page, frame):
+        """작성 화면이 없거나 이미 저장된 청구서면 결의서 목록의 [일반청구] 로 새 청구서를 띄운다(설정 auto_new_sheet, 담당자 허락 2026-10-19).
+        저장된 청구서에 일반 건을 채우면 그 청구서에 줄이 더해진다(17절) — 전에는 막고 사람에게 띄우라고만 했다. 못 띄우면 받은 그대로 돌려준다."""
+        cfg = self._load_settings()
+        if not getattr(cfg, "auto_new_sheet", True):
+            return page, frame
+        if frame is not None and not claim_form.saved_sheet(claim_form.read_state(frame, ["REQ_CNT", "APPR_DIV_CD"])):
+            return page, frame
+        wait = lambda seconds: self.page.wait_for_timeout(int(seconds * 1000))  # noqa: E731
+        if frame is None and erp.grid_rows_shown(self.page.context) == 0 and getattr(cfg, "auto_open_project", True):
+            self.go_to_claims(getattr(cfg, "project_no", "") or settings_mod.DEFAULT_PROJECT_NO)
+        opened, note, _fresh = navigate.open_new_sheet(self.page.context, self.log, wait)
+        if not opened:
+            self.log("새 청구서를 앱이 띄우지 못함: " + note)
+            return page, frame
+        return claim_form.wait_for_form(self.page.context, log=self.log)
+
     # ── 일반청구 ─────────────────────────────────────────────────────────
     def claim_form_open(self) -> bool:
         """지금 브라우저에 일반청구 작성 화면이 떠 있는지."""
@@ -171,6 +209,8 @@ class ErpSession:
         if not self.browser_open:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
         page, frame = claim_form.wait_for_form(self.page.context, log=self.log)
+        if not dry_run:
+            page, frame = self._new_sheet_if_needed(page, frame)
         if frame is None:
             report = claim_form.FillReport(dry_run=dry_run)
             report.blocked = ("일반청구 작성 화면을 찾지 못했습니다. 앱이 연 브라우저에서 결의서내역 → [일반청구] 를 눌러 "
@@ -271,13 +311,21 @@ class ErpSession:
             return claim_scholarship.run(None, None, job, self.log, ask=lambda _m: False, dry_run=True)
         if not self.browser_open:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
+        cfg = self._load_settings()
+        wait = lambda seconds: self.page.wait_for_timeout(int(seconds * 1000))  # noqa: E731
         page, frame = claim_form.wait_for_form(self.page.context, log=self.log)
+        if frame is None:
+            # 작성 화면이 없으면 앱이 띄운다. 저장된 다른 청구서가 떠 있는 경우는 scholarship._ensure_own_sheet 가 이 폴더의 청구서인지
+            # (결의번호 · 대표적요) 먼저 보고 아닐 때만 띄운다 — 멈췄다가 같은 폴더를 이어 넣을 때 새로 띄우지 않게
+            page, frame = self._new_sheet_if_needed(page, frame)
         if frame is None:
             report = claim_scholarship.ScholarshipReport(dry_run=dry_run)
             report.blocked = ("작성 화면을 찾지 못했습니다. 앱이 연 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄운 뒤 "
                               "다시 누르세요. (인건비 탭은 앱이 누릅니다)")
             self.log(report.blocked)
             return report
+        open_sheet = ((lambda: navigate.open_new_sheet(self.page.context, self.log, wait))
+                      if getattr(cfg, "auto_new_sheet", True) else None)
         messages: list[str] = []
 
         def on_dialog(dialog) -> None:
@@ -293,7 +341,8 @@ class ErpSession:
             return claim_scholarship.run(
                 page, frame, job, self.log, ask=ask or (lambda _m: False),
                 wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)), messages=messages,
-                should_stop=self.should_stop, on_person=on_person, dry_run=dry_run, auto_pick=self._popup_options()[0])
+                should_stop=self.should_stop, on_person=on_person, dry_run=dry_run, auto_pick=self._popup_options()[0],
+                open_sheet=open_sheet)
         finally:
             page.remove_listener("dialog", on_dialog)
 

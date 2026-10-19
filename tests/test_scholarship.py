@@ -740,6 +740,32 @@ def test_run_continues_in_this_folders_own_sheet(monkeypatch, job):
     assert scholarship.sheet_owner(other, "", ["03_다른 대표적요_가나다"], "40")[0] is False
 
 
+def test_other_saved_sheet_is_replaced_by_a_new_one_the_app_opens(job):
+    """다른 폴더의 저장된 청구서가 떠 있으면 open_sheet(결의서 목록의 [일반청구])로 새 청구서를 띄우고 묻지 않는다(담당자 허락 2026-10-19).
+    띄우지 못하면 전처럼 사람에게 묻는다."""
+    class Sheet:
+        def __init__(self, req_cnt, rows):
+            self.req_cnt, self.rows = req_cnt, rows
+
+        def evaluate(self, js, arg=None):
+            if js is form.PROBE_JS:
+                return True
+            if js is scholarship.SHEET_ROWS_JS:
+                return self.rows
+            if js is form.STATE_JS:
+                return {k: {"value": {"REQ_CNT": self.req_cnt, "APPR_DIV_CD": "40" if self.req_cnt else ""}.get(k, "")} for k in arg}
+            raise AssertionError(str(js)[:40])
+
+    other, fresh = Sheet("900", ["03_다른 대표적요_가나다"]), Sheet("", [])
+    asked, logs = [], []
+    ok, frame, why = scholarship._ensure_own_sheet(object(), other, job, lambda m: asked.append(m) or False, lambda s: None,
+                                                   logs.append, open_sheet=lambda: (True, "새 청구서", fresh))
+    assert ok and frame is fresh and why == "새 청구서" and asked == []
+    ok, frame, why = scholarship._ensure_own_sheet(object(), other, job, lambda m: asked.append(m) or False, lambda s: None,
+                                                   logs.append, open_sheet=lambda: (False, "결의서 목록이 열려 있지 않음", None))
+    assert not ok and frame is other and len(asked) == 1 and any("결의서 목록이 열려 있지 않음" in line for line in logs)
+
+
 def test_sheet_rows_skip_the_empty_row_of_a_new_sheet():
     """새 청구서의 청구내역 표에는 선택 칸만 있는 빈 줄이 있다 — 저장된 줄로 세지 않는다(실제 Chromium 이 있을 때만)."""
     sync_api = pytest.importorskip("playwright.sync_api")

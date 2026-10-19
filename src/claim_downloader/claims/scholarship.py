@@ -600,8 +600,9 @@ def plan_person(job: Job, index: int) -> PersonResult:
 def run(page, frame, job: Job, log: Callable[[str], None], ask: Ask, wait: Callable[[float], None] = time.sleep,
         messages: list[str] | None = None, should_stop: Callable[[], bool] = lambda: False,
         on_person: Callable[[int, str, str], None] | None = None, dry_run: bool = True,
-        auto_pick: bool = True) -> ScholarshipReport:
-    """고른 사람을 차례로 넣는다. dry_run 이면 계획만. on_person(index, 상태, 설명)으로 진행을 알린다."""
+        auto_pick: bool = True, open_sheet: Callable[[], tuple] | None = None) -> ScholarshipReport:
+    """고른 사람을 차례로 넣는다. dry_run 이면 계획만. on_person(index, 상태, 설명)으로 진행을 알린다.
+    open_sheet() 는 다른 청구서가 떠 있을 때 새 청구서를 띄운다 — (됐는지, 글, 새 작성 프레임). None 이면 사람에게 묻기만 한다."""
     # messages 는 ERP 알림을 받는 쪽(session)이 채우는 살아 있는 목록이다. 학생마다 비우고 보고서에 옮겨 둔다 —
     # 앞 학생의 '저장되었습니다' 가 남아 있으면 다음 학생의 저장이 끝나기 전에 끝난 것으로 볼 수 있다.
     live = messages if messages is not None else []
@@ -615,7 +616,7 @@ def run(page, frame, job: Job, log: Callable[[str], None], ask: Ask, wait: Calla
         return report
     notify = on_person or (lambda _i, _s, _d: None)
     # 폴더마다 청구서 하나 — 작성 화면이 다른 폴더의 청구서(이미 저장된 줄이 있는)면 섞이지 않게 새 청구서를 띄우게 한다
-    ok, frame, why = _ensure_own_sheet(page, frame, job, ask, wait, log)
+    ok, frame, why = _ensure_own_sheet(page, frame, job, ask, wait, log, open_sheet)
     if not ok:
         report.blocked = why
         report.stopped = True
@@ -705,11 +706,23 @@ def _read_sheet(frame) -> tuple[str, list[str], str]:
     return state["REQ_CNT"], rows, state["APPR_DIV_CD"]
 
 
-def _ensure_own_sheet(page, frame, job: Job, ask: Ask, wait, log) -> tuple[bool, object, str]:
-    """넣기 전에 — 작성 화면이 새 청구서이거나 이 폴더의 청구서인지. 아니면 새 청구서를 띄우게 묻고, 띄운 화면을 다시 찾는다."""
+def _ensure_own_sheet(page, frame, job: Job, ask: Ask, wait, log, open_sheet=None) -> tuple[bool, object, str]:
+    """넣기 전에 — 작성 화면이 새 청구서이거나 이 폴더의 청구서인지. 아니면 앱이 새 청구서를 띄우고(open_sheet, 담당자 허락 2026-10-19 —
+    결의서 목록의 [일반청구]), 그래도 아니면 새 청구서를 띄우게 묻고 띄운 화면을 다시 찾는다."""
     if not wait_until(lambda: frame.evaluate(PROBE_JS) is True, wait, tries=20):
         return True, frame, ""                                    # 화면을 못 읽으면 사람 단계(_run_person)가 알린다
     ok, why = sheet_owner(job, *_read_sheet(frame))
+    if not ok and open_sheet is not None:
+        log("%s — %s" % (job.spec.name, why))
+        try:
+            opened, note, fresh = open_sheet()
+        except Exception as error:  # noqa: BLE001 — 띄우지 못하면 사람에게 묻는 길로
+            opened, note, fresh = False, str(error).splitlines()[0][:80] if str(error) else "새 청구서를 띄우지 못함", None
+        if opened and fresh is not None:
+            frame = fresh
+            ok, why = sheet_owner(job, *_read_sheet(frame))
+        else:
+            log("새 청구서를 앱이 띄우지 못함: " + note)
     asks = 0
     while not ok and asks < MAX_ASKS:
         asks += 1

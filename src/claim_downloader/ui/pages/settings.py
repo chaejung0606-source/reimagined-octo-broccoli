@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import ai, archive, settings
+from ... import ai, archive, navigate, settings
 from .. import ai_status
 from ..widgets import Card, ElideLabel, Field, PageHeader, Pill, muted_label
 
@@ -127,6 +127,19 @@ class SettingsPage(QWidget):
         excel_card.add(self.excel_field)
         column.addWidget(excel_card)
 
+        # ERP 과제 — 로그인 뒤 앱이 여는 과제(담당자 지정 2026-10-19: 기본 202408470003). 고르기 칸에는 메인화면 과제현황에서
+        # 마지막으로 읽은 과제 중 과제기간에 오늘이 든 것만 보인다(navigate.choices). 읽기 전에는 기본 과제번호 하나.
+        project_card = Card("ERP 과제", "로그인하면 이 과제의 청구서 화면(결의서내역)까지 앱이 갑니다")
+        self.project_box = QComboBox()
+        self.project_box.currentIndexChanged.connect(self._save_project)
+        self.project_note = muted_label("")
+        self.project_note.setWordWrap(True)
+        project_card.add(Field("과제", self.project_box,
+                               "ERP 에 로그인하면 메인화면 '과제현황' 의 과제를 앱이 읽어 와 여기 보입니다(과제기간에 오늘이 든 과제만)."))
+        project_card.add(self.project_note)
+        column.addWidget(project_card)
+        self._fill_projects(cfg.project_no)
+
         # 일반청구 — 세금계산서 조회 팝업에는 산학협력단 전체 계산서가 다 떠서, 내 계산서수신메일로 걸러야 내 건만 보인다
         # (담당자 설명 2026-10-13). 사람마다 다른 값이라 코드에 두지 않고 여기서 받는다.
         claim_card = Card("일반청구", "세금계산서 건을 ERP 에 채울 때 씁니다")
@@ -149,6 +162,14 @@ class SettingsPage(QWidget):
         self.auto_list.setChecked(cfg.auto_read_list)
         self.auto_list.toggled.connect(lambda v: self._save(auto_read_list=v))
         behave.add(self.auto_list)
+        self.auto_project = QCheckBox("로그인하면 위 'ERP 과제' 의 과제정보 → 청구서(결의서내역)까지 앱이 이동하기 (로그인은 직접 합니다)")
+        self.auto_project.setChecked(cfg.auto_open_project)
+        self.auto_project.toggled.connect(lambda v: self._save(auto_open_project=v))
+        behave.add(self.auto_project)
+        self.auto_sheet = QCheckBox("청구서를 넣을 때 다른(저장된) 청구서가 떠 있으면 결의서내역의 [일반청구] 로 새 청구서를 앱이 띄우기")
+        self.auto_sheet.setChecked(cfg.auto_new_sheet)
+        self.auto_sheet.toggled.connect(lambda v: self._save(auto_new_sheet=v))
+        behave.add(self.auto_sheet)
         self.wait = QDoubleSpinBox()
         # 화살표는 스타일시트에서 폭 0 으로 숨긴다(theme.py). setButtonSymbols(NoButtons) 를 쓰면
         # 스타일시트가 걸린 칸에서 Qt 가 글자 칸 폭을 1px 로 잡아 값이 안 보인다.
@@ -322,6 +343,28 @@ class SettingsPage(QWidget):
         settings.update(**changes)
         self._refresh()
         self.changed.emit()
+
+    def _fill_projects(self, selected: str) -> None:
+        """과제 고르기 칸을 다시 채운다 — 로그인 뒤 과제 목록을 새로 읽었으면(worker.projects_read) 화면이 다시 부른다."""
+        self.project_box.blockSignals(True)
+        self.project_box.clear()
+        for no, label in navigate.choices(selected):
+            self.project_box.addItem(label, no)
+        index = self.project_box.findData(selected)
+        self.project_box.setCurrentIndex(index if index >= 0 else 0)
+        self.project_box.blockSignals(False)
+        projects, when = navigate.load_projects()
+        self.project_note.setText(
+            f"과제 목록은 {when} 에 ERP 메인화면 과제현황에서 읽었습니다(과제 {len(projects)}개 중 진행 {len(navigate.running(projects))}개)."
+            if when else "아직 ERP 에서 과제 목록을 읽지 않았습니다 — 브라우저를 열고 로그인하면 읽어 옵니다.")
+
+    def refresh_projects(self) -> None:
+        self._fill_projects(settings.load().project_no)
+
+    def _save_project(self, index: int) -> None:
+        no = self.project_box.itemData(index)
+        if no and no != settings.load().project_no:
+            self._save(project_no=str(no))
 
     def _save_out_root(self) -> None:
         value = self.out_root.text().strip().strip('"')

@@ -10,6 +10,7 @@
       _보관목록.json    보관 PDF 경로 → 문서번호 캐시 (지우면 다시 전체 스캔)
       _실행로그.txt     실행 로그. 문제가 생기면 여기부터 본다. 회의록 생성 기록도 여기에.
       회의록규칙.txt    회의록 작성 규칙 (minutes/rules.py). 기본값 파일과 쌍으로.
+      _과제목록.json    로그인 뒤 과제현황에서 읽은 과제(설정의 과제 고르기)
       _화면구조.txt     진단 모드 결과 — 열린 ERP 화면의 입력 요소 (새 화면 실측용) · _화면구조_모음.txt 저장할 때마다 쌓은 것
       일반청구규칙.txt  일반청구 추출 규칙 (claims/rules.py) · _청구입력기록.json 채운 폴더 기록
       장학금규칙.txt    장학금 청구 대표적요·행 적요 규칙 (claims/scholarship.py)
@@ -33,6 +34,8 @@ APP_USER_MODEL_ID = "Kangwon.COSS.WorkDesk"
 # 옛 그림이 떴다. 그래서 디자인을 바꿀 때마다 이 이름을 바꾼다(tools/make_icon.py 가 icon.ico 와 같은 그림으로 이 파일도 만든다).
 SHORTCUT_ICON = "icon-20261014.ico"
 ERP_URL = "https://knu-icf.kangwon.ac.kr/rderp_layoutMain.act"
+# 로그인 뒤 앱이 여는 과제 — 담당자 지정(2026-10-19). 다른 과제는 설정에서 고른다(과제기간에 오늘이 든 과제만 보인다, navigate.choices).
+DEFAULT_PROJECT_NO = "202408470003"
 
 
 @dataclass
@@ -46,6 +49,11 @@ class Settings:
     freeze_reload: bool = True     # 상세화면 멈춤 시 새로고침 후 이어받기
     # 받기 화면에서 브라우저를 연 뒤 결의서내역 목록이 보이면 [목록 읽기] 를 저절로 — 읽기만 한다(2026-10-15 추가 기능)
     auto_read_list: bool = True
+    # 로그인하면 메인화면 과제현황에서 이 과제를 열고 과제정보 → 청구서 탭(결의서내역)까지 앱이 간다(담당자 허락 2026-10-19, navigate.py)
+    auto_open_project: bool = True
+    project_no: str = DEFAULT_PROJECT_NO
+    # 명단 폴더를 넣을 때 다른(저장된) 청구서가 떠 있으면 결의서 목록의 [일반청구] 로 새 청구서를 앱이 띄운다(담당자 허락 2026-10-19)
+    auto_new_sheet: bool = True
     # 홈의 '처음 쓰시나요?' 안내를 닫았는지 — 동료 PC 에 처음 깔았을 때만 보이게(사용자 메뉴에서 다시 볼 수 있다)
     welcome_dismissed: bool = False
     auto_update_check: bool = True
@@ -88,6 +96,11 @@ def log_path() -> Path:
 def structure_path() -> Path:
     """진단 모드(diagnose.py)가 남기는 화면 구조. 계좌번호 같은 값이 섞일 수 있어 저장소·배포에서 뺀다."""
     return data_dir() / "_화면구조.txt"
+
+
+def projects_path() -> Path:
+    """메인화면 과제현황에서 마지막으로 읽은 과제 목록(과제번호 · 과제명 · 기간) — 설정의 과제 고르기 칸이 쓴다."""
+    return data_dir() / "_과제목록.json"
 
 
 def structure_book_path() -> Path:

@@ -1210,11 +1210,15 @@ class ClaimPage(QWidget):
         waiting = [r for r in range(len(self._dirs)) if r != row and self._is_pending_roster(r)]
         if previous is not None:
             heading = f"다음 폴더 — {job.spec.name} {job.count_text()}을 새 청구서에 넣습니다 · [신청] 은 누르지 않습니다"
-            footer = (f"앞 폴더의 청구서(결의번호 {previous.req_cnt or '?'})는 그대로 두고, ERP 에서 새 청구서(작성 화면의 [새 청구서] 또는 "
-                      "결의서내역 → [일반청구])를 띄운 뒤 누르세요. 여기서 그만하려면 [취소].")
+            footer = ((f"앞 폴더의 청구서(결의번호 {previous.req_cnt or '?'})는 그대로 두고, 앱이 결의서내역의 [일반청구] 로 새 청구서를 "
+                       "띄워 넣습니다. 여기서 그만하려면 [취소].") if settings.load().auto_new_sheet else
+                      (f"앞 폴더의 청구서(결의번호 {previous.req_cnt or '?'})는 그대로 두고, ERP 에서 새 청구서(결의서내역 → [일반청구])를 "
+                       "띄운 뒤 누르세요. 여기서 그만하려면 [취소]."))
         else:
             heading = f"학생 한 명씩 넣고 [저장](임시저장) 합니다 — {job.count_text()} · [신청] 은 누르지 않습니다"
-            footer = ("앱이 확신하지 못하는 단계에서는 멈추고 위의 노란 띠로 묻습니다. 브라우저에 새 청구서 작성 화면이 떠 있어야 합니다."
+            footer = ("앱이 확신하지 못하는 단계에서는 멈추고 위의 노란 띠로 묻습니다. "
+                      + ("새 청구서 작성 화면이 없거나 다른 청구서가 떠 있으면 앱이 결의서내역의 [일반청구] 로 새로 띄웁니다."
+                         if settings.load().auto_new_sheet else "브라우저에 새 청구서 작성 화면이 떠 있어야 합니다.")
                       + (f" 이 폴더를 끝내면 남은 명단 폴더 {len(waiting)}개도 하나씩 이어서 묻습니다." if waiting else ""))
         if not dry and not show_report(
                 self, title="ERP 에 넣기", tone="warning", heading=heading,

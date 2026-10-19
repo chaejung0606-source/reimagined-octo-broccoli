@@ -59,6 +59,25 @@ def test_diagnose_only_reads():
     assert "import playwright" not in text and "from playwright" not in text
 
 
+def test_navigation_presses_only_project_claim_tab_and_new_sheet():
+    """로그인 뒤 이동(navigate.py, 담당자 허락 2026-10-19)이 누르는 것은 과제현황의 과제명 링크 · 과제정보의 '청구서' 탭 ·
+    결의서 목록의 [일반청구](#P10) 셋뿐이다. 로그인 화면 · 신청 · 삭제 · 청구서복사 · 작성 화면의 '새 청구서' 는 누르지 않고 값도 넣지 않는다."""
+    from claim_downloader import navigate
+    text = (SRC / "navigate.py").read_text(encoding="utf-8")
+    pressing = {"CLICK_PROJECT_JS": navigate.CLICK_PROJECT_JS, "CLICK_CLAIM_TAB_JS": navigate.CLICK_CLAIM_TAB_JS,
+                "CLICK_NEW_SHEET_JS": navigate.CLICK_NEW_SHEET_JS}
+    assert text.count(".click()") == 3 and sum(js.count(".click()") for js in pressing.values()) == 3
+    assert "fnPage\\\\(\\\\s*'01'" in navigate.CLICK_PROJECT_JS                  # 과제명 링크(fnPage('01', 과제번호))만
+    assert "=== '청구서'" in navigate.CLICK_CLAIM_TAB_JS
+    assert "getElementById('P10')" in navigate.CLICK_NEW_SHEET_JS and "!== '일반청구'" in navigate.CLICK_NEW_SHEET_JS
+    for js in pressing.values():
+        for word in ("신청", "삭제", "btnDelete", "btnClone", "새 청구서", "P11", "로그인", "USER_PW"):
+            assert word not in js, word
+    for name in ("fill(", "type(", "press(", "set_input_files(", "keyboard.", ".value =", "dispatchEvent"):
+        assert name not in text, name
+    assert "import playwright" not in text and "from playwright" not in text
+
+
 def test_claim_fill_lives_outside_erp_and_cannot_press_money_buttons():
     """값 넣기는 claims/form.py 에만 — 받기 코드(erp.py)에는 끝까지 없다.
 

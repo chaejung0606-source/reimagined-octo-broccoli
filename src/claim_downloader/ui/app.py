@@ -173,6 +173,9 @@ class MainWindow(QMainWindow):
         if self._session_worker is None:
             from .worker import SessionWorker
             self._session_worker = SessionWorker()
+            # 로그인 뒤 과제현황에서 과제 목록을 새로 읽으면 설정 화면의 과제 고르기 칸을 다시 채운다(이미 열어 둔 경우)
+            self._session_worker.projects_read.connect(
+                lambda: self._pages["settings"].refresh_projects() if "settings" in self._pages else None)
         return self._session_worker
 
     def _wire(self, task: Task, page: QWidget) -> None:
