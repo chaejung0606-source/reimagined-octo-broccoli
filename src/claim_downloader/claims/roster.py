@@ -25,6 +25,9 @@ HEADERS = {
     "course": ("강좌명", "강좌", "교과목명", "교과목", "과목명", "과목"),
     # 외국인 학생의 국적 — 담당자가 명단에 열을 더하기로 함(2026-10-14). 비어 있으면 내국인으로 본다
     "nation": ("국적", "국가", "국적(국가)", "국가/지역", "국적(국가/지역)"),
+    # 소학회 · 동아리 · 팀 — 진행요원비 명단(`연번 소학회명 이름 학번 은행 계좌`)처럼 개별증빙 파일 이름이 학생 이름이 아니라
+    # 소학회명으로 돼 있을 때(`BFS_9월 지원금 신청서.pdf`) 파일을 그 학생에게 붙이는 데 쓴다(담당자 실제 시험 2026-10-19)
+    "group": ("소학회명", "소학회", "동아리명", "동아리", "팀명", "학회명", "소속팀"),
 }
 HOME_NATIONS = ("", "한국", "대한민국", "한국인", "내국인", "kr", "kor", "korea", "southkorea", "republicofkorea",
                 "해당없음", "없음", "x")
@@ -47,6 +50,7 @@ class Person:
     account: str = ""             # 적힌 그대로(하이픈 포함). 대조는 digits() 로
     course: str = ""              # (나)형 TA 의 강좌명(교과목) — 행 적요에 들어간다
     nation: str = ""              # 국적 열(있으면) — 외국인 학생만 적는다
+    group: str = ""               # 소학회명 · 동아리명 · 팀명 열(있으면) — 개별증빙 파일을 이 이름으로도 찾는다
     row: int = 0                  # 엑셀 행 번호 (사람에게 알려 줄 때)
     note: str = ""                # 이 사람 줄의 문제 (학번 없음 등)
 
@@ -265,12 +269,14 @@ def read(path, sheet: str | None = None) -> Roster:
                             bank=str(cells.get("bank") or "").strip(),
                             account=str(cells.get("account") or "").strip(),
                             course=str(cells.get("course") or "").strip(),
-                            nation=str(cells.get("nation") or "").strip())
+                            nation=str(cells.get("nation") or "").strip(),
+                            group=str(cells.get("group") or "").strip())
             if not name and last is not None:
                 # 병합된 둘째 줄 — 이름·학번·은행·계좌(·국적)를 앞 줄에서 내려받는다 ((나)형 TA: 한 학생이 두 강좌)
                 person.name, person.student_no = last.name, last.student_no
                 person.bank, person.account = person.bank or last.bank, person.account or last.account
                 person.nation = person.nation or last.nation
+                person.group = person.group or last.group
             if not person.name:
                 continue
             if not person.student_no:

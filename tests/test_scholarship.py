@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import os
 import pathlib
 
 import pytest
@@ -1265,3 +1266,58 @@ def test_record_keeps_old_single_entry_as_history(isolated_home, tmp_path):
     record.remember(folder, {"summary": "새 것"})
     lines = record.history_lines(record.previous(folder))
     assert lines[0].startswith("2026-10-13 10:00") and len(lines) == 2
+
+
+# ── 개별증빙 파일 이름이 소학회명인 경우 (담당자 실제 시험 2026-10-19) ──────────
+
+def make_club_roster(path, rows):
+    """진행요원비 명단 모양 — B2 제목, 3행 머리글 `연번 소학회명 이름 학번 은행 계좌 금액`. 이름 · 번호는 가짜."""
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws["B2"] = "2026년도 9월 진행요원비(소학회 회장) 혁신인재지원금 지급내역"
+    for c, h in enumerate(["연번", "소학회명", "이   름", "학   번", "은행", "계   좌", "금액"], start=2):
+        ws.cell(3, c, h)
+    for r, (club, name, no) in enumerate(rows, start=4):
+        for c, v in enumerate([r - 3, club, name, no, "국민", "111-11-1111" + str(r), 240000], start=2):
+            ws.cell(r, c, v)
+    ws.cell(4 + len(rows), 2, "합   계")
+    ws.cell(4 + len(rows), 8, 240000 * len(rows))
+    wb.save(path)
+
+
+def test_person_files_found_by_club_name(tmp_path):
+    folder = tmp_path / "9월"
+    (folder / "공통증빙").mkdir(parents=True)
+    (folder / "개별증빙").mkdir()
+    make_club_roster(folder / "진행요원비 지급내역.xlsx",
+                     [("ALLERGY", "가나다", 202600001), ("BFS", "라마바", 202600002),
+                      ("구름", "사아자", 202600003), ("구름자물쇠", "차카타", 202600004)])
+    (folder / "공통증빙" / "공문.pdf").write_bytes(b"%PDF")
+    names = ["AlLerGy_9월 근무상황부.pdf", "AlLerGy_9월 지원금 신청서.pdf", "BFS_9월 활동보고서.pdf",
+             "구름_9월 근무상황부.pdf", "구름자물쇠_9월 근무상황부.pdf", "모르는팀_9월 근무상황부.pdf"]
+    for n in names:
+        (folder / "개별증빙" / n).write_bytes(b"%PDF")
+    job = scholarship.load_job(str(folder))
+    got = {job.people[i].group: sorted(os.path.basename(f) for f in files) for i, files in job.person_files.items()}
+    assert got == {"ALLERGY": ["AlLerGy_9월 근무상황부.pdf", "AlLerGy_9월 지원금 신청서.pdf"],    # 대소문자는 가리지 않는다
+                   "BFS": ["BFS_9월 활동보고서.pdf"],
+                   "구름": ["구름_9월 근무상황부.pdf"], "구름자물쇠": ["구름자물쇠_9월 근무상황부.pdf"]}  # 긴 이름이 먼저
+    assert [os.path.basename(f) for f in job.unmatched] == ["모르는팀_9월 근무상황부.pdf"]
+    assert any("어느 학생 것인지 모르는 개별증빙 1개" in p for p in job.problems())
+    assert len(job.files_for(0)) == 3                                   # 공통 1 + 개별 2
+
+
+def test_club_with_two_students_is_not_guessed(tmp_path):
+    """한 소학회에 학생이 둘이면 소학회명만 든 파일은 누구 것인지 모른다 — 붙이지 않고 알린다. 이름이 든 파일은 그대로 붙는다."""
+    folder = tmp_path / "9월"
+    (folder / "개별증빙").mkdir(parents=True)
+    make_club_roster(folder / "명단.xlsx", [("BFS", "가나다", 202600001), ("BFS", "라마바", 202600002)])
+    for n in ("BFS_9월 활동보고서.pdf", "BFS_라마바_9월 신청서.pdf"):
+        (folder / "개별증빙" / n).write_bytes(b"%PDF")
+    job = scholarship.load_job(str(folder))
+    assert {i: [os.path.basename(f) for f in v] for i, v in job.person_files.items()} == {1: ["BFS_라마바_9월 신청서.pdf"]}
+    assert [os.path.basename(f) for f in job.unmatched] == ["BFS_9월 활동보고서.pdf"]
+    # 개별증빙이 하나도 없는 사람은 미리 보기 '확인할 것' 에 보인다
+    assert "개별증빙 없음" in scholarship.plan_person(job, 0).note
+    assert "개별증빙 없음" not in (scholarship.plan_person(job, 1).note or "")

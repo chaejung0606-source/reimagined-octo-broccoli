@@ -243,7 +243,8 @@ class Job:
         if not re.fullmatch(r"\d{4}-\d{2}", self.pay_ym or ""):
             out.append("지급예정년월은 YYYY-MM 꼴이어야 합니다")
         if self.unmatched:
-            out.append("어느 학생 것인지 모르는 개별증빙 %d개: %s" % (len(self.unmatched), " · ".join(os.path.basename(f) for f in self.unmatched[:5])))
+            out.append("어느 학생 것인지 모르는 개별증빙 %d개 — 붙이지 않습니다. 파일 이름에 학생 이름(또는 명단의 소학회명)이 있어야 합니다: %s"
+                       % (len(self.unmatched), " · ".join(os.path.basename(f) for f in self.unmatched[:5])))
         # ERP 청구내역 표에서는 줄을 적요로 구분한다 — 같은 적요가 둘이면 어느 줄이 누구 것인지 모른다
         summaries = [self.row_summary(i) for i in range(len(self.people))]
         same = sorted({t for t in summaries if t and summaries.count(t) > 1})
@@ -289,8 +290,31 @@ def _rows_of_student(key: str, indexes: list[int], people: list[roster_mod.Perso
     return by_course if len(by_course) == 1 else indexes
 
 
+def _rows_of_group(key: str, people: list[roster_mod.Person]) -> list[int]:
+    """경로에 이름이 없을 때 — 명단의 소학회명(동아리 · 팀)이 들어 있으면 그 소학회의 줄. 담당자 실제 시험(2026-10-19): 진행요원비 개별증빙이
+    `BFS_9월 지원금 신청서.pdf` 처럼 소학회명으로만 돼 있어 하나도 붙지 않았다. 가장 긴 소학회명 하나만 본다('구름' 과 '구름자물쇠').
+    그 소학회에 학생이 둘 이상이면 누구 것인지 모르므로 고르지 않는다."""
+    folded = key.casefold()
+    by_group: dict[str, list[int]] = {}
+    for i, p in enumerate(people):
+        group = _squash(p.group).casefold()
+        if len(group) >= 2:
+            by_group.setdefault(group, []).append(i)
+    hits = [g for g in by_group if g in folded]
+    if not hits:
+        return []
+    longest = max(len(g) for g in hits)
+    best = [g for g in hits if len(g) == longest]
+    if len(best) != 1:
+        return []
+    rows = by_group[best[0]]
+    students = {(_squash(people[i].name), people[i].student_no) for i in rows}
+    return rows if len(students) == 1 else []
+
+
 def assign_person_files(files: list[str], base: str, people: list[roster_mod.Person]) -> tuple[dict[int, list[str]], list[str]]:
-    """개별증빙 파일을 학생에게 — 파일명이나 상위 폴더 이름에 이름이 들어 있으면 그 학생. 같은 이름이 둘이면 학번으로 가린다."""
+    """개별증빙 파일을 학생에게 — 파일명이나 상위 폴더 이름에 이름이 들어 있으면 그 학생. 같은 이름이 둘이면 학번으로 가린다.
+    이름이 없으면 명단의 소학회명(동아리 · 팀)으로 찾는다(_rows_of_group)."""
     by_name: dict[str, list[int]] = {}
     for i, p in enumerate(people):
         by_name.setdefault(_squash(p.name), []).append(i)
@@ -303,6 +327,8 @@ def assign_person_files(files: list[str], base: str, people: list[roster_mod.Per
         for name, indexes in by_name.items():
             if name and name in key:
                 hits.update(_rows_of_student(key, indexes, people))
+        if not hits:
+            hits.update(_rows_of_group(key, people))
         # 한 학생의 줄만 맞았을 때만 붙인다 — 두 학생에 걸리면 사람이 정한다
         students = {(_squash(people[i].name), people[i].student_no) for i in hits}
         if hits and len(students) == 1:
@@ -526,6 +552,8 @@ def plan_person(job: Job, index: int) -> PersonResult:
     if p.foreign_nation:
         result.lines.append(f"국적 {p.nation}(명단) — 넣을 때 앱이 ERP 국적조회에서 고릅니다(못 고르면 노란 띠로 묻습니다)")
     notes = [p.note] if p.note else []
+    if (job.person_files or job.unmatched) and not job.person_files.get(index):
+        notes.append("개별증빙 없음 — 공통증빙만 붙습니다")
     if p.foreign_nation:
         notes.append(f"외국인({p.nation}) — 국적은 앱이 고름")
     if notes:

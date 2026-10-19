@@ -1177,6 +1177,17 @@ class ClaimPage(QWidget):
             if hard:
                 QMessageBox.warning(self, "넣기 전에 고칠 것", "\n".join("· " + p for p in hard))
                 return
+            # 개별증빙을 학생에게 못 붙였으면 따로 묻는다 — 확인 창 아래 '확인할 것' 한 줄로만 보여 공통증빙만 붙은 채 저장됐다
+            # (담당자 실제 시험 2026-10-19: 파일 이름이 소학회명이라 6명 모두 개별증빙 없이 저장)
+            if job.unmatched and QMessageBox.warning(
+                    self, "개별증빙이 붙지 않습니다",
+                    f"개별증빙 {len(job.unmatched)}개는 어느 학생 것인지 몰라 붙이지 않습니다.\n"
+                    + "\n".join("· " + os.path.basename(f) for f in job.unmatched[:6])
+                    + (f"\n· … 외 {len(job.unmatched) - 6}개" if len(job.unmatched) > 6 else "")
+                    + "\n\n파일 이름(또는 하위 폴더 이름)에 학생 이름이나 명단의 소학회명이 있어야 합니다. "
+                      "고친 뒤 [다시 읽기] 를 누르세요.\n\n그래도 이대로(그 파일 없이) 넣을까요?",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return
             warning = sch.record_warning(job)
             if warning and QMessageBox.warning(self, "이미 넣은 적이 있습니다", warning + "\n\n그래도 넣을까요?",
                                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
