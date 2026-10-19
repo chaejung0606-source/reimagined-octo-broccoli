@@ -648,9 +648,14 @@ def check_sheet(frame, job: Job, log: Callable[[str], None], wait=None, partial:
 # 새 청구서의 표에도 선택 칸만 있는 빈 줄이 하나 있다(실측 ① '행 1 = 빈 행') — 글자(한글 · 영문)가 없는 줄은 저장된 줄이 아니다.
 # 저장된 줄에는 청구종류 · 소득구분 · 비목 · 적요 글자가 늘 있다. 담당자 실제 시험(2026-10-19)에서 이 빈 줄을 '청구내역 1줄' 로 세어
 # 새로 띄운 청구서를 '이미 저장된 다른 청구서' 로 보고 넣지 않았다.
+# 적요 칸은 길면 '…_ ...' 로 잘려 보인다(같은 날 실제 화면) — 칸의 title 에 전체 글이 있으면 줄 글자 뒤에 붙여 둔다(빈 줄 판정은 보이는 글자로만).
 SHEET_ROWS_JS = """() => Array.from(document.querySelectorAll('input[name=CUR_REQ]')).map(r => {
-  const tr = r.closest('tr'); return tr ? (tr.innerText || tr.textContent || '').replace(/\\s+/g, ' ').trim() : ''; })
-  .filter(t => /[가-힣A-Za-z]/.test(t) && !/조회된.*없|내역이 없|데이터가 없/.test(t))"""
+  const tr = r.closest('tr'); if (!tr) return '';
+  const text = (tr.innerText || tr.textContent || '').replace(/\\s+/g, ' ').trim();
+  if (!/[가-힣A-Za-z]/.test(text) || /조회된.*없|내역이 없|데이터가 없/.test(text)) return '';
+  const titles = Array.from(tr.querySelectorAll('[title]')).map(e => (e.getAttribute('title') || '').replace(/\\s+/g, ' ').trim())
+    .filter(t => t && !text.includes(t));
+  return titles.length ? text + ' ' + titles.join(' ') : text; }).filter(t => t)"""
 
 
 def sheet_owner(job: Job, req_cnt: str, rows: list[str], appr: str = "") -> tuple[bool, str]:
@@ -694,8 +699,8 @@ def _ensure_own_sheet(page, frame, job: Job, ask: Ask, wait, log) -> tuple[bool,
             return False, frame, why + " — 멈춤"
         wait(0.5)
         try:
-            from .form import find_form
-            _page, found = find_form(page.context)
+            from .form import wait_for_form
+            _page, found = wait_for_form(page.context, tries=6, log=log)
             frame = found or frame
         except Exception:  # noqa: BLE001 — 가짜 창(테스트) · 닫힌 창이면 그대로
             pass

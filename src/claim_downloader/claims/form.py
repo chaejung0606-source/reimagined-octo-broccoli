@@ -274,6 +274,56 @@ def find_form(context):
     return found[0]
 
 
+def wait_for_form(context, tries: int = 12, interval_ms: int = 500, log: Callable[[str], None] | None = None):
+    """find_form 을 한 번 보고 포기하지 않는다 — 받기의 목록 찾기(erp.wait_for_grid)와 같은 함정(CLAUDE.md 7절 1번: 화면이 보여도 첫
+    evaluate 가 False · 예외일 수 있다).
+
+    담당자 실제 시험(2026-10-19): 작성 화면을 띄워 두고 [ERP 에 넣기] 를 눌러도 처음에는 '작성 화면을 찾지 못했습니다' 였고, 브라우저를
+    한 번 누른 뒤 다시 누르면 됐다. 그래서 0.5초마다 다시 보고, 두 번째부터는 작성 화면이 든 창을 앞으로 가져온다 — 사람이 브라우저 창을
+    누른 것과 같은 일이고 ERP 의 단추를 누르는 것이 아니다. 끝내 못 찾으면 어느 프레임이 무엇을 돌려줬는지 기록에 남긴다."""
+    for attempt in range(max(1, tries)):
+        page, frame = find_form(context)
+        if frame is not None:
+            if attempt and log:
+                log("작성 화면을 %d번째에 찾았습니다" % (attempt + 1))
+            return page, frame
+        pages = list(getattr(context, "pages", []) or [])
+        if attempt == 0:
+            for pg in [pg for pg in pages if any("rexpe_0084" in (f.url or "") for f in pg.frames)] or pages[:1]:
+                try:
+                    pg.bring_to_front()
+                except Exception:  # noqa: BLE001 — 닫히는 중인 창
+                    pass
+        if attempt + 1 < tries:
+            if pages:
+                try:
+                    pages[0].wait_for_timeout(interval_ms)
+                    continue
+                except Exception:  # noqa: BLE001 — 닫힌 창
+                    pass
+            time.sleep(interval_ms / 1000)
+    if log:
+        log("작성 화면을 찾지 못함 — " + describe_frames(context))
+    return None, None
+
+
+def describe_frames(context) -> str:
+    """진단용 — 열린 창 수와, 주소가 작성 화면(rexpe_0084)인 프레임마다 확인 결과. 주소의 물음표 뒤(과제번호 등)는 적지 않는다."""
+    pages = list(getattr(context, "pages", []) or [])
+    out = []
+    for pi, pg in enumerate(pages):
+        for fr in pg.frames:
+            url = fr.url or ""
+            if "rexpe_0084" not in url:
+                continue
+            try:
+                got = fr.evaluate(PROBE_JS)
+            except Exception as error:  # noqa: BLE001
+                got = "오류 " + (str(error).splitlines() or [""])[0][:80]
+            out.append("창 %d %s → %s" % (pi + 1, url.split("?")[0].rsplit("/", 1)[-1], got))
+    return "창 %d개 · 작성 화면 주소 프레임 %d개%s" % (len(pages), len(out), (": " + " · ".join(out)) if out else "")
+
+
 def read_state(frame, ids=None) -> dict:
     return frame.evaluate(STATE_JS, list(ids or ALLOWED_IDS))
 

@@ -747,7 +747,8 @@ def test_sheet_rows_skip_the_empty_row_of_a_new_sheet():
             "<tr><td><input type=radio name=CUR_REQ></td><td></td><td></td></tr>"
             "<tr><td><input type=radio name=CUR_REQ></td><td>1</td><td></td></tr>"
             "<tr><td><input type=radio name=CUR_REQ></td><td colspan=2>조회된 데이터가 없습니다.</td></tr>"
-            "<tr><td><input type=radio name=CUR_REQ></td><td>2</td><td>03_진행요원비_가나다 240,000</td></tr></table>")
+            "<tr><td><input type=radio name=CUR_REQ></td><td>2</td><td>03_진행요원비_가나다 240,000</td></tr>"
+            "<tr><td><input type=radio name=CUR_REQ></td><td>3</td><td title='03_진행요원비_라마바'>03_진행요원비_ ...</td></tr></table>")
     try:
         with sync_api.sync_playwright() as p:
             path = "/opt/pw-browsers/chromium"
@@ -758,7 +759,8 @@ def test_sheet_rows_skip_the_empty_row_of_a_new_sheet():
             browser.close()
     except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
         pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
-    assert rows == ["2 03_진행요원비_가나다 240,000"]
+    # 잘려 보이는 칸의 title(전체 글)은 줄 글자 뒤에 붙는다
+    assert rows == ["2 03_진행요원비_가나다 240,000", "3 03_진행요원비_ ... 03_진행요원비_라마바"]
 
 
 def test_find_form_prefers_the_visible_sheet():
@@ -783,6 +785,46 @@ def test_find_form_prefers_the_visible_sheet():
         pages = [Page()]
 
     assert form.find_form(Context())[1] is shown
+
+
+def test_wait_for_form_retries_when_the_first_look_fails():
+    """첫 evaluate 가 False 여도(작성 화면을 띄워 뒀는데 '찾지 못했습니다', 담당자 실제 시험 2026-10-19) 다시 보고, 창을 앞으로 가져온다."""
+    class Frame:
+        url = "https://erp/rexpe_0084_01.act?PRJ_NO=1"
+
+        def __init__(self):
+            self.looks = 0
+
+        def evaluate(self, js, arg=None):
+            if js is form.PROBE_JS:
+                self.looks += 1
+                return self.looks >= 3                       # 두 번은 못 읽다가 세 번째에
+            return True
+
+    frame = Frame()
+
+    class Page:
+        frames = [frame]
+        fronted = 0
+        waited = 0
+
+        def bring_to_front(self):
+            Page.fronted += 1
+
+        def wait_for_timeout(self, ms):
+            Page.waited += 1
+
+    class Context:
+        pages = [Page()]
+
+    logs = []
+    page, found = form.wait_for_form(Context(), log=logs.append)
+    assert found is frame and Page.fronted == 1 and Page.waited == 2
+    assert logs == ["작성 화면을 3번째에 찾았습니다"]
+    # 끝내 없으면 None 과 진단 한 줄(주소의 물음표 뒤는 적지 않는다)
+    frame.looks, logs[:] = -100, []
+    assert form.wait_for_form(Context(), tries=3, log=logs.append) == (None, None)
+    assert logs and "작성 화면 주소 프레임 1개" in logs[0] and "PRJ_NO" not in logs[0]
 
 
 def test_run_stops_and_asks_when_unsure(monkeypatch, job):
@@ -1241,6 +1283,46 @@ def test_sheet_check_prefers_longest_summary(job):
     a, b = job.row_summary(0), job.row_summary(1)
     check = sheet_check.compare(job, [f"1 {a} 300,000", f"2 {b} 240,000"], [540000, 540000, 0])
     assert check.ok, check.problems
+
+
+def test_sheet_check_matches_truncated_summary_by_name(job):
+    """ERP 청구내역 표는 긴 적요를 '…_ ...' 로 잘라 보인다(담당자 실제 화면 2026-10-19) — 대표적요 + 입금처 이름으로 맞춘다."""
+    from claim_downloader.claims import sheet_check
+    main = job.main_summary
+    rows = [f"1 인건비(소득성 경비) 장학금 가나다 가나다 계좌이체 300,000 300,000 0 {main}_ ... [삭제]",
+            f"2 인건비(소득성 경비) 장학금 라마바 라마바 계좌이체 240,000 240,000 0 {main}_ ... [삭제]"]
+    check = sheet_check.compare(job, rows, [540000, 540000, 0])
+    assert check.ok, check.problems
+    assert any("잘려 보이는 줄 2개" in line for line in check.lines)
+    # 같은 사람이 두 줄이면 여전히 '2번' 으로 잡는다
+    twice = sheet_check.compare(job, rows + [rows[0].replace("1 ", "3 ", 1)], [840000, 840000, 0])
+    assert any("1. 가나다 — 청구내역에 2번" in p for p in twice.problems)
+
+
+def test_sheet_check_truncated_rows_of_another_claim_are_strangers(job):
+    """이름이 같아도 대표적요가 다른 청구((나)형) · 너무 짧게 잘린 적요는 이 명단 줄로 보지 않는다."""
+    from claim_downloader.claims import sheet_check
+    a = job.row_summary(0)
+    other = job.main_summary.replace("(가)형", "(나)형")
+    rows = [f"1 가나다 300,000 {a}", f"2 라마바 240,000 {other}_ ...", "3 라마바 240,000 02_2026년도 7월 (가 ..."]
+    check = sheet_check.compare(job, rows, [780000, 780000, 0])
+    text = "\n".join(check.problems)
+    assert "명단에 없는 줄 2" in text and "명단에 없는 줄 3" in text
+
+
+def test_sheet_check_truncated_ta_rows_pick_by_amount(tmp_path):
+    """(나)형 TA — 한 학생의 교과목 두 줄이 교과목 앞에서 잘리면 금액으로 명단 줄을 고른다."""
+    from claim_downloader.claims import sheet_check
+    folder = tmp_path / "TA"
+    folder.mkdir()
+    make_na(folder / "명단.xlsx")
+    ta = scholarship.load_job(str(folder))
+    main = ta.main_summary
+    rows = [f"1 사아자 120,000 {main}(사아자_ ...", f"2 사아자 150,000 {main}(사아자_ ...", f"3 차카타 100,000 {main}(차카타_ ..."]
+    check = sheet_check.compare(ta, rows, [370000, 370000, 0])
+    assert check.ok, check.problems
+    assert any("1. 사아자 — 줄 2" in line for line in check.lines)
+    assert any("2. 사아자 — 줄 1" in line for line in check.lines)
 
 
 # ── 중복 임시저장 알림 (record.py 이력) ───────────────────────────────────

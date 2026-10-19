@@ -6,6 +6,10 @@
 
 표의 모양은 실측 ⑤(CLAUDE.md 14절)만큼만 안다 — 줄마다 선택 라디오(CUR_REQ)가 있고 그 줄 글자에 적요와 금액이 있으며, '합계' 줄에
 청구액 · 실지급액 · 공제합계가 차례로 있다. 열 위치는 모르므로 줄 글자 전체에서 적요(공백 무시)와 금액(숫자 묶음)을 찾는다.
+
+적요 칸은 길면 잘려 보인다 — 담당자 실제 화면(2026-10-19, 혁신인재지원금 6명)에서 '03_…혁신인재지원금_ ...' 처럼 이름 앞에서 끊겨
+6줄을 하나도 못 맞추고 '하나도 맞추지 못했습니다' 로 알렸다. 그래서 개별 적요가 통째로 없으면 ① 대표적요가 보이거나 잘린 채로라도
+앞부분(PREFIX_MIN 글자 이상)이 보이고 ② 그 줄의 입금처 · 예금주 칸에 명단의 이름이 있으면 그 사람 줄로 본다.
 """
 from __future__ import annotations
 
@@ -15,6 +19,8 @@ from dataclasses import dataclass, field
 from .form import PROBE_JS
 
 _NUMBER = re.compile(r"\d{1,3}(?:,\d{3})+|\d+")
+_ELLIPSIS = ("...", "…")
+PREFIX_MIN = 20          # 잘린 대표적요를 이 폴더 것으로 볼 최소 글자 수(공백 빼고) — '(가)형' · '(나)형' 이 갈리는 자리보다 길게
 
 
 def _squash(text: str) -> str:
@@ -24,6 +30,18 @@ def _squash(text: str) -> str:
 def numbers_in(text: str) -> set[int]:
     """줄 글자 속의 숫자 묶음(콤마 든 것 포함)."""
     return {int(n.replace(",", "")) for n in _NUMBER.findall(str(text or ""))}
+
+
+def visible_prefix(flat: str, want: str) -> int:
+    """want 가 통째로 있으면 그 길이, 'want 의 앞부분 + …' 으로 잘려 보이면 그 앞부분 길이, 없으면 0. 둘 다 공백을 뺀 글."""
+    if not want:
+        return 0
+    if want in flat:
+        return len(want)
+    for k in range(len(want) - 1, 0, -1):
+        if any(want[:k] + e in flat for e in _ELLIPSIS):
+            return k
+    return 0
 
 
 @dataclass
@@ -50,16 +68,35 @@ def compare(job, sheet_rows: list[str], totals: list[int], expect_no_deduction: 
     """명단(job.people 전부 — 이번에 체크한 사람만이 아니다)과 청구내역 줄을 맞춘다. partial 이면(넣다가 멈춤) 빠진 사람은 확인할 것이 아니다."""
     check = SheetCheck(read=True, rows=len(sheet_rows))
     wanted = [(i, _squash(job.row_summary(i))) for i in range(len(job.people))]
+    names = [(i, _squash(p.name)) for i, p in enumerate(job.people)]
+    main = _squash(job.main_summary)
     hits: dict[int, list[int]] = {}
     strangers: list[int] = []
+    by_name: list[tuple[int, list[int]]] = []          # (줄, 그 이름의 명단 줄들) — 적요가 잘려 이름으로 맞출 줄
     for r, text in enumerate(sheet_rows):
         flat = _squash(text)
         # '…_김민' 과 '…_김민수' 처럼 한 적요가 다른 적요를 품을 수 있다 — 가장 긴 것 하나에만 붙인다
         matched = [(len(s), i) for i, s in wanted if s and s in flat]
-        if not matched:
-            strangers.append(r)
+        if matched:
+            hits.setdefault(max(matched)[1], []).append(r)
             continue
-        hits.setdefault(max(matched)[1], []).append(r)
+        seen = visible_prefix(flat, main)
+        if main and (seen == len(main) or seen >= PREFIX_MIN):
+            found = [(len(n), i) for i, n in names if len(n) >= 2 and n in flat]
+            if found:
+                longest = max(found)[0]                    # '김민' 과 '김민수' — 긴 이름
+                by_name.append((r, [i for n, i in found if n == longest]))
+                continue
+        strangers.append(r)
+    for r, group in by_name:
+        # 같은 이름이 명단에 여럿(TA 교과목 · 동명이인)이면 금액이 같고 아직 안 맞춘 줄부터
+        amounts = numbers_in(sheet_rows[r])
+        free = [i for i in group if i not in hits]
+        same = [i for i in free if job.people[i].amount in amounts]
+        pick = (same or free or [i for i in group if job.people[i].amount in amounts] or group)[0]
+        hits.setdefault(pick, []).append(r)
+    for rows in hits.values():
+        rows.sort()
 
     if strangers and not hits:
         # 한 줄도 맞추지 못했으면 줄마다 '명단에 없음' 을 늘어놓지 않는다 — 다른 청구서이거나 표 글자가 예상(실측 ⑤)과 다르다
@@ -94,6 +131,8 @@ def compare(job, sheet_rows: list[str], totals: list[int], expect_no_deduction: 
             check.problems.append(f"합계 줄 청구액 {totals[0]:,}원 ≠ 명단으로 맞춘 줄의 합 {matched_sum:,}원")
         else:
             check.lines.append(f"✓ 합계 줄 청구액 {totals[0]:,}원 = 명단으로 맞춘 줄의 합")
+    if by_name:
+        check.lines.append(f"적요가 잘려 보이는 줄 {len(by_name)}개는 대표적요와 입금처 · 예금주 이름으로 맞췄습니다")
     if expect_no_deduction and len(totals) >= 3 and totals[2]:
         check.problems.append(f"합계 줄 공제합계가 {totals[2]:,}원입니다 — 소득구분이 '장학금' 이 아닌 줄이 있습니다(장학금 · 혁신인재지원금은 0)")
     return check

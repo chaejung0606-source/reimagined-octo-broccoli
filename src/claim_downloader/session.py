@@ -168,7 +168,7 @@ class ErpSession:
         """일반청구 작성 화면에 값을 채운다(claims/form.py). 저장·신청은 사람이."""
         if not self.browser_open:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
-        page, frame = claim_form.find_form(self.page.context)
+        page, frame = claim_form.wait_for_form(self.page.context, log=self.log)
         if frame is None:
             report = claim_form.FillReport(dry_run=dry_run)
             report.blocked = ("일반청구 작성 화면을 찾지 못했습니다. 앱이 연 브라우저에서 결의서내역 → [일반청구] 를 눌러 "
@@ -197,7 +197,7 @@ class ErpSession:
         """세금계산서 조회 팝업만 다시 — [선택] 을 눌러 열고 사업자번호로 조회한다(claims/taxbill.py). 고르기·[확인] 은 사람."""
         if not self.browser_open:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
-        page, frame = claim_form.find_form(self.page.context)
+        page, frame = claim_form.wait_for_form(self.page.context, log=self.log)
         if frame is None:
             report = claim_taxbill.TaxbillReport(ok=False, note="일반청구 작성 화면을 찾지 못했습니다")
             self.log(report.note)
@@ -210,7 +210,7 @@ class ErpSession:
         """입금처 팝업만 다시 — 돋보기를 눌러 열고 거래처를 검색한다(claims/payee.py). 고르기·[확인] 은 사람."""
         if not self.browser_open:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
-        page, frame = claim_form.find_form(self.page.context)
+        page, frame = claim_form.wait_for_form(self.page.context, log=self.log)
         if frame is None:
             report = claim_payee.PayeeReport(ok=False, note="일반청구 작성 화면을 찾지 못했습니다")
             self.log(report.note)
@@ -227,7 +227,7 @@ class ErpSession:
         """일반청구 [저장](임시저장)을 누른다. ERP 가 띄우는 알림·확인 창은 글을 모으고 넘긴다. 신청은 누르지 않는다."""
         if not self.browser_open:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
-        page, frame = claim_form.find_form(self.page.context)
+        page, frame = claim_form.wait_for_form(self.page.context, log=self.log)
         if frame is None:
             report = claim_form.SaveReport(ok=False)
             report.note = "일반청구 작성 화면을 찾지 못했습니다. 채운 화면이 그대로 열려 있는지 확인하세요."
@@ -269,7 +269,7 @@ class ErpSession:
             return claim_scholarship.run(None, None, job, self.log, ask=lambda _m: False, dry_run=True)
         if not self.browser_open:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
-        page, frame = claim_form.find_form(self.page.context)
+        page, frame = claim_form.wait_for_form(self.page.context, log=self.log)
         if frame is None:
             report = claim_scholarship.ScholarshipReport(dry_run=dry_run)
             report.blocked = ("작성 화면을 찾지 못했습니다. 앱이 연 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄운 뒤 "
@@ -300,7 +300,7 @@ class ErpSession:
         from .claims import sheet_check
         if not self.browser_open:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
-        page, frame = claim_form.find_form(self.page.context)
+        page, frame = claim_form.wait_for_form(self.page.context, log=self.log)
         if frame is None:
             self.log("신청 전 대조: 작성 화면을 찾지 못했습니다")
             return sheet_check.SheetCheck()
