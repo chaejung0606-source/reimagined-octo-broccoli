@@ -149,11 +149,29 @@ class SessionWorker(QObject):
         return self._resume_ok and not self._stop.is_set()
 
     def _wait_resume(self) -> None:
-        """[계속]/[멈추기] 를 기다린다. 그 사이 [화면 구조 저장] 을 누르면 이 스레드에서 바로 읽는다(Playwright 는 이 스레드에서만)."""
-        while not self._resume.wait(0.25):
-            if self._capture_now.is_set():
-                self._capture_now.clear()
-                self._capture_inline()
+        """[계속]/[멈추기] 를 기다린다. 그 사이 [화면 구조 저장] 을 누르면 이 스레드에서 바로 읽는다(Playwright 는 이 스레드에서만).
+        기다리는 동안은 사람이 브라우저를 쓰므로 ERP 확인 창이 브라우저에 그대로 보이게 한다(session._on_dialog)."""
+        session = self._session
+        was = getattr(session, "hands_on", True)
+        if session is not None:
+            session.hands_on = True
+        try:
+            ticks = 0
+            while not self._resume.wait(0.25):
+                if self._capture_now.is_set():
+                    self._capture_now.clear()
+                    self._capture_inline()
+                ticks += 1
+                if session is not None and ticks % 4 == 0:
+                    # 1초마다 브라우저 소식을 받는다 — 사람이 띄운 확인 창이 '사람 차례' 일 때 전달돼야 앱이 [계속] 뒤에 대신 누르거나
+                    # 앱의 알림 목록에 섞지 않는다(session._on_dialog · fill_scholarship 의 처리기)
+                    try:
+                        session.poll_alive()
+                    except Exception:  # noqa: BLE001
+                        pass
+        finally:
+            if session is not None:
+                session.hands_on = was
         if self._capture_now.is_set():           # 띠가 닫히는 순간 누른 것 — 지금 작업 뒤에 돈다
             self._capture_now.clear()
             self._put("capture", (), self._capture_owner)
@@ -169,6 +187,7 @@ class SessionWorker(QObject):
         log = file_logger(self.log.emit)
         log("════ %s 앱 실행 ════" % time.strftime("%Y-%m-%d"))
         session = ErpSession(log, self._ask_relogin, should_stop=self._stop.is_set)
+        session.hands_on = True       # 쉬는 동안은 사람이 브라우저를 쓴다 — 명령을 도는 동안만 False(아래)
         self._session = session
         alive = False
         while True:
@@ -185,6 +204,7 @@ class SessionWorker(QObject):
                 session.close()
                 return
             name, args, owner = command
+            session.hands_on = False          # 앱이 브라우저를 쓰는 동안 — 처리기 없는 확인 창은 앱이 닫는다(session._on_dialog)
             try:
                 getattr(self, "_do_" + name)(session, *args)
             except Exception as error:   # noqa: BLE001 — 스레드가 죽으면 앱 전체가 먹통이 된다
@@ -194,6 +214,7 @@ class SessionWorker(QObject):
                 self.failed.emit(owner, message)
                 self.error.emit(message)
             finally:
+                session.hands_on = True
                 alive = session.browser_open
                 self.browser_state.emit(alive)
                 self.busy.emit(False, "")
@@ -220,6 +241,7 @@ class SessionWorker(QObject):
         deadline = time.monotonic() + WATCH_SECONDS
         seen = 0
         tried = not project_no
+        session.hands_on = True        # 지켜보는 동안 사람이 로그인 · 이동한다 — 로그인 화면의 알림도 브라우저에 보여야 한다
         while time.monotonic() < deadline:
             if not self._queue.empty() or not session.browser_open:
                 return
@@ -232,7 +254,11 @@ class SessionWorker(QObject):
                         tried = True
                         self._remember_projects(session, projects)
                         session.log(f"로그인을 확인해 과제 {project_no} 의 청구서 화면으로 갑니다 (설정 → 동작에서 끌 수 있습니다)")
-                        session.go_to_claims(project_no)
+                        session.hands_on = False
+                        try:
+                            session.go_to_claims(project_no)
+                        finally:
+                            session.hands_on = True
                         rows = erp.grid_rows_shown(session.page.context)
             except Exception:  # noqa: BLE001 — 창이 닫히는 중 등: 지켜보기만 그만둔다
                 return

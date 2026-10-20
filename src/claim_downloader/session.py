@@ -54,6 +54,16 @@ class RunSummary:
 ItemCallback = Callable[[int, str, str], None]
 
 
+def _has_own_dialog_handler(page) -> bool:
+    """그 창에 앱이 붙인 dialog 처리기가 있는지(claims/payee.py · person.py · attach.py … 의 page.on("dialog") 와 저장 때의 처리기).
+    Playwright 는 묶음(context)의 처리기를 먼저 부르므로, 여기서 창의 처리기를 보고 겹쳐 누르지 않는다. 공개 API 가 없어 안쪽 값을 본다 —
+    못 보면 '없음' 으로 본다(그때는 hands_on 규칙대로)."""
+    try:
+        return bool(page._impl_obj.listeners("dialog"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class ErpSession:
     def __init__(self, log: Callable[[str], None],
                  ask_relogin: Callable[[str], bool],
@@ -70,6 +80,10 @@ class ErpSession:
         self._pw = None
         self.browser = None
         self.page = None
+        # 사람이 브라우저를 쓰는 중인지(앱이 쉬거나 노란 띠 · 재로그인 띠에서 기다릴 때) — 앱의 브라우저 스레드가 바꾼다(ui/worker.py).
+        # 이때 ERP 의 확인 창은 브라우저에 그대로 떠서 사람이 누른다. 아니면 전처럼 앱이 닫는다(_on_dialog). 기본은 '아니다' —
+        # 콘솔 실행 · 시험 스크립트가 아무도 누르지 않는 확인 창을 기다리며 멈추지 않게.
+        self.hands_on = False
 
     # ── 준비 ─────────────────────────────────────────────────────────────
     def prepare(self) -> archive.ScanReport:
@@ -106,15 +120,17 @@ class ErpSession:
             return False
 
     def poll_alive(self) -> bool:
-        """쉬는 동안 — 사람이 브라우저 창을 닫았는지. Playwright 는 다른 호출을 하는 동안에만 '닫힘' 소식을 받으므로, 열린 창에 가벼운
-        글자 하나를 계산시켜 소식을 받는다(화면은 건드리지 않는다). 전에는 명령을 하나 더 보내야 알아채서, 창을 닫은 뒤에도 앱은 열린 줄 알고
+        """쉬는 동안 — 사람이 브라우저 창을 닫았는지. Playwright 는 다른 호출을 하는 동안에만 '닫힘' 소식을 받으므로, 가벼운
+        왕복 하나로 소식을 받는다(화면은 건드리지 않는다). 전에는 명령을 하나 더 보내야 알아채서, 창을 닫은 뒤에도 앱은 열린 줄 알고
         [브라우저 열기] 를 숨겼다(담당자 2026-10-20: 지출 폴더를 넣고 읽어야 브라우저를 열 수 있었다)."""
         if self.browser is None:
             return False
         try:
             page = next((p for c in self.browser.contexts for p in c.pages if not p.is_closed()), None)
             if page is not None:
-                page.evaluate("1")
+                # 화면의 스크립트를 돌리지 않는 왕복(1ms 기다림)으로 소식만 받는다 — evaluate 는 ERP 확인 창이 떠 있는 동안 멈춰,
+                # 사람이 그 창을 누를 때까지 이 스레드가 묶였다(_on_dialog 로 확인 창을 브라우저에 보이게 한 뒤, 2026-10-20)
+                page.wait_for_timeout(1)
         except Exception:  # noqa: BLE001 — 닫히는 중이면 아래에서 닫힘으로 본다
             pass
         return self.browser_open
@@ -143,6 +159,8 @@ class ErpSession:
             self.log("크로미움을 띄우지 못해 Edge 로 엽니다 (%s)" % str(error).splitlines()[0][:120])
             self.browser = self._pw.chromium.launch(headless=False, channel="msedge")
         self.page = self.browser.new_page(accept_downloads=True)
+        # 새 창(회의록등록 · 입금처 같은 팝업)도 같은 묶음(context)이라 여기 하나로 모든 창의 확인 창을 받는다
+        self.page.context.on("dialog", self._on_dialog)
         self.page.goto(settings_mod.ERP_URL, wait_until="domcontentloaded")
         cfg = self._load_settings()
         if getattr(cfg, "auto_open_project", False):
@@ -150,6 +168,31 @@ class ErpSession:
                      % (getattr(cfg, "project_no", "") or settings_mod.DEFAULT_PROJECT_NO))
         else:
             self.log("브라우저를 열었습니다. 로그인 → [과제관리 → 과제정보 → 청구서] → 결의서내역 목록을 띄우세요.")
+
+    def _on_dialog(self, dialog) -> None:
+        """ERP 의 알림 · 확인 창(alert · confirm · prompt).
+
+        Playwright 는 받는 곳이 없으면 이 창을 **보이지 않고 바로 '취소'** 한다 — 그래서 사람이 앱 브라우저에서 누른 저장이 조용히 취소됐다
+        (담당자 2026-10-20: 카드청구 회의록등록 창에서 "이 브라우저에서는 저장이 안됨". 실제 Chromium 으로 확인: confirm 이 false).
+        받는 곳을 두되 처리하지 않으면 보통 브라우저처럼 창이 떠서 사람이 [확인]/[취소] 를 누른다.
+        - 그 창(page)에 앱의 자동화가 붙인 처리기가 있으면(저장 · 팝업 자동 선택) 거기서 처리한다 — 여기서는 손대지 않는다.
+        - 사람이 쓰는 중(hands_on)이면 그대로 둔다 — 브라우저에 보인다.
+        - 앱이 넣는 중인데 처리기가 없는 창이면 전처럼(Playwright 기본) 닫는다 — 그대로 두면 자동화가 사람의 클릭을 기다리며 멈춘다."""
+        try:
+            message = (dialog.message or "").strip()
+            page = dialog.page
+            if page is not None and _has_own_dialog_handler(page):
+                return
+            if self.hands_on:
+                self.log("ERP 확인 창(브라우저에 보임 — 직접 누르세요): %s" % message[:200])
+                return
+            self.log("ERP 알림(앱이 닫음): %s" % message[:200])
+            if dialog.type == "beforeunload":
+                dialog.accept()
+            else:
+                dialog.dismiss()
+        except Exception:  # noqa: BLE001 — 사람이 이미 눌렀거나 창이 닫힌 경우
+            pass
 
     def close(self) -> None:
         try:
@@ -313,7 +356,12 @@ class ErpSession:
             report.taxbill = claim_taxbill.search(page, frame, data, self.log, wait=wait, auto_pick=auto_pick, email=email)
             if report.taxbill.ok and not report.taxbill.picked:
                 popup = claim_payee.find_popup(page.context, claim_taxbill.POPUP_PROBE_JS)
-                if popup is not None and not claim_payee.wait_closed(popup, wait):
+                was, self.hands_on = self.hands_on, True     # 사람이 팝업에서 고르는 동안 — ERP 확인 창이 브라우저에 보여야 한다
+                try:
+                    closed = popup is None or claim_payee.wait_closed(popup, wait)
+                finally:
+                    self.hands_on = was
+                if not closed:
                     self.log("세금계산서 팝업이 아직 열려 있어 입금처 검색은 건너뜁니다 — 고른 뒤 [입금처 찾기] 를 누르세요")
                     return report
         if claim_payee.query_for(data):
@@ -442,6 +490,10 @@ class ErpSession:
         messages: list[str] = []
 
         def on_dialog(dialog) -> None:
+            if self.hands_on:
+                # 노란 띠에서 사람을 기다리는 동안 사람이 누른 것 — 앱이 대신 [확인] 하지 않고 브라우저에 보이게 둔다(_on_dialog)
+                self.log("ERP 확인 창(브라우저에 보임 — 직접 누르세요): %s" % dialog.message.strip()[:200])
+                return
             messages.append(dialog.message.strip())
             self.log("ERP 알림: %s" % dialog.message.strip())
             try:

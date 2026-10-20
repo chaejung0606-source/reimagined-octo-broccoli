@@ -184,11 +184,10 @@ def test_poll_alive_notices_a_closed_browser_window():
         def is_closed(self):
             return self.closed
 
-        def evaluate(self, js):
+        def wait_for_timeout(self, ms):
             self.calls += 1
             if self.closed:
                 raise RuntimeError("Target closed")
-            return 1
 
     page = Page()
     context = type("C", (), {"pages": [page]})()
@@ -198,3 +197,60 @@ def test_poll_alive_notices_a_closed_browser_window():
     assert s.poll_alive() is True and page.calls == 1    # 열린 창에 가볍게 한 번 물어 닫힘 소식을 받는다
     page.closed = True
     assert s.poll_alive() is False
+
+
+class FakeDialog:
+    def __init__(self, type_="confirm", message="저장하시겠습니까?", page=None, fail=False):
+        self.type, self.message, self.page, self.fail = type_, message, page, fail
+        self.done = ""
+
+    def accept(self, *_a):
+        if self.fail:
+            raise RuntimeError("Cannot accept dialog which is already handled!")
+        self.done = "accept"
+
+    def dismiss(self):
+        if self.fail:
+            raise RuntimeError("already handled")
+        self.done = "dismiss"
+
+
+def _page_with_handlers(count):
+    impl = type("Impl", (), {"listeners": lambda self, event: ["h"] * count if event == "dialog" else []})()
+    return type("P", (), {"_impl_obj": impl})()
+
+
+def test_dialog_is_left_for_the_person_while_they_use_the_browser():
+    """Playwright 는 받는 곳이 없으면 확인 창을 보이지 않고 '취소' 한다 — 사람이 앱 브라우저에서 누른 저장이 조용히 취소됐다
+    (2026-10-20 카드청구 회의록등록). 사람이 쓰는 동안에는 처리하지 않고 두어 브라우저에 보이게 한다."""
+    logs = []
+    s = ErpSession(logs.append, lambda m: True)
+    assert s.hands_on is False             # 기본은 전처럼 앱이 닫는다 — 앱의 브라우저 스레드만 쉬는 동안 True 로 둔다(ui/worker.py)
+    s.hands_on = True
+    dialog = FakeDialog(page=_page_with_handlers(0))
+    s._on_dialog(dialog)
+    assert dialog.done == "" and "직접 누르세요" in logs[-1]
+
+
+def test_dialog_closed_by_the_app_only_while_it_fills_and_has_no_handler():
+    logs = []
+    s = ErpSession(logs.append, lambda m: True)
+    s.hands_on = False
+    dialog = FakeDialog(page=_page_with_handlers(0))
+    s._on_dialog(dialog)
+    assert dialog.done == "dismiss" and "앱이 닫음" in logs[-1]          # 전처럼(Playwright 기본) — 자동화가 멈추지 않게
+    leave = FakeDialog(type_="beforeunload", page=None)
+    s._on_dialog(leave)
+    assert leave.done == "accept"
+    # 앱의 저장 · 팝업 처리기가 붙은 창은 그 처리기가 받는다 — 겹쳐 누르면 'already handled' 오류
+    owned = FakeDialog(page=_page_with_handlers(1))
+    s._on_dialog(owned)
+    assert owned.done == ""
+    s.hands_on = True
+    owned_human = FakeDialog(page=_page_with_handlers(1))
+    s._on_dialog(owned_human)
+    assert owned_human.done == ""
+    # 사람이 먼저 눌렀으면(이미 닫힘) 오류 없이 넘어간다
+    s.hands_on = False
+    s._on_dialog(FakeDialog(page=None, fail=True))
+
