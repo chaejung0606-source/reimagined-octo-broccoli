@@ -94,9 +94,9 @@ class ScholarshipPanel(QWidget):
         self.category_field = Field("비목", self.category_box)
         row.addWidget(self.category_field, 2)
         self.tab_box = QComboBox()
-        self.tab_box.addItem("인적정보 (학번)", person.TAB_STUDENT)
+        self.tab_box.addItem("인적정보 (학번·사번)", person.TAB_STUDENT)   # 학생 학번 · 교직원 사번 — 담당자 요청 2026-10-20
         self.tab_box.addItem("참여인력 (사번)", person.TAB_STAFF)
-        self.tab_box.setToolTip("소득자 돋보기 팝업에서 찾을 구분 — 학생은 인적정보")
+        self.tab_box.setToolTip("돋보기 팝업에서 찾을 구분 — 학생 · 교직원은 인적정보(학번·사번), 참여인력 명단에 있는 사람은 참여인력")
         self.tab_box.currentIndexChanged.connect(lambda _i: self._options_changed())
         self.tab_field = Field("소득자 찾기", self.tab_box)
         row.addWidget(self.tab_field, 2)

@@ -23,6 +23,7 @@ from ..session import BrowserClosed, ErpSession, ListNotFound, file_logger
 
 
 WATCH_SECONDS = 20 * 60            # 브라우저를 연 뒤 로그인 · 결의서내역 목록을 지켜보는 시간(로그인은 사람)
+IDLE_POLL_SECONDS = 2.0            # 할 일이 없을 때 브라우저 창이 닫혔는지 보는 간격
 
 class SessionWorker(QObject):
     log = Signal(str)
@@ -169,8 +170,17 @@ class SessionWorker(QObject):
         log("════ %s 앱 실행 ════" % time.strftime("%Y-%m-%d"))
         session = ErpSession(log, self._ask_relogin, should_stop=self._stop.is_set)
         self._session = session
+        alive = False
         while True:
-            command = self._queue.get()
+            try:
+                command = self._queue.get(timeout=IDLE_POLL_SECONDS)
+            except queue.Empty:
+                # 쉬는 동안 사람이 브라우저 창을 닫았으면 화면에 알린다 — 그래야 [브라우저 열기] 가 다시 보인다
+                now = session.poll_alive() if alive else False
+                if now != alive:
+                    alive = now
+                    self.browser_state.emit(now)
+                continue
             if command is None:
                 session.close()
                 return
@@ -184,7 +194,8 @@ class SessionWorker(QObject):
                 self.failed.emit(owner, message)
                 self.error.emit(message)
             finally:
-                self.browser_state.emit(session.browser_open)
+                alive = session.browser_open
+                self.browser_state.emit(alive)
                 self.busy.emit(False, "")
 
     def _do_open(self, session: ErpSession, scan: bool = True, watch: bool = False) -> None:

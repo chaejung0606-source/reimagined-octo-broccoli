@@ -448,7 +448,8 @@ class ClaimPage(QWidget):
         self.structure_button.setObjectName("ghost")
         self.structure_button.setToolTip(
             "지금 브라우저에 열린 ERP 화면(팝업 포함)의 창·프레임·입력 요소를 _화면구조.txt 로 저장합니다. "
-            "읽기만 하고 아무것도 누르거나 넣지 않습니다. 새 화면을 자동화하기 전 실측용입니다.")
+            "읽기만 하고 아무것도 누르거나 넣지 않습니다. 새 화면을 자동화하기 전 실측용입니다.\n"
+            "브라우저가 닫혀 있으면 먼저 엽니다 — 지출 폴더는 없어도 됩니다.")
         self.structure_button.clicked.connect(self._capture_structure)
         corner_row.addWidget(self.structure_button)
         self.tabs.setCornerWidget(corner, Qt.TopRightCorner)
@@ -709,8 +710,9 @@ class ClaimPage(QWidget):
         is_taxbill = filled and taxbill.wanted(self._data[self._current])
         self.taxbill_button.setVisible(is_taxbill)
         self.taxbill_button.setEnabled(is_taxbill and self._browser_open and not self._browser_busy and not running)
-        # 브라우저가 다른 일을 하는 중에는 큐에서 기다리게 되므로 막는다 — 단, 노란 띠에서 기다리는 중이면 바로 읽힌다
-        self.structure_button.setEnabled(self._browser_open and (not self._browser_busy or self.ask_banner.isVisible()))
+        # 브라우저가 다른 일을 하는 중에는 큐에서 기다리게 되므로 막는다 — 단, 노란 띠에서 기다리는 중이면 바로 읽힌다.
+        # 브라우저가 닫혀 있어도 눌린다 — 누르면 브라우저부터 연다(지출 폴더 없이 실측하려고, 담당자 요청 2026-10-20)
+        self.structure_button.setEnabled(not self._browser_busy or self.ask_banner.isVisible())
         self.tabs.setTabText(0, f"지출 목록 ({len(self._dirs)})" if self._dirs else "지출 목록")
         self.list_stack.setCurrentIndex(1 if self._dirs else 0)
 
@@ -1352,6 +1354,14 @@ class ClaimPage(QWidget):
             self._set_state("넣는 중", "info", "이어서 넣습니다.")
 
     def _capture_structure(self) -> None:
+        if not self._browser_open:
+            # 실측할 화면이 아직 없다 — 브라우저부터 연다. 지출 폴더는 없어도 된다(담당자 요청 2026-10-20)
+            self.browser.open_browser(scan=False, owner="claim")
+            self._set_state("브라우저 여는 중", "info", "ERP 에 로그인하고 실측할 화면을 띄운 뒤 [화면 구조 저장] 을 다시 누르세요.")
+            QMessageBox.information(self, "화면 구조 저장",
+                                    "브라우저를 엽니다. ERP 에 로그인하고 실측할 화면(팝업이면 팝업까지)을 띄운 뒤 "
+                                    "[화면 구조 저장] 을 다시 누르세요.\n\n지출 폴더는 넣지 않아도 됩니다.")
+            return
         self._capture_asked = True              # 청구서 받기 화면도 같은 신호를 받는다 — 누른 쪽만 창을 띄운다
         self.browser.capture_structure(owner="claim")
 

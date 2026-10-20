@@ -105,6 +105,20 @@ class ErpSession:
         except Exception:      # noqa: BLE001
             return False
 
+    def poll_alive(self) -> bool:
+        """쉬는 동안 — 사람이 브라우저 창을 닫았는지. Playwright 는 다른 호출을 하는 동안에만 '닫힘' 소식을 받으므로, 열린 창에 가벼운
+        글자 하나를 계산시켜 소식을 받는다(화면은 건드리지 않는다). 전에는 명령을 하나 더 보내야 알아채서, 창을 닫은 뒤에도 앱은 열린 줄 알고
+        [브라우저 열기] 를 숨겼다(담당자 2026-10-20: 지출 폴더를 넣고 읽어야 브라우저를 열 수 있었다)."""
+        if self.browser is None:
+            return False
+        try:
+            page = next((p for c in self.browser.contexts for p in c.pages if not p.is_closed()), None)
+            if page is not None:
+                page.evaluate("1")
+        except Exception:  # noqa: BLE001 — 닫히는 중이면 아래에서 닫힘으로 본다
+            pass
+        return self.browser_open
+
     def open_browser(self) -> None:
         """ERP 첫 화면을 띄운다. 로그인은 사람이 이 창에서 직접 한다.
 

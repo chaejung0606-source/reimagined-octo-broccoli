@@ -172,3 +172,29 @@ def test_download_asks_to_close_claim_form_first(monkeypatch):
     monkeypatch.setattr(s, "claim_form_open", lambda: True)
     summary = s.download([make_row(docNo="A")])
     assert summary.stopped and calls == [] and "일반청구 작성 화면" in asked[0]
+
+
+def test_poll_alive_notices_a_closed_browser_window():
+    """쉬는 동안 사람이 브라우저 창을 닫으면 알아챈다 — 전에는 명령을 하나 더 보내야 알아채 [브라우저 열기] 가 숨은 채였다(2026-10-20)."""
+    class Page:
+        def __init__(self):
+            self.closed = False
+            self.calls = 0
+
+        def is_closed(self):
+            return self.closed
+
+        def evaluate(self, js):
+            self.calls += 1
+            if self.closed:
+                raise RuntimeError("Target closed")
+            return 1
+
+    page = Page()
+    context = type("C", (), {"pages": [page]})()
+    s = ErpSession(lambda m: None, lambda m: True)
+    assert s.poll_alive() is False                       # 브라우저를 연 적이 없다
+    s.browser = type("B", (), {"is_connected": lambda self: True, "contexts": [context]})()
+    assert s.poll_alive() is True and page.calls == 1    # 열린 창에 가볍게 한 번 물어 닫힘 소식을 받는다
+    page.closed = True
+    assert s.poll_alive() is False
