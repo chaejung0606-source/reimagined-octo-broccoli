@@ -297,7 +297,7 @@ def test_assign_spreads_same_day_payments_and_flags_collisions():
 # ── 회의비: 회의 장소와 가맹점 주소의 도 · 시 ──────────────────────────
 def test_regions_from_addresses_and_places():
     """담당자 규칙(2026-10-20): 영수증이 없으면 카드매출전표로 갈음하는데, 회의비 공문의 장소(춘천시 정도)와 가맹점 주소(도 · 시)가 달라서는 안 된다."""
-    assert card.address_region("강원 춘천시 공지로297번길 24 (효자동)") == "춘천"
+    assert card.address_region("강원 춘천시 강원대학길 1 (효자동)") == "춘천"
     assert card.address_region("강원특별자치도 원주시 흥업면") == "원주"
     assert card.address_region("서울특별시 강남구 테헤란로 1") == "서울"
     assert card.address_region("") == ""
