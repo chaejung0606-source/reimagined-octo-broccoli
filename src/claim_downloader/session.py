@@ -511,6 +511,81 @@ class ErpSession:
         finally:
             page.remove_listener("dialog", on_dialog)
 
+    # ── 카드 ─────────────────────────────────────────────────────────────
+    def card_members(self, job) -> list:
+        """참여연구원 명단 — 설정의 파일, 없으면 카드 폴더 · 그 위 폴더의 '참여연구원 …' 엑셀 · PDF. 없으면 [] (참석자는 모두 내부참석자로)."""
+        import os
+        from .claims import participants
+        folder = getattr(job, "folder", "") or ""
+        path = participants.find_file(str(getattr(self._load_settings(), "participants_file", "") or ""),
+                                      folder, os.path.dirname(folder))
+        members = participants.read(path) if path else []
+        self.log("참여연구원 명단: %s" % (f"{os.path.basename(path)} — {len(members)}명" if path else "없음 (설정 → 일반청구에서 고르세요)"))
+        return members
+
+    def fill_card(self, job, sheet_index: int, dry_run: bool = True, ask=None, on_item=None, project_no: str = "",
+                  test_mode: bool = False):
+        """카드청구 — 결제 기간 폴더의 청구서 하나(비목 하나)를 카드청구 작성 화면에 결제 건마다 넣고 [저장](claims/card_erp.py).
+        카드청구 화면은 사람이 띄운다(결의서내역 [카드청구] 는 허락 전). [신청] 은 사람."""
+        from .claims import card_erp
+        sheet = job.sheets[sheet_index]
+        members = self.card_members(job)
+        if dry_run:
+            return card_erp.run(None, None, job, sheet, self.log, ask=lambda _m: False, dry_run=True, members=members, test_mode=test_mode)
+        if not self.browser_open:
+            raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
+        ask = ask or (lambda _m: False)
+        project = self._project(project_no)
+        context = self.page.context
+        page, frame = card_erp.wait_for_card_form(context, self._wait, tries=4)
+        if frame is None:
+            # 결의서 목록까지는 앱이 간다(허락된 이동). [카드청구](#P11) 는 사람이 누른다
+            if navigate.list_frame(context, project) is None:
+                self.go_to_claims(project)
+            for _ in range(3):
+                if not ask("카드청구 작성 화면이 없습니다. 앱이 연 브라우저의 결의서내역에서 [카드청구] 를 눌러 카드청구 화면을 띄운 뒤 [계속]."):
+                    break
+                page, frame = card_erp.wait_for_card_form(context, self._wait, tries=8)
+                if frame is not None:
+                    break
+        report = card_erp.CardReport(dry_run=False, summary=card_erp.main_summary(sheet, test_mode))
+        if frame is None:
+            report.blocked = "카드청구 작성 화면을 찾지 못했습니다 — 결의서내역에서 [카드청구] 를 눌러 띄운 뒤 다시 누르세요."
+            self.log(report.blocked)
+            return report
+        shown = navigate.frame_project(frame)
+        if shown and project and shown != project:
+            report.blocked = f"카드청구 화면이 다른 과제({shown})의 것입니다 — 고른 과제({project})의 결의서내역에서 [카드청구] 를 눌러 띄우세요."
+            self.log(report.blocked)
+            return report
+        messages: list[str] = []
+
+        def on_dialog(dialog) -> None:
+            if self.hands_on:
+                self.log("ERP 확인 창(브라우저에 보임 — 직접 누르세요): %s" % dialog.message.strip()[:200])
+                return
+            messages.append(dialog.message.strip())
+            self.log("ERP 알림: %s" % dialog.message.strip())
+            try:
+                dialog.accept()
+            except Exception:  # noqa: BLE001
+                pass
+
+        page.on("dialog", on_dialog)
+        try:
+            report = card_erp.run(page, frame, job, sheet, self.log, ask=ask,
+                                  wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)), messages=messages,
+                                  should_stop=self.should_stop, on_item=on_item, dry_run=False, members=members,
+                                  test_mode=test_mode, find_frame=lambda: card_erp.find_card_form(context))
+        finally:
+            page.remove_listener("dialog", on_dialog)
+        if not test_mode:
+            try:
+                card_erp.record_sheet(job, sheet, report)
+            except Exception as error:  # noqa: BLE001 — 기록을 못 남겨도 넣은 것은 그대로
+                self.log("카드청구 기록을 남기지 못했습니다: %s" % (str(error).splitlines()[0] if str(error) else type(error).__name__))
+        return report
+
     def check_scholarship_sheet(self, job):
         """신청 전 대조 — 작성 화면의 청구내역 표를 읽어 명단과 맞춘다(claims/sheet_check.py). 읽기만 한다."""
         from .claims import sheet_check

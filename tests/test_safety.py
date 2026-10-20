@@ -186,6 +186,32 @@ def test_scholarship_presses_only_tab_save_person_and_attach_buttons():
         assert all(word not in line for line in _click_lines(att)), word
 
 
+def test_card_presses_only_inquiry_payment_category_evidence_and_saves():
+    """카드청구(claims/card_erp.py) — 담당자 허락(2026-10-20 "네 눌러도 됩니다"): 미청구 카드내역 [조회] · 결제 건 라디오 · 청구구분 라디오 ·
+    증빙 [신규등록] · 회의록등록 창의 [저장] 과 외부참석자 [행 추가] · 작성 화면 [저장] · 첨부. [신청] 은 사람.
+    (85) [등록] · 참여인력/내부참석자 [행 추가] · 돋보기 · [카드매출전표] · 결의서내역 [카드청구](#P11) 는 미실측 · 허락 전이라 누르지 않는다."""
+    text = (SRC / "claims" / "card_erp.py").read_text(encoding="utf-8")
+    assert text.count(".click(") == 2                       # 청구구분 라디오(REQ_DIV_CLICK_JS) · 결제 건 줄의 라디오(PICK_R_JS)
+    assert ".click(" in text.split("REQ_DIV_CLICK_JS = ", 1)[1].split('"""', 2)[1]
+    assert ".click(" in text.split("PICK_R_JS = ", 1)[1].split('"""', 2)[1]
+    assert re.findall(r"evaluate\(REQ_DIV_CLICK_JS,\s*([A-Za-z_.]+)\)", text) == ["item.req_div"]
+    assert set(re.findall(r"_click\((?:frame|popup), ([A-Z_]+)\)", text)) == {"LIST_BUTTON_ID", "MINUTES_SAVE_ID", "EXTERNAL_ADD_ID"}
+    assert re.findall(r"open_popup\(page, frame, ([A-Z_]+),", text) == ["MINUTES_BUTTON_ID"]
+    assert re.findall(r"evaluate\(CLICK_ID_JS, ([A-Za-z_]+)\)", text) == ["element_id"]              # _click 안에서만
+    assert "assert element_id in ALLOWED_CLICK_IDS" in text
+    for line in ('LIST_BUTTON_ID = "btn_cardList"', 'MINUTES_BUTTON_ID = "btn_addEvid2"', 'MINUTES_SAVE_ID = "save"',
+                 'EXTERNAL_ADD_ID = "btnRowAdd2"',
+                 "ALLOWED_CLICK_IDS = frozenset({LIST_BUTTON_ID, MINUTES_BUTTON_ID, MINUTES_SAVE_ID, EXTERNAL_ADD_ID})"):
+        assert line in text, line
+    body = text.split("def _run_item(", 1)[1]
+    assert body.index("if key is not None:") < body.index("pick_row(")       # 결제 건은 card.pick 이 하나로 정한 줄만
+    assert "save_draft(" in text and '"신청"' not in text and "신청')" not in text
+    for line in [ln for ln in text.splitlines() if "evaluate(" in ln or "_click(" in ln]:
+        for word in ('"btn_addEvid"', '"P11"', "btn_gridCard", '"btnRowAdd"', "btnRowAdd1", "btnEmpInfo", "oz_report", "CALL_PRE_SFRC",
+                     "btn_del", "FORBIDDEN_IDS"):
+            assert word not in line, line
+
+
 def test_file_upload_lives_only_in_attach():
     """OS 대화상자 없이 파일을 넣는 set_input_files 는 claims/attach.py 한 곳에서만."""
     users = sorted(p.relative_to(SRC).as_posix() for p in SRC.rglob("*.py") if "set_input_files(" in p.read_text(encoding="utf-8"))

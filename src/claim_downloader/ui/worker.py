@@ -48,6 +48,8 @@ class SessionWorker(QObject):
     scholarship_ask = Signal(str)       # 장학금: 앱이 확신 못 하는 단계 — 사람이 [계속]/[멈추기]
     scholarship_done = Signal(object)   # 장학금: claims.scholarship.ScholarshipReport
     sheet_checked = Signal(object)      # 신청 전 대조: claims.sheet_check.SheetCheck
+    card_item = Signal(int, str, str)   # 카드: 결제 건 번호, 상태, 설명
+    card_done = Signal(object)          # 카드: claims.card_erp.CardReport
     list_ready = Signal()               # 받기: 브라우저를 연 뒤 결의서내역 목록이 보인다 — 화면이 [목록 읽기] 를 저절로
     projects_read = Signal()            # 로그인 뒤 메인화면 과제현황에서 과제 목록을 읽어 _과제목록.json 에 남겼다 — 일반청구의 과제 고르기 칸이 다시 읽는다
 
@@ -99,6 +101,10 @@ class SessionWorker(QObject):
     def fill_scholarship(self, job, dry_run: bool = True) -> None:
         self._stop.clear()
         self._put("fill_scholarship", (job, dry_run), "claim")
+
+    def fill_card(self, job, sheet_index: int, dry_run: bool = True, project_no: str = "", test_mode: bool = False) -> None:
+        self._stop.clear()
+        self._put("fill_card", (job, sheet_index, dry_run, project_no, test_mode), "claim")
 
     def read_list(self) -> None:
         self._put("read_list", (), "download")
@@ -315,6 +321,12 @@ class SessionWorker(QObject):
         self.busy.emit(True, f"{name} 계획을 만드는 중…" if dry_run else f"{name} 청구를 넣는 중… (멈추면 안내를 따라 주세요)")
         report = session.fill_scholarship(job, dry_run=dry_run, ask=self._ask_person, on_person=self.scholarship_person.emit)
         self.scholarship_done.emit(report)
+
+    def _do_fill_card(self, session: ErpSession, job, sheet_index: int, dry_run: bool, project_no: str, test_mode: bool) -> None:
+        self.busy.emit(True, "카드청구 계획을 만드는 중…" if dry_run else "카드청구를 넣는 중… (멈추면 안내를 따라 주세요)")
+        report = session.fill_card(job, sheet_index, dry_run=dry_run, ask=self._ask_person, on_item=self.card_item.emit,
+                                   project_no=project_no, test_mode=test_mode)
+        self.card_done.emit(report)
 
     def _do_check_sheet(self, session: ErpSession, job) -> None:
         self.busy.emit(True, "청구내역 표를 읽어 명단과 맞추는 중…")

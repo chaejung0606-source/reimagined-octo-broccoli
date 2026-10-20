@@ -340,9 +340,16 @@ class Minutes:
     merchant: str = ""
     used: dt.date | None = None
     place: str = ""              # 회의장소 칸 — 실제 회의한 곳(식당이 아니다)
+    agenda: str = ""             # 회의안건 → ERP 회의록등록 #CFRC_PURS(회의목적)
+    start: str = ""              # 회의일시의 시각 'HH:MM' → #CFRC_ST_DTM · #CFRC_END_DTM
+    end: str = ""
+    content: list[str] = field(default_factory=list)                    # 회의내용 문단 → #CFRC_CONT
+    attendees: list[tuple[str, str]] = field(default_factory=list)      # (소속, 이름) — 이름이 빈 칸은 뺀다
 
 
 MINUTES_LABELS = ("사 업 명", "회의안건", "회의일시", "회의장소", "회의비 사용처", "금액", "참석자", "소속", "이름")
+CONTENT_LABEL = "회의내용"
+TIME_RE = re.compile(r"(\d{1,2})\s*[:시]\s*(\d{2})?")
 
 
 def minutes_texts(path: str) -> list[str]:
@@ -375,9 +382,85 @@ def read_minutes(path: str) -> Minutes:
     out.amount = parse_amount(value("금액")) if value("금액") else None
     out.merchant = value("회의비 사용처")
     out.place = value("회의장소")
-    found = DATE_RE.search(value("회의일시"))
+    out.agenda = value("회의안건")
+    when = value("회의일시")
+    found = DATE_RE.search(when)
     out.used = _date(*(int(x) for x in found.groups())) if found else None
+    # 'YYYY. M. D. (요일) HH:MM ~ HH:MM'(minutes/schema.py) — 날짜를 뗀 뒤의 시각 둘
+    times = [f"{int(h):02d}:{m or '00'}" for h, m in TIME_RE.findall(when[found.end():] if found else when) if int(h) < 24]
+    if times:
+        out.start, out.end = times[0], times[1] if len(times) > 1 else ""
+    out.attendees, out.content = minutes_table(path)
     return out
+
+
+def _cell_text(xml: str, tag: str) -> list[str]:
+    return [html.unescape(t).strip() for t in re.findall(rf"<{tag}(?:\s[^>]*)?>(.*?)</{tag}>", xml, re.S)]
+
+
+def minutes_table(path: str) -> tuple[list[tuple[str, str]], list[str]]:
+    """회의록 표의 참석자 (소속, 이름) · 회의내용 문단. 소속 칸은 같은 소속끼리 세로로 합쳐져 있어(hwpx rowSpan · docx vMerge)
+    글자 순서만으로는 소속과 이름을 못 가린다 — 칸 주소(열)로 읽고 합쳐진 소속은 아래 줄로 내려 준다. 못 읽으면 ([], [])."""
+    lower = path.lower()
+    try:
+        with zipfile.ZipFile(path) as z:
+            xml = z.read("Contents/section0.xml" if lower.endswith(".hwpx") else "word/document.xml").decode("utf-8", "replace")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return [], []
+    rows: list[list[tuple[int, int, list[str]]]] = []          # 줄마다 (열, 세로 합침 칸 수, 문단들)
+    if lower.endswith(".hwpx"):
+        cells: dict[int, list[tuple[int, int, list[str]]]] = {}
+        for tc in re.findall(r"<hp:tc\b.*?</hp:tc>", xml, re.S):
+            addr = re.search(r'<hp:cellAddr\s+colAddr="(\d+)"\s+rowAddr="(\d+)"', tc)
+            span = re.search(r'<hp:cellSpan\s+colSpan="\d+"\s+rowSpan="(\d+)"', tc)
+            if addr:
+                paras = [" ".join(t for t in _cell_text(p, "hp:t") if t)
+                         for p in re.findall(r"<hp:p\b.*?</hp:p>", tc, re.S)]
+                cells.setdefault(int(addr.group(2)), []).append((int(addr.group(1)), int(span.group(1)) if span else 1, paras))
+        rows = [sorted(cells[r]) for r in sorted(cells)]
+    elif lower.endswith(".docx"):
+        for tr in re.findall(r"<w:tr\b.*?</w:tr>", xml, re.S):
+            row, col = [], 0
+            for tc in re.findall(r"<w:tc\b.*?</w:tc>", tr, re.S):
+                merge = re.search(r'<w:vMerge(?:\s+w:val="(\w+)")?\s*/>', tc)
+                paras = [" ".join(t for t in _cell_text(p, "w:t") if t) for p in re.findall(r"<w:p\b.*?</w:p>", tc, re.S)]
+                # 위 칸에 합쳐진 칸(continue)은 문단 None — 위 소속을 그대로 쓴다
+                row.append((col, 1, None if merge and merge.group(1) != "restart" else paras))
+                span = re.search(r'<w:gridSpan\s+w:val="(\d+)"', tc)
+                col += int(span.group(1)) if span else 1
+            rows.append(row)
+    attendees: list[tuple[str, str]] = []
+    content: list[str] = []
+    org_col = name_col = None
+    org, org_left = "", 0
+    in_people = in_content = False
+    for row in rows:
+        texts = {col: " ".join(p for p in paras if p).strip() for col, _span, paras in row if paras is not None}
+        joined = "".join(texts.values()).replace(" ", "")
+        if in_content:
+            content += [p.strip() for _c, _s, paras in row for p in (paras or []) if p.strip()]
+            continue
+        if joined.startswith(CONTENT_LABEL):
+            in_people, in_content = False, True
+            continue
+        if not in_people:
+            heads = {col: t.replace(" ", "") for col, t in texts.items()}
+            if "소속" in heads.values() and "이름" in heads.values():
+                org_col = next(c for c, t in heads.items() if t == "소속")
+                name_col = next(c for c, t in heads.items() if t == "이름")
+                in_people = True
+            continue
+        spans = {col: span for col, span, _p in row}
+        carried = any(col == org_col and paras is None for col, _s, paras in row)      # docx 의 합쳐진 칸
+        if org_col in texts:
+            org, org_left = texts[org_col], spans.get(org_col, 1)
+        elif not carried and org_left <= 0:
+            org = ""
+        name = texts.get(name_col, "").strip()
+        if name:
+            attendees.append((org, name))
+        org_left -= 1
+    return attendees, content
 
 
 @dataclass
@@ -474,12 +557,15 @@ class CardItem:
     minutes: str = ""              # 회의록 파일
     goods: Goods | None = None
     notice: str = ""               # 공문 PDF(회의비 · 물품 계획)
+    notice_code: str = ""          # 공문에 적힌 비목 — 회의비 · 물품 줄 적요 앞 `NN_` 은 이것으로(담당자 2026-10-20: 건별로 공문을 보고 붙인다)
+    meeting: Minutes | None = None   # 회의록에서 읽은 것 — ERP 회의록등록 창에 넣는다(card_erp)
     meeting_region: str = ""       # 회의비 — 회의 장소의 시 · 군
     meeting_region_from: str = ""
     shop_address: str = ""         # 가맹점 주소(영수증 글자에서. 없으면 ERP 회의록등록 창의 #CARD_ADDR 로 — 넣을 때)
     receipts: list[str] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)       # 확인할 것
+    status: str = ""               # 'saved' — ERP 에 임시저장함(card_erp, 이어 넣을 때 건너뛴다)
 
     @property
     def req_div_name(self) -> str:
@@ -487,8 +573,20 @@ class CardItem:
 
     @property
     def summary(self) -> str:
-        """줄 적요 — `NN_<건명>`. (17) · (85) 는 ERP 가 증빙에서 채우는지 미실측(여비는 채웠다 — 14절 끝)."""
+        """(90) 줄 적요 — `NN_<건명>`. (17) · (85) 는 ERP 가 증빙에서 채우고(14절 ④ · 15:32 실측) 앱은 앞에 `NN_` 만 붙인다(prefixed)."""
         return f"{self.code}_{self.title}" if self.code and self.title else self.title
+
+    @property
+    def line_code(self) -> str:
+        """줄 적요 앞 비목 번호 — 공문에 비목이 있으면 그것(담당자 2026-10-20: 건별로 공문을 확인하고 공문에 있는 비목으로), 없으면 폴더의 비목."""
+        return self.notice_code or self.code
+
+    def prefixed(self, erp_text: str) -> str:
+        """ERP 가 증빙에서 채운 줄 적요(`회의일자:…` · `물품명:…`) 앞에 `NN_`. 이미 `NN_` 으로 시작하면 그대로."""
+        text = str(erp_text or "").strip()
+        if not text or not self.line_code or re.match(r"^\d{2}_", text):
+            return text
+        return f"{self.line_code}_{text}"
 
     def blocking(self) -> list[str]:
         """넣기를 막을 것 — 비목 · 사용일 · 금액 중 하나라도 모르면 ERP 목록에서 결제 건을 고를 수 없다."""
@@ -508,6 +606,8 @@ class CardSheet:
     start: dt.date | None = None
     end: dt.date | None = None
     items: list[CardItem] = field(default_factory=list)
+    req_cnt: str = ""              # 넣은 ERP 청구서의 결의번호(첫 [저장] 뒤) — 이어 넣을 때 같은 청구서인지 본다
+    test_req_cnt: str = ""         # [시험] 으로 넣은 청구서의 결의번호 — 진짜 것과 섞지 않는다
 
     @property
     def category(self) -> str:
@@ -617,6 +717,7 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
                     if m.amount or m.merchant), None)
     if minutes_files:
         item.minutes = minutes.path if minutes else minutes_files[0]
+        item.meeting = minutes
     goods_files = [p for p in item.files if _is_goods(p)]
     if goods_files:
         item.goods = read_goods(goods_files[0])
@@ -632,6 +733,9 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
             notice = None
     if notice is not None:
         item.notice = notice.path
+        item.notice_code = notice.code or ""
+        if notice.code and item.code and notice.code != item.code:
+            item.notes.append(f"공문의 비목({notice.code})과 폴더의 비목({item.code})이 다름")
     if not item.code and notice is not None and notice.code:
         item.code = notice.code
         item.notes.append(f"비목은 공문에서: {notice.category}")

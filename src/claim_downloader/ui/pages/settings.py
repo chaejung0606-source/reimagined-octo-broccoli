@@ -129,7 +129,7 @@ class SettingsPage(QWidget):
 
         # 일반청구 — 세금계산서 조회 팝업에는 산학협력단 전체 계산서가 다 떠서, 내 계산서수신메일로 걸러야 내 건만 보인다
         # (담당자 설명 2026-10-13). 사람마다 다른 값이라 코드에 두지 않고 여기서 받는다.
-        claim_card = Card("일반청구", "세금계산서 건을 ERP 에 채울 때 씁니다")
+        claim_card = Card("일반청구", "세금계산서 · 카드 회의비 건을 ERP 에 채울 때 씁니다")
         self.taxbill_email = QLineEdit(getattr(cfg, "taxbill_email", "") or "")
         self.taxbill_email.setPlaceholderText("예: 홍길동@kangwon.ac.kr")
         self.taxbill_email.editingFinished.connect(
@@ -137,6 +137,22 @@ class SettingsPage(QWidget):
         claim_card.add(Field(
             "계산서수신메일", self.taxbill_email,
             "세금계산서 조회 팝업의 '계산서수신메일' 에 넣을 내 메일. 비우면 메일 없이 거래처 사업자번호로만 조회합니다."))
+        # 카드청구 회의비 — 회의록 참석자 중 학교 안 사람을 참여인력 · 내부참석자로 가르는 명단(담당자 2026-10-20). 실명이 든 파일이라 위치만 둔다
+        self.participants = QLineEdit(getattr(cfg, "participants_file", "") or "")
+        self.participants.setPlaceholderText("ERP '참여연구원 현황표' 엑셀 또는 PDF (Prn_PrjPartInfo)")
+        self.participants.editingFinished.connect(
+            lambda: self._save(participants_file=self.participants.text().strip()))
+        self.participants_field = Field(
+            "참여연구원 명단", self.participants,
+            "카드 회의비의 참석자 중 이 명단에 있는 사람은 참여인력으로 넣습니다. 비우면 카드 폴더 · 그 위 폴더에서 '참여연구원' 이 든 파일을 찾습니다.")
+        pick_part = QPushButton("파일 선택")
+        pick_part.clicked.connect(self._browse_participants)
+        clear_part = QPushButton("비우기")
+        clear_part.setObjectName("ghost")
+        clear_part.clicked.connect(lambda: (self.participants.clear(), self._save(participants_file="")))
+        self.participants_field.add_button(pick_part)
+        self.participants_field.add_button(clear_part)
+        claim_card.add(self.participants_field)
         column.addWidget(claim_card)
 
         # 동작
@@ -354,11 +370,20 @@ class SettingsPage(QWidget):
             self.excel.setText(path)
             self._save(excel_path=path)
 
+    def _browse_participants(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "참여연구원 명단", self.participants.text(), "엑셀 · PDF (*.xlsx *.xlsm *.pdf)")
+        if path:
+            self.participants.setText(path)
+            self._save(participants_file=path)
+
     def _refresh(self) -> None:
         cfg = settings.load()
         self.name_example.setText(EXAMPLE_DATE if cfg.name_date_first else EXAMPLE_CODE)
         self.excel_field.set_error(
             "이 파일이 없습니다. 경로를 확인하세요." if cfg.excel_path and not os.path.exists(cfg.excel_path) else "")
+        part = getattr(cfg, "participants_file", "") or ""
+        self.participants_field.set_error("이 파일이 없습니다. 경로를 확인하세요." if part and not os.path.exists(part) else "")
 
         if not cfg.out_root:
             self.folder_field.set_error("")

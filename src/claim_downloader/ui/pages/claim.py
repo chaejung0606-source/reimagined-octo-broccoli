@@ -48,6 +48,8 @@ from PySide6.QtWidgets import (
 
 from ... import ai, navigate, settings
 from ...claims import card as card_mod
+from ...claims import card_erp
+from ...claims import participants as part_mod
 from ...claims import kinds, record, rules, schema
 from ...claims import scholarship as sch
 from ...minutes.backends import claude_cli
@@ -84,7 +86,7 @@ GUIDE_SCHOLARSHIP = ("학생 표를 확인한 뒤, 브라우저에서 결의서�
 GUIDE_SCHOLARSHIP_AUTO = ("학생 표와 위의 과제를 확인한 뒤 [ERP 에 넣기] 를 누르세요. 그 과제의 결의서내역에 같은 청구서가 있는지 보고, "
                           "새 청구서 · 인건비 탭은 앱이 띄웁니다. 이미 올린 폴더로 시험하려면 [시험] 을 켜세요.")
 GUIDE_CARD = ("비목마다 청구서로 나눠 읽었습니다. 사용일 · 금액 · 청구구분을 확인하고, 틀리면 폴더 이름이나 파일을 고친 뒤 [다시 읽기]. "
-              "ERP 에 넣기는 카드청구 화면 실측 뒤 — 지금은 [미리 보기] 까지.")
+              "넣을 때는 결의서내역 → [카드청구] 로 카드청구 화면을 띄우고 '넣을 청구서' 를 고른 뒤 [ERP 에 넣기].")
 GUIDE_PERSONAL = ("사람 표와 비목 · 대표적요(공통증빙의 지급 공문에서 찾음)를 확인한 뒤 [ERP 에 넣기] 를 누르세요. 일반청구 탭에 사람마다 "
                   "입금처를 고르고 증빙 기타로 넣어 [저장] 합니다. 이미 올린 폴더로 시험하려면 [시험] 을 켜세요.")
 GUIDE_READ = ("값을 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [미리 보기] 로 확인하세요. "
@@ -98,6 +100,7 @@ def _money(value) -> str:
 
 
 # 장학금 미리 보기 · 넣기 확인 · 결과 창의 표 (ui/report_dialog.py) — 사람마다 한 줄
+CARD_COLUMNS = [("상태", 96), ("사용일", 70), ("건명", 200), ("금액", 84), ("청구구분", 110), ("확인할 것", None)]
 SCH_COLUMNS = [("상태", 104), ("No", 44), ("이름", 92), ("학번", 104), ("청구액", 92), ("개별 적요", 300), ("첨부", 56), ("확인할 것", None)]
 SCH_STATUS = {"planned": ("넣을 것", "neutral"), "saved": ("임시저장", "success"), "review": ("저장·확인", "warning"),
               "stopped": ("멈춤", "warning"),
@@ -173,6 +176,7 @@ class ClaimPage(QWidget):
         self._stopping = False
         self._capture_asked = False
         self._erp_row = -1
+        self._erp_sheet = 0                              # 카드: 넣는 중인 청구서(비목) 번호
         self._browser_busy = False
         self._browser_open = False
         self._available: bool | None = None
@@ -218,6 +222,8 @@ class ClaimPage(QWidget):
         b.scholarship_ask.connect(self._on_sch_ask)
         b.scholarship_done.connect(self._on_sch_done)
         b.sheet_checked.connect(self._on_sheet_checked)
+        b.card_item.connect(self._on_card_item)
+        b.card_done.connect(self._on_card_done)
         b.projects_read.connect(self._refresh_projects)
         b.structure_saved.connect(self._on_structure_saved)
         b.failed.connect(self._on_browser_failed)
@@ -572,6 +578,7 @@ class ClaimPage(QWidget):
         self.form_stack.addWidget(self.scholarship_scroll)
         self.card_panel = CardPanel()
         self.card_panel.reload_requested.connect(self._reload_card)
+        self.card_panel.sheet_changed.connect(self._sync_buttons)
         self.card_scroll = QScrollArea()
         self.card_scroll.setWidgetResizable(True)
         self.card_scroll.setFrameShape(QFrame.NoFrame)
@@ -701,12 +708,20 @@ class ClaimPage(QWidget):
         is_sch = kinds.uses_roster(self._kind(self._current)) and 0 <= self._current < len(self._dirs)
         is_card = self._kind(self._current) == kinds.CARD and 0 <= self._current < len(self._dirs)
         if is_card:
-            # 카드는 폴더 읽기 · 미리 보기까지 — ERP 를 보지 않으므로 브라우저 없이도, '미리 보기만' 체크와 상관없이 미리 보기
+            # 미리 보기는 브라우저 없이. 넣기는 고른 청구서(비목) 하나의 남은 결제 건 — 카드청구 화면은 사람이 띄운다(claims/card_erp.py)
             job = self._cards[self._current]
-            count = len(job.items) if job is not None else 0
-            self.fill_button.setEnabled(count > 0 and not busy)
-            self.fill_button.setText(f"미리 보기 (결제 {count}건)")
-            self.fill_button.setToolTip("결제 건마다 읽은 값을 표로 봅니다. ERP 카드청구 화면에 넣기는 화면 실측 뒤에 만듭니다.")
+            index = self.card_panel.chosen_sheet() if job is not None else -1
+            sheet = job.sheets[index] if job is not None and index >= 0 else None
+            left = [i for i in sheet.items if i.status != "saved"] if sheet else []
+            if dry:
+                self.fill_button.setEnabled(bool(left) and not busy)
+                self.fill_button.setText(f"미리 보기 (결제 {len(left)}건)")
+                self.fill_button.setToolTip("고른 청구서의 결제 건마다 ERP 에 넣을 값을 표로 봅니다. 브라우저는 필요 없습니다.")
+            else:
+                self.fill_button.setEnabled(bool(left) and not busy and not self._browser_busy and self._browser_open)
+                self.fill_button.setText(f"ERP 에 넣기 (결제 {len(left)}건)")
+                self.fill_button.setToolTip("" if self._browser_open else
+                                            "먼저 [브라우저 열기] 로 ERP 를 열고, 결의서내역에서 [카드청구] 로 카드청구 화면을 띄우세요.")
         elif is_sch:
             job = self._jobs[self._current]
             chosen = len(job.chosen()) if job is not None else 0
@@ -1031,7 +1046,7 @@ class ClaimPage(QWidget):
         if self._erp_running:
             self.browser.request_stop()
             self.stop_button.setEnabled(False)
-            self._set_state("멈추는 중", "warning", "지금 넣는 학생까지 마치고 멈춥니다…")
+            self._set_state("멈추는 중", "warning", "지금 넣는 건(학생 · 결제 건)까지 마치고 멈춥니다…")
             return
         self.extractor.request_stop()
         self.stop_button.setEnabled(False)
@@ -1111,7 +1126,10 @@ class ClaimPage(QWidget):
     def _fill(self) -> None:
         row = self._current
         if self._kind(row) == kinds.CARD:
-            self._preview_card(row)
+            if self.dry_run.isChecked():
+                self._preview_card(row)
+            else:
+                self._fill_card(row)
             return
         if kinds.uses_roster(self._kind(row)):
             self._fill_scholarship(row)
@@ -1278,6 +1296,7 @@ class ClaimPage(QWidget):
     def _load_card(self, row: int) -> None:
         """카드 결제 기간 폴더를 읽는다(영수증 PDF 글자 · 회의록 · 물품 표 — AI 없음)."""
         job = card_mod.load_job(self._dirs[row])
+        card_erp.restore(job)                      # 전에 넣은 결제 건 · 결의번호(_청구입력기록.json) — 다시 누르면 남은 것만
         self._cards[row] = job
         self._problems[row] = job.problems()
         self._set_status(row, "read" if job.items and not self._problems[row] else "problem" if job.items else "failed")
@@ -1294,25 +1313,147 @@ class ClaimPage(QWidget):
         self._show_form(row)
         self._sync_buttons()
 
+    def _card_members(self, job) -> list:
+        """참여연구원 명단 — 미리 보기용(넣을 때는 브라우저 스레드가 다시 읽는다)."""
+        path = part_mod.find_file(str(getattr(settings.load(), "participants_file", "") or ""), job.folder, os.path.dirname(job.folder))
+        return part_mod.read(path) if path else []
+
+    def _card_rows(self, job, sheet, results) -> list[ReportRow]:
+        by_index = {r.index: r for r in results}
+        rows = []
+        for index, item in enumerate(sheet.items):
+            result = by_index.get(index)
+            if result is None:
+                if item.status != "saved":
+                    continue
+                status, tone, note = "저장됨", "success", "전에 넣음"
+            else:
+                status, tone = {"saved": ("저장됨", "success"), "skipped": ("건너뜀", "neutral"), "stopped": ("멈춤", "danger"),
+                                "planned": ("넣을 것", "info")}.get(result.status, ("—", "neutral"))
+                if result.status == "saved" and result.review:
+                    status, tone = "저장·확인", "warning"
+                elif result.status == "planned" and (item.blocking() or result.review):
+                    status, tone = "확인 필요", "warning"
+                note = " / ".join(([result.note] if result.note and result.status != "saved" else []) + result.review)
+            rows.append(ReportRow(status, tone, [f"{item.used:%m-%d}" if item.used else "?", item.title, _money(item.amount) or "모름",
+                                                 item.req_div_name or "?", note],
+                                  detail=item_detail(item, job.folder, result), tips={1: item.title, 4: note}, right=(2,)))
+        return rows
+
     def _preview_card(self, row: int) -> None:
         job = self._cards[row] if 0 <= row < len(self._cards) else None
-        if job is None:
+        index = self.card_panel.chosen_sheet()
+        if job is None or index < 0:
             return
-        rows = []
-        for sheet in job.sheets:
-            for item in sheet.items:
-                missing = item.blocking()
-                status, tone = ("확인 필요", "warning") if missing or item.notes else (item.req_div_name or "?", "neutral")
-                rows.append(ReportRow(status, tone, [item.code or "?", f"{item.used:%m-%d}" if item.used else "?", item.title,
-                                                     _money(item.amount) or "모름", item.amount_from or "—",
-                                                     item.req_div_name or "?", " / ".join(missing + item.notes)],
-                                      detail=item_detail(item, job.folder), tips={2: item.title, 6: " / ".join(missing + item.notes)},
-                                      right=(3,)))
-        show_report(self, title="미리 보기", heading=f"카드 — {os.path.basename(job.folder)}", tone="info",
-                    summary=job.summary_lines() + ["ERP 카드청구 화면에 넣기는 화면을 실측한 뒤 만듭니다. 지금은 읽은 값만 확인합니다."],
-                    columns=[("상태", 104), ("비목", 44), ("사용일", 66), ("건명", 200), ("금액", 84), ("금액 출처", 76),
-                             ("청구구분", 100), ("확인할 것", None)],
-                    rows=rows, notes=job.problems() + [f"읽지 않음: {s}" for s in job.skipped])
+        sheet = job.sheets[index]
+        report = card_erp.run(None, None, job, sheet, lambda _m: None, ask=lambda _m: False, dry_run=True,
+                              members=self._card_members(job), test_mode=self.test_mode.isChecked())
+        self.card_panel.set_plans(index, report.results)
+        show_report(self, title="미리 보기", heading=f"ERP 에 넣지 않았습니다 — 카드 {sheet.main_summary or '(비목 모름)'}", tone="info",
+                    summary=[f"대표적요: {report.summary}", f"결제 {len(report.results)}건 · {sum(i.amount or 0 for i in sheet.items if i.status != 'saved'):,}원"]
+                            + ([f"결의번호 {sheet.req_cnt} 에 이어서" ] if sheet.req_cnt else []),
+                    columns=CARD_COLUMNS, rows=self._card_rows(job, sheet, report.results),
+                    notes=job.problems() + [f"읽지 않음: {s}" for s in job.skipped],
+                    footer="줄을 고르면 아래에 ERP 에 넣을 값(회의록등록 창 · 참석자 · 첨부)이 보입니다. 실제로 넣으려면 '미리 보기만' 체크를 풀고 "
+                           "[ERP 에 넣기] 를 누르세요.")
+
+    def _fill_card(self, row: int) -> None:
+        job = self._cards[row] if 0 <= row < len(self._cards) else None
+        index = self.card_panel.chosen_sheet()
+        if job is None or index < 0 or self._erp_running or self._browser_busy or not self._browser_open:
+            return
+        sheet = job.sheets[index]
+        left = [i for i in sheet.items if i.status != "saved"]
+        hard = ([] if sheet.code else ["이 청구서의 비목을 모릅니다 — 결제 건 폴더 이름 앞에 비목명을 적으세요"]) + \
+               [f"{i.name}: " + " · ".join(i.blocking()) for i in left if i.blocking()]
+        if hard:
+            QMessageBox.warning(self, "넣기 전에 고칠 것", "\n".join("· " + p for p in hard) + "\n\n고친 뒤 [다시 읽기] 를 누르세요.")
+            return
+        test = self.test_mode.isChecked()
+        plan = card_erp.run(None, None, job, sheet, lambda _m: None, ask=lambda _m: False, dry_run=True,
+                            members=self._card_members(job), test_mode=test)
+        self.card_panel.set_plans(index, plan.results)
+        project = self._projects[row] if row < len(self._projects) else self._last_project()
+        if not show_report(
+                self, title="ERP 에 넣기", tone="warning",
+                heading=f"결제 건 하나씩 넣고 [저장](임시저장) 합니다 — {len(left)}건 · [신청] 은 누르지 않습니다",
+                summary=[f"대표적요: {plan.summary}", f"ERP 과제: {navigate.label_of(project)}"]
+                        + ([f"결의번호 {sheet.req_cnt} 에 이어서 넣습니다"] if sheet.req_cnt else [])
+                        + (["시험 — 대표적요 앞에 [시험]. 시험 청구서를 ERP 에서 지우기 전까지 그 결제 건은 미청구 카드내역에서 빠집니다."] if test else []),
+                columns=CARD_COLUMNS, rows=self._card_rows(job, sheet, plan.results), notes=job.problems(),
+                footer=("앱이 연 브라우저에 카드청구 화면(결의서내역 → [카드청구])을 띄워 두세요 — 앱은 [카드청구] 를 누르지 않습니다. "
+                        "미청구 카드내역 [조회] · 결제 건 고르기 · 비목 · 청구구분 · 회의록등록 창(시간 · 장소 · 목적 · 내용 · 외부참석자) · 첨부 · [저장] 은 "
+                        "앱이, 참여인력 · 내부참석자와 소모성물품 [등록] 은 노란 띠가 뜨면 사람이 넣습니다."),
+                accept_text=f"ERP 에 넣기 (결제 {len(left)}건)"):
+            return
+        self._erp_row = row
+        self._erp_sheet = index
+        self._erp_running = True
+        self.card_panel.set_locked(True)
+        self._set_status(row, "erp")
+        self.busy_changed.emit(True)
+        self._set_state("넣는 중", "info", "브라우저를 건드리지 말고 기다리세요. 앱이 물으면 위의 노란 띠를 따르세요.")
+        self.browser.fill_card(job, index, dry_run=False, project_no=project, test_mode=test)
+        self._sync_buttons()
+
+    def _on_card_item(self, index: int, status: str, note: str) -> None:
+        if self._current == self._erp_row:
+            self.card_panel.set_item_status(self._erp_sheet, index, status, note)
+
+    def _on_card_done(self, report) -> None:
+        self._append_log("\n".join(report.lines()))
+        self.ask_banner.hide()
+        row = self._erp_row
+        was_running = self._erp_running
+        self._erp_running = False
+        self.card_panel.set_locked(False)
+        self.stop_button.setEnabled(True)
+        if was_running:
+            self.busy_changed.emit(False)
+        job = self._cards[row] if 0 <= row < len(self._cards) else None
+        index = self._erp_sheet
+        sheet = job.sheets[index] if job is not None and 0 <= index < len(job.sheets) else None
+        if report.blocked and not report.results:
+            if 0 <= row < len(self._status):
+                self._set_status(row, "read")
+            self._set_state("넣지 못함", "warning", report.blocked)
+            QMessageBox.warning(self, "넣지 못했습니다", report.blocked)
+            self._sync_buttons()
+            return
+        left = [i for i in sheet.items if i.status != "saved"] if sheet else []
+        if 0 <= row < len(self._status):
+            self._set_status(row, "partial" if report.stopped and report.saved else "saved" if report.saved and not left else
+                             "partial" if report.saved else "read")
+        if self._current == row and job is not None:
+            self.card_panel.set_job(job)
+            for r in report.results:
+                self.card_panel.set_item_status(index, r.index, "review" if r.status == "saved" and r.review else r.status, r.note)
+        if 0 <= row < len(self._dirs):
+            self._refresh_row(row)
+        review = report.review_items()
+        for item in review:
+            self._append_log("신청 전 확인: " + item)
+        check = f" 신청 전 확인할 것 {len(review)}건 — 결과 창과 [진행 기록] 에 있습니다." if review else ""
+        more = [s for s in (job.sheets if job else []) if any(i.status != "saved" for i in s.items)]
+        nxt = (f" 남은 청구서 {len(more)}개 — 다음 것은 ERP 에서 새 카드청구 화면을 띄운 뒤 '넣을 청구서' 를 고르고 다시 누르세요."
+               if more and not left else "")
+        if report.stopped:
+            self._set_state("멈춤", "warning", f"결제 {report.saved}건을 임시저장했습니다. 고친 뒤 다시 누르면 남은 건만 넣습니다." + check)
+        elif review:
+            self._set_state("확인 필요", "warning", f"결제 {report.saved}건을 임시저장했습니다." + check + " ERP 에서 고친 뒤 [신청] 을 직접 누르세요." + nxt)
+        else:
+            self._set_state("임시저장", "success", f"결제 {report.saved}건을 임시저장했습니다. ERP 에서 검토하고 [신청] 을 직접 누르세요." + nxt)
+        alerts = [f"{m} (×{report.messages.count(m)})" if report.messages.count(m) > 1 else m for m in dict.fromkeys(report.messages)]
+        if sheet is not None:
+            show_report(self, title="카드청구", tone="warning" if report.stopped or review else "success",
+                        heading=f"임시저장 결제 {report.saved}건" + (" — 중간에 멈췄습니다" if report.stopped else "")
+                                + (f" · 신청 전 확인할 것 {len(review)}건" if review else ""),
+                        summary=[f"대표적요: {report.summary}"] + ([f"결의번호 {report.req_cnt}"] if report.req_cnt else [])
+                                + ([report.blocked] if report.blocked else []),
+                        columns=CARD_COLUMNS, rows=self._card_rows(job, sheet, report.results),
+                        notes=review or alerts, notes_title="신청 전 확인할 것" if review else "ERP 알림",
+                        footer="ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요 — 앱은 누르지 않습니다." + nxt)
+        self._sync_buttons()
 
     def _row_kind_changed(self, _index: int) -> None:
         row = self._current
@@ -1631,6 +1772,7 @@ class ClaimPage(QWidget):
             self._erp_running = False
             self.ask_banner.hide()
             self.scholarship_panel.set_locked(False)
+            self.card_panel.set_locked(False)
             if 0 <= self._erp_row < len(self._status):
                 self._set_status(self._erp_row, "partial")
         self.busy_changed.emit(self.is_running())
