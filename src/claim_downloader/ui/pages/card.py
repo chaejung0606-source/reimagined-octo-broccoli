@@ -48,6 +48,12 @@ def item_detail(item: card.CardItem, base: str = "") -> str:
         lines.append("영수증 · 회의록에서: " + " · ".join(x for x in found if x))
     if item.minutes:
         lines.append(f"회의록: {os.path.basename(item.minutes)}")
+    if item.notice:
+        lines.append(f"공문: {os.path.basename(item.notice)}")
+    if item.req_div == "17":
+        # 영수증 대신 카드매출전표로 갈음할 때 — 회의 장소와 가맹점 주소의 도 · 시가 같아야 한다(담당자 2026-10-20)
+        lines.append(f"회의 장소 지역: {item.meeting_region or '모름'} ({item.meeting_region_from})"
+                     + (f" · 가맹점 주소: {item.shop_address}" if item.shop_address else " · 가맹점 주소는 ERP 에 넣을 때 매출전표에서 확인"))
     if item.goods:
         lines.append(f"물품 표: {os.path.basename(item.goods.path)} ({item.goods.sheet}) — {len(item.goods.rows)}줄"
                      + (f" · 합계 {item.goods.total:,}원" if item.goods.total else ""))

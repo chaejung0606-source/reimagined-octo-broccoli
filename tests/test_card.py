@@ -292,3 +292,42 @@ def test_assign_spreads_same_day_payments_and_flags_collisions():
     same = card.assign([item(name="a", merchant="가나다식당"), item(name="b", merchant="가나다식당")],
                        payments(("20260915", "가나다식당", "45000", "45000", "", "")))
     assert [r[0] for r in same] == [None, None] and all("같은 줄" in r[1] for r in same)
+
+
+# ── 회의비: 회의 장소와 가맹점 주소의 도 · 시 ──────────────────────────
+def test_regions_from_addresses_and_places():
+    """담당자 규칙(2026-10-20): 영수증이 없으면 카드매출전표로 갈음하는데, 회의비 공문의 장소(춘천시 정도)와 가맹점 주소(도 · 시)가 달라서는 안 된다."""
+    assert card.address_region("강원 춘천시 공지로297번길 24 (효자동)") == "춘천"
+    assert card.address_region("강원특별자치도 원주시 흥업면") == "원주"
+    assert card.address_region("서울특별시 강남구 테헤란로 1") == "서울"
+    assert card.address_region("") == ""
+    assert card.regions_in("강원대학교 춘천캠퍼스 미래도서관") == ["춘천"]
+    assert card.regions_in("고성능 장비 · 동해안 · 정선된 · 세종대왕") == []      # 이름 뒤에 글자가 붙은 낱말은 지역이 아니다
+    assert card.regions_in("춘천에서 개최, 원주로 이동") == ["춘천", "원주"]
+    assert card.meeting_region("사업단 회의실") == (card.HOME_REGION, "장소에 시 · 군이 없어 사업단 소재지로 봄")
+    assert card.meeting_region("원주시 OO 회의실") == ("원주", "회의록 회의장소")
+    assert card.meeting_region("사업단 회의실", "1. 일시: 10.15.\n2. 장소: 강릉시 OO호텔 세미나실\n3. 참석: 춘천 소재 기업") == ("강릉", "공문 장소")
+    assert card.region_conflict("춘천", "강원 춘천시 공지로 1") == ""
+    assert "지역이 다름" in card.region_conflict("춘천", "서울특별시 중구 세종대로 1")
+    assert card.region_conflict("춘천", "") == ""                                  # 주소를 모르면 ERP 에서 넣을 때 본다
+
+
+def test_meeting_payment_flags_a_shop_outside_the_meeting_region(tmp_path):
+    base = tmp_path / "26-10(10.09. ~ 11.08.)"
+    far = base / "기타운영경비 1015 사업단 운영회의"
+    touch(far / "1015 영수증.pdf")
+    touch(far / "운영회의 개최 계획 공문.pdf")
+    build_hwpx(minutes_data(place="사업단 회의실", date="2026. 10. 15. (목) 11:00 ~ 12:00"), str(far / "2026-10-15 목 운영회의.hwpx"))
+    near = base / "기타운영경비 1016 기획회의"
+    touch(near / "1016 영수증.pdf")
+    build_hwpx(minutes_data(date="2026. 10. 16. (금) 11:00 ~ 12:00"), str(near / "2026-10-16 금 기획회의.hwpx"))
+    texts = {"1015 영수증.pdf": RECEIPT.replace("2026-09-15", "2026-10-15") + "\n가맹점 주소: 서울특별시 중구 세종대로 1",
+             "운영회의 개최 계획 공문.pdf": "수신 내부결재\n제목 사업단 운영회의 개최 계획\n1. 장소: 강원대학교 춘천캠퍼스 사업단 회의실\n붙임 1부. 끝.",
+             "1016 영수증.pdf": RECEIPT.replace("2026-09-15", "2026-10-16") + "\n주소 강원 춘천시 공지로 1"}
+    job = card.load_job(str(base), read_text=reader(texts))
+    first, second = job.items
+    assert (first.meeting_region, first.meeting_region_from) == ("춘천", "공문 장소")
+    assert first.notice.endswith("공문.pdf") and first.shop_address.startswith("서울특별시")
+    assert any("지역이 다름" in n and "서울" in n for n in first.notes)
+    assert second.meeting_region == "춘천" and second.shop_address.startswith("강원 춘천시")
+    assert not any("지역이 다름" in n for n in second.notes)

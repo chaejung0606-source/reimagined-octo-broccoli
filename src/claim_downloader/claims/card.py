@@ -63,7 +63,25 @@ MONEY_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*원|(?<![
 DATE_RE = re.compile(r"(20\d{2})\s*[.\-/년]\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})")
 CARD_NO_RE = re.compile(r"카\s*드\s*번\s*호\s*[:：]?\s*([0-9*Xx×\-\s]{8,30})")
 APPROVAL_RE = re.compile(r"승\s*인\s*번\s*호\s*[:：]?\s*(\d{6,12})")
-MERCHANT_RE = re.compile(r"(?:가맹점\s*명|가맹점|상\s*호\s*명?|판매자\s*상호)\s*[:：]?\s*([^\n]+)")
+MERCHANT_RE = re.compile(r"(?:가맹점\s*명|가맹점(?!\s*주\s*소)|상\s*호\s*명?|판매자\s*상호)\s*[:：]?\s*([^\n]+)")
+ADDRESS_RE = re.compile(r"(?:가맹점\s*)?주\s*소\s*[:：]?\s*([^\n]+)")
+
+# 시 · 군(과 특별 · 광역시) 이름 — 회의 장소와 가맹점 주소를 '도 · 시' 수준에서 맞춰 보려고(담당자 2026-10-20: 회의비 공문 장소(춘천시 정도)와
+# 카드매출전표 가맹점 주소(도 · 시)가 상이하면 안 된다). 전국 시 이름 + 특별 · 광역시 + 강원 군. 없는 이름은 '모름' 이 될 뿐 틀리게 고르지 않는다.
+REGION_NAMES = (
+    "서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종",
+    "수원", "성남", "의정부", "안양", "부천", "광명", "평택", "동두천", "안산", "고양", "과천", "구리", "남양주", "오산", "시흥", "군포",
+    "의왕", "하남", "용인", "파주", "이천", "안성", "김포", "화성", "양주", "포천", "여주",
+    "춘천", "원주", "강릉", "동해", "태백", "속초", "삼척", "홍천", "횡성", "영월", "평창", "정선", "철원", "화천", "양구", "인제", "고성", "양양",
+    "청주", "충주", "제천", "천안", "공주", "보령", "아산", "서산", "논산", "계룡", "당진", "전주", "군산", "익산", "정읍", "남원", "김제",
+    "목포", "여수", "순천", "나주", "광양", "포항", "경주", "김천", "안동", "구미", "영주", "영천", "상주", "문경", "경산",
+    "창원", "진주", "통영", "사천", "김해", "밀양", "거제", "양산", "제주", "서귀포",
+)
+REGION_RE = re.compile(r"(?<![가-힣])(" + "|".join(sorted(REGION_NAMES, key=len, reverse=True)) + r")"
+                       r"(?:특별자치시|특별자치도|특별시|광역시|시|군|캠퍼스)?(?=$|[^가-힣]|에서|에|의|으로|로|역|시내|소재)")
+# 회의 장소에 시 · 군이 없을 때(대개 '사업단 회의실' 처럼 학교 안) 보는 곳 — 사업단이 있는 곳
+HOME_REGION = "춘천"
+PLACE_LINE_RE = re.compile(r"(?:장\s*소|회의\s*장소|개최\s*장소|일시\s*및\s*장소)\s*[:：]?\s*([^\n]+)")
 
 
 # ── 기간 · 이름 ──────────────────────────────────────────────────────
@@ -217,6 +235,7 @@ class Receipt:
     approval: str = ""
     merchant: str = ""
     used: dt.date | None = None
+    address: str = ""           # 가맹점 주소 — 회의비는 회의 장소와 같은 도 · 시여야 한다(region_conflict)
 
 
 def _money_in(line: str) -> list[int]:
@@ -256,6 +275,9 @@ def read_receipt(text: str, path: str = "") -> Receipt:
     hit = MERCHANT_RE.search(text)
     if hit:
         out.merchant = re.split(r"\s{2,}|사업자|대표자|전화|주소", hit.group(1).strip())[0].strip(" :：")
+    hit = ADDRESS_RE.search(text)
+    if hit:
+        out.address = re.split(r"\s{2,}|전화|TEL|tel|사업자", hit.group(1).strip())[0].strip(" :：")
     for line in lines:
         if any(w in line.replace(" ", "") for w in ("거래일", "승인일", "결제일", "일시", "일자", "이용일")):
             found = DATE_RE.search(line)
@@ -273,12 +295,51 @@ def looks_like_receipt(text: str) -> bool:
     return sum(1 for w in RECEIPT_TEXT_WORDS if w in flat) >= 1
 
 
+def regions_in(text: str) -> list[str]:
+    """글에 나온 시 · 군 이름(나온 차례, 겹치지 않게)."""
+    out: list[str] = []
+    for hit in REGION_RE.finditer(text or ""):
+        if hit.group(1) not in out:
+            out.append(hit.group(1))
+    return out
+
+
+def address_region(address: str) -> str:
+    """가맹점 주소 → 시 · 군('강원 춘천시 공지로…' → 춘천, '서울특별시 강남구…' → 서울). 모르면 ''."""
+    found = regions_in(address)
+    return found[0] if found else ""
+
+
+def meeting_region(place: str = "", notice_text: str = "") -> tuple[str, str]:
+    """회의 장소의 시 · 군과 그 근거. 회의록 '회의장소' → 공문의 '장소' 줄 → 공문 전체(하나만 나올 때) → 사업단 소재지(HOME_REGION)."""
+    found = regions_in(place)
+    if found:
+        return found[0], "회의록 회의장소"
+    for line in PLACE_LINE_RE.findall(notice_text or ""):
+        found = regions_in(line)
+        if found:
+            return found[0], "공문 장소"
+    found = regions_in(notice_text)
+    if len(found) == 1:
+        return found[0], "공문"
+    return HOME_REGION, "장소에 시 · 군이 없어 사업단 소재지로 봄"
+
+
+def region_conflict(meeting: str, merchant_address: str) -> str:
+    """회의비 — 회의 장소와 가맹점 주소의 시 · 군이 다르면 그 글, 같거나 주소를 모르면 ''(담당자 2026-10-20)."""
+    shop = address_region(merchant_address)
+    if not meeting or not shop or meeting == shop:
+        return ""
+    return f"회의 장소({meeting})와 가맹점 주소({shop})의 지역이 다름 — 회의비 증빙으로 쓸 수 없음(담당자 규칙)"
+
+
 @dataclass
 class Minutes:
     path: str = ""
     amount: int | None = None
     merchant: str = ""
     used: dt.date | None = None
+    place: str = ""              # 회의장소 칸 — 실제 회의한 곳(식당이 아니다)
 
 
 MINUTES_LABELS = ("사 업 명", "회의안건", "회의일시", "회의장소", "회의비 사용처", "금액", "참석자", "소속", "이름")
@@ -313,6 +374,7 @@ def read_minutes(path: str) -> Minutes:
 
     out.amount = parse_amount(value("금액")) if value("금액") else None
     out.merchant = value("회의비 사용처")
+    out.place = value("회의장소")
     found = DATE_RE.search(value("회의일시"))
     out.used = _date(*(int(x) for x in found.groups())) if found else None
     return out
@@ -411,6 +473,10 @@ class CardItem:
     req_div_from: str = ""
     minutes: str = ""              # 회의록 파일
     goods: Goods | None = None
+    notice: str = ""               # 공문 PDF(회의비 · 물품 계획)
+    meeting_region: str = ""       # 회의비 — 회의 장소의 시 · 군
+    meeting_region_from: str = ""
+    shop_address: str = ""         # 가맹점 주소(영수증 글자에서. 없으면 ERP 회의록등록 창의 #CARD_ADDR 로 — 넣을 때)
     receipts: list[str] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)       # 확인할 것
@@ -558,11 +624,14 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
         if not item.goods.rows:
             item.goods = None
     notice = None
-    if not item.code or not (parsed.amount or receipts or minutes or item.goods):
-        candidates = [p for p in pdfs if p not in item.receipts]
+    want_notice = not item.code or not (parsed.amount or receipts or minutes or item.goods) or bool(minutes_files) or parsed.req_div == "17"
+    if want_notice:
+        candidates = [p for p in pdfs if p not in item.receipts and not _is_minutes(p)]
         notice = notice_mod.find(candidates, read_texts=lambda ps: [read_text(p) for p in ps]) if candidates else None
         if notice is not None and not notice.path:
             notice = None
+    if notice is not None:
+        item.notice = notice.path
     if not item.code and notice is not None and notice.code:
         item.code = notice.code
         item.notes.append(f"비목은 공문에서: {notice.category}")
@@ -584,6 +653,7 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
         item.notes.append("금액을 공문에서 읽음(계획 금액일 수 있음) — 영수증 금액과 같은지 확인")
 
     item.merchant = next((r.merchant for r in receipts if r.merchant), "") or (minutes.merchant if minutes else "")
+    item.shop_address = next((r.address for r in receipts if r.address), "")
     item.card_last = next((r.card_last for r in receipts if r.card_last), "")
     item.approval = next((r.approval for r in receipts if r.approval), "")
     other_day = next((r.used for r in receipts if r.used), None) or (minutes.used if minutes else None)
@@ -606,6 +676,13 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
         item.req_div, item.req_div_from = "90", "회의록 · 물품 표 없음"
     if item.req_div == "17" and not item.minutes:
         item.notes.append("회의비인데 회의록이 없음")
+    if item.req_div == "17":
+        # 영수증이 없으면 ERP 의 카드매출전표로 갈음하는데, 회의 장소(공문 · 회의록)와 가맹점 주소의 도 · 시가 같아야 한다(담당자 2026-10-20)
+        item.meeting_region, item.meeting_region_from = meeting_region(minutes.place if minutes else "",
+                                                                        read_text(item.notice) if item.notice else "")
+        conflict = region_conflict(item.meeting_region, item.shop_address)
+        if conflict:
+            item.notes.append(conflict)
     if item.req_div == "85" and not item.goods:
         item.notes.append("소모성물품인데 물품 표(품명 · 수량 · 단가 · 금액 엑셀)가 없음")
     if not item.title:
