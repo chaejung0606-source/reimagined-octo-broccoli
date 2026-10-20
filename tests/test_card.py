@@ -79,11 +79,14 @@ def test_period_names_the_staff_uses_and_the_short_ones():
 
 
 def test_main_summary_matches_past_claim_titles():
-    """지난 청구서 제목 `03_[교육연구프로그램개발운영비] 카드 결제 건(26.…` · `09_[기타운영경비] 카드 결제 건(26.10.09.~26.11.08.)`."""
+    """실제 청구서 제목(ERP 대시보드 알림 실측) `03_[교육연구프로그램개발운영비] 카드 결제 건(26.…` · `09_[그밖의사업운영경비] 카드 결제 건(26.10.0…`
+    — 괄호 안은 ERP 보기('기타운영경비')가 아니라 보관 폴더식 이름."""
     start, end = D(2026, 10, 9), D(2026, 11, 8)
-    assert card.main_summary("09", start, end) == "09_[기타운영경비] 카드 결제 건(26.10.09.~26.11.08.)"
+    assert card.main_summary("09", start, end) == "09_[그밖의사업운영경비] 카드 결제 건(26.10.09.~26.11.08.)"
     assert card.main_summary("03", start, end) == "03_[교육연구프로그램개발운영비] 카드 결제 건(26.10.09.~26.11.08.)"
     assert card.main_summary("", start, end) == ""
+    for code, short in (("04", "교육연구환경개선비"), ("05", "실험실습장비및기자재구입운영비"), ("07", "기업지원협력활동비"), ("08", "성과활용확산지원비")):
+        assert card.category_short(code) == short
 
 
 def test_item_folder_name_parts():
@@ -169,7 +172,7 @@ def test_period_folder_splits_by_category_and_reads_each_payment(tmp_path):
     assert (job.start, job.end) == (D(2026, 9, 9), D(2026, 10, 8))
     assert [s.code for s in job.sheets] == ["03", "09"]
     other, etc = job.sheets
-    assert etc.main_summary == "09_[기타운영경비] 카드 결제 건(26.09.09.~26.10.08.)"
+    assert etc.main_summary == "09_[그밖의사업운영경비] 카드 결제 건(26.09.09.~26.10.08.)"
     meeting, goods, sub = etc.items                                      # 사용일 차례
     assert (meeting.req_div, meeting.amount, meeting.amount_from, meeting.merchant, meeting.card_last, meeting.approval) == \
         ("17", 45000, "영수증", "가나다식당", "4321", "30012345")

@@ -27,7 +27,7 @@ import re
 import zipfile
 from dataclasses import dataclass, field
 
-from ..naming import normnm
+from ..naming import BIMOK_NM, normnm
 from . import notice as notice_mod
 from .schema import CATEGORY_CODES, category_code, parse_amount
 
@@ -105,8 +105,9 @@ def period_text(start: dt.date, end: dt.date) -> str:
 
 
 def category_short(code: str) -> str:
-    """대표적요 괄호 안의 비목 이름 — 지난 청구서 `03_[교육연구프로그램개발운영비] 카드 결제 건(…)` 처럼 점 · 띄어쓰기를 뺀 ERP 보기."""
-    return re.sub(r"[\s·ㆍ・]", "", CATEGORY_CODES.get(code, ""))
+    """대표적요 괄호 안의 비목 이름 — 실제 청구서 `09_[그밖의사업운영경비] 카드 결제 건(26.10.0…` · `03_[교육연구프로그램개발운영비] …`
+    (ERP 대시보드 알림 실측 2026-10-20). ERP 보기('기타운영경비')가 아니라 보관 폴더식 이름(naming.BIMOK_NM)에서 점 · 띄어쓰기를 뺀 것이다."""
+    return re.sub(r"[\s·ㆍ・]", "", BIMOK_NM.get(code, "") or CATEGORY_CODES.get(code, ""))
 
 
 def main_summary(code: str, start: dt.date | None, end: dt.date | None) -> str:
