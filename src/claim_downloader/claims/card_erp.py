@@ -14,7 +14,8 @@
 확실하지 않으면 그 자리에서 **사람에게 묻는다**(ask — 장학금과 같은 노란 띠). 누르는 것(담당자 허락 2026-10-20 "네 눌러도 됩니다"):
 [조회](#btn_cardList) · 결제 건 라디오 · 청구구분 라디오 · 증빙 [신규등록](#btn_addEvid2) · 회의록등록 창의 외부참석자 [행 추가](#btnRowAdd2) ·
 그 창의 [저장](#save) · 작성 화면 [저장] · 첨부(attach.py). [신청] · [삭제] · [초기화] · '새 청구서' · [카드매출전표] · '과제카드' 링크 ·
-[불러오기] · 회의록 출력 · 행 삭제는 누르지 않는다(tests/test_safety.py). 결의서내역의 [카드청구](#P11)도 누르지 않는다 — 허락 전이라 사람이 띄운다.
+[불러오기] · 회의록 출력 · 행 삭제는 누르지 않는다(tests/test_safety.py). 새 카드청구 화면은 session 이 결의서내역의 [카드청구](#P11)로 띄운다
+(navigate.open_card_sheet, 담당자 허락 2026-10-20) — 이 모듈은 그 화면 안에서만 누른다.
 
 이 모듈은 Playwright 를 들여오지 않는다 — session.py 가 넘겨준 page · frame 만 쓴다.
 """
@@ -46,7 +47,7 @@ ALLOWED_CLICK_IDS = frozenset({LIST_BUTTON_ID, MINUTES_BUTTON_ID, MINUTES_SAVE_I
 # 절대 누르지 않는다 — 신청 · 지우기 · 다른 창(미실측) · 다른 증빙 불러오기
 FORBIDDEN_IDS = ("btn_addEvid", "btn_addEvid3", "btn_gridCard", "btnRowAdd", "btnRowAdd1", "btnRowDel", "btnRowDel1", "btnRowDel2",
                  "btnEmpInfo", "CALL_PRE_SFRC", "oz_report", "confirmBtn", "btn_addCheckDate", "btn_addUser", "btn_addRCVRUserNm",
-                 "btnRcvr", "bgtAmtPU", "btnModApplCont", "P11")
+                 "btnRcvr", "bgtAmtPU", "btnModApplCont")
 ATTACH_SUFFIXES = (".pdf", ".jpg", ".jpeg", ".png", ".gif", ".bmp")
 WEEKEND_WORDS = ("토요일", "일요일")
 MIN_CONTENT = 20                         # 회의내용 20자 이상(#CFRC_CONTENT_LENGTH_LIMITED, 실측 ②)
@@ -499,7 +500,9 @@ def run(page, frame, job: card.CardJob, sheet: card.CardSheet, log: Callable[[st
     members = members or []
     summary = main_summary(sheet, test_mode)
     items = sheet.items
-    log("카드청구 %s — %s · 결제 %d건" % ("미리 보기" if dry_run else "시작", summary, len(items)))
+    left = sum(1 for item in items if item.status != "saved")
+    log("카드청구 %s — %s · 결제 %d건" % ("미리 보기" if dry_run else "시작", summary, len(items))
+        + (f" (남은 {left}건)" if left != len(items) and not test_mode else ""))
     if dry_run:
         report = CardReport(dry_run=True, summary=summary, req_cnt=sheet.req_cnt)
         report.results = [plan_item(item, i, members) for i, item in enumerate(items) if item.status != "saved"]
@@ -531,9 +534,17 @@ def _run(page, frame, job, sheet, summary, log, ask, wait, live, should_stop, on
             found_page, found = find_frame()
             if found is not None:
                 page, frame = found_page, found
-        return sheet_owner(frame, sheet, summary)
+        ok, why = sheet_owner(frame, sheet, summary)
+        if not ok:
+            return False, why + ". 결의서내역에서 [카드청구] 를 눌러 새 카드청구 화면을 띄운 뒤"
+        try:
+            shown = frame.evaluate(FRAME_VISIBLE_JS) is not False
+        except Exception:  # noqa: BLE001
+            shown = True
+        # 결의서내역을 읽느라(18절) 목록 탭이 앞으로 오면 카드 화면이 숨는다 — 숨은 그리드는 줄이 그려지지 않아 결제 건을 못 고른다
+        return (True, why) if shown else (False, "카드청구 화면이 다른 탭 뒤에 있습니다. 위쪽 '청구서(카드)' 탭을 눌러 앞으로 가져온 뒤")
 
-    ok, why = _ask_until(owner, ask, lambda w: f"{w}. 결의서내역에서 [카드청구] 를 눌러 새 카드청구 화면을 띄운 뒤 [계속].", wait)
+    ok, why = _ask_until(owner, ask, lambda w: f"{w} [계속].", wait)
     if not ok:
         report.blocked, report.stopped = why, True
         return report
@@ -931,6 +942,17 @@ def record_sheet(job: card.CardJob, sheet: card.CardSheet, report: CardReport) -
     record.remember(sheet_key(job, sheet), {"summary": report.summary, "req_cnt": report.req_cnt,
                                             "amount": sum(i.amount or 0 for i in sheet.items if i.status == "saved")},
                     kind="card", people=saved)
+
+
+def record_warning(job: card.CardJob, sheet: card.CardSheet) -> str:
+    """결의서내역을 못 읽을 때 묻는 글 — 이 폴더 · 비목을 전에 넣은 앱 기록(18절과 같은 쓰임)."""
+    from . import record
+    entry = record.previous(sheet_key(job, sheet))
+    if not entry:
+        return ""
+    saved = len(entry.get("saved") or [])
+    return ("이 청구서를 전에 넣은 기록이 있습니다 — " + " / ".join(record.history_lines(entry))
+            + (f" · 저장한 결제 건 {saved}건" if saved else ""))
 
 
 def sheet_key(job: card.CardJob, sheet: card.CardSheet) -> str:

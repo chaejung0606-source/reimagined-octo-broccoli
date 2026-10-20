@@ -9,7 +9,7 @@ import datetime as dt
 import pytest
 
 from claim_downloader import erp, navigate, settings
-from claim_downloader.claims import form
+from claim_downloader.claims import card_erp, form
 
 TODAY = dt.date(2026, 10, 19)
 ROWS = [
@@ -31,6 +31,7 @@ class Screen:
         self.toolbar_prj = ""          # 열린 과제정보의 과제번호
         self.grid_prj = ""             # 결의서 목록의 과제번호(청구서 탭을 누른 과제)
         self.form = None               # 작성 화면 값 {PRJ_NO, REQ_CNT, APPR_DIV_CD, REQ_SEQ_NO, REQ_AMT, REQ_PTCL, RCV_NM}
+        self.card = None               # 카드청구 작성 화면 값 — 일반청구 화면과 위쪽 탭 한 자리를 같이 쓴다(14절)
         self.clicks: list[str] = []
         self.sheets = 0
         self.list_rows: list[dict] = []  # 결의서내역 그리드의 행 (erp._PARSE_ROWS_JS 모양)
@@ -76,12 +77,23 @@ class Frame:
             s.clicks.append("P10:" + s.grid_prj)
             s.sheets += 1
             s.active = "sheet"
+            s.card = None
             s.form = {"PRJ_NO": s.grid_prj, "REQ_CNT": "", "APPR_DIV_CD": "", "REQ_SEQ_NO": f"TMP_REQ_{s.sheets}",
                       "REQ_AMT": "0", "REQ_PTCL": "", "RCV_NM": ""}
             return {"ok": True}
+        if js is navigate.CLICK_CARD_SHEET_JS:
+            s.clicks.append("P11:" + s.grid_prj)
+            s.sheets += 1
+            s.active = "sheet"
+            s.form = None                  # 일반청구 탭 자리가 '청구서(카드)' 로 바뀐다
+            s.card = {"PRJ_NO": s.grid_prj, "REQ_CNT": "", "APPR_DIV_CD": "", "REQ_SEQ_NO": f"TMP_REQ_{s.sheets}",
+                      "REQ_AMT": "", "REQ_PTCL": "", "RCV_NM": "카드청구"}
+            return {"ok": True}
+        if js is card_erp.PROBE_JS:
+            return self.kind == "card" and s.card is not None
         if js is navigate.PRJ_JS:
             return {"toolbar": s.toolbar_prj or None, "grid": s.grid_prj or None,
-                    "form": (s.form or {}).get("PRJ_NO")}.get(self.kind)
+                    "form": (s.form or {}).get("PRJ_NO"), "card": (s.card or {}).get("PRJ_NO")}.get(self.kind)
         if js is erp._GRID_PROBE:
             return self.kind == "grid" and bool(s.grid_prj)
         if js is erp.GRID_ROWS_JS:
@@ -90,13 +102,14 @@ class Frame:
             return self.kind == "form" and s.form is not None
         if js is form.FRAME_VISIBLE_JS:
             # 위쪽 탭 중 앞에 있는 것의 프레임만 크기가 있다 — 결의서 목록은 과제정보 탭, 작성 화면은 청구서(일반) 탭
-            return {"toolbar": "project", "grid": "project", "form": "sheet"}.get(self.kind, s.active) == s.active
+            return {"toolbar": "project", "grid": "project", "form": "sheet", "card": "sheet"}.get(self.kind, s.active) == s.active
         if js is erp._PARSE_ROWS_JS:
             return [dict(r) for r in s.list_rows] if self.kind == "grid" and s.grid_prj else []
         if js in (erp._SCROLL_TOP_JS, erp._SCROLL_INFO_JS):
             return None                  # 한 화면에 다 보인다 — 내리지 않는다
         if js is form.STATE_JS:
-            return {key: {"value": (s.form or {}).get(key, "")} for key in args[0]}
+            values = s.card if self.kind == "card" else s.form
+            return {key: {"value": (values or {}).get(key, "")} for key in args[0]}
         if self.kind == "layout":
             return None
         raise AssertionError("모르는 JS: " + str(js)[:60])
@@ -104,7 +117,7 @@ class Frame:
 
 class Page:
     def __init__(self, screen: Screen):
-        self.frames = [Frame(screen, k) for k in ("layout", "dash", "toolbar", "grid", "form")]
+        self.frames = [Frame(screen, k) for k in ("layout", "dash", "toolbar", "grid", "form", "card")]
 
     def wait_for_timeout(self, ms):
         pass
@@ -188,6 +201,35 @@ def test_new_sheet_is_opened_from_the_list_only_over_a_saved_empty_sheet():
     screen.form.update(REQ_PTCL="")
     ok, _note, frame = navigate.open_new_sheet(ctx, lambda m: None, no_wait)
     assert ok and screen.clicks == ["P10:202408470003"] * 2 and screen.form["REQ_SEQ_NO"] == "TMP_REQ_2"
+
+
+def test_card_sheet_is_opened_from_the_list_unless_something_unsaved_is_on_screen():
+    """결의서 목록의 [카드청구](#P11, 담당자 허락 2026-10-20). 일반청구 · 카드 작성 화면은 한 탭 자리라 저장하지 않은 입력이 있으면 누르지 않는다."""
+    screen = Screen()
+    screen.toolbar_prj = screen.grid_prj = "202408470003"
+    ctx = Context(screen)
+    # 일반청구 화면에 적다 만 입력이 있으면 그 탭이 카드로 바뀌며 날아간다 — 누르지 않는다
+    screen.form = {"PRJ_NO": "202408470003", "REQ_CNT": "", "REQ_PTCL": "09_적다 만 적요", "REQ_AMT": "0", "RCV_NM": ""}
+    ok, note, _ = navigate.open_card_sheet(ctx, lambda m: None, no_wait, "202408470003")
+    assert not ok and "일반청구 작성 화면에 저장하지 않은 입력(적요)" in note and screen.clicks == []
+    # 저장된 일반청구 화면(칸이 빔)이면 띄운다
+    screen.form.update(REQ_CNT="330", APPR_DIV_CD="40", REQ_PTCL="")
+    ok, _note, frame = navigate.open_card_sheet(ctx, lambda m: None, no_wait, "202408470003")
+    assert ok and frame is not None and screen.clicks == ["P11:202408470003"] and screen.form is None
+    assert card_erp.find_card_form(ctx)[1] is frame
+    # 이미 새 카드 화면이면 누르지 않는다 — 결의서내역을 읽느라 뒤로 갔으면(replace_empty) 다시 띄워 앞으로
+    ok, note, _ = navigate.open_card_sheet(ctx, lambda m: None, no_wait, "202408470003")
+    assert not ok and "저장 전" in note and screen.clicks == ["P11:202408470003"]
+    ok, _note, _ = navigate.open_card_sheet(ctx, lambda m: None, no_wait, "202408470003", replace_empty=True)
+    assert ok and screen.clicks == ["P11:202408470003"] * 2
+    # 결제 건을 골라 청구액이 들어온 화면은 날리지 않는다(숨은 입금처 '카드청구' 는 입력으로 보지 않는다)
+    screen.card.update(REQ_AMT="45,000")
+    ok, note, _ = navigate.open_card_sheet(ctx, lambda m: None, no_wait, "202408470003", replace_empty=True)
+    assert not ok and "저장하지 않은 입력(청구액)" in note and len(screen.clicks) == 2
+    # 저장된 카드 청구서(칸이 빔)면 다음 청구서를 띄운다
+    screen.card.update(REQ_AMT="", REQ_CNT="335", APPR_DIV_CD="40")
+    ok, _note, _ = navigate.open_card_sheet(ctx, lambda m: None, no_wait, "202408470003")
+    assert ok and len(screen.clicks) == 3 and screen.card["REQ_CNT"] == ""
 
 
 def test_new_sheet_needs_the_list():

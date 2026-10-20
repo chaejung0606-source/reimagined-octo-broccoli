@@ -98,6 +98,16 @@ CLICK_NEW_SHEET_JS = r"""() => {
   return {ok: true};
 }"""
 
+CARD_SHEET_ID = "P11"
+# 결의서 목록의 [카드청구](담당자 허락 2026-10-20 "네") — [일반청구] 와 같이 id 와 글자가 둘 다 맞을 때만 누른다
+CLICK_CARD_SHEET_JS = r"""() => {
+  const b = document.getElementById('P11');
+  const t = b ? (b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim() : '';
+  if (!b || t !== '카드청구') return {ok: false, why: "결의서 목록의 [카드청구] 를 찾지 못함"};
+  b.click();
+  return {ok: true};
+}"""
+
 
 @dataclass
 class Project:
@@ -403,3 +413,57 @@ def open_new_sheet(context, log: Callable[[str], None], wait: Callable[[float], 
         return False, "[일반청구] 를 눌렀지만 새 작성 화면이 뜨지 않았습니다", None
     log("✓ 새 청구서 작성 화면이 떴습니다")
     return True, "새 청구서", frame
+
+
+def typed_card_fields(state: dict) -> list[str]:
+    """카드청구 작성 화면에 저장하지 않은 입력 — 결제 건을 고르면 청구액이 들어온다. 입금처는 늘 숨은 '카드청구' 라 보지 않는다."""
+    return [label for key, label in (("REQ_AMT", "청구액"), ("REQ_PTCL", "청구내역")) if state.get(key) and state.get(key) not in ("0",)]
+
+
+def open_card_sheet(context, log: Callable[[str], None], wait: Callable[[float], None], project_no: str = "",
+                    replace_empty: bool = False):
+    """결의서 목록의 [카드청구](#P11)로 새 카드청구 작성 화면을 띄운다(담당자 허락 2026-10-20). (됐는지, 글, 새 카드 프레임 또는 None).
+
+    일반청구 · 카드청구 작성 화면은 위쪽 탭 한 자리를 같이 쓴다(14절 — [카드청구] 를 누르면 일반청구 탭이 '청구서(카드)' 로 바뀐다). 그래서 지금 떠 있는
+    작성 화면(일반이든 카드든)에 **저장하지 않은 입력이 있으면 누르지 않는다**. 같은 과제의 저장 전 빈 카드 화면이면 이미 새 것이라 누르지 않는다 —
+    replace_empty 면(결의서 목록을 읽느라 그 화면이 뒤로 갔을 때) 새로 띄워 앞으로 가져온다."""
+    from .claims import card_erp, form
+    project_no = re.sub(r"\D", "", str(project_no or ""))
+    _page, current = card_erp.find_card_form(context)
+    before = _sheet_state(current) if current is not None else {}
+    if current is not None:
+        other = bool(project_no) and frame_project(current) not in ("", project_no)
+        fresh_now = not (before.get("REQ_CNT") or before.get("APPR_DIV_CD") == "40")
+        if not other and fresh_now and not replace_empty:
+            return False, "카드청구 화면이 아직 저장 전인 청구서입니다 — 새로 띄우지 않았습니다", None
+        typed = typed_card_fields(before)
+        if typed:
+            return False, f"카드청구 화면에 저장하지 않은 입력({' · '.join(typed)})이 있어 새 카드청구 화면을 띄우지 않았습니다", None
+    _gpage, general = form.find_form(context)
+    if general is not None:
+        typed = typed_fields(_sheet_state(general))
+        if typed:
+            return False, f"일반청구 작성 화면에 저장하지 않은 입력({' · '.join(typed)})이 있어 [카드청구] 를 누르지 않았습니다(같은 탭 자리)", None
+    grid = list_frame(context, project_no)
+    if grid is None:
+        return False, (f"과제 {project_no} 의 " if project_no else "") + "결의서 목록(과제정보 → 청구서)이 열려 있지 않아 카드청구 화면을 띄우지 못했습니다", None
+    result = _evaluate(grid, CLICK_CARD_SHEET_JS) or {}
+    if not result.get("ok"):
+        return False, str(result.get("why") or "결의서 목록을 읽지 못했습니다"), None
+    log("결의서 목록의 [카드청구] 로 새 카드청구 화면을 띄웁니다" + (f" — 과제 {project_no}" if project_no else "")
+        + (f" (앞 청구서 결의번호 {before.get('REQ_CNT')})" if before.get("REQ_CNT") else ""))
+
+    def fresh():
+        _p, frame = card_erp.find_card_form(context)
+        if frame is None:
+            return None
+        now = _sheet_state(frame)
+        new = now and not now.get("REQ_CNT") and now.get("APPR_DIV_CD") != "40"
+        mine = not project_no or frame_project(frame) in ("", project_no)
+        return frame if new and mine and now.get("REQ_SEQ_NO") != before.get("REQ_SEQ_NO") else None
+
+    frame = _wait(fresh, wait, tries=30)
+    if frame is None:
+        return False, "[카드청구] 를 눌렀지만 새 카드청구 화면이 뜨지 않았습니다", None
+    log("✓ 새 카드청구 화면이 떴습니다")
+    return True, "새 카드청구서", frame

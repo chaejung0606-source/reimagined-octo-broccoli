@@ -86,7 +86,7 @@ GUIDE_SCHOLARSHIP = ("학생 표를 확인한 뒤, 브라우저에서 결의서�
 GUIDE_SCHOLARSHIP_AUTO = ("학생 표와 위의 과제를 확인한 뒤 [ERP 에 넣기] 를 누르세요. 그 과제의 결의서내역에 같은 청구서가 있는지 보고, "
                           "새 청구서 · 인건비 탭은 앱이 띄웁니다. 이미 올린 폴더로 시험하려면 [시험] 을 켜세요.")
 GUIDE_CARD = ("비목마다 청구서로 나눠 읽었습니다. 사용일 · 금액 · 청구구분을 확인하고, 틀리면 폴더 이름이나 파일을 고친 뒤 [다시 읽기]. "
-              "넣을 때는 결의서내역 → [카드청구] 로 카드청구 화면을 띄우고 '넣을 청구서' 를 고른 뒤 [ERP 에 넣기].")
+              "넣을 때는 '넣을 청구서' 를 고르고 [ERP 에 넣기] — 카드청구 화면은 앱이 결의서내역의 [카드청구] 로 띄웁니다.")
 GUIDE_PERSONAL = ("사람 표와 비목 · 대표적요(공통증빙의 지급 공문에서 찾음)를 확인한 뒤 [ERP 에 넣기] 를 누르세요. 일반청구 탭에 사람마다 "
                   "입금처를 고르고 증빙 기타로 넣어 [저장] 합니다. 이미 올린 폴더로 시험하려면 [시험] 을 켜세요.")
 GUIDE_READ = ("값을 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [미리 보기] 로 확인하세요. "
@@ -708,7 +708,7 @@ class ClaimPage(QWidget):
         is_sch = kinds.uses_roster(self._kind(self._current)) and 0 <= self._current < len(self._dirs)
         is_card = self._kind(self._current) == kinds.CARD and 0 <= self._current < len(self._dirs)
         if is_card:
-            # 미리 보기는 브라우저 없이. 넣기는 고른 청구서(비목) 하나의 남은 결제 건 — 카드청구 화면은 사람이 띄운다(claims/card_erp.py)
+            # 미리 보기는 브라우저 없이. 넣기는 고른 청구서(비목) 하나의 남은 결제 건 — 카드청구 화면은 앱이 [카드청구](#P11)로 띄운다(session.fill_card)
             job = self._cards[self._current]
             index = self.card_panel.chosen_sheet() if job is not None else -1
             sheet = job.sheets[index] if job is not None and index >= 0 else None
@@ -721,7 +721,7 @@ class ClaimPage(QWidget):
                 self.fill_button.setEnabled(bool(left) and not busy and not self._browser_busy and self._browser_open)
                 self.fill_button.setText(f"ERP 에 넣기 (결제 {len(left)}건)")
                 self.fill_button.setToolTip("" if self._browser_open else
-                                            "먼저 [브라우저 열기] 로 ERP 를 열고, 결의서내역에서 [카드청구] 로 카드청구 화면을 띄우세요.")
+                                            "먼저 [브라우저 열기] 로 ERP 를 열고 로그인하세요. 카드청구 화면은 앱이 띄웁니다.")
         elif is_sch:
             job = self._jobs[self._current]
             chosen = len(job.chosen()) if job is not None else 0
@@ -1381,7 +1381,7 @@ class ClaimPage(QWidget):
                         + ([f"결의번호 {sheet.req_cnt} 에 이어서 넣습니다"] if sheet.req_cnt else [])
                         + (["시험 — 대표적요 앞에 [시험]. 시험 청구서를 ERP 에서 지우기 전까지 그 결제 건은 미청구 카드내역에서 빠집니다."] if test else []),
                 columns=CARD_COLUMNS, rows=self._card_rows(job, sheet, plan.results), notes=job.problems(),
-                footer=("앱이 연 브라우저에 카드청구 화면(결의서내역 → [카드청구])을 띄워 두세요 — 앱은 [카드청구] 를 누르지 않습니다. "
+                footer=("결의서내역에서 대표적요가 같은 청구서를 먼저 찾고, 이어 넣는 것이 아니면 결의서내역의 [카드청구] 로 새 카드청구 화면을 앱이 띄웁니다. "
                         "미청구 카드내역 [조회] · 결제 건 고르기 · 비목 · 청구구분 · 회의록등록 창(시간 · 장소 · 목적 · 내용 · 외부참석자) · 첨부 · [저장] 은 "
                         "앱이, 참여인력 · 내부참석자와 소모성물품 [등록] 은 노란 띠가 뜨면 사람이 넣습니다."),
                 accept_text=f"ERP 에 넣기 (결제 {len(left)}건)"):

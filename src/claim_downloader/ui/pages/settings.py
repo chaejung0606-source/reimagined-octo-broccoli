@@ -170,7 +170,7 @@ class SettingsPage(QWidget):
         self.auto_project.setChecked(cfg.auto_open_project)
         self.auto_project.toggled.connect(lambda v: self._save(auto_open_project=v))
         behave.add(self.auto_project)
-        self.auto_sheet = QCheckBox("청구서를 넣을 때 다른(저장된) 청구서가 떠 있으면 결의서내역의 [일반청구] 로 새 청구서를 앱이 띄우기")
+        self.auto_sheet = QCheckBox("청구서를 넣을 때 다른(저장된) 청구서가 떠 있으면 결의서내역의 [일반청구] · [카드청구] 로 새 청구서를 앱이 띄우기")
         self.auto_sheet.setChecked(cfg.auto_new_sheet)
         self.auto_sheet.toggled.connect(lambda v: self._save(auto_new_sheet=v))
         behave.add(self.auto_sheet)

@@ -525,11 +525,14 @@ class ErpSession:
 
     def fill_card(self, job, sheet_index: int, dry_run: bool = True, ask=None, on_item=None, project_no: str = "",
                   test_mode: bool = False):
-        """카드청구 — 결제 기간 폴더의 청구서 하나(비목 하나)를 카드청구 작성 화면에 결제 건마다 넣고 [저장](claims/card_erp.py).
-        카드청구 화면은 사람이 띄운다(결의서내역 [카드청구] 는 허락 전). [신청] 은 사람."""
+        """카드청구 — 결제 기간 폴더의 청구서 하나(비목 하나)를 카드청구 작성 화면에 결제 건마다 넣고 [저장](claims/card_erp.py). [신청] 은 사람.
+
+        이 청구서에 이어 넣는 것이 아니면 일반청구처럼 먼저 결의서내역에서 대표적요가 같은 청구서를 찾고(18절), 결의서 목록의 [카드청구](#P11)로
+        새 카드청구 화면을 띄운다(담당자 허락 2026-10-20, 설정 auto_new_sheet). 못 띄우면 사람에게 띄우게 묻는다."""
         from .claims import card_erp
         sheet = job.sheets[sheet_index]
         members = self.card_members(job)
+        summary = card_erp.main_summary(sheet, test_mode)
         if dry_run:
             return card_erp.run(None, None, job, sheet, self.log, ask=lambda _m: False, dry_run=True, members=members, test_mode=test_mode)
         if not self.browser_open:
@@ -537,9 +540,23 @@ class ErpSession:
         ask = ask or (lambda _m: False)
         project = self._project(project_no)
         context = self.page.context
+        auto = bool(getattr(self._load_settings(), "auto_new_sheet", True))
+        report = card_erp.CardReport(dry_run=False, summary=summary)
         page, frame = card_erp.wait_for_card_form(context, self._wait, tries=4)
+        continuing = False
+        if frame is not None and navigate.frame_project(frame) in ("", project):
+            own, why = card_erp.sheet_owner(frame, sheet, summary)
+            continuing = own and why != "새 카드청구서"
+        if not continuing:
+            stop = self._duplicate_check(summary, project, ask, test_mode, lambda: card_erp.record_warning(job, sheet))
+            if stop:
+                report.blocked = stop
+                self.log("카드청구 멈춤 — " + stop)
+                return report
+            if auto:
+                page, frame = self._fresh_card_sheet(page, frame, project)
         if frame is None:
-            # 결의서 목록까지는 앱이 간다(허락된 이동). [카드청구](#P11) 는 사람이 누른다
+            # 앱이 못 띄웠거나(설정에서 끔 · 저장하지 않은 입력) — 결의서 목록까지는 앱이 가고, [카드청구] 는 사람이
             if navigate.list_frame(context, project) is None:
                 self.go_to_claims(project)
             for _ in range(3):
@@ -548,7 +565,6 @@ class ErpSession:
                 page, frame = card_erp.wait_for_card_form(context, self._wait, tries=8)
                 if frame is not None:
                     break
-        report = card_erp.CardReport(dry_run=False, summary=card_erp.main_summary(sheet, test_mode))
         if frame is None:
             report.blocked = "카드청구 작성 화면을 찾지 못했습니다 — 결의서내역에서 [카드청구] 를 눌러 띄운 뒤 다시 누르세요."
             self.log(report.blocked)
@@ -585,6 +601,19 @@ class ErpSession:
             except Exception as error:  # noqa: BLE001 — 기록을 못 남겨도 넣은 것은 그대로
                 self.log("카드청구 기록을 남기지 못했습니다: %s" % (str(error).splitlines()[0] if str(error) else type(error).__name__))
         return report
+
+    def _fresh_card_sheet(self, page, frame, project: str):
+        """이 과제의 새 카드청구 화면을 결의서 목록의 [카드청구] 로 띄워 앞에 둔다. 못 띄우면 받은 그대로(사람이 띄운 화면을 쓴다 · 없으면 사람에게 묻는다)."""
+        from .claims import card_erp
+        context = self.page.context
+        if navigate.list_frame(context, project) is None:
+            self.go_to_claims(project)
+        opened, note, _fresh = navigate.open_card_sheet(context, self.log, self._wait, project, replace_empty=True)
+        if not opened:
+            # 사람이 띄워 둔 화면이 있으면 그대로 — 다른 청구서이거나 다른 탭 뒤에 있으면 card_erp.run 이 사람에게 묻는다
+            self.log("새 카드청구 화면을 앱이 띄우지 못함: " + note)
+            return page, frame
+        return card_erp.wait_for_card_form(context, self._wait, tries=8)
 
     def check_scholarship_sheet(self, job):
         """신청 전 대조 — 작성 화면의 청구내역 표를 읽어 명단과 맞춘다(claims/sheet_check.py). 읽기만 한다."""
