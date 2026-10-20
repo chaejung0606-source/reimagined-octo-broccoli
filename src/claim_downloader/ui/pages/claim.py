@@ -1,7 +1,8 @@
 """일반청구 화면 — 지출 폴더를 넣고 [내용 읽기] → 값을 고치고 → [ERP 에 채우기] → 사람이 입금처·첨부 → [임시저장] → 사람이 검토·신청.
 
 폴더마다 **청구 종류**를 고른다(claims/kinds.py, 담당자 제안 2026-10-14) — 일반(AI 가 서류를 읽음) · 장학금(명단 엑셀 + 공통/개별증빙,
-오른쪽 칸이 학생 표로 바뀌고 [ERP 에 넣기] 가 학생마다 인건비 탭에 넣고 저장) · 출장비 · 카드(준비 중, 고를 수 없음). '자동' 이면 폴더 모양으로 정한다.
+오른쪽 칸이 학생 표로 바뀌고 [ERP 에 넣기] 가 학생마다 인건비 탭에 넣고 저장) · 카드(결제 기간 폴더를 읽어 비목마다 청구서로 나눠
+미리 보기만 — ERP 에 넣기는 카드청구 화면 실측 뒤) · 출장비(준비 중, 고를 수 없음). '자동' 이면 폴더 모양으로 정한다.
 
     AI 플랫폼 고르기 → 지출 폴더 추가(끌어다 놓기 · 버튼) → 내용 읽기(AI) → 오른쪽 칸에서 값 확인·수정
     → 브라우저에 일반청구 작성 화면을 띄움 → [ERP 에 채우기] → ERP 에서 사람이 입금처·첨부 → [임시저장]
@@ -46,6 +47,7 @@ from PySide6.QtWidgets import (
 )
 
 from ... import ai, navigate, settings
+from ...claims import card as card_mod
 from ...claims import kinds, record, rules, schema
 from ...claims import scholarship as sch
 from ...minutes.backends import claude_cli
@@ -55,6 +57,7 @@ from ..claim_worker import ClaimExtractWorker
 from ..report_dialog import ReportRow, show_report, show_structure_saved
 from ..widgets import Card, EmptyState, Field, Pill, PillDelegate, WrapLabel, muted_label
 from ..worker import SessionWorker
+from .card import CardPanel, item_detail
 from .scholarship import ScholarshipPanel
 
 COLUMNS = [("상태", 96), ("종류", 108), ("지출 (폴더)", 200), ("적요", 280), ("청구액", 110), ("입금처", None)]
@@ -80,6 +83,8 @@ GUIDE_SCHOLARSHIP = ("학생 표를 확인한 뒤, 브라우저에서 결의서�
 # 새 청구서를 앱이 띄울 때(설정 auto_new_sheet, 기본) — 사람은 로그인만 하면 된다
 GUIDE_SCHOLARSHIP_AUTO = ("학생 표와 위의 과제를 확인한 뒤 [ERP 에 넣기] 를 누르세요. 그 과제의 결의서내역에 같은 청구서가 있는지 보고, "
                           "새 청구서 · 인건비 탭은 앱이 띄웁니다. 이미 올린 폴더로 시험하려면 [시험] 을 켜세요.")
+GUIDE_CARD = ("비목마다 청구서로 나눠 읽었습니다. 사용일 · 금액 · 청구구분을 확인하고, 틀리면 폴더 이름이나 파일을 고친 뒤 [다시 읽기]. "
+              "ERP 에 넣기는 카드청구 화면 실측 뒤 — 지금은 [미리 보기] 까지.")
 GUIDE_PERSONAL = ("사람 표와 비목 · 대표적요(공통증빙의 지급 공문에서 찾음)를 확인한 뒤 [ERP 에 넣기] 를 누르세요. 일반청구 탭에 사람마다 "
                   "입금처를 고르고 증빙 기타로 넣어 [저장] 합니다. 이미 올린 폴더로 시험하려면 [시험] 을 켜세요.")
 GUIDE_READ = ("값을 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [미리 보기] 로 확인하세요. "
@@ -161,6 +166,7 @@ class ClaimPage(QWidget):
         self._problems: list[list[str]] = []
         self._kinds: list[str] = []                      # 폴더마다 청구 종류 (kinds.GENERAL · SCHOLARSHIP)
         self._jobs: list[sch.Job | None] = []            # 장학금 폴더의 명단 · 증빙
+        self._cards: list[card_mod.CardJob | None] = []  # 카드 결제 기간 폴더 — 비목마다 청구서 · 결제 건
         self._projects: list[str] = []                   # 폴더마다 ERP 과제번호 — 폴더를 넣을 때 고른다(담당자 2026-10-19)
         self._running = False
         self._erp_running = False                        # 장학금을 ERP 에 넣는 중 (브라우저 스레드)
@@ -564,6 +570,14 @@ class ClaimPage(QWidget):
         self.scholarship_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scholarship_scroll.setWidget(self.scholarship_panel)
         self.form_stack.addWidget(self.scholarship_scroll)
+        self.card_panel = CardPanel()
+        self.card_panel.reload_requested.connect(self._reload_card)
+        self.card_scroll = QScrollArea()
+        self.card_scroll.setWidgetResizable(True)
+        self.card_scroll.setFrameShape(QFrame.NoFrame)
+        self.card_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.card_scroll.setWidget(self.card_panel)
+        self.form_stack.addWidget(self.card_scroll)
         card.add(self.form_stack, 1)
         self.form_card = card
         return card
@@ -685,7 +699,15 @@ class ClaimPage(QWidget):
         self.row_project.setEnabled(can_edit and not self._browser_busy and 0 <= self._current < len(self._dirs))
         dry = self.dry_run.isChecked()
         is_sch = kinds.uses_roster(self._kind(self._current)) and 0 <= self._current < len(self._dirs)
-        if is_sch:
+        is_card = self._kind(self._current) == kinds.CARD and 0 <= self._current < len(self._dirs)
+        if is_card:
+            # 카드는 폴더 읽기 · 미리 보기까지 — ERP 를 보지 않으므로 브라우저 없이도, '미리 보기만' 체크와 상관없이 미리 보기
+            job = self._cards[self._current]
+            count = len(job.items) if job is not None else 0
+            self.fill_button.setEnabled(count > 0 and not busy)
+            self.fill_button.setText(f"미리 보기 (결제 {count}건)")
+            self.fill_button.setToolTip("결제 건마다 읽은 값을 표로 봅니다. ERP 카드청구 화면에 넣기는 화면 실측 뒤에 만듭니다.")
+        elif is_sch:
             job = self._jobs[self._current]
             chosen = len(job.chosen()) if job is not None else 0
             self.fill_button.setEnabled(chosen > 0 and not busy and not self._browser_busy and (dry or self._browser_open))
@@ -746,6 +768,12 @@ class ClaimPage(QWidget):
                     "payeeName": ("학생 " if job.spec.payroll else "사람 ") + job.count_text(chosen)
                                  + (f" / 명단 {job.count_text(list(range(len(job.people))))}"
                                                                         if len(chosen) != len(job.people) else "")}
+        cards = self._cards[row] if row < len(self._cards) else None
+        if cards is not None:
+            names = ", ".join(s.code for s in cards.sheets if s.code) or "비목 모름"
+            data = {"summary": (f"카드 청구서 {len(cards.sheets)}개 ({names})" if len(cards.sheets) != 1 else
+                                cards.sheets[0].main_summary or "(비목 모름)"),
+                    "amount": cards.total, "payeeName": f"결제 {len(cards.items)}건"}
         kind_item = QTableWidgetItem(kinds.name_of(self._kind(row)))
         project = self._projects[row] if row < len(self._projects) else ""
         kind_item.setToolTip(kinds.name_of(self._kind(row)) + " — " + kinds.find(self._kind(row)).hint
@@ -790,6 +818,7 @@ class ClaimPage(QWidget):
         self._problems.append([])
         self._kinds.append(kind)
         self._jobs.append(None)
+        self._cards.append(None)
         self._projects.append(str(self.add_project.currentData() or self._last_project()))
         row = self.table.rowCount()
         self.table.setRowCount(row + 1)
@@ -799,6 +828,8 @@ class ClaimPage(QWidget):
         self._set_status(row, "waiting")
         if kinds.uses_roster(kind):
             self._load_scholarship(row)
+        elif kind == kinds.CARD:
+            self._load_card(row)
         self._refresh_row(row)
         self._set_progress(self._done_count, len(self._dirs))
         if self._current < 0:
@@ -828,7 +859,7 @@ class ClaimPage(QWidget):
         if self._erp_running:
             return
         self._dirs, self._status, self._data, self._problems = [], [], [], []
-        self._kinds, self._jobs, self._projects = [], [], []
+        self._kinds, self._jobs, self._cards, self._projects = [], [], [], []
         self._current = -1
         self._done_count = 0
         self.table.setRowCount(0)
@@ -869,6 +900,17 @@ class ClaimPage(QWidget):
         self.row_kind.setCurrentIndex(max(self.row_kind.findData(kind), 0))
         self.row_kind.blockSignals(False)
         self._show_row_project(row)
+        if kind == kinds.CARD and 0 <= row < len(self._cards):
+            self.form_stack.setCurrentWidget(self.card_scroll)
+            self.card_panel.set_job(self._cards[row])
+            self.form_card.title_label.setText("카드 청구")
+            self.form_card.hint_label.setText("비목마다 청구서 하나 · 결제 건마다 한 줄입니다. 고칠 것은 폴더 이름이나 파일 — 고친 뒤 [다시 읽기].")
+            self._set_wide_form(True)
+            self.form_card.setEnabled(True)
+            self._loading_form = False
+            if not self.is_running():
+                self.guide.setText(GUIDE_CARD)
+            return
         if kinds.uses_roster(kind) and 0 <= row < len(self._jobs):
             self.form_stack.setCurrentWidget(self.scholarship_scroll)
             self.scholarship_panel.set_job(self._jobs[row])
@@ -1068,6 +1110,9 @@ class ClaimPage(QWidget):
     # ── ERP 에 채우기 ────────────────────────────────────────────────────
     def _fill(self) -> None:
         row = self._current
+        if self._kind(row) == kinds.CARD:
+            self._preview_card(row)
+            return
         if kinds.uses_roster(self._kind(row)):
             self._fill_scholarship(row)
             return
@@ -1230,6 +1275,45 @@ class ClaimPage(QWidget):
         for problem in self._problems[row]:
             self._append_log("  확인: " + problem)
 
+    def _load_card(self, row: int) -> None:
+        """카드 결제 기간 폴더를 읽는다(영수증 PDF 글자 · 회의록 · 물품 표 — AI 없음)."""
+        job = card_mod.load_job(self._dirs[row])
+        self._cards[row] = job
+        self._problems[row] = job.problems()
+        self._set_status(row, "read" if job.items and not self._problems[row] else "problem" if job.items else "failed")
+        self._append_log("카드 폴더 읽음: " + " / ".join(job.summary_lines()))
+        for problem in self._problems[row]:
+            self._append_log("  확인: " + problem)
+
+    def _reload_card(self) -> None:
+        row = self._current
+        if not (0 <= row < len(self._cards)) or self._kinds[row] != kinds.CARD or self._erp_running:
+            return
+        self._load_card(row)
+        self._refresh_row(row)
+        self._show_form(row)
+        self._sync_buttons()
+
+    def _preview_card(self, row: int) -> None:
+        job = self._cards[row] if 0 <= row < len(self._cards) else None
+        if job is None:
+            return
+        rows = []
+        for sheet in job.sheets:
+            for item in sheet.items:
+                missing = item.blocking()
+                status, tone = ("확인 필요", "warning") if missing or item.notes else (item.req_div_name or "?", "neutral")
+                rows.append(ReportRow(status, tone, [item.code or "?", f"{item.used:%m-%d}" if item.used else "?", item.title,
+                                                     _money(item.amount) or "모름", item.amount_from or "—",
+                                                     item.req_div_name or "?", " / ".join(missing + item.notes)],
+                                      detail=item_detail(item, job.folder), tips={2: item.title, 6: " / ".join(missing + item.notes)},
+                                      right=(3,)))
+        show_report(self, title="미리 보기", heading=f"카드 — {os.path.basename(job.folder)}", tone="info",
+                    summary=job.summary_lines() + ["ERP 카드청구 화면에 넣기는 화면을 실측한 뒤 만듭니다. 지금은 읽은 값만 확인합니다."],
+                    columns=[("상태", 104), ("비목", 44), ("사용일", 66), ("건명", 200), ("금액", 84), ("금액 출처", 76),
+                             ("청구구분", 100), ("확인할 것", None)],
+                    rows=rows, notes=job.problems() + [f"읽지 않음: {s}" for s in job.skipped])
+
     def _row_kind_changed(self, _index: int) -> None:
         row = self._current
         if self._loading_form or not (0 <= row < len(self._dirs)) or self._running or self._erp_running:
@@ -1238,8 +1322,12 @@ class ClaimPage(QWidget):
         if kind == self._kinds[row] or not kinds.find(kind).ready:
             return
         self._kinds[row] = kind
+        self._cards[row] = None
         if kinds.uses_roster(kind):
             self._load_scholarship(row)
+        elif kind == kinds.CARD:
+            self._jobs[row] = None
+            self._load_card(row)
         else:
             # 일반으로 바꾸면 AI 로 다시 읽어야 한다
             self._jobs[row] = None

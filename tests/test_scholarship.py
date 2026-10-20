@@ -1249,7 +1249,7 @@ def test_kind_resolve_honors_choice_and_refuses_unready(tmp_path):
     folder.mkdir()
     assert kinds.resolve(kinds.AUTO, str(folder)) == kinds.GENERAL
     assert kinds.resolve(kinds.SCHOLARSHIP, str(folder)) == kinds.SCHOLARSHIP     # 담당자가 고르면 모양과 상관없이 그 종류
-    for key in (kinds.TRAVEL, kinds.CARD):
+    for key in (kinds.TRAVEL,):
         assert not kinds.find(key).ready
         with pytest.raises(ValueError):
             kinds.resolve(key, str(folder))

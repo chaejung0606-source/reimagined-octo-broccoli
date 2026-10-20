@@ -37,10 +37,13 @@ KINDS: tuple[Kind, ...] = (
     Kind(PERSONAL, "개인 지급(기타)", "지급내역 엑셀 + '공통증빙' · '개별증빙' 폴더 — 일반청구 탭에 사람마다 입금처 · 증빙 기타로 넣고 "
          "저장합니다. 비목 · 대표적요는 공통증빙의 지급 공문에서 찾습니다(일반으로 넣어도 이 모양이면 이것으로)", "claim", True),
     Kind(TRAVEL, "출장비", "출장명령부 · 여비 블록 자동화는 준비 중입니다", "travel", False),
-    Kind(CARD, "카드", "ERP 카드청구 화면을 실측한 뒤 만듭니다", "card", False),
+    # 카드는 폴더 읽기 · 미리 보기까지만(2026-10-20). ERP 카드청구 화면에 넣기는 실측 뒤 — 화면의 [ERP 에 넣기] 는 막아 둔다
+    Kind(CARD, "카드", "결제 기간 폴더('26-09(09.09. ~ 10.08.)') 안의 결제 건 폴더('<비목명> MMDD <건명>')를 읽어 비목마다 청구서로 "
+         "나눠 미리 봅니다. ERP 에 넣기는 카드청구 화면을 실측한 뒤 만듭니다", "card", True),
 )
 
-ROSTER_KINDS = (SCHOLARSHIP, INNOVATION, PERSONAL)     # 명단 엑셀 + 공통/개별증빙 폴더로 사람마다 넣는 종류
+ROSTER_KINDS = (SCHOLARSHIP, INNOVATION, PERSONAL)
+ERP_LATER = (CARD,)       # 폴더 읽기 · 미리 보기는 되고 ERP 에 넣기는 아직 없는 종류     # 명단 엑셀 + 공통/개별증빙 폴더로 사람마다 넣는 종류
 COMMON_WORD = "공통"      # 장학금 폴더의 공통증빙 하위 폴더 이름에 든 글자
 PERSON_WORD = "개별"      # 장학금 폴더의 개별증빙 하위 폴더 이름에 든 글자
 EXCEL_SUFFIXES = (".xlsx", ".xlsm")
@@ -155,11 +158,14 @@ def personal_folder(folder: str) -> bool:
 
 
 def guess(folder: str) -> str:
-    """'자동' 으로 넣었을 때의 종류. 확실한 모양(명단 폴더)만 알아보고 나머지는 일반 — 담당자가 표에서 바꿀 수 있다.
+    """'자동' 으로 넣었을 때의 종류. 확실한 모양(카드 결제 기간 폴더 · 명단 폴더)만 알아보고 나머지는 일반 — 담당자가 표에서 바꿀 수 있다.
 
     공통/개별 하위 폴더가 없어도 '지급내역' 엑셀이 있고 이름(엑셀 · 폴더 · 위 폴더)에 장학금 · 혁신인재지원금 말이 있으면 명단 청구로 본다
     (담당자 요청 2026-10-19: 원본이 엑셀이면 엑셀을 먼저). 그런 폴더가 일반으로 들어가 AI 가 PDF 를 읽은 적이 있다(2026-10-13 (나)형 TA).
     '지원내역' (프로그램참여지원비 · 재직자 교육 지원)이나 이름에 그 말이 없는 '자문료 지급내역' 은 일반청구라 그대로 둔다."""
+    from . import card
+    if card.looks_like_card_folder(folder):
+        return CARD                 # 이름이 결제 기간('26-09(09.09. ~ 10.08.)')이고 안에 결제 건 폴더(MMDD)가 있다
     named = named_kind(folder)
     if looks_like_scholarship(folder) or roster_excels(folder):
         if named:
