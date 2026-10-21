@@ -22,6 +22,15 @@ from .art import Art
 from .theme import STATUS
 
 
+def fit_to_text(widget: QWidget) -> QWidget:
+    """글자 길이만큼만 차지하게 — 줄에 남는 폭을 늘려 받지 않는다. 폭을 숫자로 박지 않고 글자(sizeHint)를 따른다.
+
+    담당자 2026-10-21: 단계 번호 · 상태 배지가 줄 폭을 나눠 받아 가로로 길게 늘어났다 — "안에 글씨에 맞춰서 자동 길이 조정".
+    """
+    widget.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+    return widget
+
+
 class WrapLabel(QLabel):
     """여러 줄로 접히는 글자.
 
@@ -201,7 +210,7 @@ class Step(QFrame):
         body.setSpacing(3)
         head = QHBoxLayout()
         head.setSpacing(8)
-        self.number = _label(number, "stepNo")
+        self.number = fit_to_text(_label(number, "stepNo"))
         self.number.setAlignment(Qt.AlignCenter)
         head.addWidget(self.number)
         head.addWidget(_label(title, "cardTitle"), 1)
@@ -278,6 +287,7 @@ class Pill(QLabel):
 
     def __init__(self, text: str = "", status: str = "neutral", parent: QWidget | None = None):
         super().__init__(text, parent)
+        fit_to_text(self)
         self.set_status(text, status)
 
     def set_status(self, text: str, status: str) -> None:

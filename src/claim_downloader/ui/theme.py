@@ -256,11 +256,13 @@ QLineEdit:disabled, QDoubleSpinBox:disabled, QPlainTextEdit:disabled {{
     background: {c['surface_alt']}; color: {c['text_faint']}; border-style: dashed;
 }}
 QLineEdit[error="true"] {{ border: 2px solid {c['danger']}; padding: 6px 9px; }}
-QPlainTextEdit#logView {{
+QPlainTextEdit#logView, QPlainTextEdit#foldLog {{
     font-family: "D2Coding", "Consolas", "Cascadia Mono", monospace;
     font-size: {f['table']}px;
     color: {c['text_muted']};
 }}
+/* 단계 아래에 펼치는 진행 기록(청구서 받기) — 창이 낮아도 몇 줄은 읽히게. 픽셀이 아니라 글자 크기로 */
+QPlainTextEdit#foldLog {{ min-height: 4em; }}
 
 /* ── 버튼 ─────────────────────────────────────────────── */
 QPushButton {{
