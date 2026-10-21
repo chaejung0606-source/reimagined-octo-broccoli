@@ -36,12 +36,46 @@ def test_no_typing_into_erp():
         assert name not in ERP, name
 
 
+# 로그인 정보를 다뤄도 되는 곳 — 주차등록 사이트뿐(담당자 허락 2026-10-21: "여기엔 개인정보같은게 없어서 자동 로그인해도 괜찮습니다").
+# ERP 로그인 정보는 여전히 어디에도 두지 않는다(CLAUDE.md 9절).
+PARKING_FILES = {SRC / "parking.py", SRC / "ui" / "pages" / "parking.py"}
+
+
 def test_no_credentials_anywhere():
     for path in SRC.rglob("*.py"):
         text = path.read_text(encoding="utf-8").lower()
-        # storage_state · user_data_dir 는 로그인 쿠키를 디스크에 남긴다
-        for word in ("password", "passwd", "storage_state", "user_data_dir"):
+        # storage_state · user_data_dir 는 로그인 쿠키를 디스크에 남긴다 — 주차등록도 안 된다
+        for word in ("storage_state", "user_data_dir"):
             assert word not in text, f"{path.name}: {word}"
+        if path in PARKING_FILES:
+            continue
+        for word in ("password", "passwd"):
+            assert word not in text, f"{path.name}: {word}"
+
+
+def test_parking_login_stays_with_parking():
+    """주차등록 자동 로그인은 그 사이트에만 — ERP 쪽 코드는 그 로그인 정보를 읽지 않고, 주차 코드는 ERP 주소에 가지 않는다.
+    로그인 정보는 저장소 · config.json 이 아니라 사용자 폴더의 _주차로그인.json 에(윈도우 DPAPI), 기록에는 비밀번호를 남기지 않는다."""
+    from claim_downloader import parking
+    text = (SRC / "parking.py").read_text(encoding="utf-8")
+    assert "knu-icf" not in text and "ERP_URL" not in text
+    assert "dpapi" in text.lower() and "CryptProtectData" in text
+    for path in SRC.rglob("*.py"):
+        if path in PARKING_FILES or path.name in ("session.py", "worker.py"):
+            continue
+        body = path.read_text(encoding="utf-8")
+        assert "load_login" not in body and "_주차로그인" not in body or path.name == "settings.py", path.name
+    # 넣는 칸은 표시를 붙인 아이디 · 비밀번호 둘뿐이고, 누르는 것은 Enter 와 '로그인' 단추 하나(SUBMIT_JS)뿐
+    fills = re.findall(r"\.fill\(([A-Z_]+),", text)
+    assert sorted(fills) == ["ID_SELECTOR", "PW_SELECTOR"], fills
+    assert re.findall(r"\.press\(([A-Z_]+), \"(\w+)\"\)", text) == [("PW_SELECTOR", "Enter")]
+    assert text.count(".click()") == 1 and parking.SUBMIT_JS.count(".click()") == 1
+    assert "로그인|login" in parking.SUBMIT_JS and "cands.length !== 1" in parking.SUBMIT_JS
+    # 비밀번호를 기록에 쓰는 줄이 없다 — log(...) 안에 secret 이 들어가지 않는다
+    for call in re.findall(r"log\(([^\n]*)\)", text):
+        assert "secret" not in call, call
+    # 실패하면 다시 시도하지 않는다(계정 잠김) — 한 번 실패를 기억한다
+    assert "_failed[\"why\"] = report.note" in text
 
 
 def test_browser_is_launched_in_one_place():

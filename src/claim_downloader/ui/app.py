@@ -158,7 +158,7 @@ class MainWindow(QMainWindow):
         module_name, class_name = task.page.split(":")
         module = importlib.import_module(f".pages.{module_name}", __package__)
         cls = getattr(module, class_name)
-        if task_id in ("download", "claim"):
+        if task_id in ("download", "claim", "parking"):        # 브라우저 스레드 하나를 같이 쓴다(ERP · 주차등록 한 브라우저)
             page = cls(worker=self.session_worker())
         else:
             page = cls()

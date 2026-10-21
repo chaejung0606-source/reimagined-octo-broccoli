@@ -42,6 +42,25 @@ class BrowserClosed(RuntimeError):
     pass
 
 
+def _host(url: str) -> str:
+    return str(url or "").split("://", 1)[-1].split("/", 1)[0].lower()
+
+
+def _is_erp(page) -> bool:
+    """ERP 주소(settings.ERP_URL)와 같은 곳의 창인지 — 주차등록 사이트 창과 가른다."""
+    try:
+        return _host(page.url) == _host(settings_mod.ERP_URL)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _opener(page):
+    try:
+        return page.opener()
+    except Exception:  # noqa: BLE001 — 가짜 창 · 닫힘
+        return None
+
+
 @dataclass
 class RunSummary:
     ok: int = 0
@@ -135,12 +154,18 @@ class ErpSession:
             pass
         return self.browser_open
 
-    def open_browser(self) -> None:
-        """ERP 첫 화면을 띄운다. 로그인은 사람이 이 창에서 직접 한다.
+    def open_browser(self, start_url: str = "") -> None:
+        """ERP 첫 화면을 띄운다. 로그인은 사람이 이 창에서 직접 한다. ERP 아이디·비밀번호는 어디에도 저장하지 않는다.
 
-        아이디·비밀번호는 어디에도 저장하지 않는다.
+        start_url 을 주면(주차등록 — parking.py) 그 사이트를 첫 창으로 연다. 브라우저가 이미 열려 있는데 ERP 창이 없으면
+        (주차등록만 열어 둔 채 받기 · 일반청구를 누름) ERP 를 새 탭으로 연다 — 전에는 열린 브라우저를 그대로 써 ERP 화면을 끝내 못 찾았다.
         """
         if self.browser_open:
+            if not start_url and self.erp_page() is None:
+                page = self._live_page().context.new_page()
+                page.goto(settings_mod.ERP_URL, wait_until="domcontentloaded")
+                self.page = page
+                self.log("ERP 창이 없어 새 탭으로 열었습니다. 그 탭에서 로그인하세요.")
             return
         if self.browser is not None:          # 창이 모두 닫힌 채 남은 브라우저 — 새로 띄우기 전에 닫는다
             try:
@@ -158,10 +183,14 @@ class ErpSession:
             # 학교망에서 크로미움을 못 받은 PC 가 있다. 윈도우에 늘 있는 Edge 로 대신 띄운다.
             self.log("크로미움을 띄우지 못해 Edge 로 엽니다 (%s)" % str(error).splitlines()[0][:120])
             self.browser = self._pw.chromium.launch(headless=False, channel="msedge")
-        self.page = self.browser.new_page(accept_downloads=True)
+        # 묶음(context)을 따로 만든다 — browser.new_page() 의 묶음에는 앱이 새 탭을 더 열 수 없다(주차등록 · ERP 를 한 브라우저에, 2026-10-21).
+        # 쿠키 · 로그인은 이 묶음의 메모리에만 있고 디스크에 남지 않는다(로그인 상태를 파일로 내보내지 않는다 — 9절)
+        self.page = self.browser.new_context(accept_downloads=True).new_page()
         # 새 창(회의록등록 · 입금처 같은 팝업)도 같은 묶음(context)이라 여기 하나로 모든 창의 확인 창을 받는다
         self.page.context.on("dialog", self._on_dialog)
-        self.page.goto(settings_mod.ERP_URL, wait_until="domcontentloaded")
+        self.page.goto(start_url or settings_mod.ERP_URL, wait_until="domcontentloaded")
+        if start_url:
+            return
         cfg = self._load_settings()
         if getattr(cfg, "auto_open_project", False):
             self.log("브라우저를 열었습니다. 로그인만 하세요 — 그 뒤 과제 %s 의 청구서(결의서내역)까지 앱이 갑니다."
@@ -232,13 +261,77 @@ class ErpSession:
         """고른 과제의 과제정보 → 청구서 탭 → 결의서내역 목록까지. 누르는 것은 과제명 링크와 '청구서' 탭뿐."""
         if not self.browser_open:
             return False, "브라우저가 닫혀 있습니다"
-        ok, message = navigate.go_to_claims(self.page.context, project_no, self.log,
-                                            lambda seconds: self.page.wait_for_timeout(int(seconds * 1000)))
+        ok, message = navigate.go_to_claims(self.page.context, project_no, self.log, self._wait)
         self.log(("✓ " if ok else "⚠ ") + message)
         return ok, message
 
     def _wait(self, seconds: float) -> None:
-        self.page.wait_for_timeout(int(seconds * 1000))
+        self._live_page().wait_for_timeout(int(seconds * 1000))
+
+    def _pages(self) -> list:
+        if self.browser is None:
+            return []
+        try:
+            return [p for c in self.browser.contexts for p in c.pages if not p.is_closed()]
+        except Exception:  # noqa: BLE001 — 닫히는 중
+            return []
+
+    def _live_page(self):
+        """작업 창(self.page)이 닫혔으면(주차등록 탭을 닫음 등) 열린 다른 창 — 기다리기 · 새 탭 열기에 쓴다."""
+        try:
+            if self.page is not None and not self.page.is_closed():
+                return self.page
+        except Exception:  # noqa: BLE001
+            pass
+        pages = self._pages()
+        if pages:
+            self.page = next((p for p in pages if _is_erp(p)), pages[0])
+        return self.page
+
+    def erp_page(self):
+        """ERP 첫 창(팝업이 아닌 창). 없으면 None — 주차등록 사이트만 열려 있을 수 있다."""
+        return next((p for p in self._pages() if _is_erp(p) and _opener(p) is None), None)
+
+    # ── 주차등록 (parking.py) ──────────────────────────────────────────────
+    def open_parking(self, url: str = "", login: tuple[str, str] | None = None):
+        """주차등록 사이트를 앱 브라우저에서 연다(열려 있으면 그 탭을 앞으로, 없으면 새 탭). login 이 있고 로그인 화면이면 한 번만 자동 로그인.
+        ERP 창(self.page)은 그대로 둔다 — ERP 일과 섞이지 않게."""
+        from . import parking
+        url = url or parking.DEFAULT_URL
+        report = parking.OpenReport()
+        fresh = True
+        try:
+            if not self.browser_open:
+                self.open_browser(start_url=url)
+                page = self.page
+                report.new_tab = False
+            else:
+                page = next((p for p in self._pages() if parking.is_site(p.url, url)), None)
+                if page is None:
+                    page = self._live_page().context.new_page()
+                    page.goto(url, wait_until="domcontentloaded")
+                    report.new_tab = True
+                else:
+                    fresh = False                         # 이미 열린 탭 — 로그인돼 있으면 로그인 칸을 기다리지 않는다
+                page.bring_to_front()
+        except Exception as error:  # noqa: BLE001
+            report.note = str(error).splitlines()[0][:120] if str(error) else type(error).__name__
+            self.log("주차등록 사이트를 열지 못했습니다: " + report.note)
+            return report
+        report.opened = True
+        self.log("주차등록 사이트를 열었습니다: " + url)
+        if not login:
+            report.note = "자동 로그인 정보가 없어 직접 로그인하세요(주차등록 화면의 '로그인 정보' 에 넣으면 다음부터 앱이 합니다)"
+            return report
+        if parking.failed_before():
+            report.note = "앞서 자동 로그인이 되지 않아 다시 시도하지 않습니다 — 로그인 정보를 고쳐 저장하면 다시 합니다"
+            return report
+        was, self.hands_on = self.hands_on, False       # 로그인하는 동안 사이트 알림은 앱이 받는다(parking.login 의 처리기)
+        try:
+            return parking.login(page, login[0], login[1], self.log,
+                                 wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)), report=report, fresh=fresh)
+        finally:
+            self.hands_on = was
 
     def _project(self, project_no: str = "") -> str:
         """폴더에 붙은 과제(일반청구 화면에서 고름) — 없으면 마지막으로 고른 과제, 그것도 없으면 담당자가 정한 기본 과제."""

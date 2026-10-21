@@ -15,6 +15,7 @@
       일반청구규칙.txt  일반청구 추출 규칙 (claims/rules.py) · _청구입력기록.json 채운 폴더 기록
       장학금규칙.txt    장학금 청구 대표적요·행 적요 규칙 (claims/scholarship.py)
       혁신인재지원금규칙.txt  혁신인재지원금 청구 규칙 (같은 모양, 대표적요 03_)
+      _주차로그인.json  주차등록 사이트 자동 로그인(아이디 · 윈도우 DPAPI 로 감싼 비밀번호) — parking.py. ERP 로그인은 어디에도 두지 않는다
 
 개인 경로를 기본값으로 넣지 않는다. 동료에게 그대로 공유할 수 있어야 한다.
 """
@@ -72,6 +73,9 @@ class Settings:
     # 카드청구 회의비의 참석자를 참여인력 · 내부참석자로 가를 ERP '참여연구원 현황표'(엑셀 · PDF). 실명 · 직번이 든 사용자 파일이라
     # 위치만 둔다. 비우면 카드 폴더 · 그 위 폴더에서 이름에 '참여연구원' 이 든 파일을 찾는다(claims/participants.find_file)
     participants_file: str = ""
+    # 주차등록 사이트(parking.py) — 담당자 요청 2026-10-21. 로그인 정보는 여기가 아니라 _주차로그인.json(비밀번호는 윈도우 DPAPI 로 감쌈)에
+    parking_url: str = "https://traffic.kangwon.ac.kr/login"
+    parking_auto_login: bool = True        # 로그인 정보가 있으면 사이트를 열 때 한 번 자동 로그인(담당자 허락 2026-10-21)
 
 
 def data_dir() -> Path:

@@ -119,6 +119,23 @@ def _download(painter: QPainter) -> None:
     painter.drawLine(QPointF(4.5, 19.5), QPointF(19.5, 19.5))
 
 
+def _car(painter: QPainter) -> None:
+    """주차등록 — 옆에서 본 승용차."""
+    body = QPainterPath()
+    body.moveTo(3.5, 15.5)
+    body.lineTo(3.5, 12.5)
+    body.lineTo(6.5, 11.5)
+    body.lineTo(9, 7.5)
+    body.lineTo(15.5, 7.5)
+    body.lineTo(18, 11.5)
+    body.lineTo(20.5, 12.5)
+    body.lineTo(20.5, 15.5)
+    painter.drawPath(body)
+    painter.drawLine(QPointF(6.5, 11.5), QPointF(18, 11.5))
+    painter.drawEllipse(QPointF(7.5, 16.5), 1.8, 1.8)
+    painter.drawEllipse(QPointF(16.5, 16.5), 1.8, 1.8)
+
+
 def _home(painter: QPainter) -> None:
     """홈 — 지붕 있는 집."""
     path = QPainterPath()
@@ -206,4 +223,5 @@ _ICONS = {
     "gear": _gear,
     "search": _search,
     "download": _download,
+    "car": _car,
 }

@@ -52,6 +52,7 @@ class SessionWorker(QObject):
     card_done = Signal(object)          # 카드: claims.card_erp.CardReport
     list_ready = Signal()               # 받기: 브라우저를 연 뒤 결의서내역 목록이 보인다 — 화면이 [목록 읽기] 를 저절로
     projects_read = Signal()            # 로그인 뒤 메인화면 과제현황에서 과제 목록을 읽어 _과제목록.json 에 남겼다 — 일반청구의 과제 고르기 칸이 다시 읽는다
+    parking_opened = Signal(object)     # 주차등록: parking.OpenReport — 사이트를 열고 자동 로그인했는지
 
     def __init__(self) -> None:
         super().__init__()
@@ -105,6 +106,10 @@ class SessionWorker(QObject):
     def fill_card(self, job, sheet_index: int, dry_run: bool = True, project_no: str = "", test_mode: bool = False) -> None:
         self._stop.clear()
         self._put("fill_card", (job, sheet_index, dry_run, project_no, test_mode), "claim")
+
+    def open_parking(self) -> None:
+        """주차등록 사이트를 앱 브라우저에서 열고(열려 있으면 그 탭) 로그인 정보가 있으면 한 번 자동 로그인(parking.py)."""
+        self._put("open_parking", (), "parking")
 
     def read_list(self, project_no: str = "") -> None:
         """project_no — 받기 화면에서 고른 과제. 그 과제의 결의서 목록을 앞에 띄운 뒤 읽는다(session.read_list)."""
@@ -351,7 +356,22 @@ class SessionWorker(QObject):
     def _do_forget_archive(self, session: ErpSession) -> None:
         session.archive_report = None
 
+    def _do_open_parking(self, session: ErpSession) -> None:
+        from .. import parking
+        cfg = settings.load()
+        self.busy.emit(True, "주차등록 사이트를 여는 중…")
+        login = parking.load_login() if cfg.parking_auto_login else None
+        self.parking_opened.emit(session.open_parking(cfg.parking_url or parking.DEFAULT_URL, login))
+
     def _do_read_list(self, session: ErpSession, project_no: str = "") -> None:
+        if session.browser_open and session.erp_page() is None:
+            # 주차등록만 열어 둔 브라우저 — ERP 를 새 탭으로 열고 로그인 뒤 목록이 보이면 받기 화면이 다시 읽는다(list_ready)
+            session.open_browser()
+            self.browser_opened.emit()
+            cfg = settings.load()
+            self.busy.emit(False, "")
+            self._watch_for_list(session, ready=True, project_no=project_no or (cfg.project_no if cfg.auto_open_project else ""))
+            return
         self._ensure_scanned(session)
         self.busy.emit(True, "결의서 목록을 읽는 중…")
         try:

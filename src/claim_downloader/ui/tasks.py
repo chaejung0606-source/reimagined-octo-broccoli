@@ -32,6 +32,9 @@ TASKS: tuple[Task, ...] = (
     # 장학금 · 카드 · 출장비는 따로 두지 않고 일반청구 화면에서 폴더마다 '청구 종류' 로 고른다(담당자 제안 2026-10-14, claims/kinds.py)
     Task("claim", "일반청구", "지출 폴더마다 청구 종류(일반 · 장학금 …)를 골라 ERP 일반청구 화면에 채우고 임시저장합니다. 신청은 직접.",
          "claim", "document-check", "peach", "claim:ClaimPage", ready=True),
+    # 담당자 요청 2026-10-21 — 교내 주차 등록 사이트. 1단계는 앱 브라우저로 열고 자동 로그인 · 직접 입력, 앱 입력은 실측 뒤(parking.py)
+    Task("parking", "주차등록", "교내 주차 등록 사이트를 앱 브라우저로 열고 자동으로 로그인합니다.",
+         "parking", "car", "sky", "parking:ParkingPage", ready=True),
 )
 
 # 상단 메뉴에서 여는 화면. 독·홈 카드·[+] 메뉴에는 두지 않는다.

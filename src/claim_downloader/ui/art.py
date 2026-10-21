@@ -39,6 +39,7 @@ ART = {
     "claim":     "signed-doc",      # 서명 문서 — 일반청구(결재)
     "scholarship": "doc-users",     # 사람이 그려진 서류 — 장학금 청구(학생 명단)
     "travel":    "send-tray",       # 종이비행기 — 출장비 청구(준비 중)
+    "parking":   "monitor-lock",    # 모니터와 자물쇠 — 주차등록 사이트에 로그인해 등록(차 그림이 없어 웹 로그인 그림)
     "card":      "card-receipt",    # 카드와 영수증 — 카드 청구(일반청구 화면의 종류) (tools/make_card_art.py 로 새로 그림)
     "recent":    "folder-papers",   # 종이 겹친 폴더 — 최근 작업
     "done":      "send-tray",       # 종이비행기와 트레이 — 완료 안내
