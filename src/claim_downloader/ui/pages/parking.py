@@ -38,7 +38,8 @@ from ..widgets import Card, EmptyState, Field, Pill, WrapLabel, muted_label
 from ..worker import SessionWorker
 
 AUTO_PRODUCT = "사이트에 하나뿐이면 그것"
-TAB_LINK, TAB_APPLY, TAB_HISTORY = range(3)
+# 할인 적용이 맨 앞 · 처음 열리는 탭(담당자 요청 2026-10-21 — 들어온 차에 바로 할인하는 일이 가장 잦다)
+TAB_APPLY, TAB_LINK, TAB_HISTORY = range(3)
 
 
 def _qdt(value: dt.datetime) -> QDateTime:
@@ -92,7 +93,7 @@ class ParkingPage(QWidget):
         title = QLabel("주차등록")
         title.setObjectName("pageTitle")
         texts.addWidget(title)
-        texts.addWidget(muted_label("교내 주차 사이트(traffic.kangwon.ac.kr) — 할인 링크 · QR 을 만들거나 차량번호로 바로 할인을 적용하고, "
+        texts.addWidget(muted_label("교내 주차 사이트(traffic.kangwon.ac.kr) — 차량번호로 바로 할인을 적용하거나 할인 링크 · QR 을 만들고, "
                                     "할인 내역을 봅니다. 로그인은 설정의 '주차등록 로그인 정보' 로 앱이 합니다."))
         head.addLayout(texts, 1)
         self.open_button = QPushButton("브라우저에서 사이트 열기")
@@ -114,9 +115,12 @@ class ParkingPage(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.tabBar().setDrawBase(False)
-        self.tabs.addTab(_scrolled(self._build_link_card()), "할인 링크 · QR")
-        self.tabs.addTab(_scrolled(self._build_apply_card()), "할인 적용 (차량번호)")
-        self.tabs.addTab(self._build_history_card(), "할인 내역")
+        tabs = {TAB_APPLY: (_scrolled(self._build_apply_card()), "할인 적용 (차량번호)"),
+                TAB_LINK: (_scrolled(self._build_link_card()), "할인 링크 · QR"),
+                TAB_HISTORY: (self._build_history_card(), "할인 내역")}
+        for index in sorted(tabs):
+            self.tabs.addTab(*tabs[index])
+        self.tabs.setCurrentIndex(TAB_APPLY)
         layout.addWidget(self.tabs, 1)
 
         w = self.worker
