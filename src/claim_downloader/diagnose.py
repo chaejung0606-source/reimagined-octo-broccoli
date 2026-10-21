@@ -171,8 +171,10 @@ def _frame_report(fr) -> dict:
     return data
 
 
-def capture(context, frame_kind: Callable[[object], str] | None = None) -> list[dict]:
-    """열린 모든 창의 모든 프레임을 읽는다. frame_kind 는 프레임을 알아본 이름('결의서 목록' 등)."""
+def capture(context, frame_kind: Callable[[object], str] | None = None,
+            keep: Callable[[str], bool] | None = None) -> list[dict]:
+    """열린 모든 창의 모든 프레임을 읽는다. frame_kind 는 프레임을 알아본 이름('결의서 목록' 등).
+    keep 을 주면 창 주소로 고른 창만(화면 구조 저장 업무에서 ERP · 주차등록 사이트 중 고른 곳 — 2026-10-21)."""
     windows = []
     for pg in context.pages:
         try:
@@ -188,6 +190,8 @@ def capture(context, frame_kind: Callable[[object], str] | None = None) -> list[
             url = pg.url
         except Exception:  # noqa: BLE001
             url = "?"
+        if keep is not None and not keep(url):
+            continue
         frames = []
         for fr in pg.frames:
             report = _frame_report(fr)
@@ -273,10 +277,10 @@ def _collapsed(elements: list[dict]) -> list[str]:
     return [f"{line}  (× {n})" if n > 1 else line for line, n in zip(lines, counts)]
 
 
-def format_report(windows: list[dict], when: str | None = None) -> str:
+def format_report(windows: list[dict], when: str | None = None, target: str = "") -> str:
     when = when or time.strftime("%Y-%m-%d %H:%M")
     out = [
-        f"COSS 업무데스크 화면 구조  ({when})",
+        f"COSS 업무데스크 화면 구조  ({when})" + (f" · 대상: {target}" if target else ""),
         "읽기만 했습니다. 아무것도 누르거나 넣지 않았습니다. 비밀번호 칸의 값은 기록하지 않습니다.",
         "보이는 요소를 먼저, 숨은 요소는 뒤에 '[숨김]' 으로 적습니다.",
         "a · button 이 아닌데 손가락 커서가 뜨는 글자(메뉴 · 탭)는 '[누를 수 있음]' 으로 적습니다.",

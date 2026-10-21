@@ -206,7 +206,7 @@ def read_history(page, log: Callable[[str], None], wait: Callable[[float], None]
         last = count if table.get("tables") else None
         wait(0.5)
     if not table.get("tables"):
-        report.note = "화면에 표가 없습니다 — 사이트 모양이 다르면 [화면 구조 저장] 을 보내 주세요"
+        report.note = "화면에 표가 없습니다 — 사이트 모양이 다르면 '화면 구조 저장' 업무로 그 화면을 저장해 보내 주세요"
         return report
     report.ok = True
     report.headers = [str(h) for h in table.get("headers") or []]

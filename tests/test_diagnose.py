@@ -115,3 +115,31 @@ def test_each_save_is_added_to_the_book(tmp_path):
     assert diagnose.append_to_book(book, "둘째 화면\n") == 2
     text = book.read_text(encoding="utf-8")
     assert text.index("════ 화면 구조 1번째 ════\n첫 화면") < text.index("════ 화면 구조 2번째 ════\n둘째 화면")
+
+
+def test_capture_keeps_only_the_chosen_site():
+    """화면 구조 저장 업무(담당자 2026-10-21) — ERP · 주차등록 사이트 중 고른 곳의 창만 읽는다."""
+    class Frame:
+        url = ""
+
+        def evaluate(self, js, *args):
+            return [] if js is diagnose._GRID_JS else {"elements": [], "title": ""}
+
+    class Page:
+        def __init__(self, url):
+            self.url, self.frames = url, [Frame()]
+
+        def is_closed(self):
+            return False
+
+        def title(self):
+            return self.url
+
+    class Context:
+        pages = [Page("https://knu-icf.kangwon.ac.kr/rderp_layoutMain.act"), Page("https://traffic.kangwon.ac.kr/discount-apply"),
+                 Page("https://knu-icf.kangwon.ac.kr/rexpe_0084_rcv_pop.act")]
+
+    every = diagnose.capture(Context())
+    erp_only = diagnose.capture(Context(), keep=lambda url: "knu-icf" in url)
+    assert len(every) == 3 and [w["url"] for w in erp_only] == [Context.pages[0].url, Context.pages[2].url]
+    assert "대상: ERP" in diagnose.format_report(erp_only, target="ERP").splitlines()[0]

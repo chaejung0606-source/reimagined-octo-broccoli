@@ -45,7 +45,7 @@ from ... import archive, navigate, project_folders, rebudget, settings, skiplist
 from .. import project_box
 from ...targets import volume_warning
 from ..art import Art
-from ..report_dialog import ReportRow, show_report, show_structure_saved
+from ..report_dialog import ReportRow, show_report
 from ..widgets import Card, EmptyState, KpiCard, Pill, PillDelegate, Step, WrapLabel, muted_label
 from ..worker import SessionWorker
 
@@ -202,7 +202,6 @@ class DownloadPage(QWidget):
         w.relogin.connect(self._on_relogin)
         w.failed.connect(self._on_failed)
         w.browser_state.connect(self._on_browser_state)
-        w.structure_saved.connect(self._on_structure_saved)
         w.list_ready.connect(self._on_list_ready)
         w.projects_read.connect(self._refresh_projects)
         w.rebudget_planned.connect(self._on_rebudget_planned)
@@ -316,14 +315,7 @@ class DownloadPage(QWidget):
         corner_row = QHBoxLayout(corner)
         corner_row.setContentsMargins(0, 0, 0, 0)
         corner_row.setSpacing(4)
-        # 진단 모드 — 새 화면(일반청구 등)을 자동화하기 전에 담당자가 그 화면을 띄우고 눌러 실측한다
-        self.structure_button = QPushButton("화면 구조 저장")
-        self.structure_button.setObjectName("ghost")
-        self.structure_button.setToolTip(
-            "지금 브라우저에 열린 ERP 화면의 창·프레임·입력 요소를 _화면구조.txt 로 저장합니다. "
-            "읽기만 하고 아무것도 누르거나 넣지 않습니다. 새 화면을 자동화하기 전 실측용입니다.")
-        self.structure_button.clicked.connect(self._capture_structure)
-        corner_row.addWidget(self.structure_button)
+        # [화면 구조 저장] 은 '화면 구조 저장' 업무 하나로 옮겼다(담당자 요청 2026-10-21, pages/structure.py)
         # 이미 받은 대응자금 청구서를 예산 탭 차례 번호로 고치기(담당자 2026-10-21) — 대응자금 과제 폴더가 있을 때만 보인다
         self.rebudget_button = QPushButton("대응자금 파일 정리")
         self.rebudget_button.setObjectName("ghost")
@@ -459,7 +451,6 @@ class DownloadPage(QWidget):
         self.all_button.setEnabled(can_run)
         self.all_button.setText(f"남은 {remaining}건 받기" if remaining else "받기")
         self.test_button.setEnabled(can_run)
-        self.structure_button.setEnabled(not busy and self._browser_open)
         self.rebudget_button.setEnabled(not busy)
         self.unwanted_button.setEnabled(not busy)
         running = busy and bool(self._running_rows)
@@ -897,21 +888,10 @@ class DownloadPage(QWidget):
                     rows=[ReportRow("옮김" if m.done else "못 옮김", "success" if m.done else "danger",
                                     [m.project, m.place(), m.to()], detail=m.why) for m in moves])
 
-    def _capture_structure(self) -> None:
-        self._capture_asked = True              # 일반청구 화면도 같은 브라우저 스레드의 신호를 받는다 — 누른 쪽만 창을 띄운다
-        self.worker.capture_structure()
-
-    def _on_structure_saved(self, path: str) -> None:
-        if not getattr(self, "_capture_asked", False):
-            return
-        self._capture_asked = False
-        show_structure_saved(self, path)
-
     def _on_failed(self, owner: str, message: str) -> None:
         """이 화면이 넣은 명령의 오류만 — 일반청구가 넣은 명령의 오류는 그 화면이 알린다."""
         if owner != "download":
             return
-        self._capture_asked = False
         self._rebudget_asked = False
         self._on_error(message)
 

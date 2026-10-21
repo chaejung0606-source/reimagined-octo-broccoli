@@ -294,8 +294,14 @@ class HomePage(QWidget):
         for col in range(columns + 1):
             self._grid.setColumnStretch(col, 1 if col == columns else 0)
 
-    # 업무 타일은 늘 한 줄에 둔다(담당자 요청). 장학금 청구가 들어와 다섯(2026-10-14) — 196 × 5 + 간격도 최소 창(1120)에 들어간다.
-    # 업무가 다섯 이상으로 늘면 여기서 창 폭에 따라 줄을 나누면 된다.
+    # 업무 타일은 한 줄에 둔다(담당자 요청). 화면 구조 저장이 들어와 다섯(2026-10-21) — 196 × 5 + 간격 + 둘레(1084)가 최소 창(1024)보다 넓어
+    # 창이 그보다 좁을 때만 줄을 나눈다(안 그러면 오른쪽 타일이 잘린다 — 홈은 가로 스크롤이 없다).
+    TILE, GAP, SIDE = 196, 8, 36 * 2 + 14          # 타일 폭 · 간격 · 둘레 여백(+ 세로 스크롤 막대)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        room = self.width() - self.SIDE
+        self._relayout(max(1, min(len(TASKS), (room + self.GAP) // (self.TILE + self.GAP))))
 
     # ── 이어서 작업하기 ──────────────────────────────────────────────
     def _build_continue(self) -> QWidget:

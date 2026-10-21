@@ -55,7 +55,7 @@ from ...minutes.backends import claude_cli
 from .. import ai_status, project_box
 from ..art import Art
 from ..claim_worker import ClaimExtractWorker
-from ..report_dialog import ReportRow, show_report, show_structure_saved
+from ..report_dialog import ReportRow, show_report
 from ..widgets import Card, EmptyState, Field, Pill, PillDelegate, WrapLabel, muted_label
 from ..worker import SessionWorker
 from .card import CardPanel, item_detail
@@ -173,7 +173,6 @@ class ClaimPage(QWidget):
         self._running = False
         self._erp_running = False                        # 장학금을 ERP 에 넣는 중 (브라우저 스레드)
         self._stopping = False
-        self._capture_asked = False
         self._erp_row = -1
         self._erp_sheet = 0                              # 카드: 넣는 중인 청구서(비목) 번호
         self._browser_busy = False
@@ -224,7 +223,6 @@ class ClaimPage(QWidget):
         b.card_item.connect(self._on_card_item)
         b.card_done.connect(self._on_card_done)
         b.projects_read.connect(self._refresh_projects)
-        b.structure_saved.connect(self._on_structure_saved)
         b.failed.connect(self._on_browser_failed)
 
         self._show_form(-1)
@@ -429,21 +427,8 @@ class ClaimPage(QWidget):
         self.log_view.setMaximumBlockCount(3000)
         log_layout.addWidget(self.log_view, 1)
         self.tabs.addTab(log_page, "진행 기록")
-        corner = QWidget()
-        corner_row = QHBoxLayout(corner)
-        corner_row.setContentsMargins(0, 0, 0, 0)
-        corner_row.setSpacing(4)
-        # 진단 모드 — 청구서 받기 화면과 같은 단추(담당자 요청 2026-10-14). 장학금 노란 띠에서 기다리는 중에도 눌러
-        # 그때 열어 둔 팝업(국적 돋보기 등)을 실측할 수 있다 — 브라우저 스레드가 기다리는 자리에서 읽는다(worker._wait_resume).
-        self.structure_button = QPushButton("화면 구조 저장")
-        self.structure_button.setObjectName("ghost")
-        self.structure_button.setToolTip(
-            "지금 브라우저에 열린 ERP 화면(팝업 포함)의 창·프레임·입력 요소를 _화면구조.txt 로 저장합니다. "
-            "읽기만 하고 아무것도 누르거나 넣지 않습니다. 새 화면을 자동화하기 전 실측용입니다.\n"
-            "브라우저가 닫혀 있으면 먼저 엽니다 — 지출 폴더는 없어도 됩니다.")
-        self.structure_button.clicked.connect(self._capture_structure)
-        corner_row.addWidget(self.structure_button)
-        self.tabs.setCornerWidget(corner, Qt.TopRightCorner)
+        # [화면 구조 저장] 은 '화면 구조 저장' 업무 하나로 옮겼다(담당자 요청 2026-10-21, pages/structure.py) — 노란 띠에서 기다리는 중에도
+        # 그 업무에서 누르면 바로 읽힌다(worker._wait_resume)
         card.add(self.tabs, 1)
         return card
 
@@ -727,8 +712,6 @@ class ClaimPage(QWidget):
         self.taxbill_button.setVisible(is_taxbill)
         self.taxbill_button.setEnabled(is_taxbill and self._browser_open and not self._browser_busy and not running)
         # 브라우저가 다른 일을 하는 중에는 큐에서 기다리게 되므로 막는다 — 단, 노란 띠에서 기다리는 중이면 바로 읽힌다.
-        # 브라우저가 닫혀 있어도 눌린다 — 누르면 브라우저부터 연다(지출 폴더 없이 실측하려고, 담당자 요청 2026-10-20)
-        self.structure_button.setEnabled(not self._browser_busy or self.ask_banner.isVisible())
         self.tabs.setTabText(0, f"지출 목록 ({len(self._dirs)})" if self._dirs else "지출 목록")
         self.list_stack.setCurrentIndex(1 if self._dirs else 0)
 
@@ -1558,24 +1541,6 @@ class ClaimPage(QWidget):
         if ok:
             self._set_state("넣는 중", "info", "이어서 넣습니다.")
 
-    def _capture_structure(self) -> None:
-        if not self._browser_open:
-            # 실측할 화면이 아직 없다 — 브라우저부터 연다. 지출 폴더는 없어도 된다(담당자 요청 2026-10-20)
-            self.browser.open_browser(scan=False, owner="claim")
-            self._set_state("브라우저 여는 중", "info", "ERP 에 로그인하고 실측할 화면을 띄운 뒤 [화면 구조 저장] 을 다시 누르세요.")
-            QMessageBox.information(self, "화면 구조 저장",
-                                    "브라우저를 엽니다. ERP 에 로그인하고 실측할 화면(팝업이면 팝업까지)을 띄운 뒤 "
-                                    "[화면 구조 저장] 을 다시 누르세요.\n\n지출 폴더는 넣지 않아도 됩니다.")
-            return
-        self._capture_asked = True              # 청구서 받기 화면도 같은 신호를 받는다 — 누른 쪽만 창을 띄운다
-        self.browser.capture_structure(owner="claim")
-
-    def _on_structure_saved(self, path: str) -> None:
-        if not getattr(self, "_capture_asked", False):
-            return
-        self._capture_asked = False
-        show_structure_saved(self, path)
-
     def _on_sch_ask(self, message: str) -> None:
         self.ask_text.setText(message)
         self.ask_banner.show()
@@ -1750,7 +1715,6 @@ class ClaimPage(QWidget):
         """브라우저 스레드의 오류 — 이 화면이 넣은 명령의 것만. 받기 화면의 오류로 AI 읽기 상태가 풀리던 것을 막는다."""
         if owner != "claim":
             return
-        self._capture_asked = False
         if self._erp_running:
             self._erp_running = False
             self.ask_banner.hide()

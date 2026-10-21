@@ -331,3 +331,18 @@ def test_file_upload_lives_only_in_attach():
     """OS 대화상자 없이 파일을 넣는 set_input_files 는 claims/attach.py 한 곳에서만."""
     users = sorted(p.relative_to(SRC).as_posix() for p in SRC.rglob("*.py") if "set_input_files(" in p.read_text(encoding="utf-8"))
     assert users == ["claims/attach.py"], users
+
+
+def test_structure_card_only_reads_and_does_not_reload_open_sites():
+    """화면 구조 저장 업무(담당자 2026-10-21) — 고른 사이트를 여는 것은 창을 앞으로 가져오기 · 새 탭에 첫 화면 열기뿐이고
+    (이미 열린 창은 다시 불러오지 않아 로그인 · 띄운 화면이 그대로), 화면을 누르거나 값을 넣지 않는다. 화면 코드는 브라우저를 직접 만지지 않는다."""
+    import inspect
+    from claim_downloader import session
+    for name in ("show_erp", "open_sites", "_site_finder", "capture_structure"):
+        code = inspect.getsource(getattr(session.ErpSession, name))
+        for word in ("evaluate", ".click", "fill(", "press(", "type(", "set_input_files", "reload"):
+            assert word not in code, (name, word)
+    show = inspect.getsource(session.ErpSession.show_erp)
+    assert show.index("bring_to_front") < show.index("goto")        # 열린 ERP 창이 있으면 앞으로만 — 그 뒤에야 새로 연다
+    page = (SRC / "ui" / "pages" / "structure.py").read_text(encoding="utf-8")
+    assert "evaluate" not in page and "playwright" not in page.lower()

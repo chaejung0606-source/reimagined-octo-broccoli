@@ -136,6 +136,14 @@ def _car(painter: QPainter) -> None:
     painter.drawEllipse(QPointF(16.5, 16.5), 1.8, 1.8)
 
 
+def _layout(painter: QPainter) -> None:
+    """화면 구조 저장 — 칸이 나뉜 창."""
+    painter.drawRoundedRect(QRectF(3.5, 4.5, 17, 15), 2, 2)
+    painter.drawLine(QPointF(3.5, 9), QPointF(20.5, 9))
+    painter.drawLine(QPointF(9.5, 9), QPointF(9.5, 19.5))
+    painter.drawLine(QPointF(12.5, 13.5), QPointF(17.5, 13.5))
+
+
 def _home(painter: QPainter) -> None:
     """홈 — 지붕 있는 집."""
     path = QPainterPath()
@@ -224,4 +232,5 @@ _ICONS = {
     "search": _search,
     "download": _download,
     "car": _car,
+    "layout": _layout,
 }

@@ -33,7 +33,6 @@ from PySide6.QtWidgets import (
 
 from ... import parking_link, settings
 from ..art import Art
-from ..report_dialog import show_structure_saved
 from ..widgets import Card, EmptyState, Field, Pill, WrapLabel, muted_label
 from ..worker import SessionWorker
 
@@ -77,8 +76,7 @@ class ParkingPage(QWidget):
         self.worker = worker if worker is not None else SessionWorker()
         self._busy = False
         self._mine = ""                       # 지금 도는 일 — 'link' · 'apply' · 'history' · 'open'. 받기 · 일반청구도 같은 스레드를 쓴다
-        self._capture_asked = False
-        self._site_open = False               # 이 화면에서 사이트를 연 뒤에만 [화면 구조 저장] — 닫힌 브라우저를 읽으면 빈 파일이 된다
+        self._site_open = False               # 이 화면에서 사이트를 열었는지 — 브라우저가 닫히면 상태를 '닫힘' 으로
         self._history_rows: list[list[str]] = []
 
         layout = QVBoxLayout(self)
@@ -100,10 +98,7 @@ class ParkingPage(QWidget):
         self.open_button.setToolTip("앱 브라우저(ERP 와 같은 창)에 사이트를 열고, 로그인 정보가 있으면 자동으로 로그인합니다")
         self.open_button.clicked.connect(self._open)
         head.addWidget(self.open_button, 0, Qt.AlignVCenter)
-        self.structure_button = QPushButton("화면 구조 저장")
-        self.structure_button.setToolTip("지금 열린 화면의 칸 · 단추를 읽기만 해서 _화면구조.txt 로 남깁니다(사이트 화면을 실측할 때 보내 주세요)")
-        self.structure_button.clicked.connect(self._capture)
-        head.addWidget(self.structure_button, 0, Qt.AlignVCenter)
+        # [화면 구조 저장] 은 '화면 구조 저장' 업무 하나로 옮겼다(담당자 요청 2026-10-21, pages/structure.py — 주차등록 사이트를 골라 저장)
         self.state = Pill("준비", "neutral")
         head.addWidget(self.state, 0, Qt.AlignVCenter)
         layout.addLayout(head)
@@ -130,7 +125,6 @@ class ParkingPage(QWidget):
         w.parking_history.connect(self._on_history)
         w.busy.connect(self._on_busy)
         w.failed.connect(self._on_failed)
-        w.structure_saved.connect(self._on_structure_saved)
         w.browser_state.connect(self._on_browser_state)
         self._load_products()
         self._sync()
@@ -275,7 +269,7 @@ class ParkingPage(QWidget):
         self.apply_result.hide()
         card.add(self.apply_result)
         note = WrapLabel("지금은 [조회] · [적용] 을 브라우저에서 직접 누릅니다 — 이 화면은 아직 실측 전입니다. 차량번호를 넣고 [조회] 한 화면과 "
-                         "[적용] 한 뒤 화면에서 위쪽 [화면 구조 저장] 을 보내 주시면 앱이 끝까지 하게 고칩니다.")
+                         "[적용] 한 뒤 화면을 '화면 구조 저장' 업무(주차등록 사이트)로 저장해 보내 주시면 앱이 끝까지 하게 고칩니다.")
         note.setObjectName("muted")
         card.add(note)
         return card
@@ -416,10 +410,6 @@ class ParkingPage(QWidget):
         self.state.set_status("여는 중", "info")
         self.worker.open_parking()
 
-    def _capture(self) -> None:
-        self._capture_asked = True                       # 다른 화면도 같은 신호를 받는다 — 누른 쪽만 창을 띄운다
-        self.worker.capture_structure(owner="parking")
-
     def _on_opened(self, report) -> None:
         self._mine = ""
         self._site_open = bool(report.opened)
@@ -435,16 +425,9 @@ class ParkingPage(QWidget):
             self.state.set_status("열림", "info")
         self._sync()
 
-    def _on_structure_saved(self, path: str) -> None:
-        if not self._capture_asked:
-            return
-        self._capture_asked = False
-        show_structure_saved(self, path)
-
     def _on_failed(self, owner: str, message: str) -> None:
         if owner != "parking":
             return
-        self._capture_asked = False
         mine, self._mine = self._mine, ""
         if mine == "link":
             self.form_state.set_status("오류", "danger")
@@ -475,4 +458,3 @@ class ParkingPage(QWidget):
     def _sync(self) -> None:
         for button in (self.open_button, self.register_button, self.links_button, self.apply_button, self.history_button):
             button.setEnabled(not self._busy)
-        self.structure_button.setEnabled(not self._busy and self._site_open)

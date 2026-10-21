@@ -443,17 +443,58 @@ class ErpSession:
         self.erp_logged_in = False
 
     # ── 진단 ─────────────────────────────────────────────────────────────
-    def capture_structure(self) -> Path:
-        """지금 열린 ERP 화면의 창·프레임·입력 요소를 _화면구조.txt 로. 읽기만 한다(diagnose.py)."""
+    # 화면 구조 저장 업무(담당자 2026-10-21)가 고르는 사이트 — 이름 · 그 사이트의 창인지
+    SITES = {"erp": "ERP", "parking": "주차등록 사이트"}
+
+    def _site_finder(self):
+        """창 주소 → 'erp' · 'parking' · ''. 주차 사이트 주소는 설정에서 한 번만 읽는다."""
+        from . import parking
+        parking_url = getattr(self._load_settings(), "parking_url", "") or parking.DEFAULT_URL
+        erp_host = _host(settings_mod.ERP_URL)
+        return lambda url: "erp" if _host(url) == erp_host else ("parking" if parking.is_site(url, parking_url) else "")
+
+    def open_sites(self) -> dict:
+        """지금 앱 브라우저에 열린 사이트 — 화면 구조 저장 업무가 '이미 열려 있음 · 로그인됨' 을 보인다. 브라우저 스레드에서만 부른다.
+        창 주소는 Playwright 가 이미 아는 값이라 화면과 주고받지 않는다."""
+        pages = self._pages() if self.browser is not None else []
+        site_of = self._site_finder()
+        sites = {site_of(p.url) for p in pages}
+        erp_open = "erp" in sites
+        return {"browser": bool(pages), "erp": erp_open, "erp_login": erp_open and self.erp_logged_in, "parking": "parking" in sites}
+
+    def show_erp(self) -> str:
+        """화면 구조 저장 업무의 [ERP 열기] — 열린 ERP 창이 있으면 앞으로 가져오기만 한다(다시 불러오지 않아 로그인 · 띄운 화면이 그대로).
+        없으면 연다(브라우저가 닫혀 있으면 새로, 주차 탭만 있으면 새 탭). 로그인 뒤 과제로 가는 자동 이동은 하지 않는다 — 실측할 화면은 사람이 띄운다."""
+        page = self.erp_page() if self.browser_open else None
+        if page is not None:
+            page.bring_to_front()
+            return "이미 열린 ERP 창을 앞으로 가져왔습니다 — 다시 로그인하지 않아도 됩니다"
+        if self.browser_open:
+            page = self._live_page().context.new_page()
+            page.goto(settings_mod.ERP_URL, wait_until="domcontentloaded")
+            self.page = page
+        else:
+            self.open_browser(start_url=settings_mod.ERP_URL)
+        self.log("화면 구조 저장: ERP 를 열었습니다 — 로그인하고 실측할 화면을 띄운 뒤 저장하세요")
+        return "ERP 를 열었습니다 — 로그인하고 실측할 화면을 띄운 뒤 [화면 구조 저장] 을 누르세요"
+
+    def capture_structure(self, site: str = "") -> Path:
+        """지금 열린 화면의 창·프레임·입력 요소를 _화면구조.txt 로. 읽기만 한다(diagnose.py).
+        site 를 주면('erp' · 'parking') 그 사이트의 창만 — 다른 업무가 연 창이어도 그대로 읽는다(누르거나 다시 불러오지 않는다)."""
         if not self.browser_open:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
-        windows = diagnose.capture(self.page.context, frame_kind=erp.frame_kind)
+        site_of = self._site_finder()
+        keep = (lambda url: site_of(url) == site) if site else None
+        windows = diagnose.capture(self._live_page().context, frame_kind=erp.frame_kind, keep=keep)
+        label = self.SITES.get(site, "")
+        if site and not windows:
+            raise BrowserClosed(f"{label} 창이 열려 있지 않습니다 — 먼저 {label} 를 열고 실측할 화면을 띄우세요.")
         path = settings_mod.structure_path()
-        report = diagnose.format_report(windows)
+        report = diagnose.format_report(windows, target=label)
         path.write_text(report, encoding="utf-8")
         number = diagnose.append_to_book(settings_mod.structure_book_path(), report)
         count = sum(len(fr.get("elements", [])) for win in windows for fr in win["frames"])
-        self.log("화면 구조 저장: 창 %d · 요소 %d개 → %s (모음 %d번째)" % (len(windows), count, path, number))
+        self.log("화면 구조 저장%s: 창 %d · 요소 %d개 → %s (모음 %d번째)" % (f"({label})" if label else "", len(windows), count, path, number))
         return path
 
     # ── 로그인 뒤 청구서 화면까지 (navigate.py) ────────────────────────────

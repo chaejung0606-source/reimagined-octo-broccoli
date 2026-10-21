@@ -57,6 +57,8 @@ class SessionWorker(QObject):
     parking_applied = Signal(object)    # 주차등록: parking_screens.ApplyReport — 할인 적용 화면에 차량번호를 넣었는지
     parking_history = Signal(object)    # 주차등록: parking_screens.HistoryReport — 할인 내역 표(읽기만)
     rebudget_planned = Signal(object)   # 대응자금 파일 정리: rebudget.Plan — 옮기기 전 표
+    sites_changed = Signal(object)      # 화면 구조 저장: 앱 브라우저에 열린 사이트 {browser, erp, erp_login, parking}(session.open_sites)
+    site_opened = Signal(str, str)      # 화면 구조 저장: 사이트를 열었거나 앞으로 가져왔다 — (사이트, 한 줄 안내)
     rebudget_applied = Signal(object)   # 대응자금 파일 정리: 옮긴 결과(rebudget.Move 목록)
 
     def __init__(self) -> None:
@@ -70,6 +72,9 @@ class SessionWorker(QObject):
         self._capture_owner = "download"
         self._idle_stopped = False              # 띠에서 기다리다 오래 비워 멈춤 — 끝난 일을 활동으로 세지 않는다(곧 로그아웃)
         self._session: ErpSession | None = None
+        self._capture_site = ""                 # [화면 구조 저장] 으로 읽을 사이트('erp' · 'parking', 빈 값은 모두)
+        # 브라우저에 열린 사이트(화면 구조 저장 업무가 읽는다). 이 스레드가 통째로 바꿔 끼우기만 하므로 화면 스레드가 읽어도 된다
+        self.sites: dict = {"browser": False, "erp": False, "erp_login": False, "parking": False}
         self._thread = threading.Thread(target=self._loop, name="erp-browser", daemon=True)
         self._thread.start()
 
@@ -156,16 +161,26 @@ class SessionWorker(QObject):
         self._stop.clear()
         self._put("download", (targets, project_no), "download")
 
-    def capture_structure(self, owner: str = "download") -> None:
+    def open_site(self, site: str) -> None:
+        """화면 구조 저장 업무 — 고른 사이트를 연다. 이미 열려 있으면 그 창을 앞으로만(다시 불러오지 않는다 — 로그인 · 띄운 화면 그대로)."""
+        self._put("open_site", (site,), "structure")
+
+    @property
+    def waiting(self) -> bool:
+        """노란 띠 · 재로그인 띠에서 사람을 기다리는 중 — 그때 누른 [화면 구조 저장] 은 바로 읽힌다."""
+        return self._waiting_relogin
+
+    def capture_structure(self, owner: str = "structure", site: str = "") -> None:
         """진단 모드 — 지금 열린 화면의 구조를 파일로. 읽기만 한다.
 
         장학금 노란 띠 · 재로그인 띠로 이 스레드가 기다리는 중이면 그 자리에서 바로 읽는다 — 큐에 넣으면 작업이 다 끝난 뒤에야 돌아,
         띠가 떠 있는 동안 연 팝업(국적 돋보기 등)을 실측할 수 없다(담당자 요청 2026-10-14: 일반청구에서도 화면 구조 저장)."""
         self._capture_owner = owner
+        self._capture_site = site
         if self._waiting_relogin:
             self._capture_now.set()
         else:
-            self._put("capture", (), owner)
+            self._put("capture", (site,), owner)
 
     def request_stop(self) -> None:
         """지금 받는 건을 마치고 멈춘다. 받는 도중 끊으면 반쪽짜리 파일이 남는다."""
@@ -215,6 +230,7 @@ class SessionWorker(QObject):
                         due = session.auto_logout_due()
                     except Exception:  # noqa: BLE001
                         due = ""
+                    self._emit_sites(session)       # 띠에서 기다리는 동안 연 팝업 · 사이트도 화면 구조 저장 업무에 보이게
                     if due == "idle":
                         # 띠를 띄운 채 오래 비웠다 — 하던 일을 멈추고(멈추기와 같다) 쉬는 고리에서 로그아웃한다(담당자 요청 2026-10-21).
                         # ERP 창을 닫은 것('closed')으로는 멈추지 않는다 — 하던 일이 끝나면 쉬는 고리가 로그아웃한다
@@ -228,11 +244,11 @@ class SessionWorker(QObject):
                 session.hands_on = was
         if self._capture_now.is_set():           # 띠가 닫히는 순간 누른 것 — 지금 작업 뒤에 돈다
             self._capture_now.clear()
-            self._put("capture", (), self._capture_owner)
+            self._put("capture", (self._capture_site,), self._capture_owner)
 
     def _capture_inline(self) -> None:
         try:
-            self.structure_saved.emit(str(self._session.capture_structure()))
+            self.structure_saved.emit(str(self._session.capture_structure(self._capture_site)))
         except Exception as error:  # noqa: BLE001 — 실측이 실패해도 기다리던 작업은 이어 가야 한다(error 신호는 화면이 작업을 끝난 것으로 본다)
             self.log.emit("화면 구조를 저장하지 못했습니다: " + (str(error).splitlines()[0] if str(error) else type(error).__name__))
             self.structure_saved.emit("")
@@ -254,6 +270,7 @@ class SessionWorker(QObject):
                 if now != alive:
                     alive = now
                     self.browser_state.emit(now)
+                self._emit_sites(session)
                 continue
             if command is None:
                 try:
@@ -280,6 +297,7 @@ class SessionWorker(QObject):
                     session.touch()
                 alive = session.browser_open
                 self.browser_state.emit(alive)
+                self._emit_sites(session)
                 self.busy.emit(False, "")
 
     def _auto_logout(self, session: ErpSession) -> None:
@@ -407,9 +425,30 @@ class SessionWorker(QObject):
     def _do_check_claim_form(self, session: ErpSession) -> None:
         self.claim_form_state.emit(session.claim_form_open())
 
-    def _do_capture(self, session: ErpSession) -> None:
+    def _do_capture(self, session: ErpSession, site: str = "") -> None:
         self.busy.emit(True, "화면 구조를 읽는 중…")
-        self.structure_saved.emit(str(session.capture_structure()))
+        self.structure_saved.emit(str(session.capture_structure(site)))
+
+    def _do_open_site(self, session: ErpSession, site: str) -> None:
+        if site == "parking":
+            self.busy.emit(True, "주차등록 사이트를 여는 중…")
+            url, login = self._parking_site()
+            report = session.open_parking(url, login)
+            note = report.note or ("주차등록 사이트를 열었습니다 — 실측할 화면을 띄운 뒤 [화면 구조 저장] 을 누르세요"
+                                   if report.opened else "주차등록 사이트를 열지 못했습니다")
+            self.site_opened.emit(site, note)
+            return
+        self.busy.emit(True, "ERP 를 여는 중…")
+        self.site_opened.emit(site, session.show_erp())
+
+    def _emit_sites(self, session: ErpSession) -> None:
+        try:
+            now = session.open_sites()
+        except Exception:  # noqa: BLE001 — 닫히는 중
+            now = {"browser": False, "erp": False, "erp_login": False, "parking": False}
+        if now != getattr(self, "sites", None):
+            self.sites = now
+            self.sites_changed.emit(now)
 
     def _ensure_scanned(self, session: ErpSession) -> None:
         """받기 전에는 보관 폴더를 반드시 한 번 훑는다. 일반청구가 브라우저를 먼저 열면(scan=False) 훑지 않은 채

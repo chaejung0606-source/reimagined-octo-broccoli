@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from claim_downloader import archive, session as session_mod, settings
 from claim_downloader.session import ErpSession
 from conftest import make_row
@@ -313,3 +315,48 @@ def test_dialog_closed_by_the_app_only_while_it_fills_and_has_no_handler():
     s.hands_on = False
     s._on_dialog(FakeDialog(page=None, fail=True))
 
+
+
+def test_structure_card_sees_open_sites_and_shows_erp_without_reloading(monkeypatch):
+    """화면 구조 저장 업무(담당자 2026-10-21) — 다른 업무가 연 창이 있으면 그 사이트가 열린 것으로 보고, [열린 창 앞으로] 는 다시 불러오지 않는다
+    (로그아웃 · 다시 로그인 없이 바로 저장). 고른 사이트의 창만 읽는다."""
+    class Page:
+        def __init__(self, url):
+            self.url, self.fronted, self.gotos = url, 0, []
+
+        def is_closed(self):
+            return False
+
+        def bring_to_front(self):
+            self.fronted += 1
+
+        def goto(self, url, **_kw):
+            self.gotos.append(url)
+
+        def opener(self):
+            return None
+
+    erp_page, parking_page = Page(settings.ERP_URL), Page("https://traffic.kangwon.ac.kr/discount-links")
+
+    class Context:
+        pages = [erp_page, parking_page]
+
+    erp_page.context = parking_page.context = Context()
+
+    class Browser:
+        contexts = [erp_page.context]
+
+        def is_connected(self):
+            return True
+
+    s, logs, _asked = _session(_ok, monkeypatch=monkeypatch)
+    s.browser, s.page = Browser(), parking_page
+    s.erp_logged_in = True
+    assert s.open_sites() == {"browser": True, "erp": True, "erp_login": True, "parking": True}
+    assert "이미 열린" in s.show_erp() and erp_page.fronted == 1 and erp_page.gotos == []
+    seen = []
+    monkeypatch.setattr(session_mod.diagnose, "capture",
+                        lambda context, frame_kind=None, keep=None: seen.append([p.url for p in context.pages if keep(p.url)]) or [])
+    with pytest.raises(session_mod.BrowserClosed):        # 고른 사이트의 창을 못 읽었으면(가짜라 빈 결과) 빈 파일을 남기지 않는다
+        s.capture_structure("parking")
+    assert seen == [[parking_page.url]]
