@@ -37,6 +37,10 @@ class Screen:
         self.list_rows: list[dict] = []  # 결의서내역 그리드의 행 (erp._PARSE_ROWS_JS 모양)
         self.pages: list[list[str]] | None = None   # 과제현황 쪽 나눔(#prevBtn · #nextBtn) — 쪽마다 보이는 과제번호
         self.page_index = 0
+        self.numbered = False       # True — 쪽 번호 링크 · 지금 쪽 숫자(실측 2026-10-21 17:36: #prevBtn · <a id="1">1</a> · <strong>2</strong> · #nextBtn)
+        self.filter = "전체과제"     # 과제현황 거르기(#SEARCH_GB). '진행과제' 면 all_pages 는 '전체과제' 로 바꿔야 보인다
+        self.all_pages: list[list[str]] | None = None
+        self.filter_reloads = True  # False — 보기를 골라도 [검색] 을 눌러야 목록이 바뀐다
         self.script_pages = True    # False — 화면 스크립트의 click() 으로는 쪽이 안 바뀐다(2026-10-21 실제 ERP 에서 겪은 모양)
         self.mouse_pages = True     # False — 마우스로 눌러도 안 됨(Playwright 오류)
         self.mouse: list[str] = []
@@ -70,6 +74,13 @@ class Frame:
         if js is navigate.CLICK_PAGE_JS:
             if self.kind != "dash" or s.active != "main" or s.pages is None:
                 return {"ok": False, "why": "쪽 단추가 없음"}
+            if args[0].isdigit():
+                index = int(args[0]) - 1
+                if not s.numbered or not 0 <= index < len(s.pages) or index == s.page_index:
+                    return {"ok": False, "why": "쪽 번호가 없음"}
+                s.page_index = index
+                s.clicks.append("page:" + args[0])
+                return {"ok": True}
             step = 1 if args[0] == "nextBtn" else -1
             if not 0 <= s.page_index + step < len(s.pages):
                 return {"ok": False, "why": "끝 쪽"}
@@ -82,8 +93,31 @@ class Frame:
             step = 1 if args[0] == "nextBtn" else -1
             return "" if 0 <= s.page_index + step < len(s.pages) else "끝 쪽"
         if js is navigate.PAGER_JS:
-            return ({"next": "보임 24×24 (type 없음)", "prev": "보임 24×24 (type 없음)", "links": 2, "shown": 2,
-                     "pages": f"{s.page_index + 1} / {len(s.pages)}"} if self.kind == "dash" and s.pages else None)
+            if self.kind != "dash" or not s.dashboard or s.active != "main":
+                return None
+            pages = s.pages or [[]]
+            return {"next": "보임 24×24 (type 없음)", "prev": "보임 24×24 (type 없음)", "links": 2, "shown": 2,
+                    "pages": "" if s.numbered or not s.pages else f"{s.page_index + 1} / {len(pages)}",
+                    "nums": [str(i + 1) for i in range(len(pages)) if i != s.page_index] if s.numbered else [],
+                    "now": str(s.page_index + 1) if s.numbered else "", "filter": s.filter, "query": False}
+        if js is navigate.ALL_PROJECTS_JS:
+            if self.kind != "dash" or s.active != "main":
+                return {"ok": False, "why": "과제현황 거르기 칸(#SEARCH_GB)이 없음"}
+            if args[0] == "search":
+                s.clicks.append("검색")
+                if s.filter == "전체과제" and s.all_pages is not None:
+                    s.pages, s.page_index = s.all_pages, 0
+                return {"ok": True}
+            if s.filter == "전체과제":
+                return {"ok": True, "done": True}
+            if args[0] == "open":
+                s.clicks.append("거르기")
+                return {"ok": True}
+            s.clicks.append("전체과제")
+            s.filter = "전체과제"
+            if s.filter_reloads and s.all_pages is not None:
+                s.pages, s.page_index = s.all_pages, 0
+            return {"ok": True}
         if js is navigate.CLICK_PROJECT_TAB_JS:
             if self.kind != "layout" or not s.toolbar_prj:
                 return {"ok": False, "why": "위쪽 '과제정보' 탭이 보이지 않음"}
@@ -554,6 +588,72 @@ def test_page_button_is_pressed_with_the_mouse_when_the_script_click_does_nothin
     assert not ok and "쪽을 넘기지 못했습니다" in message and "#nextBtn" in message
     assert screen.mouse == ["#nextBtn"] and screen.page_index == 0
     assert any("다른 것에 가려짐" in line for line in logs) and not any("손경호" in line for line in logs)
+
+
+ENDED = "202603130001"        # 끝난 과제 — '진행과제' 에 없고 '전체과제' 둘째 쪽에 있다(가짜 행 중 하나를 그 자리에 둔다)
+
+
+def _filtered_screen(**kw):
+    """2026-10-21 17:36 실측 모양 — 과제현황 거르기 '진행과제' 는 한 쪽(지금 쪽 '1' 만), '전체과제' 는 두 쪽이고 쪽 번호 링크로 넘긴다."""
+    screen = Screen()
+    screen.numbered = True
+    screen.filter = "진행과제"
+    screen.pages = [["202408470003", "202409710003", "202408470002"]]
+    screen.all_pages = [["202408470003", "202409710003"], ["202408470002", ENDED]]
+    for key, value in kw.items():
+        setattr(screen, key, value)
+    return screen
+
+
+def test_ended_project_is_found_by_showing_all_projects_and_page_two():
+    """담당자 2026-10-21 "전체과제로 설정하고 2페이지를 눌러야함" — '진행과제' 에 없는 과제는 거르기를 '전체과제' 로 바꾸고 쪽 번호 2 를 누른다.
+    한 쪽뿐인 '진행과제' 에서는 [다음] · [이전] 을 헛누르지 않는다(지금 쪽 숫자만 있고 번호 링크가 없으면 한 쪽)."""
+    screen = _filtered_screen()
+    logs = []
+    ok, message = navigate.go_to_claims(Context(screen), ENDED, logs.append, no_wait)
+    assert ok, message
+    assert screen.clicks == ["거르기", "전체과제", "page:2", "project:" + ENDED, "청구서"] and not screen.mouse
+    assert screen.filter == "전체과제"
+    assert any("거르기 '진행과제' · 쪽 번호 없음 (지금 1)" in line for line in logs)
+    assert any("'진행과제' 에서 '전체과제' 로 바꿉니다" in line for line in logs) and any("(쪽 2) → 보이는 과제" in line for line in logs)
+    # 다음 과제가 첫 쪽에 있으면 — 거르기는 그대로 두고 쪽 번호 1 로
+    ok, message = navigate.go_to_claims(Context(screen), "202409710003", logs.append, no_wait)
+    assert ok, message
+    assert screen.clicks[5:] == ["메인화면", "page:1", "project:202409710003", "청구서"]
+    # '진행과제' 첫 쪽에 있는 과제는 거르기를 바꾸지 않는다
+    screen = _filtered_screen()
+    ok, _ = navigate.go_to_claims(Context(screen), "202408470002", logs.append, no_wait)
+    assert ok and screen.clicks == ["project:202408470002", "청구서"] and screen.filter == "진행과제"
+
+
+def test_show_all_presses_search_only_when_the_list_does_not_redraw():
+    """보기 '전체과제' 를 골라도 목록이 그대로면 과제현황 [검색] 을 한 번 누른다. 어디에도 없으면 까닭에 '전체과제' 의 쪽 수를 적는다."""
+    screen = _filtered_screen(filter_reloads=False)
+    ok, message = navigate.go_to_claims(Context(screen), ENDED, lambda m: None, no_wait)
+    assert ok, message
+    assert screen.clicks[:4] == ["거르기", "전체과제", "검색", "page:2"]
+    screen = _filtered_screen()
+    ok, message = navigate.go_to_claims(Context(screen), "209999999999", lambda m: None, no_wait)
+    assert not ok and "'전체과제' 의 쪽 2개를 다 봤지만 없습니다" in message
+    assert screen.clicks == ["거르기", "전체과제", "page:2"]
+
+
+def test_show_all_failure_is_reported_without_guessing():
+    """거르기 칸이 없거나 바꾸지 못하면 누르지 않고 까닭을 알린다 — 사람이 브라우저에서 '전체과제' 로 바꾸면 된다."""
+    screen = _filtered_screen()
+    original = Frame.evaluate
+
+    def no_filter(self, js, *args):
+        if js is navigate.ALL_PROJECTS_JS:
+            return {"ok": False, "why": "과제현황 거르기 칸(#SEARCH_GB)이 없음"}
+        return original(self, js, *args)
+
+    Frame.evaluate = no_filter
+    try:
+        ok, message = navigate.go_to_claims(Context(screen), ENDED, lambda m: None, no_wait)
+    finally:
+        Frame.evaluate = original
+    assert not ok and "'전체과제' 로 바꾸지 못했습니다" in message and "#SEARCH_GB" in message and screen.clicks == []
 
 
 def _folders(tmp_path, *names):

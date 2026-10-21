@@ -150,21 +150,34 @@ def test_navigation_presses_only_project_claim_tab_and_new_sheet():
     """로그인 뒤 이동(navigate.py, 담당자 허락 2026-10-19)이 누르는 것은 과제현황의 과제명 링크 · 과제정보의 '청구서' 탭 ·
     결의서 목록의 [일반청구](#P10) · [카드청구](#P11, 담당자 허락 2026-10-20) · 위쪽 탭 '메인화면' · '과제정보'(가려진 화면을 앞으로) ·
     과제현황 쪽 넘김(#prevBtn · #nextBtn — 고른 과제가 다른 쪽에 있을 때, 과제 폴더별 받기 2026-10-21) 일곱뿐이다.
-    쪽 단추는 화면 스크립트로 눌러도 쪽이 안 바뀌면 마우스(프레임의 click)로 한 번 더 누른다 — 그 단추 둘만.
+    쪽 단추는 화면 스크립트로 눌러도 쪽이 안 바뀌면 마우스(프레임의 click)로 한 번 더 누른다 — 그 단추 둘만. 쪽 번호 링크와
+    과제현황 거르기 '전체과제'(+ 목록이 그대로면 [검색])도 누른다 — 끝난 과제는 '전체과제' 둘째 쪽에 있다(2026-10-21).
     로그인 화면 · 신청 · 삭제 · 청구서복사 · 작성 화면의 '새 청구서' · 탭 닫기는 누르지 않고 값도 넣지 않는다."""
     from claim_downloader import navigate
     text = (SRC / "navigate.py").read_text(encoding="utf-8")
     pressing = {"CLICK_PROJECT_JS": navigate.CLICK_PROJECT_JS, "CLICK_CLAIM_TAB_JS": navigate.CLICK_CLAIM_TAB_JS,
                 "CLICK_NEW_SHEET_JS": navigate.CLICK_NEW_SHEET_JS, "CLICK_MAIN_TAB_JS": navigate.CLICK_MAIN_TAB_JS,
                 "CLICK_PROJECT_TAB_JS": navigate.CLICK_PROJECT_TAB_JS, "CLICK_CARD_SHEET_JS": navigate.CLICK_CARD_SHEET_JS,
-                "CLICK_PAGE_JS": navigate.CLICK_PAGE_JS}
-    assert text.count(".click()") == 7 and sum(js.count(".click()") for js in pressing.values()) == 7
-    assert "which !== 'nextBtn' && which !== 'prevBtn'" in navigate.CLICK_PAGE_JS          # 쪽 넘김 단추 둘 밖은 받지 않는다
+                "CLICK_PAGE_JS": navigate.CLICK_PAGE_JS, "ALL_PROJECTS_JS": navigate.ALL_PROJECTS_JS}
+    assert text.count(".click()") == 11 and sum(js.count(".click()") for js in pressing.values()) == 11
+    # 쪽 넘김은 단추 둘과, 두 단추를 함께 담은 묶음 안의 숫자뿐인 쪽 번호 링크(과제 줄의 fnPage 금액 링크는 아님)만
+    assert "which !== 'nextBtn' && which !== 'prevBtn'" in navigate.CLICK_PAGE_JS
+    assert "/^[0-9]{1,2}$/.test(which)" in navigate.CLICK_PAGE_JS and "box.contains(pb)" in navigate.CLICK_PAGE_JS
+    assert "!/fnPage/.test(" in navigate.CLICK_PAGE_JS and "hits.length !== 1" in navigate.CLICK_PAGE_JS
+    # 과제현황 거르기(담당자 2026-10-21 "전체과제로 설정하고 2페이지를 눌러야함") — #SEARCH_GB · 보기 '전체과제' 하나 · 과제현황 [검색](빈 검색 칸일 때)뿐.
+    # 카드미청구 탭의 거르기(#CARD_SEARCH_GB) 곁으로는 올라가지 않는다
+    js = navigate.ALL_PROJECTS_JS
+    assert js.count(".click()") == 3 and "getElementById('SEARCH_GB')" in js and "getElementById('btnPrjSearch')" in js
+    assert "txt(e) === '전체과제'" in js and "box.contains(card)" in js and "opts.length !== 1" in js
+    assert "txt(b) !== '검색'" in js and "String(q.value || '').trim()" in js
+    for word in ("진행과제", "종료", "중단", "S_PRJ_NM').value =", "CARD_SEARCH_GB').click"):
+        assert word not in js.replace("getElementById('CARD_SEARCH_GB')", ""), word
     # 화면 스크립트로 눌러도 쪽이 안 바뀌면 같은 쪽 단추를 마우스로 한 번 더(2026-10-21) — 그 한 곳뿐이고 쪽 단추 둘 밖은 받지 않는다
     assert navigate.PAGE_BUTTONS == ("nextBtn", "prevBtn")
     assert re.findall(r"\bclick\((?!\))", text) == ["click("] and 'click(f"#{which}", timeout=3000)' in text
     assert "if which not in PAGE_BUTTONS:" in text.split("def _mouse_click", 1)[1].split("click(f", 1)[0]
-    assert ".click()" not in navigate.PAGER_JS + navigate.PAGE_STATE_JS                       # 쪽 모양 · 단추 상태는 읽기만
+    assert ".click()" not in navigate.PAGER_JS + navigate.PAGE_STATE_JS                       # 쪽 모양 · 단추 상태 · 거르기는 읽기만
+    assert ".value =" not in navigate.PAGER_JS and "q.value" in navigate.PAGER_JS                # 검색 칸은 글자가 있는지만
     assert "getElementById('P11')" in navigate.CLICK_CARD_SHEET_JS and "!== '카드청구'" in navigate.CLICK_CARD_SHEET_JS
     assert "fnPage\\\\(\\\\s*'01'" in navigate.CLICK_PROJECT_JS                  # 과제명 링크(fnPage('01', 과제번호))만
     assert "=== '청구서'" in navigate.CLICK_CLAIM_TAB_JS

@@ -18,9 +18,10 @@
   [일반청구] 를 다시 누르면 있던 작성 화면이 새 것으로 바뀐다고 본다 — 그래서 **지금 작성 화면이 저장된 청구서이고 입력 칸이 비었을 때만** 누른다
   (저장 전 입력이 있으면 날아간다). 누른 뒤 결의번호 없는 새 작성 화면이 떴는지 본다. 작성 화면의 '새 청구서' 단추는 누르지 않는다(무엇을 하는지 미실측).
 
-누르는 것은 과제명 링크 · '청구서' 탭 · 결의서 목록의 `#P10` · `#P11` · 위쪽 '메인화면' · '과제정보' 탭 · 과제현황 쪽 넘김(`#prevBtn` · `#nextBtn`,
-고른 과제가 다른 쪽에 있을 때만 — 2026-10-21)뿐이다(tests/test_safety.py). 값을 넣지 않는다. Playwright 를 들여오지 않는다 — 프레임의 evaluate 와,
-쪽 단추를 화면 스크립트로 눌러도 쪽이 안 바뀔 때 그 단추 하나를 프레임의 click 으로 한 번 더 누르는 것뿐이다.
+누르는 것은 과제명 링크 · '청구서' 탭 · 결의서 목록의 `#P10` · `#P11` · 위쪽 '메인화면' · '과제정보' 탭, 그리고 고른 과제가 과제현황 첫 쪽에
+없을 때만 과제현황의 쪽 번호 · 쪽 단추(`#prevBtn` · `#nextBtn`)와 거르기 '전체과제'(`#SEARCH_GB` → 보기 '전체과제', 목록이 그대로면 [검색]) —
+2026-10-21 담당자 "전체과제로 설정하고 2페이지를 눌러야함" — 뿐이다(tests/test_safety.py). 값을 넣지 않는다. Playwright 를 들여오지 않는다 —
+프레임의 evaluate 와, 쪽 단추를 화면 스크립트로 눌러도 쪽이 안 바뀔 때 그 단추 하나를 프레임의 click 으로 한 번 더 누르는 것뿐이다.
 """
 from __future__ import annotations
 
@@ -66,9 +67,24 @@ CLICK_PROJECT_JS = r"""(no) => {
   return {ok: true};
 }"""
 
-# 과제현황 표의 쪽 넘김(#prevBtn · #nextBtn, 실측 2026-10-19) — 고른 과제가 다른 쪽에 있을 때만 누른다(받기의 '폴더 만든 과제 모두' 가
-# 끝난 과제까지 찾아가게, 담당자 2026-10-21). 화면 이동일 뿐 값을 바꾸지 않는다. 보이고 막히지 않은 단추일 때만.
+# 과제현황 표의 쪽 넘김 — 고른 과제가 다른 쪽에 있을 때만 누른다(받기의 '폴더 만든 과제 모두' 가 끝난 과제까지 찾아가게, 담당자 2026-10-21).
+# 화면 이동일 뿐 값을 바꾸지 않는다. 실측(2026-10-21 17:36, 전체과제 2쪽): `#prevBtn` · `<a id="1">1</a>` · `<strong>2</strong>`(지금 쪽) · `#nextBtn`.
+# which 가 숫자면 그 쪽 번호 링크 — #prevBtn 과 #nextBtn 을 함께 담은 묶음 안의 숫자뿐인 링크 하나(과제 줄의 금액 링크 fnPage 는 빼고).
+# 'nextBtn' · 'prevBtn' 이면 그 단추 — 보이고 막히지 않았을 때만.
 CLICK_PAGE_JS = r"""(which) => {
+  const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  if (/^[0-9]{1,2}$/.test(which)) {
+    const nb = document.getElementById('nextBtn'), pb = document.getElementById('prevBtn');
+    let box = nb && pb ? nb.parentElement : null;
+    for (let i = 0; box && !box.contains(pb) && i < 2; i++) box = box.parentElement;
+    if (!box || !box.contains(pb)) return {ok: false, why: '쪽 번호가 없음'};
+    let hits = Array.from(box.querySelectorAll('a')).filter(a => vis(a) && (a.innerText || a.textContent || '').trim() === which
+      && !/fnPage/.test(a.getAttribute('onclick') || ''));
+    if (hits.length > 1) hits = hits.filter(a => a.id === which);
+    if (hits.length !== 1) return {ok: false, why: hits.length ? '쪽 번호가 여럿' : '쪽 번호가 없음'};
+    hits[0].click();
+    return {ok: true};
+  }
   if (which !== 'nextBtn' && which !== 'prevBtn') return {ok: false, why: '쪽 단추가 아님'};
   const b = document.getElementById(which);
   if (!b) return {ok: false, why: '쪽 단추가 없음'};
@@ -104,14 +120,64 @@ PAGER_JS = r"""() => {
       + (b.tagName === 'BUTTON' ? ' ' + (b.getAttribute('type') || '(type 없음)') : ' ' + b.tagName.toLowerCase())
       + (b.form ? ' · form 안' : '') + (all.length > 1 ? ' · 같은 id ' + all.length + '개' : '');
   };
+  const txt = e => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim();
   const links = Array.from(document.querySelectorAll('a[onclick]')).filter(a => /fnPage\(\s*'01'/.test(a.getAttribute('onclick') || ''));
   let pages = '';
-  const nb = document.getElementById('nextBtn');
+  const nb = document.getElementById('nextBtn'), pb = document.getElementById('prevBtn');
   for (let cur = nb && nb.parentElement, i = 0; cur && i < 2 && !pages; cur = cur.parentElement, i++) {
     const t = (cur.innerText || cur.textContent || '').replace(/[^0-9\/]+/g, ' ').replace(/\s+/g, ' ').trim();
     if (t) pages = t.slice(0, 20);
   }
-  return {next: btn('nextBtn'), prev: btn('prevBtn'), links: links.length, shown: links.filter(vis).length, pages};
+  // 쪽 번호(누를 수 있는 숫자 링크)와 지금 쪽(링크가 아닌 숫자 — 실측 <strong>) — CLICK_PAGE_JS 와 같은 묶음에서
+  const nums = [];
+  let now = '';
+  let box = nb && pb ? nb.parentElement : null;
+  for (let i = 0; box && !box.contains(pb) && i < 2; i++) box = box.parentElement;
+  if (box && box.contains(pb)) {
+    box.querySelectorAll('a').forEach(a => {
+      const t = txt(a);
+      if (/^[0-9]{1,2}$/.test(t) && vis(a) && !/fnPage/.test(a.getAttribute('onclick') || '') && !nums.includes(t)) nums.push(t);
+    });
+    for (const e of box.querySelectorAll('strong, em, b, span, li')) {
+      const t = txt(e);
+      if (/^[0-9]{1,2}$/.test(t) && vis(e) && !e.closest('a') && !e.querySelector('a')) { now = t; break; }
+    }
+  }
+  // 과제현황 거르기(#SEARCH_GB — 진행과제 · 전체과제 …)와 검색 칸에 글자가 있는지(글자는 읽지 않는다)
+  const gb = document.getElementById('SEARCH_GB'), q = document.getElementById('S_PRJ_NM');
+  return {next: btn('nextBtn'), prev: btn('prevBtn'), links: links.length, shown: links.filter(vis).length, pages,
+          nums, now, filter: gb ? txt(gb) : '', query: !!(q && String(q.value || '').trim())};
+}"""
+
+# 과제현황 거르기를 '전체과제' 로 — 담당자 2026-10-21 "전체과제로 설정하고 2페이지를 눌러야함". 끝난 과제(202408470001 · 202409710001 ·
+# 202502320001)는 기본 거르기 '진행과제'(8과제 · 한 쪽)에 없고 '전체과제'(13과제 · 두 쪽)의 둘째 쪽에 있다(실측 같은 날 17:36).
+# step 'open' = 거르기 단추(#SEARCH_GB)를 눌러 보기를 펼침 · 'pick' = 바로 곁의 보기 '전체과제' 하나 · 'search' = 거르기가 바뀌었는데
+# 목록이 그대로일 때만 과제현황 [검색](#btnPrjSearch, 검색 칸이 비었을 때만). 카드미청구 탭의 같은 보기(#CARD_SEARCH_GB 곁)는 고르지 않는다.
+ALL_PROJECTS = "전체과제"
+ALL_PROJECTS_JS = r"""(step) => {
+  const txt = e => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim();
+  const sel = document.getElementById('SEARCH_GB');
+  if (!sel) return {ok: false, why: '과제현황 거르기 칸(#SEARCH_GB)이 없음'};
+  if (step === 'search') {
+    if (txt(sel) !== '전체과제') return {ok: false, why: "거르기가 '전체과제' 가 아님"};
+    const q = document.getElementById('S_PRJ_NM'), b = document.getElementById('btnPrjSearch');
+    if (!b || txt(b) !== '검색') return {ok: false, why: '과제현황 [검색] 이 없음'};
+    if (q && String(q.value || '').trim()) return {ok: false, why: '과제현황 검색 칸에 글자가 있음'};
+    b.click();
+    return {ok: true};
+  }
+  if (txt(sel) === '전체과제') return {ok: true, done: true};
+  if (step === 'open') { sel.click(); return {ok: true}; }
+  const card = document.getElementById('CARD_SEARCH_GB');
+  let opts = [];
+  for (let box = sel.parentElement, i = 0; box && i < 3 && !opts.length; box = box.parentElement, i++) {
+    if (card && box.contains(card)) break;
+    opts = Array.from(box.querySelectorAll('button, a, li')).filter(e => e !== sel && !e.contains(sel) && txt(e) === '전체과제'
+      && !e.querySelector('button, a'));
+  }
+  if (opts.length !== 1) return {ok: false, why: opts.length ? "보기 '전체과제' 가 여럿" : "보기 '전체과제' 가 없음"};
+  opts[0].click();
+  return {ok: true};
 }"""
 
 # 과제정보 프레임(rtask_0008_t00_01) — 숨은 #PRJ_NO 와 '기본정보' · '청구서' 하위 탭 링크가 함께 있는 프레임. 읽기만 한다.
@@ -369,61 +435,98 @@ def _mouse_click(frame, which: str) -> str:
         return error.__class__.__name__
 
 
+NO_TURN = "눌러도 쪽이 바뀌지 않음"
+
+
 def _turn(context, which: str, before: frozenset, wait: Callable[[float], None], say: Callable[[str], None],
           how: dict) -> tuple[frozenset, str]:
-    """쪽 단추 하나를 눌러 과제현황의 보이는 과제가 바뀌기를 기다린다 — (바뀐 뒤 보이는 과제, 못 넘긴 까닭).
-    화면 스크립트로 누르고 6초 안에 안 바뀌면 같은 단추를 마우스로 한 번 더 누른다. 통한 방법은 how['by'] 에 남겨 다음 쪽부터 그것만 쓴다
-    (마지막 쪽에서도 단추가 막히지 않으면 두 번씩 기다리게 되므로)."""
+    """쪽 번호 · 쪽 단추 하나를 눌러 과제현황의 보이는 과제가 바뀌기를 기다린다 — (바뀐 뒤 보이는 과제, 못 넘긴 까닭).
+    쪽 단추는 화면 스크립트로 누르고 6초 안에 안 바뀌면 같은 단추를 마우스로 한 번 더 누른다. 통한 방법은 how['by'] 에 남겨 다음 쪽부터
+    그것만 쓴다(마지막 쪽에서도 단추가 막히지 않으면 두 번씩 기다리게 되므로). 쪽 번호는 화면 스크립트로만."""
     frame = _dashboard(context)
     if frame is None:
         return frozenset(), "과제현황이 보이지 않음"
+    button = which in PAGE_BUTTONS
+    label = f"#{which}" if button else f"쪽 {which}"
 
     def changed():
         now = _now(context)
         return now if now and now != before else None
 
-    state = _evaluate(frame, PAGE_STATE_JS, which)
-    if state:
-        return frozenset(), state                       # 단추 없음 · 숨음 · 막힘(끝 쪽)
-    if how.get("by") != "mouse":
+    if button:
+        state = _evaluate(frame, PAGE_STATE_JS, which)
+        if state:
+            return frozenset(), state                   # 단추 없음 · 숨음 · 막힘(끝 쪽)
+    if how.get("by") != "mouse" or not button:
         result = _evaluate(frame, CLICK_PAGE_JS, which)
         if result is not None and not result.get("ok"):
             return frozenset(), result.get("why", "")
         after = _wait(changed, wait, tries=12)
         if after:
-            how["by"] = "script"
-            say(f"과제현황 쪽 넘김(#{which}) → 보이는 과제 {len(after)}개")
+            if button:
+                how["by"] = "script"
+            say(f"과제현황 쪽 넘김({label}) → 보이는 과제 {len(after)}개")
             return after, ""
+        if not button:
+            say(f"과제현황 {label} 를 눌러도 쪽이 바뀌지 않았습니다")
+            return frozenset(), NO_TURN
         if how.get("by") == "script":
             return frozenset(), "끝 쪽"                  # 앞 쪽은 스크립트로 넘어갔다 — 더 넘길 쪽이 없다
     trouble = _mouse_click(frame, which)
     if trouble:
-        say(f"과제현황 쪽 단추(#{which})를 눌러도 쪽이 바뀌지 않았습니다 — 마우스로 다시 누르지 못함({trouble})")
-        return frozenset(), "쪽 단추를 눌러도 쪽이 바뀌지 않음"
+        say(f"과제현황 쪽 단추({label})를 눌러도 쪽이 바뀌지 않았습니다 — 마우스로 다시 누르지 못함({trouble})")
+        return frozenset(), NO_TURN
     after = _wait(changed, wait, tries=12)
     if after:
         how["by"] = "mouse"
-        say(f"과제현황 쪽 넘김(#{which}, 마우스) → 보이는 과제 {len(after)}개")
+        say(f"과제현황 쪽 넘김({label}, 마우스) → 보이는 과제 {len(after)}개")
         return after, ""
     if how.get("by") == "mouse":
         return frozenset(), "끝 쪽"
-    say(f"과제현황 쪽 단추(#{which})를 화면 스크립트 · 마우스로 눌러도 쪽이 바뀌지 않았습니다")
-    return frozenset(), "쪽 단추를 눌러도 쪽이 바뀌지 않음"
+    say(f"과제현황 쪽 단추({label})를 화면 스크립트 · 마우스로 눌러도 쪽이 바뀌지 않았습니다")
+    return frozenset(), NO_TURN
 
 
-def _page_to(context, project_no: str, wait: Callable[[float], None], say: Callable[[str], None] = lambda _m: None) -> tuple[bool, str]:
-    """과제현황의 다른 쪽에서 그 과제를 찾는다 — 다음 쪽으로 끝까지, 없으면 앞 쪽으로 끝까지. (찾았는지 — 그 쪽이 보인 채, 못 찾은 까닭)."""
+def _pager(context) -> dict:
+    frame = _dashboard(context)
+    return (_evaluate(frame, PAGER_JS) or {}) if frame is not None else {}
+
+
+def _page_through(context, project_no: str, wait: Callable[[float], None], say: Callable[[str], None]) -> tuple[bool, list[str], int]:
+    """지금 거르기의 과제현황 쪽을 차례로 보며 그 과제를 찾는다 — (찾았는지 — 그 쪽이 보인 채, 못 넘긴 까닭들, 본 쪽 수).
+    쪽 번호가 있으면 번호를 작은 것부터(실측 모양), 번호 없이 단추만 있으면 다음 쪽으로 끝까지 · 앞 쪽으로 끝까지."""
     frame = _dashboard(context)
     if frame is None:
-        return False, ""
+        return False, [], 0
     info = _evaluate(frame, PAGER_JS) or {}
     hidden = any(r.get("no") == project_no and not r.get("visible") for r in (_evaluate(frame, PROJECTS_JS) or []))
-    say(f"과제현황에 과제 {project_no} 가 안 보여 쪽을 넘깁니다 — 다음 쪽 단추 {info.get('next', '?')} · 이전 쪽 단추 {info.get('prev', '?')}"
+    nums = [str(n) for n in info.get("nums") or []]
+    say(f"과제현황에 과제 {project_no} 가 안 보여 쪽을 봅니다 — 거르기 '{info.get('filter', '')}' · 쪽 번호 {' '.join(nums) or '없음'}"
+        f" (지금 {info.get('now') or '?'}) · 다음 쪽 단추 {info.get('next', '?')} · 이전 쪽 단추 {info.get('prev', '?')}"
         f" · 쪽 표시 '{info.get('pages', '')}' · 과제명 링크 보임 {info.get('shown', '?')}/{info.get('links', '?')}"
         + (" · 이 과제의 링크는 화면에 있지만 숨어 있음" if hidden else ""))
     seen = {_shown_projects(frame)}
     how: dict = {}
-    reasons = []
+    reasons: list[str] = []
+    if nums or info.get("now"):
+        # 쪽 번호가 있는 모양 — 지금 쪽만 있고 번호 링크가 없으면 한 쪽뿐이다(실측: 진행과제 8과제는 '<strong>1</strong>' 하나)
+        visited = {str(info.get("now") or "")}
+        for _ in range(MAX_PAGES):
+            todo = sorted((n for n in (_pager(context).get("nums") or []) if str(n) not in visited), key=int)
+            if not todo:
+                break
+            number = str(todo[0])
+            visited.add(number)
+            after, why = _turn(context, number, _now(context), wait, say, how)
+            if not after:
+                reasons.append(f"쪽 {number}: {why}")
+                continue
+            if project_no in after:
+                return True, [], len(seen) + 1
+            seen.add(after)
+        if not reasons:
+            return False, [], len(seen)
+    # 쪽 번호가 없거나 번호로 못 넘겼으면 다음 · 이전 단추.
     # 쪽 표시가 '지금 / 전체' 꼴이면 갈 수 없는 쪽으로는 누르지 않는다 — 마지막 쪽에서도 [다음] 이 막히지 않으면 12초를 헛기다린다
     where = re.fullmatch(r"(\d+) ?/ ?(\d+)", str(info.get("pages", "")))
     skip = set()
@@ -436,18 +539,75 @@ def _page_to(context, project_no: str, wait: Callable[[float], None], say: Calla
         for _ in range(MAX_PAGES):
             after, why = _turn(context, which, _now(context), wait, say, how)
             if not after:
-                if why == "쪽 단추를 눌러도 쪽이 바뀌지 않음":
+                if why == NO_TURN:
                     reasons.append(f"#{which}: {why}")
                 break                                    # 끝 쪽 · 단추 없음(한 쪽뿐) · 못 넘김
             if project_no in after:
-                return True, ""
+                return True, [], len(seen) + 1
             if after in seen:
                 break                                    # 본 쪽으로 돌아왔다
             seen.add(after)
-    if len(seen) > 1:
-        return False, (f"과제현황의 쪽 {len(seen)}개를 다 봤지만 없습니다 — 과제현황 목록(진행과제)에 없는 과제면 직접 과제정보 → 청구서를 여세요")
+    return False, (reasons if len(seen) == 1 else []), len(seen)
+
+
+def _show_all(context, wait: Callable[[float], None], say: Callable[[str], None]) -> tuple[bool, str]:
+    """과제현황 거르기를 '전체과제' 로 바꾼다 — (바꿨는지, 못 바꾼 까닭). 이미 '전체과제' 면 (False, '')."""
+    info = _pager(context)
+    if not info or info.get("filter") == ALL_PROJECTS:
+        return False, ""
+    frame = _dashboard(context)
+    before = (_now(context), info.get("now"), tuple(info.get("nums") or ()))
+    say(f"과제현황 거르기를 '{info.get('filter') or '?'}' 에서 '{ALL_PROJECTS}' 로 바꿉니다 (끝난 과제는 '{ALL_PROJECTS}' 에만 있다)")
+    opened = _evaluate(frame, ALL_PROJECTS_JS, "open") or {}
+    if not opened.get("ok"):
+        return False, opened.get("why", "거르기 칸을 읽지 못함")
+    wait(0.5)
+    picked = _evaluate(_dashboard(context) or frame, ALL_PROJECTS_JS, "pick") or {}
+    if not picked.get("ok"):
+        return False, picked.get("why", "보기를 읽지 못함")
+
+    def redrawn():
+        now = _pager(context)
+        if now.get("filter") != ALL_PROJECTS:
+            return None
+        shown = _now(context)
+        return shown if shown and (shown, now.get("now"), tuple(now.get("nums") or ())) != before else None
+
+    after = _wait(redrawn, wait, tries=12)
+    if not after:
+        if _pager(context).get("filter") != ALL_PROJECTS:
+            return False, f"'{ALL_PROJECTS}' 를 눌러도 거르기가 바뀌지 않음"
+        searched = _evaluate(_dashboard(context) or frame, ALL_PROJECTS_JS, "search") or {}
+        say(f"거르기는 '{ALL_PROJECTS}' 인데 목록이 그대로라 과제현황 [검색] 을 누릅니다"
+            + ("" if searched.get("ok") else f" — 못 누름({searched.get('why', '?')})"))
+        after = _wait(redrawn, wait, tries=12)
+    now = _pager(context)
+    say(f"과제현황 거르기 '{now.get('filter', '?')}' → 보이는 과제 {len(_now(context))}개 · 쪽 번호 {' '.join(map(str, now.get('nums') or [])) or '없음'}"
+        f" (지금 {now.get('now') or '?'})" + ("" if after else " — 목록이 다시 그려졌는지는 모름"))
+    return True, ""
+
+
+def _page_to(context, project_no: str, wait: Callable[[float], None], say: Callable[[str], None] = lambda _m: None) -> tuple[bool, str]:
+    """과제현황의 다른 쪽에서 그 과제를 찾는다 — 지금 거르기의 쪽을 다 보고, 없으면 거르기를 '전체과제' 로 바꿔 다시 본다
+    (담당자 2026-10-21 "전체과제로 설정하고 2페이지를 눌러야함"). (찾았는지 — 그 쪽이 보인 채, 못 찾은 까닭)."""
+    found, reasons, pages = _page_through(context, project_no, wait, say)
+    if found:
+        return True, ""
+    switched, trouble = _show_all(context, wait, say)
+    if trouble:
+        return False, (f"과제현황 거르기를 '{ALL_PROJECTS}' 로 바꾸지 못했습니다({trouble}) — 브라우저에서 과제현황을 '{ALL_PROJECTS}' 로 바꾼 뒤 다시 누르세요"
+                       + (" · " + " · ".join(reasons) if reasons else ""))
+    if switched:
+        if project_no in _now(context):
+            return True, ""
+        found, reasons, pages = _page_through(context, project_no, wait, say)
+        if found:
+            return True, ""
     if reasons:
         return False, "과제현황의 쪽을 넘기지 못했습니다(" + " · ".join(reasons) + ")"
+    if pages > 1 or switched:
+        return False, (f"과제현황 '{_pager(context).get('filter') or ALL_PROJECTS}' 의 쪽 {pages}개를 다 봤지만 없습니다 — "
+                       "ERP 과제현황에 없는 과제면 직접 과제정보 → 청구서를 여세요")
     return False, ""
 
 
