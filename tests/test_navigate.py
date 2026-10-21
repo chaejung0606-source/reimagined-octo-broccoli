@@ -264,6 +264,9 @@ def test_watcher_reads_projects_and_goes_to_claims_after_login(isolated_home, mo
         def log(self, message):
             self.logs.append(message)
 
+        def auto_logout_due(self):
+            return ""
+
         def read_projects(self):
             ticks["n"] += 1
             if ticks["n"] >= 2:

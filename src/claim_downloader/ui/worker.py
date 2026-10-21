@@ -63,6 +63,7 @@ class SessionWorker(QObject):
         self._waiting_relogin = False
         self._capture_now = threading.Event()   # 띠에서 기다리는 중에 누른 [화면 구조 저장]
         self._capture_owner = "download"
+        self._idle_stopped = False              # 띠에서 기다리다 오래 비워 멈춤 — 끝난 일을 활동으로 세지 않는다(곧 로그아웃)
         self._session: ErpSession | None = None
         self._thread = threading.Thread(target=self._loop, name="erp-browser", daemon=True)
         self._thread.start()
@@ -180,8 +181,17 @@ class SessionWorker(QObject):
                     # 앱의 알림 목록에 섞지 않는다(session._on_dialog · fill_scholarship 의 처리기)
                     try:
                         session.poll_alive()
+                        due = session.auto_logout_due()
                     except Exception:  # noqa: BLE001
-                        pass
+                        due = ""
+                    if due == "idle":
+                        # 띠를 띄운 채 오래 비웠다 — 하던 일을 멈추고(멈추기와 같다) 쉬는 고리에서 로그아웃한다(담당자 요청 2026-10-21).
+                        # ERP 창을 닫은 것('closed')으로는 멈추지 않는다 — 하던 일이 끝나면 쉬는 고리가 로그아웃한다
+                        session.log("띠를 띄운 채 ERP 를 오래 쓰지 않아 하던 일을 멈춥니다 — 곧 자동 로그아웃합니다")
+                        self._idle_stopped = True
+                        self._stop.set()
+                        self._resume_ok = False
+                        break
         finally:
             if session is not None:
                 session.hands_on = was
@@ -209,15 +219,22 @@ class SessionWorker(QObject):
             except queue.Empty:
                 # 쉬는 동안 사람이 브라우저 창을 닫았으면 화면에 알린다 — 그래야 [브라우저 열기] 가 다시 보인다
                 now = session.poll_alive() if alive else False
+                self._auto_logout(session)
                 if now != alive:
                     alive = now
                     self.browser_state.emit(now)
                 continue
             if command is None:
+                try:
+                    session.auto_logout("app")            # 앱을 닫으면 브라우저도 닫힌다 — 로그아웃 없이 닫지 않게
+                except Exception:  # noqa: BLE001
+                    pass
                 session.close()
                 return
             name, args, owner = command
             session.hands_on = False          # 앱이 브라우저를 쓰는 동안 — 처리기 없는 확인 창은 앱이 닫는다(session._on_dialog)
+            session.touch()                   # 앱이 ERP 를 쓰는 것도 활동이다(자동 로그아웃)
+            self._idle_stopped = False
             try:
                 getattr(self, "_do_" + name)(session, *args)
             except Exception as error:   # noqa: BLE001 — 스레드가 죽으면 앱 전체가 먹통이 된다
@@ -228,9 +245,26 @@ class SessionWorker(QObject):
                 self.error.emit(message)
             finally:
                 session.hands_on = True
+                if not self._idle_stopped:
+                    session.touch()
                 alive = session.browser_open
                 self.browser_state.emit(alive)
                 self.busy.emit(False, "")
+
+    def _auto_logout(self, session: ErpSession) -> None:
+        """쉬는 동안 — 설정한 분(기본 30) 동안 ERP 를 쓰지 않았거나 ERP 창을 닫았으면 로그아웃(session.auto_logout_due · logout.py)."""
+        try:
+            due = session.auto_logout_due()
+            if due:
+                session.hands_on = False          # 로그아웃 확인 창은 앱이 받는다(session.logout 의 처리기)
+                try:
+                    session.auto_logout(due)
+                finally:
+                    session.hands_on = True
+                    self._idle_stopped = False
+        except Exception as error:  # noqa: BLE001 — 쉬는 고리가 죽으면 앱 전체가 먹통이 된다
+            session.log("자동 로그아웃 중 오류: %s" % (str(error).splitlines()[0] if str(error) else type(error).__name__))
+            session.erp_logged_in = False
 
     def _do_open(self, session: ErpSession, scan: bool = True, watch: bool = False) -> None:
         if scan:
@@ -256,7 +290,7 @@ class SessionWorker(QObject):
         tried = not project_no
         session.hands_on = True        # 지켜보는 동안 사람이 로그인 · 이동한다 — 로그인 화면의 알림도 브라우저에 보여야 한다
         while time.monotonic() < deadline:
-            if not self._queue.empty() or not session.browser_open:
+            if not self._queue.empty() or not session.browser_open or session.auto_logout_due():
                 return
             try:
                 session.page.wait_for_timeout(1500)

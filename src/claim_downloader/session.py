@@ -21,7 +21,7 @@ from .claims import form as claim_form
 from .claims import payee as claim_payee
 from .claims import scholarship as claim_scholarship
 from .claims import taxbill as claim_taxbill
-from . import archive, diagnose, erp, navigate, settings as settings_mod
+from . import archive, diagnose, erp, logout as logout_mod, navigate, settings as settings_mod
 from .reconcile import reconcile
 from .targets import Selection, select_targets
 
@@ -59,6 +59,25 @@ def _opener(page):
         return page.opener()
     except Exception:  # noqa: BLE001 — 가짜 창 · 닫힘
         return None
+
+
+def _page_state(page) -> str:
+    """ERP 창이 로그인 상태인지 — 'in' · 'out' · '?'(옮겨 가는 중 등)."""
+    try:
+        return page.main_frame.evaluate(logout_mod.STATE_JS)
+    except Exception:  # noqa: BLE001
+        return "?"
+
+
+def _minimize(page) -> None:
+    """로그아웃하려고 다시 연 창을 작게 — 사람이 막 닫은 창이 다시 크게 뜨지 않게. 크로미움 · 엣지만 되고, 안 되면 그대로 둔다."""
+    try:
+        cdp = page.context.new_cdp_session(page)
+        window = cdp.send("Browser.getWindowForTarget")
+        cdp.send("Browser.setWindowBounds", {"windowId": window["windowId"], "bounds": {"windowState": "minimized"}})
+        cdp.detach()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 @dataclass
@@ -103,6 +122,12 @@ class ErpSession:
         # 이때 ERP 의 확인 창은 브라우저에 그대로 떠서 사람이 누른다. 아니면 전처럼 앱이 닫는다(_on_dialog). 기본은 '아니다' —
         # 콘솔 실행 · 시험 스크립트가 아무도 누르지 않는 확인 창을 기다리며 멈추지 않게.
         self.hands_on = False
+        # 자동 로그아웃(logout.py, 담당자 요청 2026-10-21) — 마지막 활동 시각 · ERP 에 로그인돼 있는지 · 사람에게 남겨 둔 확인 창
+        self.last_active = time.monotonic()
+        self._signals: list = []
+        self._logged_in = False
+        self._context = None
+        self._left_dialogs: list = []
 
     # ── 준비 ─────────────────────────────────────────────────────────────
     def prepare(self) -> archive.ScanReport:
@@ -168,6 +193,7 @@ class ErpSession:
                 self.log("ERP 창이 없어 새 탭으로 열었습니다. 그 탭에서 로그인하세요.")
             return
         if self.browser is not None:          # 창이 모두 닫힌 채 남은 브라우저 — 새로 띄우기 전에 닫는다
+            self.auto_logout("reopen")
             try:
                 self.browser.close()
             except Exception:  # noqa: BLE001
@@ -185,7 +211,10 @@ class ErpSession:
             self.browser = self._pw.chromium.launch(headless=False, channel="msedge")
         # 묶음(context)을 따로 만든다 — browser.new_page() 의 묶음에는 앱이 새 탭을 더 열 수 없다(주차등록 · ERP 를 한 브라우저에, 2026-10-21).
         # 쿠키 · 로그인은 이 묶음의 메모리에만 있고 디스크에 남지 않는다(로그인 상태를 파일로 내보내지 않는다 — 9절)
-        self.page = self.browser.new_context(accept_downloads=True).new_page()
+        self._context = self.browser.new_context(accept_downloads=True)
+        self.erp_logged_in = False
+        self._watch_activity(self._context)
+        self.page = self._context.new_page()
         # 새 창(회의록등록 · 입금처 같은 팝업)도 같은 묶음(context)이라 여기 하나로 모든 창의 확인 창을 받는다
         self.page.context.on("dialog", self._on_dialog)
         self.page.goto(start_url or settings_mod.ERP_URL, wait_until="domcontentloaded")
@@ -214,6 +243,7 @@ class ErpSession:
                 return
             if self.hands_on:
                 self.log("ERP 확인 창(브라우저에 보임 — 직접 누르세요): %s" % message[:200])
+                self._left_dialogs = self._left_dialogs[-4:] + [dialog]    # 자동 로그아웃 전에 닫는다(사람이 자리를 비웠다)
                 return
             self.log("ERP 알림(앱이 닫음): %s" % message[:200])
             if dialog.type == "beforeunload":
@@ -222,6 +252,178 @@ class ErpSession:
                 dialog.dismiss()
         except Exception:  # noqa: BLE001 — 사람이 이미 눌렀거나 창이 닫힌 경우
             pass
+
+    # ── 자동 로그아웃 (logout.py) ────────────────────────────────────────
+    def _watch_activity(self, context) -> None:
+        """ERP 창에서 사람이 움직이면(마우스 · 키보드) 알림을 받는다 — 30분 동안 아무 일 없으면 로그아웃하려고. 알리기만 하는 스크립트라
+        ERP 화면은 그대로다. 못 붙이면(가짜 브라우저 · 옛 Playwright) 앱이 하는 일만 활동으로 센다."""
+        try:
+            context.expose_binding(logout_mod.BINDING, self._on_erp_signal)
+            context.add_init_script(logout_mod.activity_script(_host(settings_mod.ERP_URL)))
+        except Exception as error:  # noqa: BLE001
+            self.log("ERP 창의 활동을 볼 수 없어 앱이 하는 일만 활동으로 셉니다 (%s)" % (str(error).splitlines()[0][:120] if str(error) else type(error).__name__))
+
+    def _on_erp_signal(self, source, value=None) -> None:
+        """브라우저 쪽 알림(ACTIVITY_JS) — 'active:in' · 'load:out' 따위. 이 안에서는 Playwright 를 부르지 않는다 — 부르면 이 스레드가
+        멈춘다(실제 Chromium 으로 확인: 알림 처리 중 page.opener()). 로그인 상태는 받아 두었다가 erp_logged_in 을 읽을 때 정한다."""
+        kind, state = logout_mod.parse_signal(value)
+        if kind == "active":
+            self.touch()
+        page = source.get("page") if isinstance(source, dict) else None
+        if state != "?" and page is not None:
+            self._signals.append((page, state))
+
+    @property
+    def erp_logged_in(self) -> bool:
+        """ERP 에 로그인돼 있는지 — ERP 첫 창(팝업이 아닌 창)의 알림으로만 정한다."""
+        while self._signals:
+            page, state = self._signals.pop(0)
+            if not _is_erp(page) or _opener(page) is not None:
+                continue
+            if state == "in" and not self._logged_in:
+                self.touch()                                # 로그인한 때부터 센다
+            self._logged_in = state == "in"
+        return self._logged_in
+
+    @erp_logged_in.setter
+    def erp_logged_in(self, value: bool) -> None:
+        self._signals.clear()
+        self._logged_in = bool(value)
+
+    def touch(self) -> None:
+        self.last_active = time.monotonic()
+
+    def idle_seconds(self) -> float:
+        return time.monotonic() - self.last_active
+
+    def auto_logout_due(self) -> str:
+        """지금 자동 로그아웃할 까닭 — 'idle'(설정한 분 동안 활동 없음) · 'closed'(ERP 창을 닫음) · ''(할 것 없음)."""
+        if not self.erp_logged_in or self.browser is None:
+            return ""
+        cfg = self._load_settings()
+        if not getattr(cfg, "auto_logout", True):
+            return ""
+        if self.erp_page() is None:
+            return "closed"
+        minutes = int(getattr(cfg, "auto_logout_minutes", logout_mod.DEFAULT_MINUTES) or 0)
+        if minutes > 0 and self.idle_seconds() >= minutes * 60:
+            return "idle"
+        return ""
+
+    def auto_logout(self, reason: str) -> bool:
+        """설정이 켜져 있고 ERP 에 로그인돼 있으면 로그아웃한다(reason: 'idle' · 'closed' · 'app' · 'reopen')."""
+        if not self.erp_logged_in:
+            return False
+        cfg = self._load_settings()
+        if not getattr(cfg, "auto_logout", True):
+            return False
+        return self.logout(reason, int(getattr(cfg, "auto_logout_minutes", logout_mod.DEFAULT_MINUTES) or 0),
+                           timeout=4.0 if reason == "app" else 8.0)        # 앱을 닫을 때는 오래 붙잡지 않는다(worker.shutdown 이 8초 기다림)
+
+    def logout(self, reason: str, minutes: int = logout_mod.DEFAULT_MINUTES, timeout: float = 8.0) -> bool:
+        """ERP 위쪽 [로그아웃](#layoutMain_btn_logout) 을 누른다. ERP 창을 닫았으면 같은 묶음에 ERP 를 잠깐 다시 열어(작게 줄여서) 누르고 닫는다 —
+        쿠키는 이 묶음의 메모리에 남아 있어 닫은 창의 로그인이 그대로 살아 있다. 누른 뒤 뜨는 확인 창은 이때만 앱이 [확인] 한다."""
+        why = logout_mod.reason_text(reason, minutes)
+        if self.browser is None or not self.browser.is_connected():
+            self.erp_logged_in = False
+            self.log("⚠ %s 로그아웃하려 했지만 브라우저가 이미 닫혔습니다. 이 PC 에는 로그인이 남지 않습니다(쿠키를 저장하지 않음) — "
+                     "ERP 서버 쪽 접속은 시간이 지나면 끝납니다." % why)
+            return False
+        for dialog in self._left_dialogs:                   # 사람에게 남겨 둔 확인 창 — 떠 있으면 화면 스크립트가 멈춘다
+            try:
+                dialog.dismiss()
+            except Exception:  # noqa: BLE001 — 사람이 이미 눌렀다
+                pass
+        self._left_dialogs = []
+        page, reopened = self.erp_page(), False
+        try:
+            if page is None:
+                if self._context is None:
+                    return False
+                page, reopened = self._context.new_page(), True
+                _minimize(page)
+                page.goto(settings_mod.ERP_URL, wait_until="domcontentloaded")
+            ok, note = self._press_logout(page, timeout)
+        except Exception as error:  # noqa: BLE001
+            ok, note = False, str(error).splitlines()[0][:120] if str(error) else type(error).__name__
+        if ok or note == "이미 로그아웃됨":
+            self.erp_logged_in = False
+            self.log("✓ %s ERP 에서 로그아웃했습니다%s (설정 → 동작에서 끌 수 있습니다)" % (why, " — " + note if note and not ok else ""))
+            self._close_erp_popups()
+        else:
+            # 다시 해 보지 않는다(2초마다 되풀이해 누르지 않게) — 사람이 ERP 에서 다시 움직이면(로그인 상태 알림) 그때부터 다시 센다
+            self.erp_logged_in = False
+            self.log("⚠ %s 로그아웃하려 했지만 하지 못했습니다: %s — ERP 위쪽 [로그아웃] 을 직접 눌러 주세요." % (why, note))
+        if reopened:
+            try:
+                page.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return ok
+
+    def _press_logout(self, page, timeout: float) -> tuple[bool, str]:
+        frames = [page.main_frame] + [f for f in page.frames if f is not page.main_frame]
+        answers: list[str] = []
+        moved: list[str] = []
+
+        def on_dialog(dialog) -> None:          # 로그아웃 확인 창 — 이때만 앱이 [확인]
+            try:
+                answers.append((dialog.message or "").strip()[:120])
+                dialog.accept()
+            except Exception:  # noqa: BLE001
+                pass
+
+        def on_nav(frame) -> None:
+            if frame is page.main_frame:
+                moved.append(str(frame.url).split("?", 1)[0])       # 물음표 뒤(값)는 남기지 않는다
+
+        result = "none"
+        page.on("dialog", on_dialog)
+        page.on("framenavigated", on_nav)
+        try:
+            for frame in frames:
+                try:
+                    result = frame.evaluate(logout_mod.CLICK_LOGOUT_JS)
+                except Exception:  # noqa: BLE001 — 닫히는 프레임
+                    continue
+                if result != "none":
+                    break
+            if result != "clicked":
+                state = _page_state(page)
+                if state == "out":
+                    return False, "이미 로그아웃됨"
+                return False, {"none": "[로그아웃] 단추가 없음", "text": "[로그아웃] 글자가 다름",
+                               "hidden": "[로그아웃] 단추가 보이지 않음"}.get(result, result)
+            # 로그인 화면이 뜨거나, 창이 다른 주소로 옮겨 [로그아웃] 이 두 번 연달아 안 보이면 끝
+            deadline, gone = time.monotonic() + timeout, 0
+            while time.monotonic() < deadline:
+                page.wait_for_timeout(500)
+                state = _page_state(page)
+                gone = gone + 1 if state == "out" or (moved and state != "in") else 0
+                if state == "out" or gone >= 2:
+                    break
+            else:
+                return False, "누른 뒤에도 로그인 화면으로 바뀌지 않음"
+        finally:
+            for name, handler in (("dialog", on_dialog), ("framenavigated", on_nav)):
+                try:
+                    page.remove_listener(name, handler)
+                except Exception:  # noqa: BLE001
+                    pass
+        if answers:
+            self.log("   로그아웃 확인 창: " + " / ".join(answers))
+        if moved:
+            self.log("   로그아웃 뒤 주소: " + " → ".join(dict.fromkeys(moved)))
+        return True, ""
+
+    def _close_erp_popups(self) -> None:
+        """로그아웃한 뒤 남은 ERP 팝업(입금처 · 보고서 …) — 지난 화면이 그대로 보이지 않게 닫는다(ERP 단추가 아니라 창 닫기)."""
+        for page in self._pages():
+            if _is_erp(page) and _opener(page) is not None:
+                try:
+                    page.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def close(self) -> None:
         try:
@@ -234,7 +436,8 @@ class ErpSession:
                 self._pw.stop()
         except Exception:      # noqa: BLE001
             pass
-        self.browser = self._pw = self.page = None
+        self.browser = self._pw = self.page = self._context = None
+        self.erp_logged_in = False
 
     # ── 진단 ─────────────────────────────────────────────────────────────
     def capture_structure(self) -> Path:

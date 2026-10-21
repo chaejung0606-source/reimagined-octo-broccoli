@@ -174,6 +174,12 @@ class SettingsPage(QWidget):
         self.auto_sheet.setChecked(cfg.auto_new_sheet)
         self.auto_sheet.toggled.connect(lambda v: self._save(auto_new_sheet=v))
         behave.add(self.auto_sheet)
+        minutes = cfg.auto_logout_minutes
+        self.auto_logout = QCheckBox(("ERP 를 %d분 동안 쓰지 않거나, " % minutes if minutes > 0 else "")
+                                     + "로그아웃 없이 ERP 창 · 앱을 닫으면 앱이 ERP [로그아웃] 을 누르기")
+        self.auto_logout.setChecked(cfg.auto_logout)
+        self.auto_logout.toggled.connect(lambda v: self._save(auto_logout=v))
+        behave.add(self.auto_logout)
         self.wait = QDoubleSpinBox()
         # 화살표는 스타일시트에서 폭 0 으로 숨긴다(theme.py). setButtonSymbols(NoButtons) 를 쓰면
         # 스타일시트가 걸린 칸에서 Qt 가 글자 칸 폭을 1px 로 잡아 값이 안 보인다.

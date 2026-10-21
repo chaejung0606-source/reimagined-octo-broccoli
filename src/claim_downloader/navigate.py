@@ -28,7 +28,7 @@ import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
-from . import erp, settings
+from . import erp, logout, settings
 
 CLAIM_TAB_TEXT = "청구서"
 
@@ -138,6 +138,18 @@ def _frames(context):
     for page in list(getattr(context, "pages", []) or []):
         for frame in list(getattr(page, "frames", []) or []):
             yield page, frame
+
+
+def logged_out(context) -> bool:
+    """ERP 창이 로그인 화면인지(자동 로그아웃 뒤 · 로그인 전) — 그때는 과제를 못 찾은 까닭을 '로그인하세요' 로 알린다. 읽기만 한다."""
+    host = str(settings.ERP_URL).split("://", 1)[-1].split("/", 1)[0].lower()
+    for page in list(getattr(context, "pages", []) or []):
+        url = str(getattr(page, "url", "") or "")
+        frame = getattr(page, "main_frame", None)
+        if frame is not None and url.split("://", 1)[-1].split("/", 1)[0].lower() == host \
+                and _evaluate(frame, logout.STATE_JS) == "out":
+            return True
+    return False
 
 
 def _evaluate(frame, js, *args):
@@ -279,6 +291,8 @@ def _click_project(context, project_no: str) -> tuple[bool, str]:
                 (r for r in (_evaluate(f, CLICK_MAIN_TAB_JS) for _p, f in _frames(context)) if r and r.get("ok")), None)
             if tab is None:
                 break
+    if logged_out(context):
+        return False, "ERP 에 로그인돼 있지 않습니다 — 브라우저에서 로그인한 뒤 다시 하세요 (오래 쓰지 않으면 앱이 자동 로그아웃합니다)"
     return False, (f"메인화면 과제현황에 과제 {project_no} 가 보이지 않습니다 — 다음 쪽에 있거나 다른 화면이 떠 있으면 "
                    "직접 과제정보 → 청구서를 여세요")
 

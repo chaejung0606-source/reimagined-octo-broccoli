@@ -78,6 +78,23 @@ def test_parking_login_stays_with_parking():
     assert "_failed[\"why\"] = report.note" in text
 
 
+def test_auto_logout_presses_only_logout():
+    """ERP 자동 로그아웃(담당자 요청 2026-10-21: 30분 활동 없음 · 로그아웃 없이 창을 닫음)이 누르는 것은 ERP 틀 위쪽의 [로그아웃]
+    (#layoutMain_btn_logout, 글자 '로그아웃') 하나다. ERP 창에 미리 넣는 스크립트는 활동을 알리기만 하고 누르거나 값을 넣지 않는다."""
+    from claim_downloader import logout
+    text = (SRC / "logout.py").read_text(encoding="utf-8")
+    assert text.count(".click()") == 1 and logout.CLICK_LOGOUT_JS.count(".click()") == 1
+    assert "getElementById('layoutMain_btn_logout')" in logout.CLICK_LOGOUT_JS and "!== '로그아웃'" in logout.CLICK_LOGOUT_JS
+    script = logout.activity_script("knu-icf.kangwon.ac.kr")
+    for name in ("fill(", "type(", "press(", "set_input_files(", "keyboard.", ".value =", "dispatchEvent", ".click(", "submit("):
+        assert name not in script, name
+    assert "import playwright" not in text and "from playwright" not in text
+    for word in ("신청", "삭제", "저장", "로그인'", "USER_PW"):
+        assert word not in logout.CLICK_LOGOUT_JS, word
+    session = (SRC / "session.py").read_text(encoding="utf-8")
+    assert session.count("logout_mod.CLICK_LOGOUT_JS") == 1          # 세션이 누르는 로그아웃은 이것 하나
+
+
 def test_browser_is_launched_in_one_place():
     pattern = re.compile(r"^\s*(from|import)\s+playwright", re.M)
     users = sorted(p.name for p in SRC.rglob("*.py") if pattern.search(p.read_text(encoding="utf-8")))

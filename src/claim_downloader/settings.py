@@ -57,6 +57,10 @@ class Settings:
     # 명단 폴더를 넣을 때 다른(저장된) 청구서가 떠 있으면 결의서 목록의 [일반청구] 로 새 청구서를 앱이 띄운다(담당자 허락 2026-10-19).
     # 카드청구도 [카드청구](#P11)로 같이(담당자 허락 2026-10-20)
     auto_new_sheet: bool = True
+    # ERP 를 이 분 동안 쓰지 않거나(마우스 · 키보드 · 앱의 일 없음) 로그아웃 없이 ERP 창 · 앱을 닫으면 앱이 ERP [로그아웃] 을 누른다
+    # (담당자 요청 2026-10-21, logout.py). 분은 config.json 에서 바꾼다 — 0 이면 '쓰지 않음' 로그아웃만 끈다
+    auto_logout: bool = True
+    auto_logout_minutes: int = 30
     # 홈의 '처음 쓰시나요?' 안내를 닫았는지 — 동료 PC 에 처음 깔았을 때만 보이게(사용자 메뉴에서 다시 볼 수 있다)
     welcome_dismissed: bool = False
     auto_update_check: bool = True
@@ -200,6 +204,9 @@ def load() -> Settings:
         if isinstance(default, bool):
             if isinstance(value, bool):
                 setattr(settings, field.name, value)
+        elif isinstance(default, int):            # 자동 로그아웃 분 — 메모장에서 30.0 으로 적어도 받는다
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+                setattr(settings, field.name, int(value))
         elif isinstance(default, float):
             if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
                 setattr(settings, field.name, float(value))
