@@ -306,7 +306,7 @@ class MainWindow(QMainWindow):
                 task = find(task_id)
                 items.append((task.id, task.art, task.name, text))
         self.home.set_resumable(items)
-        self.home.refresh_recent()
+        self.home.refresh_status()
         self.home.refresh_welcome()
 
     def _on_update_status(self, status) -> None:
