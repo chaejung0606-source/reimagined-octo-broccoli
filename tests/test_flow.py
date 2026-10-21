@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from claim_downloader.ui.flowlogic import (
-    CURRENT, DONE, DOWNLOAD_ORDER, HIDDEN, OPEN, STRUCTURE_ORDER, download_stage, flow_states, structure_stage,
+    CURRENT, DONE, DOWNLOAD_ORDER, HIDDEN, OPEN, STRUCTURE_ORDER, download_stage, flow_states, parking_stage, structure_stage,
 )
 
 
@@ -28,6 +28,12 @@ def test_structure_goes_site_open_save_send():
     assert structure_stage(picked=True, opened=True, saved=False) == "save"          # 다른 업무에서 열어 둔 창이면 ② 는 저절로 지난다
     states = flow_states(STRUCTURE_ORDER, "send", keep_open=("save",))
     assert states == {"site": DONE, "open": DONE, "save": OPEN, "send": CURRENT}    # 저장한 뒤에도 다른 화면을 이어서 저장
+
+
+def test_parking_goes_what_work_result():
+    assert parking_stage(picked=False, has_result=True) == "what"
+    assert parking_stage(picked=True, has_result=False) == "work"       # 처음엔 할인 적용이 골라진 채 ② 부터(화면이 picked=True 로 연다)
+    assert parking_stage(picked=True, has_result=True) == "result"
 
 
 def test_badges_take_only_their_text_width():
