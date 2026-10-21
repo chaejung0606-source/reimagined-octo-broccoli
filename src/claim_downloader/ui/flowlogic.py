@@ -68,3 +68,14 @@ def minutes_stage(has_dirs: bool, finished: bool) -> str:
     if not has_dirs:
         return "folders"
     return "result" if finished else "make"
+
+
+CLAIM_ORDER = ["add", "check", "put"]
+
+
+def claim_stage(has_dirs: bool, ready: bool) -> str:
+    """일반청구 — ① 지출 폴더 넣기(종류 · 과제) → ② 내용 확인(목록 · 청구 내용, 일반은 AI 로 읽기) → ③ ERP 에 넣기.
+    ③ 은 고른 줄을 넣을 수 있을 때(일반은 읽은 뒤, 명단 · 카드는 폴더를 읽어 두었으면) 떠오른다. ② 는 늘 펼친 채(표와 값을 보며 넣는다)."""
+    if not has_dirs:
+        return "add"
+    return "put" if ready else "check"

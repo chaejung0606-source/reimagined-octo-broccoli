@@ -41,6 +41,7 @@ class FlowStep(QFrame):
         self._editable = editable
         outer = QVBoxLayout(self)
         outer.setContentsMargins(18, 14, 18, 14)
+        self._outer = outer
         outer.setSpacing(10)
         head = QHBoxLayout()
         head.setSpacing(10)
@@ -122,6 +123,8 @@ class FlowStep(QFrame):
 
     def _apply(self) -> None:
         done = self.state == DONE
+        # 접힌 단계는 한 줄이라 위아래 여백을 줄인다 — 아래 단계(표 · 칸)에 자리를 준다
+        self._outer.setContentsMargins(18, 8 if done else 14, 18, 8 if done else 14)
         self.setObjectName({CURRENT: "cardCurrent", DONE: "cardDone"}.get(self.state, "card"))
         self.number.setObjectName("stepNoDone" if done else "stepNo")
         self.summary.setVisible(done)
@@ -202,6 +205,17 @@ class ChoiceCard(QFrame):
         super().keyPressEvent(event)
 
 
+class _StepsLayout(QVBoxLayout):
+    """단계를 쌓는 레이아웃 — 높이를 폭에 맞춰 셈하지 않는다고 알린다.
+
+    줄바꿈 글자(WrapLabel)가 들어 있으면 스크롤 칸이 '그 폭에서 바라는 높이'(표 · 칸의 넉넉한 높이)로 안을 키워, 자리가
+    남는데도 ③ 이 화면 아래로 밀려 스크롤해야 보였다(일반청구, 2026-10-21). 이렇게 두면 최소 높이만 지키고 남는 높이는
+    stretch 를 준 단계(표)가 받는다 — 최소 높이도 안 들어갈 때만 스크롤된다."""
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return False
+
+
 class FlowArea(QScrollArea):
     """단계들을 담는 스크롤 칸 — 창이 낮으면(1024×640) 칸을 눌러 겹치게 하지 않고 아래로 넘긴다.
     다 들어가면 스크롤 막대 없이 그대로이고, stretch 를 준 단계(표)가 남는 높이를 받는다. 마지막에 filler 가 있어
@@ -213,7 +227,7 @@ class FlowArea(QScrollArea):
         self.setFrameShape(QScrollArea.NoFrame)
         body = QWidget()
         body.setObjectName("pageBody")
-        self.steps = QVBoxLayout(body)
+        self.steps = _StepsLayout(body)
         self.steps.setContentsMargins(0, 0, 0, 0)
         self.steps.setSpacing(12)
         self.filler = QWidget()

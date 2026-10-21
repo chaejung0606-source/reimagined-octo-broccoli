@@ -4,8 +4,8 @@ from __future__ import annotations
 import pytest
 
 from claim_downloader.ui.flowlogic import (
-    CURRENT, DONE, DOWNLOAD_ORDER, HIDDEN, MINUTES_ORDER, OPEN, STRUCTURE_ORDER, download_stage, flow_states, minutes_stage,
-    parking_stage, structure_stage,
+    CLAIM_ORDER, CURRENT, DONE, DOWNLOAD_ORDER, HIDDEN, MINUTES_ORDER, OPEN, STRUCTURE_ORDER, claim_stage, download_stage,
+    flow_states, minutes_stage, parking_stage, structure_stage,
 )
 
 
@@ -44,6 +44,14 @@ def test_minutes_goes_folders_make_result():
     # 폴더를 넣으면 ① 은 '회의 N건' 으로 접히고, [폴더 더 넣기] 를 누르면 펼친 채
     assert flow_states(MINUTES_ORDER, "make", keep_open=("make",))["folders"] == DONE
     assert flow_states(MINUTES_ORDER, "result", keep_open=("make", "folders")) == {"folders": OPEN, "make": OPEN, "result": CURRENT}
+
+
+def test_claim_goes_add_check_put():
+    assert claim_stage(has_dirs=False, ready=True) == "add"
+    assert claim_stage(has_dirs=True, ready=False) == "check"          # 일반 폴더는 AI 로 읽기 전
+    assert claim_stage(has_dirs=True, ready=True) == "put"
+    # ② 는 표와 값을 보며 넣으므로 ③ 차례에도 펼친 채
+    assert flow_states(CLAIM_ORDER, "put", keep_open=("check",)) == {"add": DONE, "check": OPEN, "put": CURRENT}
 
 
 def test_badges_take_only_their_text_width():
