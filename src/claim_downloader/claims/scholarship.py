@@ -97,8 +97,10 @@ SUMMARY_JS = """() => {
 
 
 # 개인 지급(일반청구 탭 · 증빙 기타) — 대표적요의 바탕은 지급 공문 제목, 비목 번호는 공문의 비목에서(담당자 2026-10-19)
+# '지원내역' 은 지우지 않는다 — 담당자 실제(2026-10-20): 재직자 지원 10월 대표적요를 '… 교육 지원내역(10월)' 으로 고쳤고, 9월 실제 청구서도
+# '07_재직자 역량 강화 프로그램_AI 바이브 코딩 교육 지원내역(9월)' 이었다. 고치지 않은 규칙 파일은 다음에 읽을 때 이 값으로 바뀐다(기본값 쌍).
 PERSONAL_RULES_DEFAULT = """대표적요: {비목번호}_{제목}
-제목에서 뺄 말: 지급내역, 지급 내역, 지원내역, 지원 내역
+제목에서 뺄 말: 지급내역, 지급 내역
 행적요: {대표적요}_{이름}
 행적요(강좌): {대표적요}({이름}_{강좌명})"""
 GENERAL_TAB_ID = "10"                 # 작성 화면 서브탭 '일반청구' — <a id="10">, 숨은 #TAB_GB 도 10(실측 ① · ⑤)
@@ -280,6 +282,8 @@ class Job:
     test_req_cnt: str = ""                  # 시험으로 넣은 청구서의 결의번호 — 진짜 것(req_cnt)과 섞지 않는다(marked)
     category: str = ""                      # 개인 지급의 비목(ERP 보기 글자) — 지급 공문에서, 화면에서 고친다. 비면 spec.category
     notice: object = None                   # 개인 지급의 지급 공문(notice.Notice) — 비목 · 제목 · 금액을 어디서 찾았는지
+    default_summary: str = ""               # 읽을 때 앱이 만든 대표적요 · 비목 — 다시 읽을 때 사람이 고친 값인지 가려 남긴다(keep_edits)
+    default_category: str = ""
 
     @property
     def spec(self) -> Spec:
@@ -494,7 +498,27 @@ def load_job(folder: str, excel: str | None = None, rules: dict[str, str] | None
         _read_notice(job, entries, rules)
     job.pay_ym = time.strftime("%Y-%m")
     job.selected = [bool(p.name) and p.amount is not None and p.amount > 0 for p in roster.people]
+    job.default_summary, job.default_category = job.main_summary, job.category
     return job
+
+
+def keep_edits(job: Job, old: Job) -> None:
+    """같은 폴더를 다시 읽을 때([다시 읽기] · 엑셀 바꾸기 · 종류 바꾸기) 사람이 고친 것을 남긴다.
+    담당자 실제(2026-10-20 13:40 → 13:42): 고친 대표적요가 다시 읽기로 공문 제목으로 돌아갔고, (2026-10-21) 임시저장해 체크가 풀린
+    학생들이 다시 체크돼 같은 청구서에 또 넣으려 했다. 대표적요 · 비목은 종류가 같을 때만(장학금 02_ ↔ 혁신인재지원금 03_)."""
+    if old.pay_ym and re.fullmatch(r"\d{4}-\d{2}", old.pay_ym):
+        job.pay_ym = old.pay_ym
+    job.tab = old.tab
+    if old.kind == job.kind:
+        if old.category and old.category != old.default_category:
+            job.category = old.category
+        if old.main_summary and old.main_summary != old.default_summary:
+            job.main_summary = old.main_summary
+    unchecked = {(_squash(p.name), p.student_no, _squash(p.course))
+                 for p, on in zip(old.people, old.selected) if not on}
+    for i, p in enumerate(job.people):
+        if (_squash(p.name), p.student_no, _squash(p.course)) in unchecked:
+            job.selected[i] = False
 
 
 def _read_notice(job: Job, entries: list[str], rules: dict[str, str]) -> None:
@@ -504,7 +528,11 @@ def _read_notice(job: Job, entries: list[str], rules: dict[str, str]) -> None:
     found = notice_mod.find(list(job.common_files) + attach.attachable(root_files))
     job.notice = found
     job.category = found.category
-    title = found.clean_title or job.roster.title or os.path.basename(os.path.normpath(job.folder))
+    # 공문 제목은 '지급' 공문일 때만 대표적요로 — 담당자 실제(2026-10-20): 10월 재직자 지원 폴더의 공문이 '… 지도교수 추가'(계획 변경)여서
+    # 대표적요가 그 제목이 됐고, 담당자가 명단 제목으로 고쳤다(9월 실제 청구서도 명단 제목 '… 지원내역(9월)'). 지급 공문이 아니면 명단 제목.
+    paid = "지급" in (found.title or "")
+    title = ((found.clean_title if paid else "") or job.roster.title or found.clean_title
+             or os.path.basename(os.path.normpath(job.folder)))
     job.main_summary = main_summary(title, rules, found.code)
     if found.clean_title:
         # 명단 위 제목이 없다는 알림은 공문 제목이 있으면 필요 없다
@@ -989,7 +1017,8 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
     result.lines.extend(line.replace("소득자", who) for line in found.lines())      # 일반청구 탭에서는 같은 팝업이 '입금처'
     if auto_pick and not found.picked and _not_found(found.pick_note) and not person_ok()[0]:
         found = _recheck_student_no(page, frame, job, index, log, wait, messages, result, want) or found
-    ok, why = _ask_until(person_ok, ask, lambda w: ("%d. %s — %s 팝업에서 %s 을(를) 고르고 [확인] 을 누른 뒤 [계속] 을 누르세요.\n(%s)"
+    ok, why = _ask_until(person_ok, ask, lambda w: ("%d. %s — %s 팝업에서 %s 을(를) 고르고 [확인] 을 누른 뒤 [계속] 을 누르세요. "
+                                                    "팝업이 닫혀 있으면 작성 화면의 돋보기를 눌러 여세요.\n(%s)"
                                                     % (index + 1, p.name, who, p.name, found.pick_note or found.note or w)), wait)
     if not ok:
         return False, f"{who}를 고르지 못함"

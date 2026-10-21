@@ -18,7 +18,6 @@ ERP 결의서내역에서 대표적요가 같은 청구서를 찾아 있으면 �
 from __future__ import annotations
 
 import os
-import re
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
@@ -1261,10 +1260,7 @@ class ClaimPage(QWidget):
         old = self._jobs[row]
         job = sch.load_job(self._dirs[row], excel=excel, kind=self._kinds[row])
         if old is not None:
-            # 다시 읽어도 담당자가 고친 값은 남긴다
-            if old.pay_ym and re.fullmatch(r"\d{4}-\d{2}", old.pay_ym):
-                job.pay_ym = old.pay_ym
-            job.tab = old.tab
+            sch.keep_edits(job, old)                # 다시 읽어도 담당자가 고친 값 · 넣어서 체크를 푼 사람은 남긴다
         self._jobs[row] = job
         self._problems[row] = job.problems()
         self._set_status(row, "read" if job.people and not any("합계" in p for p in self._problems[row])

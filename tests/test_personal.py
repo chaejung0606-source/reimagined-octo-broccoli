@@ -263,3 +263,35 @@ def test_personal_plan_marks_test_mode(isolated_home, tmp_path, texts):
     with scholarship.marked(job):
         report = scholarship.run(None, None, job, lambda m: None, ask=lambda m: False, dry_run=True)
     assert all(r.summary.startswith("[시험] 07_") for r in report.results)
+
+
+def test_notice_title_is_summary_only_when_it_is_a_payment_notice(isolated_home, tmp_path, monkeypatch):
+    """담당자 실제(2026-10-20): 10월 폴더의 공문이 '… 지도교수 추가'(계획 변경)였는데 대표적요가 그 제목이 됐다 — 담당자가 명단 제목으로 고쳤다.
+    '지급' 공문이 아니면 명단 제목으로 만든다(비목은 그 공문에서 그대로)."""
+    plan = NOTICE_TEXT.replace("제목 2026년도 9월 재직자 역량 강화 프로그램 지원금 지급", "제목 2026학년도 재직자 역량 강화 [AI 바이브 코딩] 지도교수 추가")
+    monkeypatch.setattr(scholarship, "_pdf_texts",
+                        lambda paths, pages=8: [plan if str(p).endswith("지급.pdf") else "" for p in paths if str(p).lower().endswith(".pdf")])
+    job = scholarship.load_job(str(personal_folder(tmp_path)), kind=kinds.PERSONAL)
+    assert job.category == "기업지원·협력활동비"
+    assert job.main_summary == "07_2026년도 9월 재직자 역량 강화 프로그램 지원내역"
+
+
+def test_reload_keeps_edited_summary_category_and_unchecked_people(isolated_home, tmp_path, texts):
+    """다시 읽기([다시 읽기] · 엑셀 · 종류)에도 고친 대표적요 · 비목, 넣어서 체크를 푼 사람은 남는다(2026-10-20 · 10-21 실제)."""
+    folder = str(personal_folder(tmp_path))
+    old = scholarship.load_job(folder, kind=kinds.PERSONAL)
+    old.main_summary = "07_재직자 역량 강화 프로그램_AI 바이브 코딩 교육 지원내역(10월)"
+    old.selected[0] = False
+    new = scholarship.load_job(folder, kind=kinds.PERSONAL)
+    scholarship.keep_edits(new, old)
+    assert new.main_summary == old.main_summary and new.selected == [False, True]
+    # 고치지 않았으면 새로 읽은 값(공문 · 명단이 바뀌었을 수 있다)
+    fresh = scholarship.load_job(folder, kind=kinds.PERSONAL)
+    again = scholarship.load_job(folder, kind=kinds.PERSONAL)
+    scholarship.keep_edits(again, fresh)
+    assert again.main_summary == fresh.default_summary and again.selected == [True, True]
+    # 비목을 바꾸면 그 비목과 바뀐 대표적요 번호가 남는다
+    fresh.set_category("교육·연구프로그램개발·운영비")
+    again = scholarship.load_job(folder, kind=kinds.PERSONAL)
+    scholarship.keep_edits(again, fresh)
+    assert again.category == "교육·연구프로그램개발·운영비" and again.main_summary.startswith("03_")

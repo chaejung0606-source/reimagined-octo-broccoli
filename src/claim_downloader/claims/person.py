@@ -246,7 +246,10 @@ def pick(popup, frame, name: str, student_no: str, confirm_id: str, log: Callabl
     if got_no and got_no == _digits(student_no):
         log("소득자 자동 선택: %s(%s) — %s" % (got_name or name, got_no, why))
         return True, why, got_no
-    return False, "[확인] 을 눌렀지만 작성 화면의 소득자가 바뀌지 않음 — 직접 골라 주세요", got_no
+    # 남지 않으면 기록에 아무 줄도 없이 사람을 기다렸다(2026-10-21 10:50 — 10분)
+    log("소득자 자동 선택: %s(%s) 를 골라 [확인] 했지만 작성 화면의 소득자가 바뀌지 않음 (지금 %s %s)"
+        % (name, _digits(student_no), got_name or "—", got_no))
+    return False, "[확인] 을 눌렀지만 작성 화면의 소득자가 바뀌지 않음 — 작성 화면의 돋보기를 눌러 다시 골라 주세요", got_no
 
 
 def _not_found(report: PersonReport) -> bool:

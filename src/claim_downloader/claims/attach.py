@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .form import read_state
-from .payee import CLICK_ID_JS, find_popup, wait_closed, wait_until
+from .payee import CLICK_ID_JS, close_stale, find_popup, opened_from, owner_mark, remember_owner, wait_closed, wait_until
 
 OPEN_TEXT = "첨부"                 # 작성 화면의 링크 — id 가 없어 글자로. '첨부문서'(라벨) · '첨부 문서'(표 머리글)와 섞이지 않게 정확히 같은 것만
 UPLOAD_BUTTON_ID = "btn_upload"
@@ -78,6 +78,10 @@ def file_count(frame) -> int:
 
 def open_popup(page, frame, log: Callable[[str], None]):
     popup = find_popup(page.context, POPUP_PROBE_JS)
+    if popup is not None and not opened_from(popup, frame):
+        # 앞 청구서에서 열린 파일등록 창 — 여기에 올리면 파일이 이 청구서가 아닌 곳으로 간다(payee.opened_from)
+        close_stale(popup, log, "파일등록 창")
+        popup = None
     if popup is not None:
         try:
             pending = int(popup.evaluate(ROW_COUNT_JS))
@@ -88,11 +92,13 @@ def open_popup(page, frame, log: Callable[[str], None]):
             return None, f"열려 있는 파일등록 창에 아직 올리지 않은 파일이 {pending}개 있습니다 — 그 창을 닫은 뒤 다시 하세요"
         log("파일등록 팝업이 이미 열려 있어 그대로 씁니다")
         return popup, ""
+    mark = owner_mark(frame)
     try:
         with page.expect_popup(timeout=8000) as info:
             result = frame.evaluate(CLICK_TEXT_JS, OPEN_TEXT)
             if not result.get("ok"):
                 raise RuntimeError("'첨부' 를 누르지 못했습니다: " + str(result.get("why", "")))
+        remember_owner(info.value, mark)
         return info.value, ""
     except Exception as error:  # noqa: BLE001
         return None, (str(error).splitlines()[0][:120] if str(error) else "팝업이 열리지 않았습니다")

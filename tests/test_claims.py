@@ -349,8 +349,14 @@ class FakePopup:
         self.listing = listing or []            # 결과 목록 행 [{index, text, titles, pick}]
         self.form = form                        # FakeFormFrame — [확인] 을 누르면 작성 화면에 반영한다
         self.picked = None
+        self.opener_mark = "form-1"             # 이 팝업을 연 작성 화면(FakeFormFrame.mark) — 다르면 앞 청구서에서 연 팝업
+
+    def close(self):
+        self.closed = True
 
     def evaluate(self, js, arg=None):
+        if js is payee.OPENER_MARK_JS:
+            return self.opener_mark
         if js is payee.POPUP_PROBE_JS:
             return self.kind == "payee"
         if js is taxbill.POPUP_PROBE_JS:
@@ -465,6 +471,7 @@ class FakeFormFrame:
         self.clicks = []
         self.link_visible = link_visible
         self.values = {"RCV_NM": "", "TAXBILL_SEQ_NO": "", "EXP_DT": "2026-10-13", "BUY_WHERE": ""}
+        self.mark = "form-1"                    # payee.OWNER_MARK_JS 가 이 창에 남기는 표시
 
     def apply(self, row):
         """팝업 [확인] 의 callback 흉내."""
@@ -475,6 +482,8 @@ class FakeFormFrame:
             self.values["EXP_DT"] = row.get("date", self.values["EXP_DT"])
 
     def evaluate(self, js, arg=None):
+        if js is payee.OWNER_MARK_JS:
+            return self.mark
         if js is payee.CLICK_ID_JS:
             self.clicks.append(arg)
             return {"ok": True}
@@ -504,6 +513,16 @@ def test_payee_search_reuses_open_popup_and_reports_failures():
     page, frame = FakePage(popup, already_open=True), FakeFormFrame()
     report = payee.search(page, frame, {"payeeName": "", "payeeBizNo": "123-45-67890"}, lambda m: None, wait=lambda s: None, auto_pick=False)
     assert report.ok and report.query == "1234567890" and frame.clicks == [] and page.opened == 0
+
+    # 앞 청구서에서 열린 채 남은 팝업은 쓰지 않는다 — 닫고 이 화면의 돋보기로 새로 연다(2026-10-21 10:50 실제: [확인] 해도 안 들어가 10분 대기)
+    stale, fresh = FakePopup(), FakePopup()
+    stale.opener_mark = "form-0"
+    page, frame = FakePage(fresh), FakeFormFrame()
+    page.context.pages.append(stale)
+    logs = []
+    report = payee.search(page, frame, {"payeeName": "", "payeeBizNo": "123-45-67890"}, logs.append, wait=lambda s: None, auto_pick=False)
+    assert report.ok and stale.closed and not fresh.closed and page.opened == 1 and frame.clicks == [payee.OPEN_BUTTON_ID]
+    assert any("앞 화면에서 열린 팝업" in line for line in logs)
 
     page, frame = FakePage(FakePopup(), opens=False), FakeFormFrame()
     report = payee.search(page, frame, {"payeeName": "코웨이"}, lambda m: None, wait=lambda s: None)

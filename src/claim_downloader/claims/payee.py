@@ -261,17 +261,67 @@ def wait_until(check: Callable[[], bool], wait: Callable[[float], None], tries: 
     return False
 
 
+# 팝업이 지금 작성 화면에서 열린 것인지 — 작성 프레임의 창에 표시를 남기고, 팝업의 opener(팝업을 연 창)가 그 표시를 가졌는지 본다.
+# 담당자 실제(2026-10-21 10:50): 앞 청구서에서 열린 소득자 팝업이 남은 채 앱이 새 청구서를 띄웠고, 그 팝업을 '그대로 써' [확인] 을 눌렀지만
+# 새 청구서에는 아무것도 들어가지 않아 10분 동안 사람을 기다렸다. 팝업은 자기를 연 화면(opener)에만 값을 돌려준다.
+OWNER_MARK_JS = "() => window.__cossOwner || (window.__cossOwner = Date.now().toString(36) + Math.random().toString(36).slice(2))"
+OPENER_MARK_JS = """() => { try { return (window.opener && !window.opener.closed && window.opener.__cossOwner) || ''; }
+  catch (e) { return ''; } }"""
+
+
+def opened_from(popup, frame) -> bool:
+    """이 팝업을 연 창이 지금 작성 프레임(지금 떠 있는 그 문서)인지. 알 수 없으면 False — 다시 열면 되고, 남의 화면에 값을 넣지 않는 쪽이 안전하다.
+    앱이 연 팝업은 열 때의 표시(remember_owner)로 본다 — 같은 iframe 에 새 청구서가 다시 뜨면 opener 는 같은 자리를 가리켜 구분이 안 된다
+    (새 문서의 창에는 표시가 새로 붙으므로 열 때의 표시와 다르다). 사람이 연 팝업은 opener 의 표시로 본다."""
+    try:
+        mark = frame.evaluate(OWNER_MARK_JS)
+        owner = getattr(popup, "_coss_owner", None)
+        if owner is not None:
+            return bool(mark) and owner == mark
+        return bool(mark) and popup.evaluate(OPENER_MARK_JS) == mark
+    except Exception:  # noqa: BLE001 — 닫히는 중 · 가짜 창
+        return False
+
+
+def owner_mark(frame) -> str:
+    """팝업을 열기 전에 — 작성 프레임의 표시(없으면 붙인다)."""
+    try:
+        return str(frame.evaluate(OWNER_MARK_JS) or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def remember_owner(popup, mark: str) -> None:
+    try:
+        popup._coss_owner = mark                  # Playwright 창 객체에 붙여 둔다 — 같은 창이면 다음에 다시 쓸 때 본다
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def close_stale(popup, log: Callable[[str], None], what: str = "팝업") -> None:
+    """앞 화면에서 열린 채 남은 팝업을 닫는다 — 창을 닫을 뿐 ERP 단추는 누르지 않는다."""
+    log(f"앞 화면에서 열린 {what}이 남아 있어 닫고 새로 엽니다")
+    try:
+        popup.close()
+    except Exception:  # noqa: BLE001 — 이미 닫힘
+        pass
+
+
 def open_popup(page, frame, button_id: str, probe_js: str, log: Callable[[str], None]):
-    """작성 프레임의 단추(button_id)를 눌러 팝업을 연다. 이미 열려 있으면 그것을 쓴다. (팝업, 못 연 이유)."""
+    """작성 프레임의 단추(button_id)를 눌러 팝업을 연다. 이 화면에서 연 팝업이 이미 열려 있으면 그것을 쓴다. (팝업, 못 연 이유)."""
     popup = find_popup(page.context, probe_js)
-    if popup is not None:
+    if popup is not None and opened_from(popup, frame):
         log("팝업이 이미 열려 있어 그대로 씁니다")
         return popup, ""
+    if popup is not None:
+        close_stale(popup, log)
+    mark = owner_mark(frame)
     try:
         with page.expect_popup(timeout=8000) as info:
             result = frame.evaluate(CLICK_ID_JS, button_id)
             if not result.get("ok"):
                 raise RuntimeError("단추를 누르지 못했습니다: " + str(result.get("why", "")))
+        remember_owner(info.value, mark)
         return info.value, ""
     except Exception as error:  # noqa: BLE001 — 팝업이 안 뜨면 사람이 연다
         return None, (str(error).splitlines()[0][:120] if str(error) else "팝업이 열리지 않았습니다")
