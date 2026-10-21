@@ -29,7 +29,7 @@ SKIP_SUFFIXES = {".pyc", ".pyo"}
 NEVER_PACK = {".pdf", ".hwp", ".hwpx", ".jpg", ".jpeg", ".xls", ".xlsx"}
 # 받은 기록·로그. 지금은 ~/.claim-downloader/ 에 있지만, 옛 단일 파일 시절처럼 앱
 # 폴더에 남아 있을 수 있다.
-NEVER_PACK_NAMES = {"_받은기록.json", "_보관목록.json", "_실행로그.txt", "_화면구조.txt", "_화면구조_모음.txt", "_과제목록.json","_공유용로그.txt", "_청구입력기록.json", "config.json"}
+NEVER_PACK_NAMES = {"_받은기록.json", "_보관목록.json", "_실행로그.txt", "_화면구조.txt", "_화면구조_모음.txt", "_과제목록.json","_공유용로그.txt", "_청구입력기록.json", "_받지않는결의서.json", "config.json"}
 
 
 def check_batch_files(root: Path) -> None:

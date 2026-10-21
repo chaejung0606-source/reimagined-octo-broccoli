@@ -112,6 +112,11 @@ def log_path() -> Path:
     return data_dir() / "_실행로그.txt"
 
 
+def skip_path() -> Path:
+    """받지 않는 결의서(skiplist.py) — 청구서출력이 없어 받을 수 없는 결의서. 대표적요(사람 이름이 들 수 있음)가 있어 저장소 · 배포에서 뺀다."""
+    return data_dir() / "_받지않는결의서.json"
+
+
 def structure_path() -> Path:
     """진단 모드(diagnose.py)가 남기는 화면 구조. 계좌번호 같은 값이 섞일 수 있어 저장소·배포에서 뺀다."""
     return data_dir() / "_화면구조.txt"

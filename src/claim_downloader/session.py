@@ -21,7 +21,7 @@ from .claims import form as claim_form
 from .claims import payee as claim_payee
 from .claims import scholarship as claim_scholarship
 from .claims import taxbill as claim_taxbill
-from . import archive, diagnose, erp, logout as logout_mod, naming, navigate, project_folders, settings as settings_mod
+from . import archive, diagnose, erp, logout as logout_mod, naming, navigate, project_folders, settings as settings_mod, skiplist
 from .reconcile import reconcile
 from .targets import Selection, select_targets
 
@@ -86,9 +86,10 @@ class RunSummary:
     failed: list[dict] = field(default_factory=list)
     stopped: bool = False
     missing: list[dict] = field(default_factory=list)   # 엑셀 대조 누락
+    unwanted: list[dict] = field(default_factory=list)  # 청구서출력이 없어 받지 않는 결의서 목록에 넣은 건(skiplist) — 실패가 아니다
 
 
-# on_item(번호, 상태, 설명) — 상태: 'running' | 'done' | 'retry' | 'failed'
+# on_item(번호, 상태, 설명) — 상태: 'running' | 'done' | 'retry' | 'failed' | 'unwanted'(받지 않는 결의서 목록에 넣음)
 ItemCallback = Callable[[int, str, str], None]
 
 
@@ -1047,6 +1048,14 @@ class ErpSession:
         rows = erp.collect_all(gfr)
         self.log("수집 %d행" % len(rows))
         sel = select_targets(rows, self.done)
+        unwanted = skiplist.load()
+        if unwanted:
+            # 청구서출력이 없어 받을 수 없는 결의서(담당자 2026-10-21 "받지 않아도 되는 결의서 목록") — 받을 것에서 뺀다
+            keep = [r for r in sel.targets if not skiplist.matches(unwanted, r, listed)]
+            sel.excluded = len(sel.targets) - len(keep)
+            sel.targets = keep
+            if sel.excluded:
+                self.log(f"받지 않는 결의서 {sel.excluded}건은 뺐습니다 (청구서출력이 없는 결의서 — 받기 화면 [받지 않는 결의서] 에서 봅니다)")
         sel.projects = [listed] if listed else []
         for row in sel.targets:
             row["project"] = listed          # 받을 때 이 과제의 폴더에 둔다(project_folders)
@@ -1133,6 +1142,7 @@ class ErpSession:
                 continue
             total.targets += sel.targets
             total.skipped += sel.skipped
+            total.excluded += sel.excluded
             total.projects += sel.projects
             total.blocked += sel.blocked
         self.log("── 과제 %d개를 읽음 · 받을 건 %d건 (이미 보관된 %d건은 건너뜀)%s"
@@ -1219,8 +1229,19 @@ class ErpSession:
                 # (2026-10-21 실제: 이것을 멈춤으로 보고 ERP 를 새로 열어 다시 로그인을 물었다)
                 reason = str(error).splitlines()[0] if str(error) else "청구서출력 없음"
                 self.log("      ↷ 건너뜀 — %s (결의서구분 '%s')" % (reason, row.get("gubun") or "?"))
-                summary.failed.append(row)
-                notify(i, "failed", "건너뜀: " + reason)
+                # 받지 않는 결의서 목록에 넣어 다음 목록 읽기부터 뺀다(담당자 2026-10-21) — 청구 결의서는 넣지 않는다(skiplist.why_not)
+                try:
+                    added, why_not = skiplist.add(row, reason, project)
+                except OSError as error:
+                    added, why_not = False, f"목록 파일을 쓰지 못해서({error.__class__.__name__})"
+                if added:
+                    self.log("      → 받지 않는 결의서 목록에 넣었습니다 — 다음 목록 읽기부터 뺍니다")
+                    summary.unwanted.append(row)
+                    notify(i, "unwanted", "청구서출력이 없는 결의서 — 받지 않는 결의서 목록에 넣음")
+                else:
+                    self.log(f"      (받지 않는 결의서 목록에는 넣지 않음 — {why_not}. 다음에 다시 해 봅니다)")
+                    summary.failed.append(row)
+                    notify(i, "failed", "건너뜀: " + reason)
                 current = None
                 i += 1
                 continue
@@ -1269,7 +1290,8 @@ class ErpSession:
                 notify(i, "done", dest.name)
             i += 1
 
-        self.log("── 끝: 성공 %d건 / 실패 %d건" % (summary.ok, len(summary.failed)))
+        self.log("── 끝: 성공 %d건 / 실패 %d건" % (summary.ok, len(summary.failed))
+                 + (" / 받지 않음 %d건(받지 않는 결의서 목록에 넣음)" % len(summary.unwanted) if summary.unwanted else ""))
         for r in summary.failed:
             self.log("   실패: No %s 결의 %s %s" % (r.get("no"), r.get("seq"), (r.get("cont") or "")[:30]))
         summary.missing = reconcile(cfg.excel_path, self.done, self.log)

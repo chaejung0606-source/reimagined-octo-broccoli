@@ -18,6 +18,7 @@ class Selection:
     skipped: int = 0      # 이미 받은(보관된) 건
     projects: list[str] = field(default_factory=list)        # 읽은 과제(목록의 #PRJ_NO) — 받는 건마다 'project' 에도 적는다
     blocked: list[tuple[str, str]] = field(default_factory=list)   # (과제번호, 까닭) — 과제 폴더가 없거나 목록을 못 띄워 받지 않는 과제
+    excluded: int = 0     # 받지 않는 결의서(skiplist.py — 청구서출력이 없어 받을 수 없는 것)라 뺀 건
 
 
 def select_targets(rows: list[dict], done: set[str]) -> Selection:

@@ -83,11 +83,28 @@ def test_document_without_print_button_is_skipped_without_relogin(monkeypatch):
     items = []
     summary = s.download([make_row(docNo="A", gubun="예산잔액조정"), make_row(docNo="B")], on_item=lambda *a: items.append(a))
     assert asked == [] and s.page.gotos == 0
-    assert summary.ok == 1 and [r["docNo"] for r in summary.failed] == ["A"]
-    assert any(state == "failed" and text.startswith("건너뜀:") for _i, state, text in items)
+    assert summary.ok == 1 and summary.failed == [] and [r["docNo"] for r in summary.unwanted] == ["A"]
+    assert any(state == "unwanted" and "받지 않는 결의서 목록" in text for _i, state, text in items)
     assert any("↷ 건너뜀" in line and "예산잔액조정" in line for line in logs)
     assert any("(결의 " in line and "· 예산잔액조정)" in line for line in logs)
     assert archive.load_done(settings.done_path()) == {"B"}
+    # 담당자 2026-10-21 "받지 않아도 되는 결의서 목록에 추가" — 다음 목록 읽기부터 뺀다
+    from claim_downloader import skiplist
+    assert [(i["docNo"], i["gubun"]) for i in skiplist.load()] == [("A", "예산잔액조정")]
+    assert skiplist.matches(skiplist.load(), make_row(docNo="A")) and not skiplist.matches(skiplist.load(), make_row(docNo="B"))
+
+
+def test_claim_type_without_print_button_is_not_put_on_the_skip_list(monkeypatch):
+    """결의서구분에 '청구' 가 든 결의서는 청구서출력이 있어야 한다 — 못 받았어도 목록에 넣지 않고 다음에 다시 해 본다(누락 막기)."""
+    def no_print(page, row, *rest):
+        raise session_mod.erp.NoPrintScreen("상세조회 뒤 ERP 알림: 처리 중입니다")
+
+    s, logs, _asked = _session(no_print, monkeypatch=monkeypatch)
+    items = []
+    s.download([make_row(docNo="C", gubun="일반청구")], on_item=lambda *a: items.append(a))
+    from claim_downloader import skiplist
+    assert skiplist.load() == [] and any("목록에는 넣지 않음" in line and "일반청구" in line for line in logs)
+    assert any(state == "failed" and text.startswith("건너뜀:") for _i, state, text in items)
 
 
 def test_freeze_resumes_by_itself_when_still_logged_in(monkeypatch, tmp_path):

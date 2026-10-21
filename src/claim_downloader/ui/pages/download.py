@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import archive, navigate, project_folders, rebudget, settings
+from ... import archive, navigate, project_folders, rebudget, settings, skiplist
 from .. import project_box
 from ...targets import volume_warning
 from ..art import Art
@@ -60,6 +60,7 @@ ROW_STATUS = {
     "retry": ("다시 로그인 대기", "warning"),
     "done": ("완료", "success"),
     "failed": ("실패", "danger"),
+    "unwanted": ("받지 않음", "neutral"),      # 청구서출력이 없는 결의서 — 받지 않는 결의서 목록에 넣었다(skiplist)
 }
 
 GUIDE_START = ("과제를 고르고 ① 브라우저 열기를 누르세요. 열린 ERP 창에서 로그인하면 그 과제의 결의서내역에서 "
@@ -331,6 +332,12 @@ class DownloadPage(QWidget):
             "다시 받지 않습니다. 옮기기 전에 표로 보여 주고 묻습니다.")
         self.rebudget_button.clicked.connect(self._rebudget)
         corner_row.addWidget(self.rebudget_button)
+        # 청구서출력이 없어 받지 않는 결의서(skiplist.py, 담당자 2026-10-21) — 있을 때만 보인다. 보고 비울 수 있다
+        self.unwanted_button = QPushButton("받지 않는 결의서")
+        self.unwanted_button.setObjectName("ghost")
+        self.unwanted_button.setToolTip("청구서출력이 없어 받을 수 없는 결의서(잔액조정 · 대체 등) — 목록 읽기에서 뺍니다. 눌러서 보고 비울 수 있습니다.")
+        self.unwanted_button.clicked.connect(self._show_unwanted)
+        corner_row.addWidget(self.unwanted_button)
         open_log = QPushButton("로그 파일 열기")
         open_log.setObjectName("ghost")
         open_log.clicked.connect(
@@ -383,6 +390,9 @@ class DownloadPage(QWidget):
             self.folder_button.setToolTip("")
         names = {p.no: p.name for p in navigate.load_projects()[0]}
         self.rebudget_button.setVisible(bool(rebudget.fund_folders(cfg.out_root, names)) if cfg.out_root else False)
+        unwanted = len(skiplist.load())
+        self.unwanted_button.setText(f"받지 않는 결의서 {unwanted}")
+        self.unwanted_button.setVisible(unwanted > 0)
         self._sync_empty()
         self.counts_changed.emit()
 
@@ -392,7 +402,8 @@ class DownloadPage(QWidget):
         total = len(self._targets) + skipped
         remaining = len(self._remaining())
         if self._listed:
-            self.kpi_total.set_value(str(total), f"보관으로 제외 {skipped}건")
+            excluded = self._selection.excluded if self._selection else 0
+            self.kpi_total.set_value(str(total), f"보관으로 제외 {skipped}건" + (f" · 받지 않음 {excluded}건" if excluded else ""))
             self.kpi_remaining.set_value(str(remaining), f"실패 {self._run_failed}건 포함" if self._run_failed else "대상 − 보관 제외 − 완료")
         else:
             self.kpi_total.set_value("—", "목록을 읽으면 표시")
@@ -413,9 +424,12 @@ class DownloadPage(QWidget):
             self.list_stack.setCurrentIndex(1)
         elif self._listed:
             skipped = self._selection.skipped if self._selection else 0
+            excluded = self._selection.excluded if self._selection else 0
             self.empty.set_content(
                 "approved", "새로 받을 청구서가 없습니다",
-                f"승인된 건은 모두 보관되어 있습니다(보관으로 제외 {skipped}건). 목록이 바뀌면 ② 목록 읽기를 다시 누르세요.")
+                f"승인된 건은 모두 보관되어 있습니다(보관으로 제외 {skipped}건"
+                + (f" · 청구서출력이 없어 받지 않는 결의서 {excluded}건" if excluded else "")
+                + "). 목록이 바뀌면 ② 목록 읽기를 다시 누르세요.")
             self.list_stack.setCurrentIndex(0)
         else:
             self.empty.set_content(
@@ -429,7 +443,7 @@ class DownloadPage(QWidget):
             self.guide.setText(guide)
 
     def _remaining(self) -> list[int]:
-        return [i for i, s in enumerate(self._status) if s != "done"]
+        return [i for i, s in enumerate(self._status) if s not in ("done", "unwanted")]
 
     def _sync_buttons(self) -> None:
         busy = self._busy
@@ -447,6 +461,7 @@ class DownloadPage(QWidget):
         self.test_button.setEnabled(can_run)
         self.structure_button.setEnabled(not busy and self._browser_open)
         self.rebudget_button.setEnabled(not busy)
+        self.unwanted_button.setEnabled(not busy)
         running = busy and bool(self._running_rows)
         self.stop_button.setVisible(running)
         self.stop_button.setEnabled(running)
@@ -765,6 +780,8 @@ class DownloadPage(QWidget):
         failed = len(summary.failed)
         remaining = len(self._remaining())
         text = f"성공 {summary.ok}건 · 실패 {failed}건 · 남은 대상 {remaining}건"
+        if summary.unwanted:
+            text += f" · 받지 않음 {len(summary.unwanted)}건(청구서출력이 없는 결의서 — 다음부터 목록에서 뺍니다)"
         if summary.stopped:
             text += " — 중간에 멈췄습니다"
         if summary.missing:
@@ -786,6 +803,25 @@ class DownloadPage(QWidget):
         self._set_state("다시 로그인", "warning", "아래 띠의 안내를 따른 뒤 [계속] 을 누르세요.")
         self.window().raise_()
         self.window().activateWindow()
+
+    # ── 받지 않는 결의서(skiplist.py) ───────────────────────────────────
+    def _show_unwanted(self) -> None:
+        items = skiplist.load()
+        rows = [ReportRow("받지 않음", "neutral",
+                          [i.get("project", ""), i.get("seq", ""), i.get("gubun", ""), i.get("cont", ""), i.get("at", "")],
+                          detail=f"까닭: {i.get('reason', '')}" + (f"\n문서번호: {i['docNo']}" if i.get("docNo") else ""))
+                 for i in items]
+        clear = show_report(
+            self, title="받지 않는 결의서", heading=f"목록 읽기에서 빼는 결의서 {len(items)}건", tone="neutral",
+            summary=["청구서출력이 없어 받을 수 없는 결의서(잔액조정 · 대체 등)입니다. 받기가 만나면 저절로 여기 들어오고, 목록 읽기에서 빠집니다.",
+                     "결의서구분에 '청구' 가 든 결의서(일반청구 · 카드청구 · 대량청구)는 들어오지 않습니다 — 못 받으면 다음에 다시 해 봅니다."],
+            columns=[("상태", 104), ("과제", 118), ("결의번호", 80), ("결의서구분", 140), ("내용", 300), ("넣은 때", None)], rows=rows,
+            footer="목록을 비우면 다음 받기에서 다시 해 보고, 그래도 못 받으면 다시 들어옵니다.",
+            accept_text="목록 비우기" if items else "")
+        if clear and QMessageBox.question(self, "받지 않는 결의서", f"목록의 {len(items)}건을 비울까요? 다음 받기에서 다시 해 봅니다.",
+                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
+            skiplist.clear()
+            self.refresh_counts()
 
     # ── 대응자금 파일 정리(rebudget.py) ─────────────────────────────────
     def _rebudget(self) -> None:
