@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import pytest
 
-from claim_downloader.ui.flowlogic import CURRENT, DONE, DOWNLOAD_ORDER, HIDDEN, OPEN, download_stage, flow_states
+from claim_downloader.ui.flowlogic import (
+    CURRENT, DONE, DOWNLOAD_ORDER, HIDDEN, OPEN, STRUCTURE_ORDER, download_stage, flow_states, structure_stage,
+)
 
 
 def test_steps_before_are_folded_and_after_are_hidden():
@@ -18,6 +20,14 @@ def test_download_goes_what_login_list():
     assert download_stage(picked=True, reading=False, listed=False) == "login"
     assert download_stage(picked=True, reading=True, listed=False) == "list"
     assert download_stage(picked=True, reading=False, listed=True) == "list"
+
+
+def test_structure_goes_site_open_save_send():
+    assert structure_stage(picked=False, opened=True, saved=True) == "site"
+    assert structure_stage(picked=True, opened=False, saved=True) == "open"         # 닫히면 다시 열기부터(파일은 머리 메뉴에)
+    assert structure_stage(picked=True, opened=True, saved=False) == "save"          # 다른 업무에서 열어 둔 창이면 ② 는 저절로 지난다
+    states = flow_states(STRUCTURE_ORDER, "send", keep_open=("save",))
+    assert states == {"site": DONE, "open": DONE, "save": OPEN, "send": CURRENT}    # 저장한 뒤에도 다른 화면을 이어서 저장
 
 
 def test_badges_take_only_their_text_width():

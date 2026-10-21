@@ -13,8 +13,9 @@ from __future__ import annotations
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
 from PySide6.QtWidgets import QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
+from .art import Art
 from .flowlogic import CURRENT, DONE, HIDDEN, OPEN, flow_states  # noqa: F401 — 화면이 여기서 함께 가져다 쓴다
-from .widgets import ElideLabel, WrapLabel, fit_to_text
+from .widgets import ElideLabel, Pill, WrapLabel, fit_to_text, muted_label
 
 
 class FlowStep(QFrame):
@@ -140,3 +141,50 @@ class FlowStep(QFrame):
         self._anim = anim
         anim.start()
 
+
+
+class ChoiceCard(QFrame):
+    """단계 ① 의 '무엇을' 고르는 카드 — 그림 · 이름 · 한 줄 설명(· 상태 배지). 누르거나 Space/Enter 로 고른다.
+    고르면 그 단계가 접히고 다음 단계가 떠오른다 — [다음] 을 따로 누르지 않는다(한 번 더 누를 일을 줄인다)."""
+
+    chosen = Signal(str)
+
+    def __init__(self, key: str, name: str, description: str, art: str, pill: bool = False, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.key = key
+        self.setObjectName("card")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName(name)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(14, 12, 14, 12)
+        row.setSpacing(12)
+        row.addWidget(Art(art, 46), 0, Qt.AlignVCenter)
+        texts = QVBoxLayout()
+        texts.setSpacing(2)
+        title = QLabel(name)
+        title.setObjectName("cardTitle")
+        texts.addWidget(title)
+        desc = muted_label(description)
+        desc.setWordWrap(True)
+        texts.addWidget(desc)
+        row.addLayout(texts, 1)
+        self.state = Pill("", "neutral") if pill else None
+        if self.state is not None:
+            row.addWidget(self.state, 0, Qt.AlignVCenter)
+
+    def set_selected(self, on: bool) -> None:
+        self.setObjectName("cardCurrent" if on else "card")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if self.isEnabled():
+            self.chosen.emit(self.key)
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter) and self.isEnabled():
+            self.chosen.emit(self.key)
+            return
+        super().keyPressEvent(event)

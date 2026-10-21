@@ -33,3 +33,38 @@ def download_stage(picked: bool, reading: bool, listed: bool) -> str:
     if listed or reading:
         return "list"
     return "login"
+
+
+STRUCTURE_ORDER = ["site", "open", "save", "send"]
+
+
+def structure_stage(picked: bool, opened: bool, saved: bool) -> str:
+    """화면 구조 저장 — ① 어느 사이트 → ② 그 사이트 열기 → ③ 실측할 화면을 띄우고 저장 → ④ 저장한 파일 보내기.
+    다른 업무에서 이미 열어 둔 사이트면 ② 는 저절로 지난다. 저장한 뒤에도 ③ 은 펼친 채(화면 여러 개를 차례로 저장)."""
+    if not picked:
+        return "site"
+    if not opened:
+        return "open"
+    return "send" if saved else "save"
+
+
+PARKING_ORDER = ["what", "work", "result"]
+
+
+def parking_stage(picked: bool, has_result: bool) -> str:
+    """주차등록 — ① 무엇을 할까요(할인 적용 · 할인 링크 · 할인 내역) → ② 그 일의 칸 → ③ 결과.
+    할인 내역은 ② 의 표가 결과라 ③ 이 없다(화면이 has_result 를 넘기지 않는다)."""
+    if not picked:
+        return "what"
+    return "result" if has_result else "work"
+
+
+MINUTES_ORDER = ["folders", "make", "result"]
+
+
+def minutes_stage(has_dirs: bool, finished: bool) -> str:
+    """회의록 생성 — ① 회의 폴더 넣기 → ② 확인하고 만들기(AI · [작업 시작]) → ③ 결과.
+    폴더를 더 넣을 수 있게 ① 은 펼친 채 두고, 끝난 뒤 폴더를 더 넣으면 다시 ② 로."""
+    if not has_dirs:
+        return "folders"
+    return "result" if finished else "make"
