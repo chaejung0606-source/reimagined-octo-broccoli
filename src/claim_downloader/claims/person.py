@@ -77,10 +77,12 @@ class PersonReport:
     pick_note: str = ""
     chosen_no: str = ""                 # 작성 화면에 들어간 학번/사번
     query: str = ""                     # 마지막으로 검색한 말(학번/사번 또는 이름)
+    tried: str = ""                     # 처음 고른 구분에서 못 찾아 다른 구분으로 찾았으면 처음 구분(참여인력)
 
     def lines(self) -> list[str]:
         if self.ok and self.picked:
-            return [f"✓ 소득자: {self.name}({self.chosen_no}) 를 골라 [확인] 까지 눌렀습니다 ({self.pick_note})"]
+            where = f" — {self.tried}에 없어 {self.tab}에서 찾음" if self.tried else ""
+            return [f"✓ 소득자: {self.name}({self.chosen_no}) 를 골라 [확인] 까지 눌렀습니다 ({self.pick_note}){where}"]
         if self.ok:
             found = f"결과 {self.rows}행" if self.rows is not None else "결과 수는 세지 못함"
             why = f" — {self.pick_note}" if self.pick_note else ""
@@ -247,6 +249,11 @@ def pick(popup, frame, name: str, student_no: str, confirm_id: str, log: Callabl
     return False, "[확인] 을 눌렀지만 작성 화면의 소득자가 바뀌지 않음 — 직접 골라 주세요", got_no
 
 
+def _not_found(report: PersonReport) -> bool:
+    """아무 줄도 고르지 않았고 그 까닭이 '없음' 인지 — 검색 결과 0행이거나 학번이 맞는 줄이 없음(누른 것 없음)."""
+    return not report.picked and (not report.rows or report.pick_note.endswith("인 행이 없음"))
+
+
 def queries_for(name: str, student_no: str, tab: str = TAB_STUDENT) -> list[tuple[str, str]]:
     """검색할 말 차례 — (무엇, 검색어). 학번/사번이 있으면 그것 먼저(담당자 요청 2026-10-14), 그다음 이름."""
     out = []
@@ -268,8 +275,7 @@ def search(page, frame, name: str, student_no: str, log: Callable[[str], None],
     if not name:
         report.note = "이름이 없습니다"
         return report
-    confirm_id = CONFIRM_IDS.get(tab)
-    if confirm_id is None:
+    if tab not in CONFIRM_IDS:
         report.note = f"모르는 구분 '{tab}'"
         return report
     popup, why = open_popup(page, frame, OPEN_BUTTON_ID, POPUP_PROBE_JS, log)
@@ -291,30 +297,43 @@ def search(page, frame, name: str, student_no: str, log: Callable[[str], None],
         if not wait_until(lambda: popup.evaluate(POPUP_PROBE_JS) is True, wait, tries=40):
             report.note = "팝업이 소득자 조회 화면이 아닙니다"
             return report
-        div = popup.evaluate(CHECK_DIV_JS, [DIV_RADIO_NAME, tab])
-        if not div.get("ok"):
-            report.note = f"구분을 '{tab}' 로 바꾸지 못했습니다: " + str(div.get("why", ""))
-            return report
-        if not div.get("same"):
-            wait(0.5)                                    # 탭이 바뀌며 칸이 다시 그려진다
-        for what, query in queries_for(name, student_no, tab):
-            ok, note, rows = run_search(popup, query, wait)
-            if not ok:
-                report.note = note
+        # 참여인력에서 못 찾으면 인적정보에서 한 번 더 — 담당자 실제(2026-10-21): 근로장학생 명단을 '참여인력' 으로 넣자 학번 · 이름 둘 다
+        # 결과가 없어 멈췄다. 인적정보는 학생 학번 · 교직원 사번을 다 찾는다(2026-10-20). 거꾸로(인적정보 → 참여인력)는 하지 않는다.
+        tabs = [tab] + ([TAB_STUDENT] if tab == TAB_STAFF and auto_pick else [])
+        for n, tab_now in enumerate(tabs):
+            if n:
+                if report.picked or not _not_found(report):
+                    break                                # 찾았거나 여럿 · 이름 다름 · 확인 실패 — 다른 구분에서 찾지 않고 사람에게
+                log("소득자를 %s에서 찾지 못해 %s에서 다시 찾습니다" % (tab, tab_now))
+                report.rows, report.pick_note = None, ""
+            div = popup.evaluate(CHECK_DIV_JS, [DIV_RADIO_NAME, tab_now])
+            if not div.get("ok"):
+                if n:
+                    report.pick_note = f"{tab}에서 찾지 못함 · 구분을 '{tab_now}' 로 바꾸지 못함"
+                    break
+                report.note = f"구분을 '{tab_now}' 로 바꾸지 못했습니다: " + str(div.get("why", ""))
                 return report
-            report.ok, report.rows, report.query = True, rows, query
-            log("소득자 검색(%s, %s): '%s' → %s" % (tab, what, query, f"{rows}행" if rows is not None else "결과 수 모름"))
-            if not rows:
-                continue                                 # 0행 — 다음 검색어(이름)로
-            if not auto_pick:
-                break                                    # 사람이 고를 목록
-            report.picked, report.pick_note, report.chosen_no = pick(popup, frame, name, student_no, confirm_id, log, wait)
-            # 학번이 맞는 줄이 없을 때만(아무것도 누르지 않았다) 다음 검색어로 — 여럿 · 이름 다름 · 확인 실패는 사람에게
-            if report.picked or not report.pick_note.endswith("인 행이 없음"):
-                break
-        if auto_pick and not report.rows and not report.pick_note:
-            report.pick_note = "검색 결과가 없음"
-            log("소득자 자동 선택 안 함: 검색 결과가 없음")
+            if not div.get("same"):
+                wait(0.5)                                # 탭이 바뀌며 칸이 다시 그려진다
+            report.tab, report.tried = tab_now, (tab if n else "")
+            for what, query in queries_for(name, student_no, tab_now):
+                ok, note, rows = run_search(popup, query, wait)
+                if not ok:
+                    report.note = note
+                    return report
+                report.ok, report.rows, report.query = True, rows, query
+                log("소득자 검색(%s, %s): '%s' → %s" % (tab_now, what, query, f"{rows}행" if rows is not None else "결과 수 모름"))
+                if not rows:
+                    continue                             # 0행 — 다음 검색어(이름)로
+                if not auto_pick:
+                    break                                # 사람이 고를 목록
+                report.picked, report.pick_note, report.chosen_no = pick(popup, frame, name, student_no, CONFIRM_IDS[tab_now], log, wait)
+                # 학번이 맞는 줄이 없을 때만(아무것도 누르지 않았다) 다음 검색어로 — 여럿 · 이름 다름 · 확인 실패는 사람에게
+                if report.picked or not report.pick_note.endswith("인 행이 없음"):
+                    break
+            if auto_pick and not report.rows and not report.pick_note:
+                report.pick_note = "검색 결과가 없음"
+                log("소득자 자동 선택 안 함: 검색 결과가 없음" + (f" ({tab_now})" if len(tabs) > 1 else ""))
         return report
     finally:
         try:

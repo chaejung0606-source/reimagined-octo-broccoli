@@ -1556,3 +1556,131 @@ def test_club_with_two_students_is_not_guessed(tmp_path):
     # 개별증빙이 하나도 없는 사람은 미리 보기 '확인할 것' 에 보인다
     assert "개별증빙 없음" in scholarship.plan_person(job, 0).note
     assert "개별증빙 없음" not in (scholarship.plan_person(job, 1).note or "")
+
+
+def test_run_skips_people_already_on_this_folders_sheet(monkeypatch, job):
+    """담당자 실제(2026-10-21): 4명을 다 넣은 뒤 폴더를 다시 읽자 같은 청구서(336)에 '이어서' 4명을 또 넣으려 했다.
+    청구내역에 이미 있는 사람은 화면을 보고 건너뛴다 — 아무것도 누르지 않는다."""
+    frame = FakeForm()
+    frame.v["REQ_CNT"] = "336"
+    frame.sheet = [f"1 {job.row_summary(1)} 400,000", f"2 {job.row_summary(0)} 300,000"]
+    calls = _patch_popups(monkeypatch, frame)
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: False, wait=lambda s: None, dry_run=False)
+    assert report.saved == 0 and report.present == 2 and not report.stopped
+    assert calls["person"] == [] and frame.clicks == [] and frame.saved == []
+    assert [r.status for r in report.results] == ["present", "present"]
+    assert "줄 2" in report.results[0].note and "건너뜀 2명" in report.lines()[0]
+
+
+def test_run_puts_only_the_people_missing_from_this_folders_sheet(monkeypatch, job):
+    frame = FakeForm()
+    frame.v["REQ_CNT"], frame.rows, frame.total = "336", 1, 300000
+    frame.sheet = [f"1 {job.row_summary(0)} 300,000"]
+    calls = _patch_popups(monkeypatch, frame)
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: False, wait=lambda s: None, dry_run=False)
+    assert report.present == 1 and report.saved == 1
+    assert [c[:2] for c in calls["person"]] == [("라마바", "202600002")]
+    assert report.check is not None and report.check.ok, report.check.problems
+
+
+def test_new_sheet_is_not_checked_for_people_already_there(monkeypatch, job):
+    """새 청구서(결의번호 없음)에는 청구내역이 없다 — 표를 읽지 않고 바로 넣는다."""
+    frame = FakeForm()
+    _patch_popups(monkeypatch, frame)
+    report = scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: False, wait=lambda s: None, dry_run=False)
+    assert report.present == 0 and report.saved == 2
+
+
+class FakePersonPopup:
+    """소득자 팝업 — 구분 라디오(참여인력 · 인적정보)마다 결과가 다르다. 참여인력에 없는 학생은 빈 그리드 틀만 남는다."""
+
+    def __init__(self, staff=(), people=()):
+        self.lists = {person.TAB_STAFF: list(staff), person.TAB_STUDENT: list(people)}
+        self.tab = person.TAB_STAFF
+        self.query = ""
+        self.shown: list = []
+        self.clicks: list = []
+        self.closed = False
+        self.frames = []
+
+    def on(self, *_a):
+        pass
+
+    def remove_listener(self, *_a):
+        pass
+
+    def is_closed(self):
+        return self.closed
+
+    def evaluate(self, js, arg=None):
+        if js is person.POPUP_PROBE_JS:
+            return True
+        if js is payee.CHECK_DIV_JS:
+            same = self.tab == arg[1]
+            self.tab, self.shown = arg[1], []
+            return {"ok": True, "same": same}
+        if js is form.SET_TEXT_JS:
+            self.query = arg[1]
+            return {"ok": True, "now": arg[1]}
+        if js is payee.CLICK_ID_JS:
+            self.clicks.append(arg)
+            if arg == payee.SEARCH_BUTTON_ID:
+                self.shown = [(nm, no) for nm, no in self.lists[self.tab] if self.query in (nm, no)]
+            elif arg in person.CONFIRM_IDS.values():
+                self.closed = True
+            return {"ok": True}
+        if js is payee.RESULT_COUNT_JS:
+            return {"rows": len(self.shown), "kind": "grid"}   # 빈 그리드 틀도 0행으로(2026-10-21 고침)
+        if js is payee.ROWS_JS:
+            return {"kind": "grid", "rows": _grid(*self.shown)}
+        if js is person.SCROLL_JS:
+            return {"ok": True, "top": 0, "h": 200, "sh": 200}
+        if js is payee.PICK_ROW_JS:
+            self.picked = self.shown[arg]
+            return {"ok": True}
+        raise AssertionError("모르는 JS: " + str(js)[:60])
+
+
+class FakeRcvFrame:
+    def __init__(self, popup):
+        self.popup = popup
+
+    def evaluate(self, js, arg=None):
+        if js is form.STATE_JS:
+            nm, no = getattr(self.popup, "picked", ("", ""))
+            return {"RCV_CD": {"value": no}, "RCV_NM": {"value": nm}}
+        raise AssertionError("모르는 JS: " + str(js)[:60])
+
+
+def test_person_not_in_staff_list_is_found_in_personal_info(monkeypatch):
+    """담당자 실제(2026-10-21): 근로장학생을 '참여인력' 으로 찾자 학번 · 이름 둘 다 '결과 수 모름' 으로 멈췄다. 인적정보에서 다시 찾는다."""
+    popup = FakePersonPopup(staff=[("다른이", "123456")], people=[("가나다", "202600001")])
+    monkeypatch.setattr(person, "open_popup", lambda *a, **k: (popup, ""))
+    frame = FakeRcvFrame(popup)
+    logs = []
+    report = person.search(object(), frame, "가나다", "202600001", logs.append, wait=lambda s: None, tab=person.TAB_STAFF)
+    assert report.picked and report.tab == person.TAB_STUDENT and report.tried == person.TAB_STAFF
+    assert popup.clicks[-1] == person.CONFIRM_IDS[person.TAB_STUDENT]
+    assert any("참여인력에서 찾지 못해 인적정보에서" in line for line in logs)
+    assert "참여인력에 없어 인적정보에서 찾음" in report.lines()[0]
+    assert "소득자 검색(참여인력, 사번): '202600001' → 0행" in logs     # 빈 그리드도 '결과 수 모름' 이 아니다
+
+
+def test_person_found_in_staff_list_stays_there_and_personal_info_is_never_tried_backwards(monkeypatch):
+    popup = FakePersonPopup(staff=[("가나다", "123456")], people=[("가나다", "123456")])
+    monkeypatch.setattr(person, "open_popup", lambda *a, **k: (popup, ""))
+    report = person.search(object(), FakeRcvFrame(popup), "가나다", "123456", lambda m: None, wait=lambda s: None, tab=person.TAB_STAFF)
+    assert report.picked and report.tab == person.TAB_STAFF and not report.tried
+    # 인적정보에서 못 찾았다고 참여인력으로 가지는 않는다
+    popup = FakePersonPopup(staff=[("가나다", "202600001")], people=[])
+    monkeypatch.setattr(person, "open_popup", lambda *a, **k: (popup, ""))
+    popup.tab = person.TAB_STUDENT
+    report = person.search(object(), FakeRcvFrame(popup), "가나다", "202600001", lambda m: None, wait=lambda s: None)
+    assert not report.picked and report.tab == person.TAB_STUDENT and report.pick_note == "검색 결과가 없음"
+
+
+def test_person_with_two_rows_in_staff_list_is_not_looked_up_elsewhere(monkeypatch):
+    popup = FakePersonPopup(staff=[("가나다", "123456"), ("가나다", "123456")], people=[("가나다", "123456")])
+    monkeypatch.setattr(person, "open_popup", lambda *a, **k: (popup, ""))
+    report = person.search(object(), FakeRcvFrame(popup), "가나다", "123456", lambda m: None, wait=lambda s: None, tab=person.TAB_STAFF)
+    assert not report.picked and report.tab == person.TAB_STAFF and "2개" in report.pick_note

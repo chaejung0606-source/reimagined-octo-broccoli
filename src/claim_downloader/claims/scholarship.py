@@ -521,7 +521,7 @@ def _read_notice(job: Job, entries: list[str], rules: dict[str, str]) -> None:
 class PersonResult:
     index: int
     name: str
-    status: str = "waiting"          # planned · saved · stopped · failed
+    status: str = "waiting"          # planned · saved · present(이미 청구내역에 있어 넣지 않음) · stopped · failed
     lines: list[str] = field(default_factory=list)
     note: str = ""
     # 화면의 결과 표가 쓰는 값 — 글 줄(lines)을 다시 쪼개지 않게 따로 둔다
@@ -549,12 +549,17 @@ class ScholarshipReport:
     def saved(self) -> int:
         return sum(1 for r in self.results if r.status == "saved")
 
+    @property
+    def present(self) -> int:
+        return sum(1 for r in self.results if r.status == "present")
+
     def review_items(self) -> list[str]:
         """[신청] 전에 ERP 에서 확인할 것 — 결과 창 · 진행 기록 · 로그에 그대로 보인다."""
         return [f"{r.index + 1}. {r.name} — {item}" for r in self.results for item in r.review]
 
     def lines(self) -> list[str]:
-        out = ["미리 보기 (ERP 에 넣지 않음)" if self.dry_run else f"ERP 임시저장 {self.saved}명" + (" — 멈춤" if self.stopped else "")]
+        out = ["미리 보기 (ERP 에 넣지 않음)" if self.dry_run else f"ERP 임시저장 {self.saved}명"
+               + (f" · 이미 청구내역에 있어 건너뜀 {self.present}명" if self.present else "") + (" — 멈춤" if self.stopped else "")]
         if self.blocked:
             out.append("✗ " + self.blocked)
         review = self.review_items()
@@ -565,7 +570,7 @@ class ScholarshipReport:
             out.append("신청 전 대조: " + self.check.heading())
             out.extend("  ! " + item for item in self.check.problems)
         for r in self.results:
-            mark = {"saved": "✓", "planned": "·", "stopped": "■", "failed": "✗"}.get(r.status, "·")
+            mark = {"saved": "✓", "present": "=", "planned": "·", "stopped": "■", "failed": "✗"}.get(r.status, "·")
             out.append(f"{mark} {r.index + 1}. {r.name}" + (f" — {r.note}" if r.note else ""))
             out.extend("    " + line for line in r.lines)
         if not self.dry_run:
@@ -752,7 +757,16 @@ def run(page, frame, job: Job, log: Callable[[str], None], ask: Ask, wait: Calla
         report.stopped = True
         log("%s 청구 멈춤 — %s" % (job.spec.name, why))
         return report
+    already = _already_on_sheet(frame, job, chosen, log) if why != "새 청구서" else {}
     for index in chosen:
+        if index in already:
+            result = new_result(job, index)
+            result.status = "present"
+            result.note = "이미 이 청구서의 청구내역(줄 %s)에 있어 넣지 않았습니다" % ", ".join(str(r + 1) for r in already[index])
+            result.lines.append("= " + result.note)
+            report.results.append(result)
+            notify(index, "present", result.note)
+            continue
         if should_stop():
             report.stopped = True
             break
@@ -778,9 +792,27 @@ def run(page, frame, job: Job, log: Callable[[str], None], ask: Ask, wait: Calla
     log("%s 청구 끝 — 임시저장 %d명%s" % (job.spec.name, report.saved, " (멈춤)" if report.stopped else ""))
     for item in report.review_items():
         log("  신청 전 확인: " + item)
-    if report.saved:
+    if report.saved or report.present:
         report.check = check_sheet(frame, job, log, wait, partial=report.stopped)
     return report
+
+
+def _already_on_sheet(frame, job: Job, chosen: list[int], log) -> dict[int, list[int]]:
+    """이 폴더의 청구서에 이어 넣기 전에 — 이번에 넣을 사람 중 이미 청구내역에 있는 사람 {index: [줄]}. ERP 화면이 기준이다.
+
+    담당자 실제(2026-10-21): 4명을 다 넣은 뒤 폴더를 다시 읽자(체크가 다시 다 켜짐) 앱이 같은 청구서(결의번호 336)에 '이어서' 4명을
+    또 넣으려 했다(그때는 소득자를 못 찾아 멈춰 두 번 들어가지 않았다). 앱 기록이 아니라 화면의 청구내역으로 본다 — ERP 에서 줄을
+    지웠으면 다시 넣는 것이 맞다. 같은 이름 · 같은 금액 줄이 둘인 사람(TA 교과목 둘)도 줄 수만큼만 건너뛴다(sheet_check.match_rows)."""
+    from . import sheet_check
+    rows = _read_sheet(frame)[1]
+    if not rows:
+        return {}
+    hits = sheet_check.present(job, rows)
+    out = {i: hits[i] for i in chosen if i in hits}
+    if out:
+        log("%s — 청구내역 %d줄 중 이번에 넣을 사람 %d명이 이미 있어 건너뜁니다: %s" % (
+            job.spec.name, len(rows), len(out), ", ".join(f"{i + 1}. {job.people[i].name}" for i in out)))
+    return out
 
 
 def check_sheet(frame, job: Job, log: Callable[[str], None], wait=None, partial: bool = False):

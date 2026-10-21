@@ -450,7 +450,11 @@ class ErpSession:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
         cfg = self._load_settings()
         project = self._project(getattr(job, "project_no", ""))
-        page, frame = claim_form.wait_for_form(self.page.context, log=self.log)
+        auto_sheet = getattr(cfg, "auto_new_sheet", True)
+        # 앱이 새 청구서를 띄울 것이면 작성 화면이 없는 것이 보통이다 — '작성 화면을 찾지 못함' 대신 무엇을 할지 적는다(진단 줄은 그대로 남긴다)
+        page, frame = claim_form.wait_for_form(self.page.context, log=None if auto_sheet else self.log)
+        if frame is None and auto_sheet:
+            self.log("작성 화면이 떠 있지 않음 (%s) — 결의서내역을 본 뒤 새 청구서를 띄웁니다" % claim_form.describe_frames(self.page.context))
         # 이 폴더의 청구서(멈췄다가 이어 넣기 — 결의번호 · 대표적요로 알아본다)가 앞에 있으면 그대로. 아니면 그 과제의 ERP 결의서내역에서
         # 대표적요가 같은 청구서를 먼저 찾고(담당자 요청 2026-10-19), 결의서 목록의 [일반청구] 로 새 청구서를 띄운다.
         continuing = False
@@ -485,7 +489,7 @@ class ErpSession:
                 self.go_to_claims(project)
             return navigate.open_new_sheet(self.page.context, self.log, self._wait, project)
 
-        open_sheet = open_sheet if getattr(cfg, "auto_new_sheet", True) else None
+        open_sheet = open_sheet if auto_sheet else None
         dry_run = False
         messages: list[str] = []
 

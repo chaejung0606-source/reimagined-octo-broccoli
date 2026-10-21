@@ -103,7 +103,7 @@ def _money(value) -> str:
 CARD_COLUMNS = [("상태", 96), ("사용일", 70), ("건명", 200), ("금액", 84), ("청구구분", 110), ("확인할 것", None)]
 SCH_COLUMNS = [("상태", 104), ("No", 44), ("이름", 92), ("학번", 104), ("청구액", 92), ("개별 적요", 300), ("첨부", 56), ("확인할 것", None)]
 SCH_STATUS = {"planned": ("넣을 것", "neutral"), "saved": ("임시저장", "success"), "review": ("저장·확인", "warning"),
-              "stopped": ("멈춤", "warning"),
+              "present": ("이미 있음", "neutral"), "stopped": ("멈춤", "warning"),
               "failed": ("실패", "danger"), "waiting": ("대기", "neutral")}
 
 
@@ -1644,6 +1644,8 @@ class ClaimPage(QWidget):
             QMessageBox.warning(self, "넣지 못했습니다", report.blocked)
         else:
             saved = [r.index for r in report.results if r.status == "saved"]
+            # 이미 청구내역에 있어 건너뛴 사람도 체크를 푼다 — 다시 눌러도 넣지 않을 사람이다(기록은 '앱이 저장한 사람' 만)
+            done = saved + [r.index for r in report.results if r.status == "present"]
             if saved and job is not None and not job.test_mode:      # 시험으로 넣은 것은 기록하지 않는다
                 try:
                     sch.record_job(job, report)
@@ -1652,13 +1654,13 @@ class ClaimPage(QWidget):
             # 다 넣었으면(멈추지 않았으면) 남은 명단 폴더로 이어 간다 — 담당자 요청(2026-10-14) '하나를 끝내고 다음으로'
             nxt = self._next_roster_row(row) if saved and not report.stopped else None
             if 0 <= row < len(self._status):
-                self._set_status(row, "partial" if report.stopped and saved else "saved" if saved else "read")
+                self._set_status(row, "partial" if report.stopped and done else "saved" if done else "read")
             if self._current == row:
                 for r in report.results:
                     self.scholarship_panel.set_person_status(r.index, "review" if r.review else r.status, r.note)
-                self.scholarship_panel.uncheck_saved(saved)
+                self.scholarship_panel.uncheck_saved(done)
             elif job is not None:
-                for index in saved:
+                for index in done:
                     job.selected[index] = False
             if 0 <= row < len(self._dirs):
                 self._refresh_row(row)
@@ -1670,16 +1672,21 @@ class ClaimPage(QWidget):
             if report.check is not None:
                 review = review + ["청구내역 대조: " + item for item in report.check.problems]
             check = f" 신청 전 확인할 것 {len(review)}건 — 결과 창과 [진행 기록] 에 있습니다." if review else ""
-            if report.stopped:
+            all_present = bool(report.present) and not saved and not report.stopped
+            if report.present and not all_present:
+                check = f" 이미 청구내역에 있던 {report.present}명은 넣지 않았습니다." + check
+            if all_present:
+                self._set_state("이미 있음", "info", "넣을 사람이 모두 이 청구서의 청구내역에 이미 있어 넣지 않았습니다." + check)
+            elif report.stopped:
                 self._set_state("멈춤", "warning", f"{report.saved}명까지 임시저장했습니다. 남은 학생만 체크돼 있으니 고친 뒤 다시 누르면 이어집니다." + check)
             elif review:
                 self._set_state("확인 필요", "warning", f"{report.saved}명을 임시저장했습니다." + check + " ERP 에서 고친 뒤 [신청] 을 직접 누르세요.")
             else:
-                self._set_state("임시저장", "success", f"{report.saved}명을 임시저장했습니다. ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요.")
+                self._set_state("임시저장", "success", f"{report.saved}명을 임시저장했습니다." + check + " ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요.")
             if job is None:
                 QMessageBox.information(self, "명단 청구", "\n".join(report.lines()[:40]))
             else:
-                saved_text = job.count_text(saved) if saved else "0명"
+                saved_text = (job.count_text(saved) if saved else "0명") + (f" · 이미 있어 건너뜀 {report.present}명" if report.present else "")
                 # 같은 ERP 알림이 파일마다 되풀이된다('파일명의 특수문자는 제거됩니다.') — 한 줄로 모아 몇 번인지만
                 alerts = [f"{m} (×{report.messages.count(m)})" if report.messages.count(m) > 1 else m
                           for m in dict.fromkeys(report.messages)]

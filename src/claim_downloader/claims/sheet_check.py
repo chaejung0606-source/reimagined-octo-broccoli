@@ -63,10 +63,8 @@ class SheetCheck:
         return f"청구내역 {self.rows}줄 — 명단과 맞습니다"
 
 
-def compare(job, sheet_rows: list[str], totals: list[int], expect_no_deduction: bool = True,
-            partial: bool = False) -> SheetCheck:
-    """명단(job.people 전부 — 이번에 체크한 사람만이 아니다)과 청구내역 줄을 맞춘다. partial 이면(넣다가 멈춤) 빠진 사람은 확인할 것이 아니다."""
-    check = SheetCheck(read=True, rows=len(sheet_rows))
+def match_rows(job, sheet_rows: list[str]) -> tuple[dict[int, list[int]], list[int], int]:
+    """청구내역 줄을 명단 사람에게 붙인다 — ({사람 index: [줄 번호(0부터)]}, 명단에 없는 줄, 이름으로 맞춘 줄 수)."""
     wanted = [(i, _squash(job.row_summary(i))) for i in range(len(job.people))]
     names = [(i, _squash(p.name)) for i, p in enumerate(job.people)]
     main = _squash(job.main_summary)
@@ -97,6 +95,21 @@ def compare(job, sheet_rows: list[str], totals: list[int], expect_no_deduction: 
         hits.setdefault(pick, []).append(r)
     for rows in hits.values():
         rows.sort()
+    return hits, strangers, len(by_name)
+
+
+def present(job, sheet_rows: list[str]) -> dict[int, list[int]]:
+    """이미 청구내역에 들어 있는 사람 {index: [줄 번호]} — 이 폴더의 청구서에 이어 넣기 전에 두 번 넣지 않으려고(scholarship.run).
+    한 줄도 이 명단과 맞지 않으면(다른 청구서이거나 표 글자가 예상과 다르면) 빈 dict."""
+    hits, _strangers, _named = match_rows(job, sheet_rows)
+    return hits
+
+
+def compare(job, sheet_rows: list[str], totals: list[int], expect_no_deduction: bool = True,
+            partial: bool = False) -> SheetCheck:
+    """명단(job.people 전부 — 이번에 체크한 사람만이 아니다)과 청구내역 줄을 맞춘다. partial 이면(넣다가 멈춤) 빠진 사람은 확인할 것이 아니다."""
+    check = SheetCheck(read=True, rows=len(sheet_rows))
+    hits, strangers, named = match_rows(job, sheet_rows)
 
     if strangers and not hits:
         # 한 줄도 맞추지 못했으면 줄마다 '명단에 없음' 을 늘어놓지 않는다 — 다른 청구서이거나 표 글자가 예상(실측 ⑤)과 다르다
@@ -131,8 +144,8 @@ def compare(job, sheet_rows: list[str], totals: list[int], expect_no_deduction: 
             check.problems.append(f"합계 줄 청구액 {totals[0]:,}원 ≠ 명단으로 맞춘 줄의 합 {matched_sum:,}원")
         else:
             check.lines.append(f"✓ 합계 줄 청구액 {totals[0]:,}원 = 명단으로 맞춘 줄의 합")
-    if by_name:
-        check.lines.append(f"적요가 잘려 보이는 줄 {len(by_name)}개는 대표적요와 입금처 · 예금주 이름으로 맞췄습니다")
+    if named:
+        check.lines.append(f"적요가 잘려 보이는 줄 {named}개는 대표적요와 입금처 · 예금주 이름으로 맞췄습니다")
     if expect_no_deduction and len(totals) >= 3 and totals[2]:
         check.problems.append(f"합계 줄 공제합계가 {totals[2]:,}원입니다 — 소득구분이 '장학금' 이 아닌 줄이 있습니다(장학금 · 혁신인재지원금은 0)")
     return check

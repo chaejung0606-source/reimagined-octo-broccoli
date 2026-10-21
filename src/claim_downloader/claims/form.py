@@ -461,7 +461,8 @@ def save_draft(frame, log: Callable[[str], None], messages: list[str],
         log("임시저장 실패 — " + report.note)
         return report
     # 누른 뒤에 적는다 — 전에는 누르기 전에 '누름' 을 적어 실패한 시험의 로그가 헷갈렸다
-    log("임시저장: ERP [%s] 누름 (결의번호 %s)" % (SAVE_TEXT, before.get("REQ_SEQ_NO") or "—"))
+    # 결의번호(#REQ_CNT)는 첫 [저장] 에 생긴다(실측 ⑤). REQ_SEQ_NO 는 'TMP_REQ_…' 임시 번호라 결의번호로 적지 않는다
+    log("임시저장: ERP [%s] 누름 (%s)" % (SAVE_TEXT, f"결의번호 {before['REQ_CNT']}" if before.get("REQ_CNT") else "첫 저장"))
     after = before
     for _ in range(tries):
         wait(0.25)

@@ -125,6 +125,9 @@ RESULT_COUNT_JS = """() => {
   if (best) return {rows: best, kind: 'table'};
   // 머리글(k_열이름 셀)만 있고 행이 없는 JGM 그리드 — 조회 결과 0행 (실측: 세금계산서 팝업은 조회 전엔 그리드 자체가 없다)
   if (document.querySelector('[class*="k_"]')) return {rows: 0, kind: 'grid'};
+  // 머리글 칸도 없이 빈 틀만 남은 JGM 그리드 — 담당자 실제(2026-10-21): 소득자 팝업 참여인력 탭에서 명단에 없는 학생을 찾자
+  // '결과 수 모름' 이 됐다. 그리드 틀(.jgrid-viewport)이 보이면 0행으로 센다
+  if (Array.from(document.querySelectorAll('.jgrid-viewport')).some(vis)) return {rows: 0, kind: 'grid'};
   return {rows: 0, kind: 'unknown'};
 }"""
 
