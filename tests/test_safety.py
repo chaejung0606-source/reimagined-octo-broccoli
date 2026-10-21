@@ -152,14 +152,19 @@ def test_navigation_presses_only_project_claim_tab_and_new_sheet():
     과제현황 쪽 넘김(#prevBtn · #nextBtn — 고른 과제가 다른 쪽에 있을 때, 과제 폴더별 받기 2026-10-21) 일곱뿐이다.
     쪽 단추는 화면 스크립트로 눌러도 쪽이 안 바뀌면 마우스(프레임의 click)로 한 번 더 누른다 — 그 단추 둘만. 쪽 번호 링크와
     과제현황 거르기 '전체과제'(+ 목록이 그대로면 [검색])도 누른다 — 끝난 과제는 '전체과제' 둘째 쪽에 있다(2026-10-21).
+    대응자금 과제는 비목 차례를 읽으려고 과제정보의 '예산' 하위 탭도 누른다(담당자 2026-10-21 "과제정보-예산에서 확인하고") — 그 화면은 읽기만.
     로그인 화면 · 신청 · 삭제 · 청구서복사 · 작성 화면의 '새 청구서' · 탭 닫기는 누르지 않고 값도 넣지 않는다."""
     from claim_downloader import navigate
     text = (SRC / "navigate.py").read_text(encoding="utf-8")
     pressing = {"CLICK_PROJECT_JS": navigate.CLICK_PROJECT_JS, "CLICK_CLAIM_TAB_JS": navigate.CLICK_CLAIM_TAB_JS,
                 "CLICK_NEW_SHEET_JS": navigate.CLICK_NEW_SHEET_JS, "CLICK_MAIN_TAB_JS": navigate.CLICK_MAIN_TAB_JS,
                 "CLICK_PROJECT_TAB_JS": navigate.CLICK_PROJECT_TAB_JS, "CLICK_CARD_SHEET_JS": navigate.CLICK_CARD_SHEET_JS,
-                "CLICK_PAGE_JS": navigate.CLICK_PAGE_JS, "ALL_PROJECTS_JS": navigate.ALL_PROJECTS_JS}
-    assert text.count(".click()") == 11 and sum(js.count(".click()") for js in pressing.values()) == 11
+                "CLICK_PAGE_JS": navigate.CLICK_PAGE_JS, "ALL_PROJECTS_JS": navigate.ALL_PROJECTS_JS,
+                "CLICK_BUDGET_TAB_JS": navigate.CLICK_BUDGET_TAB_JS}
+    assert text.count(".click()") == 12 and sum(js.count(".click()") for js in pressing.values()) == 12
+    # 예산 탭은 글자가 정확히 '예산' 인 보이는 링크 하나만(그 화면의 [변경신청서작성] · [삭제] · [예산출력] 은 아니다), 예산내역은 읽기만
+    assert "txt(a) === '예산'" in navigate.CLICK_BUDGET_TAB_JS and "shown.length !== 1" in navigate.CLICK_BUDGET_TAB_JS
+    assert ".click()" not in navigate.BUDGET_JS and ".value =" not in navigate.BUDGET_JS
     # 쪽 넘김은 단추 둘과, 두 단추를 함께 담은 묶음 안의 숫자뿐인 쪽 번호 링크(과제 줄의 fnPage 금액 링크는 아님)만
     assert "which !== 'nextBtn' && which !== 'prevBtn'" in navigate.CLICK_PAGE_JS
     assert "/^[0-9]{1,2}$/.test(which)" in navigate.CLICK_PAGE_JS and "box.contains(pb)" in navigate.CLICK_PAGE_JS

@@ -94,3 +94,37 @@ def test_destination_is_directly_under_bimok_folder(tmp_path):
 def test_upload_folder_is_refused(tmp_path):
     with pytest.raises(RuntimeError):
         naming.ensure_not_upload(tmp_path / "02. 장학금" / "업로드" / "x.pdf")
+
+
+BUDGET = [["A10110002", "장학금"], ["A10110012", "연구시설/장비비"]]       # 대응자금 예산 탭(2026-10-21 담당자 그림)의 차례
+
+
+@pytest.mark.parametrize("cont, info, expected", [
+    ("02_연구장비 구입", {"bimok": "연구시설/장비비"}, "02"),           # 적요 앞 02_(사업비 장학금 번호)는 보지 않고 상세 표 '비목' 열
+    ("근로장학금", {"bimok": "장학금"}, "01"),
+    ("근로장학금", {"bimok": "A10110012"}, "02"),                      # 비목코드로 적혀 있어도
+    ("[연구시설·장비비] 노트북", {}, "02"),                            # 적요 안 […]
+    ("노트북", {"full": "비목 금액\n연구시설/장비비 1,234,000\n장학금 0"}, "02"),   # 금액 줄
+    ("노트북", {"full": "장학금 안내\n연구시설/장비비 안내"}, "00"),      # 둘 다 나오면 추측하지 않는다
+    ("노트북", {"bimok": "인건비"}, "00"),                             # 예산에 없는 비목 — 사업비 번호(01)로 보내지 않는다
+])
+def test_matching_fund_bimok_follows_budget_tab_order(cont, info, expected):
+    code, name = naming.build_name(make_row(cont=cont, amt="1234000", budget=BUDGET), info)
+    assert code == expected and name.startswith(expected + "_(")
+    assert ") 02_" not in name                                               # 적요 앞 번호는 떼어 낸다
+
+
+def test_matching_fund_with_one_budget_line_needs_no_evidence():
+    assert naming.budget_code([["A10110002", "장학금"]], "아무 적요", {}, 0) == "01"
+
+
+def test_matching_fund_folders(tmp_path):
+    assert naming.folder_name("02", BUDGET) == "02. 연구시설장비비"
+    assert naming.folder_name("00", BUDGET) == naming.folder_name("07", BUDGET) == naming.UNSORTED
+    assert naming.destination(tmp_path, "01", "x.pdf", BUDGET).parent == tmp_path / "01. 장학금"
+    mine = tmp_path / "02. 연구시설 · 장비비"                          # 담당자가 먼저 만든 같은 번호 · 같은 이름 폴더는 그대로 쓴다
+    mine.mkdir()
+    (tmp_path / "02. 인건비").mkdir()
+    assert naming.destination(tmp_path, "02", "x.pdf", BUDGET).parent == mine
+    assert naming.own_budget("(202409710003)_2026년도 대응자금_254,907,000") and naming.own_budget("", "사업[대응 자금-교내]")
+    assert not naming.own_budget("(202408470003)_2026년도 사업비", "가짜사업_이월금")

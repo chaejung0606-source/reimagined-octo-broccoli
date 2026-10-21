@@ -18,7 +18,7 @@
   [일반청구] 를 다시 누르면 있던 작성 화면이 새 것으로 바뀐다고 본다 — 그래서 **지금 작성 화면이 저장된 청구서이고 입력 칸이 비었을 때만** 누른다
   (저장 전 입력이 있으면 날아간다). 누른 뒤 결의번호 없는 새 작성 화면이 떴는지 본다. 작성 화면의 '새 청구서' 단추는 누르지 않는다(무엇을 하는지 미실측).
 
-누르는 것은 과제명 링크 · '청구서' 탭 · 결의서 목록의 `#P10` · `#P11` · 위쪽 '메인화면' · '과제정보' 탭, 그리고 고른 과제가 과제현황 첫 쪽에
+누르는 것은 과제명 링크 · '청구서' 탭 · '예산' 탭(대응자금 과제의 비목 차례 읽기, 2026-10-21) · 결의서 목록의 `#P10` · `#P11` · 위쪽 '메인화면' · '과제정보' 탭, 그리고 고른 과제가 과제현황 첫 쪽에
 없을 때만 과제현황의 쪽 번호 · 쪽 단추(`#prevBtn` · `#nextBtn`)와 거르기 '전체과제'(`#SEARCH_GB` → 보기 '전체과제', 목록이 그대로면 [검색]) —
 2026-10-21 담당자 "전체과제로 설정하고 2페이지를 눌러야함" — 뿐이다(tests/test_safety.py). 값을 넣지 않는다. Playwright 를 들여오지 않는다 —
 프레임의 evaluate 와, 쪽 단추를 화면 스크립트로 눌러도 쪽이 안 바뀔 때 그 단추 하나를 프레임의 click 으로 한 번 더 누르는 것뿐이다.
@@ -201,6 +201,59 @@ CLICK_CLAIM_TAB_JS = r"""() => {
   if (shown.length !== 1) return {ok: false, why: shown.length ? "'청구서' 탭이 여럿" : "'청구서' 탭이 보이지 않음"};
   shown[0].click();
   return {ok: true};
+}"""
+
+# 과제정보의 '예산' 하위 탭 — 대응자금 과제의 비목 차례를 읽으려고(담당자 2026-10-21 "과제정보-예산에서 확인하고 순서대로 숫자를 붙여주세요").
+# '청구서' 탭과 같이 글자가 정확히 '예산' 이고 보이는 링크가 하나일 때만. 그 화면의 [변경신청서작성] · [삭제] · [예산출력] 은 누르지 않는다.
+BUDGET_TAB_TEXT = "예산"
+CLICK_BUDGET_TAB_JS = r"""() => {
+  const txt = e => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim();
+  const shown = Array.from(document.querySelectorAll('a')).filter(a => {
+    const r = a.getBoundingClientRect();
+    return txt(a) === '예산' && r.width > 0 && r.height > 0;
+  });
+  if (shown.length !== 1) return {ok: false, why: shown.length ? "'예산' 탭이 여럿" : "'예산' 탭이 보이지 않음"};
+  shown[0].click();
+  return {ok: true};
+}"""
+
+# 예산 탭의 예산내역 — 머리글에 '비목코드' · '비목명' 이 있는 화면에서, 줄(tr · JGM .jgrid-row)마다 비목코드 꼴(A10110002)인 칸과 그 다음 칸(비목명)을
+# 차례대로 읽는다(실측 그림 2026-10-21: 재원 | 비목분류명 | 지급구분 | 비목코드 | 비목명 | 당초예산액 …, 재원 · 비목분류명은 여러 줄을 합친 칸).
+# 표 모양(table 인지 JGM 인지)은 아직 구조 저장으로 실측하지 않아 칸 차례에 기대지 않는다. 소계 · 합계 줄은 비목코드가 없어 빠진다. 읽기만 한다.
+BUDGET_JS = r"""() => {
+  const txt = e => {
+    const t = e.getAttribute && e.getAttribute('title');
+    return ((t && t.trim()) ? t : (e.innerText || e.textContent || '')).replace(/\s+/g, ' ').trim();
+  };
+  const flat = (document.body ? (document.body.innerText || document.body.textContent || '') : '').replace(/\s+/g, '');
+  if (flat.indexOf('비목코드') < 0 || flat.indexOf('비목명') < 0) return null;
+  let shown = true;
+  try { const f = window.frameElement; if (f) { const r = f.getBoundingClientRect(); shown = r.width > 0 && r.height > 0; } } catch (e) {}
+  const prj = document.getElementById('PRJ_NO');
+  const CODE = /^[A-Z]{1,3}[0-9]{5,12}$/;
+  const rows = Array.from(document.querySelectorAll('tr, .jgrid-row'))
+    .filter(row => row.tagName === 'TR' || !row.parentElement || !row.parentElement.closest('.jgrid-row'));
+  const order = row => { const r = row.getAttribute && row.getAttribute('r'); return r !== null && r !== '' && !isNaN(+r) ? +r : null; };
+  const items = [], seen = {};
+  const jgmCells = row => {
+    const all = Array.from(row.querySelectorAll('[class]')).filter(e => Array.from(e.classList).some(c => /^k_/.test(c)));
+    return all.filter(e => !all.some(o => o !== e && o.contains(e)));       // 칸 안의 칸은 빼고 바깥 칸만
+  };
+  rows.forEach((row, at) => {
+    const cells = row.tagName === 'TR' ? Array.from(row.cells) : jgmCells(row);
+    for (let j = 0; j < cells.length - 1; j++) {
+      const code = txt(cells[j]);
+      if (!CODE.test(code)) continue;
+      let name = '';
+      for (let k = j + 1; k < cells.length && !name; k++) name = txt(cells[k]);
+      if (!name || CODE.test(name) || !/[가-힣A-Za-z]/.test(name)) break;      // 비목명 대신 금액 · 빈칸이면 이 줄은 읽지 않는다
+      const key = code + '|' + name;
+      if (!seen[key]) { seen[key] = 1; items.push({code, name, r: order(row), at}); }
+      break;
+    }
+  });
+  items.sort((a, b) => (a.r !== null && b.r !== null) ? a.r - b.r : a.at - b.at);
+  return {prj: prj ? String(prj.value || '') : null, shown, items: items.map(i => [i.code, i.name])};
 }"""
 
 
@@ -682,9 +735,15 @@ def show_list(context, project_no: str, log: Callable[[str], None], wait: Callab
     if frame is not None and _shown(frame):
         return frame, ""
     if frame is not None:
+        # 과제정보는 앞인데 다른 하위 탭(예산)이 떠 있으면 '청구서' 하위 탭을, 다른 위쪽 탭이 앞이면 '과제정보' 탭을 누른다
+        frame = _claim_tab_again(context, project_no, log, wait)
+        if frame is not None:
+            return frame, ""
         if any((r or {}).get("ok") for r in (_evaluate(f, CLICK_PROJECT_TAB_JS) for _p, f in _frames(context))):
             log("결의서 목록을 보려고 위쪽 '과제정보' 탭을 앞으로 가져옵니다")
             frame = _wait(lambda: next((f for f in [list_frame(context, project_no)] if f is not None and _shown(f)), None), wait, tries=20)
+            if frame is None:
+                frame = _claim_tab_again(context, project_no, log, wait)
             if frame is not None:
                 return frame, ""
     ok, why = go_to_claims(context, project_no, log, wait)
@@ -693,6 +752,63 @@ def show_list(context, project_no: str, log: Callable[[str], None], wait: Callab
         return frame, ""
     # go_to_claims 가 '목록이 이미 떠 있습니다' 로 끝났는데 보이지 않으면 — 다른 탭 뒤에 있고 '과제정보' 탭을 누르지 못한 것이다
     return None, ("결의서 목록이 다른 탭 뒤에 있는데 위쪽 '과제정보' 탭을 누르지 못했습니다" if ok else why) or "결의서 목록이 화면에 보이지 않습니다"
+
+
+def _claim_tab_again(context, project_no: str, log: Callable[[str], None], wait: Callable[[float], None]):
+    """과제정보가 앞에 있는데 결의서 목록이 다른 하위 탭(예산) 뒤에 숨었으면 '청구서' 하위 탭을 다시 누른다 — 보이는 목록 프레임 또는 None."""
+    toolbar = _toolbar(context, project_no)
+    if toolbar is None or not (_evaluate(toolbar, TOOLBAR_JS) or {}).get("shown", True):
+        return None
+    if not (_evaluate(toolbar, CLICK_CLAIM_TAB_JS) or {}).get("ok"):
+        return None
+    log("과제정보 → 청구서 탭을 다시 눌렀습니다")
+    return _wait(lambda: next((f for f in [list_frame(context, project_no)] if f is not None and _shown(f)), None), wait, tries=40)
+
+
+def _budget_now(context, project_no: str) -> list:
+    """지금 보이는 예산내역의 비목([[비목코드, 비목명], …]) — 그 과제의 화면(숨은 #PRJ_NO 가 같거나, 없으면 보이는 화면)만."""
+    for _page, frame in _frames(context):
+        got = _evaluate(frame, BUDGET_JS)
+        if not got or not got.get("items") or not got.get("shown", True):
+            continue
+        prj = re.sub(r"\D", "", str(got.get("prj") or ""))
+        if got.get("prj") is None or prj == project_no:
+            return [[str(c), str(n)] for c, n in got["items"]]
+    return []
+
+
+def read_budget(context, project_no: str, log: Callable[[str], None], wait: Callable[[float], None]) -> tuple[list, str]:
+    """그 과제의 과제정보 → 예산 탭의 비목을 차례대로 — ([[비목코드, 비목명], …], 못 읽은 까닭). 대응자금 과제의 비목 번호를 붙이려고
+    (담당자 2026-10-21). 결의서 목록까지 간 뒤(show_list) '예산' 하위 탭을 누르고, 읽은 뒤에는 '청구서' 탭을 다시 눌러 목록을 앞에 둔다.
+    누르는 것은 '예산' · '청구서' 하위 탭(과 show_list 의 화면 이동)뿐이다."""
+    project_no = re.sub(r"\D", "", str(project_no or ""))
+    frame, why = show_list(context, project_no, log, wait)
+    toolbar = _toolbar(context, project_no) if frame is not None else None
+    if toolbar is None:
+        return [], why or f"과제 {project_no} 의 과제정보 화면이 보이지 않음"
+    result = _evaluate(toolbar, CLICK_BUDGET_TAB_JS) or {}
+    if not result.get("ok"):
+        return [], f"과제정보의 예산 탭을 누르지 못함({result.get('why', '화면을 읽지 못함')})"
+    log("과제정보 → 예산 탭을 눌렀습니다 (비목 차례 읽기)")
+    last: list = []
+    budget: list = []
+    for _ in range(40):              # 예산내역이 그려질 때까지 — 같은 것을 두 번 연달아 읽으면 다 그려진 것으로 본다
+        now = _budget_now(context, project_no)
+        if now and now == last:
+            budget = now
+            break
+        last = now
+        wait(0.5)
+    else:
+        budget = last
+    # 못 읽었으면 머리글은 보였는지 — 표 모양이 달라 줄을 못 읽은 것인지, 예산내역 화면이 안 뜬 것인지(다음 실측의 실마리)
+    header = not budget and any(_evaluate(f, BUDGET_JS) is not None for _p, f in _frames(context))
+    if _claim_tab_again(context, project_no, log, wait) is None:
+        log("⚠ 예산 탭을 읽은 뒤 청구서 탭으로 돌아오지 못했습니다 — 받을 때 앱이 다시 띄웁니다")
+    if not budget:
+        return [], ("예산 탭의 예산내역 머리글(비목코드 · 비목명)은 보이는데 비목 줄을 읽지 못함" if header
+                    else "예산 탭에 예산내역(비목코드 · 비목명)이 보이지 않음")
+    return budget, ""
 
 
 def _squash(text: str) -> str:

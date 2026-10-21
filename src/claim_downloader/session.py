@@ -21,7 +21,7 @@ from .claims import form as claim_form
 from .claims import payee as claim_payee
 from .claims import scholarship as claim_scholarship
 from .claims import taxbill as claim_taxbill
-from . import archive, diagnose, erp, logout as logout_mod, navigate, project_folders, settings as settings_mod
+from . import archive, diagnose, erp, logout as logout_mod, naming, navigate, project_folders, settings as settings_mod
 from .reconcile import reconcile
 from .targets import Selection, select_targets
 
@@ -128,6 +128,8 @@ class ErpSession:
         self._logged_in = False
         self._context = None
         self._left_dialogs: list = []
+        # 대응자금 과제의 예산 탭 비목 차례(과제번호 → [[비목코드, 비목명], …]) — 브라우저를 여는 동안 한 번만 읽는다
+        self._budgets: dict[str, list] = {}
 
     # ── 준비 ─────────────────────────────────────────────────────────────
     def prepare(self) -> archive.ScanReport:
@@ -1054,9 +1056,38 @@ class ErpSession:
             self.log("⚠ " + why)
             sel.blocked.append((listed, why))
             sel.targets = []
+        elif sel.targets and listed and self._own_budget(listed, root):
+            budget, why = self._budget(listed)
+            if budget:
+                for row in sel.targets:
+                    row["budget"] = budget       # 받을 때 비목 번호 · 폴더를 이 차례로(naming.budget_code)
+            else:
+                # 비목 번호를 모르고 받으면 사업비 폴더(01. 인건비 …)나 미분류에 섞인다 — 받지 않고 까닭을 남긴다
+                why = (f"과제 {listed} 는 대응자금이라 비목이 사업비와 다릅니다 — 과제정보 → 예산 탭에서 비목을 읽지 못해({why}) 받지 않았습니다. "
+                       "다시 목록을 읽거나, 그대로면 [문제 보내기] 로 기록을 보내 주세요")
+                self.log("⚠ " + why)
+                sel.blocked.append((listed, why))
+                sel.targets = []
         self.log("대상 %d건 (이미 보관된 %d건은 건너뜀)" % (len(sel.targets), sel.skipped)
                  + (f" → {root}" if root is not None and sel.targets else ""))
         return sel
+
+    def _own_budget(self, project: str, root) -> bool:
+        """비목이 사업비와 달라 예산 탭 차례로 번호를 붙이는 과제인지 — 과제 폴더 · ERP 과제명에 '대응자금' 이 있으면(담당자 2026-10-21)."""
+        names = [getattr(root, "name", "")] if project_folders.project_of(root or "") == project else []
+        names += [p.name for p in navigate.load_projects()[0] if p.no == project]
+        return naming.own_budget(*names)
+
+    def _budget(self, project: str) -> tuple[list, str]:
+        """그 과제의 예산 탭 비목 차례 — 한 번 읽으면 기억한다(못 읽으면 다음에 다시)."""
+        if project not in self._budgets:
+            budget, why = navigate.read_budget(self.page.context, project, self.log, self._wait)
+            if not budget:
+                return [], why
+            self._budgets[project] = budget
+            self.log(f"과제 {project} 는 대응자금이라 비목 번호를 예산 탭 차례로 붙입니다: "
+                     + " · ".join("%02d %s" % (i, name) for i, (_code, name) in enumerate(budget, 1)))
+        return self._budgets[project], ""
 
     def _still_logged_in(self, tries: int = 40) -> bool:
         """ERP 를 새로 연 뒤 로그인이 그대로인지 — 메인화면 과제현황이 뜨면 True, 로그인 화면이면 False(최대 ~20초 본다)."""

@@ -147,7 +147,14 @@ def folder_status(out_root: str) -> list[FolderCount]:
     if not out_root or not os.path.isdir(out_root):
         return []
     roots = [f.path for f in project_dirs(out_root)] or [Path(out_root)]
-    names = list(BIMOK.values()) + [UNSORTED]
+    # 대응자금 과제는 비목 폴더가 예산 탭 차례의 'NN. 비목명'(naming.folder_name)이라 사업비 이름표에 없다 — 번호로 시작하는 폴더를 더한다
+    extra = set()
+    for root in roots:
+        try:
+            extra |= {p.name for p in root.iterdir() if p.is_dir() and re.match(r"^\d{2}\.\s*\S", p.name)}
+        except OSError:
+            continue
+    names = list(BIMOK.values()) + sorted(extra - set(BIMOK.values()) - {UNSORTED}) + [UNSORTED]
     out = []
     for name in names:
         waiting = uploaded = 0

@@ -472,8 +472,8 @@ def process_one(page, row: dict, out_root: str, name_date_first: bool, wait_sec:
     page.wait_for_timeout(800)
     info = read_owners_and_bimok(dfr)
     code, fname = naming.build_name(row, info, name_date_first)
-    dest = naming.destination(out_root, code, fname)
-    log("      → %s / %s" % (naming.folder_name(code), dest.name))
+    dest = naming.destination(out_root, code, fname, row.get("budget"))
+    log("      → %s / %s" % (dest.parent.name, dest.name))
 
     with page.context.expect_page(timeout=60000) as pop_info:
         dfr.evaluate(_CLICK_PRINT_JS)

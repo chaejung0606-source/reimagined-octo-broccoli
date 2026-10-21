@@ -80,3 +80,15 @@ def test_chosen_projects_keep_folder_order_and_drop_missing():
     assert pf.pick(found, "202502320001,202408470001") == ["202408470001", "202502320001"]
     assert pf.pick(found, "202409710003, 202408470003") == ["202408470003"]              # 폴더 없는 과제는 빠진다
     assert pf.pick(found, "") == [] and pf.pick([], "202408470001") == []
+
+
+def test_counts_include_matching_fund_folders(tmp_path):
+    """대응자금 과제의 비목 폴더는 예산 탭 차례의 'NN. 비목명'(담당자 2026-10-21) — 사업비 이름표에 없어도 대기 · 완료 수에 넣는다."""
+    root = make(tmp_path)
+    fund = root / "(202409710003)_2026년도 대응자금_254,907,000"
+    for sub in ("01. 장학금", "02. 연구시설장비비/업로드"):
+        (fund / sub).mkdir(parents=True)
+        (fund / sub / "a.pdf").write_bytes(b"%PDF-1.4")
+    (fund / "참고자료").mkdir()
+    counts = {c.name: (c.waiting, c.uploaded) for c in archive.folder_status(str(root))}
+    assert counts == {"01. 장학금": (1, 0), "02. 연구시설장비비": (0, 1)}

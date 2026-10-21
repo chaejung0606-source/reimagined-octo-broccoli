@@ -45,6 +45,8 @@ class Screen:
         self.mouse_pages = True     # False — 마우스로 눌러도 안 됨(Playwright 오류)
         self.mouse: list[str] = []
         self.lists: dict[str, list[dict]] = {}      # 과제마다 결의서내역 행(있으면 list_rows 대신)
+        self.sub = "claims"           # 과제정보의 하위 탭: claims(청구서 — 결의서 목록이 보임) · budget(예산)
+        self.budgets: dict[str, list[list[str]]] = {}   # 과제마다 예산 탭 예산내역의 [비목코드, 비목명] 차례
 
     def on_page(self, no: str) -> bool:
         return self.pages is None or no in self.pages[self.page_index]
@@ -58,6 +60,15 @@ class Frame:
 
     def evaluate(self, js, *args):
         s = self.s
+        if js is navigate.BUDGET_JS:
+            if self.kind != "budget" or s.active != "project" or s.sub != "budget" or s.toolbar_prj not in s.budgets:
+                return None
+            return {"prj": s.toolbar_prj, "shown": True, "items": [list(x) for x in s.budgets[s.toolbar_prj]]}
+        if js is navigate.CLICK_BUDGET_TAB_JS:
+            assert self.kind == "toolbar"
+            s.clicks.append("예산")
+            s.sub = "budget"
+            return {"ok": True}
         if js is navigate.PROJECTS_JS:
             # 과제현황은 메인화면 탭이 앞일 때만 보인다. visible_projects=False 는 "고른 과제가 다음 쪽에 있음"
             return ([dict(r, visible=s.active == "main" and s.on_page(r["no"])) for r in ROWS]
@@ -135,6 +146,7 @@ class Frame:
         if js is navigate.CLICK_CLAIM_TAB_JS:
             s.clicks.append("청구서")
             s.grid_prj = s.toolbar_prj
+            s.sub = "claims"
             return {"ok": True}
         if js is navigate.CLICK_NEW_SHEET_JS:
             s.clicks.append("P10:" + s.grid_prj)
@@ -167,6 +179,8 @@ class Frame:
             # 위쪽 탭 중 앞에 있는 것의 프레임만 크기가 있다 — 결의서 목록은 과제정보 탭, 작성 화면은 청구서(일반) 탭
             if js is erp.GRID_SHOWN_JS and self.kind != "grid":
                 return False
+            if self.kind == "grid" and s.sub != "claims":
+                return False                     # 예산 하위 탭이 앞이면 결의서 목록은 숨는다
             return {"toolbar": "project", "grid": "project", "form": "sheet", "card": "sheet"}.get(self.kind, s.active) == s.active
         if js is erp._PARSE_ROWS_JS:
             rows = s.lists.get(s.grid_prj, s.list_rows)
@@ -196,7 +210,7 @@ class Frame:
 
 class Page:
     def __init__(self, screen: Screen):
-        self.frames = [Frame(screen, k) for k in ("layout", "dash", "toolbar", "grid", "form", "card")]
+        self.frames = [Frame(screen, k) for k in ("layout", "dash", "toolbar", "grid", "form", "card", "budget")]
         for frame in self.frames:
             frame.page = self                    # Playwright 의 frame.page 처럼
 
@@ -716,3 +730,68 @@ def test_download_refuses_a_row_of_another_project_or_without_folder(isolated_ho
     summary = s.download([wrong, nowhere])
     assert summary.ok == 0 and len(summary.failed) == 2 and saved == []
     assert any("다른 과제(202409710003)" in line for line in logs) and any("폴더가 없어" in line for line in logs)
+
+
+BUDGET = [["A10110002", "장학금"], ["A10110012", "연구시설/장비비"]]       # 2026-10-21 담당자 그림(202409710003 예산 탭)의 차례
+
+
+def test_matching_fund_project_numbers_bimok_by_its_budget_tab(isolated_home, monkeypatch, tmp_path):
+    """담당자 2026-10-21: "대응자금은 사업비와 비목이 다릅니다" · "과제정보-예산에서 확인하고 순서대로 숫자를 붙여주세요".
+    대응자금 과제는 목록을 읽은 뒤 예산 탭의 비목을 차례대로 읽어 받을 건에 붙이고, 받을 때 'NN. 비목명' 폴더에 둔다. 사업비 과제는 그대로."""
+    from claim_downloader import naming
+    from claim_downloader.session import ErpSession
+    monkeypatch.setattr(ErpSession, "browser_open", property(lambda self: True))
+    root = _folders(tmp_path, "(202408470003)_2026년도 사업비_4,438,000,000", "(202409710003)_2026년도 대응자금_254,907,000")
+    screen = Screen()
+    screen.budgets = {"202409710003": BUDGET}
+    screen.lists = {
+        "202408470003": [_approved("1", "02_2026년도 9월 (가)형 근로장학금")],
+        "202409710003": [dict(_approved("3", "02_연구장비 구입"), docNo="202409710003-20261001-3"),
+                         dict(_approved("4", "장학금 지급"), docNo="202409710003-20261001-4")],
+    }
+    s, logs, _saved = _folder_session(screen, root)
+    placed = []
+
+    def process(page, row, out, name_date_first, wait_sec, log):
+        bimok = {"3": "연구시설/장비비", "4": "장학금"}.get(row["no"], "장학금")
+        code, fname = naming.build_name(row, {"bimok": bimok, "owners": ["가나"]})
+        dest = naming.destination(out, code, fname, row.get("budget"))
+        placed.append(f"{__import__('os').path.basename(out)}/{dest.parent.name}/{dest.name[:3]}")
+        return code, dest
+
+    s._process = process
+    sel = s.read_lists(["202408470003", "202409710003"])
+    assert [t.get("budget") for t in sel.targets] == [None, BUDGET, BUDGET] and not sel.blocked
+    assert screen.clicks.count("예산") == 1 and screen.sub == "claims"         # 읽은 뒤 청구서 탭으로 돌아왔다
+    assert any("01 장학금 · 02 연구시설/장비비" in line for line in logs)
+    s.read_lists(["202409710003"])
+    assert screen.clicks.count("예산") == 1                                      # 한 번 읽은 차례는 다시 읽지 않는다
+    assert s.download(sel.targets).ok == 3
+    assert placed == ["(202408470003)_2026년도 사업비_4,438,000,000/02. 장학금/02_",
+                      "(202409710003)_2026년도 대응자금_254,907,000/02. 연구시설장비비/02_",
+                      "(202409710003)_2026년도 대응자금_254,907,000/01. 장학금/01_"]
+
+
+def test_matching_fund_whose_budget_cannot_be_read_is_not_downloaded(isolated_home, monkeypatch, tmp_path):
+    """예산 탭에서 비목을 못 읽으면 그 대응자금 과제는 받지 않는다 — 번호 없이 받으면 사업비 폴더 · 미분류에 섞인다.
+    과제 폴더가 없는 옛 저장 폴더여도 ERP 과제명의 '대응자금' 으로 안다."""
+    from claim_downloader.session import ErpSession
+    monkeypatch.setattr(ErpSession, "browser_open", property(lambda self: True))
+    navigate.save_projects([navigate.Project("202409710003", "가짜사업[대응자금-교내] / 3연차", "2026-03-01", "2027-02-28")])
+    screen = Screen()
+    screen.lists = {"202409710003": [dict(_approved("3", "02_연구장비 구입"), docNo="202409710003-20261001-3")]}
+    s, logs, _saved = _folder_session(screen, _folders(tmp_path, "02. 장학금"))
+    sel = s.read_list("202409710003")
+    assert sel.targets == [] and sel.blocked and "대응자금" in sel.blocked[0][1] and "예산 탭" in sel.blocked[0][1]
+    assert screen.sub == "claims"                         # 못 읽어도 결의서 목록을 앞에 되돌려 둔다
+    screen.budgets = {"202409710003": BUDGET}             # 다음에 다시 읽으면(못 읽은 것은 기억하지 않는다) 받는다
+    assert s.read_list("202409710003").targets[0]["budget"] == BUDGET
+
+
+def test_show_list_presses_claim_tab_when_budget_tab_is_in_front(isolated_home):
+    screen = Screen()
+    context = Context(screen)
+    assert navigate.go_to_claims(context, "202409710003", lambda _m: None, no_wait)[0]
+    screen.sub = "budget"
+    frame, why = navigate.show_list(context, "202409710003", lambda _m: None, no_wait)
+    assert frame is not None and not why and screen.clicks[-1] == "청구서" and "과제정보" not in screen.clicks
