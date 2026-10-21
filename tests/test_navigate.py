@@ -37,6 +37,9 @@ class Screen:
         self.list_rows: list[dict] = []  # 결의서내역 그리드의 행 (erp._PARSE_ROWS_JS 모양)
         self.pages: list[list[str]] | None = None   # 과제현황 쪽 나눔(#prevBtn · #nextBtn) — 쪽마다 보이는 과제번호
         self.page_index = 0
+        self.script_pages = True    # False — 화면 스크립트의 click() 으로는 쪽이 안 바뀐다(2026-10-21 실제 ERP 에서 겪은 모양)
+        self.mouse_pages = True     # False — 마우스로 눌러도 안 됨(Playwright 오류)
+        self.mouse: list[str] = []
         self.lists: dict[str, list[dict]] = {}      # 과제마다 결의서내역 행(있으면 list_rows 대신)
 
     def on_page(self, no: str) -> bool:
@@ -70,9 +73,17 @@ class Frame:
             step = 1 if args[0] == "nextBtn" else -1
             if not 0 <= s.page_index + step < len(s.pages):
                 return {"ok": False, "why": "끝 쪽"}
-            s.page_index += step
-            s.clicks.append("page:" + args[0])
+            if s.script_pages:
+                self._turn(args[0])
             return {"ok": True}
+        if js is navigate.PAGE_STATE_JS:
+            if self.kind != "dash" or s.active != "main" or s.pages is None:
+                return "쪽 단추가 없음"
+            step = 1 if args[0] == "nextBtn" else -1
+            return "" if 0 <= s.page_index + step < len(s.pages) else "끝 쪽"
+        if js is navigate.PAGER_JS:
+            return ({"next": "보임 24×24 (type 없음)", "prev": "보임 24×24 (type 없음)", "links": 2, "shown": 2,
+                     "pages": f"{s.page_index + 1} / {len(s.pages)}"} if self.kind == "dash" and s.pages else None)
         if js is navigate.CLICK_PROJECT_TAB_JS:
             if self.kind != "layout" or not s.toolbar_prj:
                 return {"ok": False, "why": "위쪽 '과제정보' 탭이 보이지 않음"}
@@ -134,6 +145,19 @@ class Frame:
         if self.kind == "layout":
             return None
         raise AssertionError("모르는 JS: " + str(js)[:60])
+
+    def _turn(self, which):
+        self.s.page_index += 1 if which == "nextBtn" else -1
+        self.s.clicks.append("page:" + which)
+
+    def click(self, selector, timeout=None):
+        """Playwright 의 frame.click — 마우스로 누르기. 쪽 단추 밖의 것이 오면 깨진다."""
+        s = self.s
+        assert selector in ("#nextBtn", "#prevBtn") and self.kind == "dash", selector
+        s.mouse.append(selector)
+        if not s.mouse_pages:
+            raise TimeoutError("Timeout 3000ms exceeded. <div class=\"x\">손경호</div> intercepts pointer events")
+        self._turn(selector[1:])
 
 
 class Page:
@@ -500,7 +524,36 @@ def test_project_on_another_page_is_found_by_turning_pages():
     ok, _ = navigate.go_to_claims(Context(screen), "202409710003", lambda m: None, no_wait)
     assert ok and screen.clicks[3:] == ["메인화면", "page:prevBtn", "project:202409710003", "청구서"]
     ok, message = navigate.go_to_claims(Context(screen), "209999999999", lambda m: None, no_wait)      # 어느 쪽에도 없음
-    assert not ok and "보이지 않습니다" in message and screen.clicks[-1].startswith("page:")
+    assert not ok and "찾지 못했습니다" in message and "쪽 2개를 다 봤지만" in message and screen.clicks[-1].startswith("page:")
+    assert not screen.mouse                     # 화면 스크립트로 넘어가면 마우스는 쓰지 않는다
+
+
+def test_page_button_is_pressed_with_the_mouse_when_the_script_click_does_nothing():
+    """2026-10-21 실제 ERP — 과제현황 둘째 쪽의 세 과제를 못 찾았다(#nextBtn 을 화면 스크립트로 눌러도 쪽이 안 바뀐 것으로 본다).
+    쪽이 안 바뀌면 같은 단추를 마우스로 한 번 더 누르고, 단추 모양 · 쪽 표시 · 넘긴 결과를 기록에 남긴다."""
+    screen = Screen()
+    screen.pages = [["202408470003", "202409710003"], ["202603130001", "202408470002"]]
+    screen.script_pages = False
+    logs = []
+    ok, message = navigate.go_to_claims(Context(screen), "202408470002", logs.append, no_wait)
+    assert ok, message
+    assert screen.mouse == ["#nextBtn"] and screen.clicks == ["page:nextBtn", "project:202408470002", "청구서"]
+    assert any("다음 쪽 단추 보임" in line and "쪽 표시 '1 / 2'" in line for line in logs)
+    assert any("(#nextBtn, 마우스)" in line for line in logs)
+    # 둘째 쪽('2 / 2')에서 첫 쪽 과제로 — 막히지 않은 [다음] 을 헛누르지 않고 [이전] 만
+    ok, message = navigate.go_to_claims(Context(screen), "202409710003", logs.append, no_wait)
+    assert ok, message
+    assert screen.mouse == ["#nextBtn", "#prevBtn"] and screen.clicks[-3:] == ["page:prevBtn", "project:202409710003", "청구서"]
+
+    # 마우스로도 안 되면 — 까닭을 남기고 멈춘다. Playwright 오류 글(화면 글자가 섞임)은 기록에 그대로 두지 않는다
+    screen = Screen()
+    screen.pages = [["202408470003", "202409710003"], ["202603130001", "202408470002"]]
+    screen.script_pages = screen.mouse_pages = False
+    logs = []
+    ok, message = navigate.go_to_claims(Context(screen), "202408470002", logs.append, no_wait)
+    assert not ok and "쪽을 넘기지 못했습니다" in message and "#nextBtn" in message
+    assert screen.mouse == ["#nextBtn"] and screen.page_index == 0
+    assert any("다른 것에 가려짐" in line for line in logs) and not any("손경호" in line for line in logs)
 
 
 def _folders(tmp_path, *names):

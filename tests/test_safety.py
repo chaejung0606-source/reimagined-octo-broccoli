@@ -150,6 +150,7 @@ def test_navigation_presses_only_project_claim_tab_and_new_sheet():
     """로그인 뒤 이동(navigate.py, 담당자 허락 2026-10-19)이 누르는 것은 과제현황의 과제명 링크 · 과제정보의 '청구서' 탭 ·
     결의서 목록의 [일반청구](#P10) · [카드청구](#P11, 담당자 허락 2026-10-20) · 위쪽 탭 '메인화면' · '과제정보'(가려진 화면을 앞으로) ·
     과제현황 쪽 넘김(#prevBtn · #nextBtn — 고른 과제가 다른 쪽에 있을 때, 과제 폴더별 받기 2026-10-21) 일곱뿐이다.
+    쪽 단추는 화면 스크립트로 눌러도 쪽이 안 바뀌면 마우스(프레임의 click)로 한 번 더 누른다 — 그 단추 둘만.
     로그인 화면 · 신청 · 삭제 · 청구서복사 · 작성 화면의 '새 청구서' · 탭 닫기는 누르지 않고 값도 넣지 않는다."""
     from claim_downloader import navigate
     text = (SRC / "navigate.py").read_text(encoding="utf-8")
@@ -159,6 +160,11 @@ def test_navigation_presses_only_project_claim_tab_and_new_sheet():
                 "CLICK_PAGE_JS": navigate.CLICK_PAGE_JS}
     assert text.count(".click()") == 7 and sum(js.count(".click()") for js in pressing.values()) == 7
     assert "which !== 'nextBtn' && which !== 'prevBtn'" in navigate.CLICK_PAGE_JS          # 쪽 넘김 단추 둘 밖은 받지 않는다
+    # 화면 스크립트로 눌러도 쪽이 안 바뀌면 같은 쪽 단추를 마우스로 한 번 더(2026-10-21) — 그 한 곳뿐이고 쪽 단추 둘 밖은 받지 않는다
+    assert navigate.PAGE_BUTTONS == ("nextBtn", "prevBtn")
+    assert re.findall(r"\bclick\((?!\))", text) == ["click("] and 'click(f"#{which}", timeout=3000)' in text
+    assert "if which not in PAGE_BUTTONS:" in text.split("def _mouse_click", 1)[1].split("click(f", 1)[0]
+    assert ".click()" not in navigate.PAGER_JS + navigate.PAGE_STATE_JS                       # 쪽 모양 · 단추 상태는 읽기만
     assert "getElementById('P11')" in navigate.CLICK_CARD_SHEET_JS and "!== '카드청구'" in navigate.CLICK_CARD_SHEET_JS
     assert "fnPage\\\\(\\\\s*'01'" in navigate.CLICK_PROJECT_JS                  # 과제명 링크(fnPage('01', 과제번호))만
     assert "=== '청구서'" in navigate.CLICK_CLAIM_TAB_JS
