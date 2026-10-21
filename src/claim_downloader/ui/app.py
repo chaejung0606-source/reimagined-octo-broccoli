@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import ai, settings, share_log, shortcuts, updater
-from . import ai_status
+from . import ai_status, placement
 from .pages.home import HomePage
 from .shell import Dock, DockOverlay, TopBar, WorkTabs
 from .tasks import HOME_ICON, HOME_ID, TASKS, UTILITIES, Task, find
@@ -78,9 +78,10 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.resize(1320, 860)
-        # 1366×768 노트북(작업 표시줄 빼면 창 안쪽 ~690)과 1920×1080 150% 배율(논리 1280×720)에서도 창 아래가 화면 밖으로 나가지 않게
-        self.setMinimumSize(1024, 640)
+        self.resize(*WINDOW_SIZE)
+        # 1366×768 노트북(작업 표시줄 빼면 창 안쪽 ~690)과 1920×1080 150% 배율(논리 1280×720)에서도 창 아래가 화면 밖으로 나가지 않게.
+        # 실제 크기 · 자리는 보이기 전에 그 화면의 작업 영역에 맞춘다(place_window)
+        self.setMinimumSize(*MIN_SIZE)
         self._pages: dict[str, QWidget] = {}
         self._session_worker = None       # 브라우저 스레드 — 청구서 받기와 일반청구가 함께 쓴다
         _follow_project_folders()
@@ -489,6 +490,54 @@ def _app_icon() -> QIcon:
     return icon
 
 
+WINDOW_SIZE = (1320, 860)
+MIN_SIZE = (1024, 640)
+
+
+def _rect(r) -> tuple[int, int, int, int]:
+    return r.x(), r.y(), r.width(), r.height()
+
+
+def _launch_screen():
+    """창을 열 화면 — 마우스가 있는 화면(바로가기를 누른 화면), 없으면 주 화면."""
+    from PySide6.QtGui import QCursor, QGuiApplication
+    return QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+
+
+def place_window(window: QWidget) -> bool:
+    """보이기 전에 — 창을 연 화면의 작업 영역(작업 표시줄 뺀 곳)에 맞는 크기로 줄이고 가운데에 둔다. 최대화해야 하면 True.
+    담당자 2026-10-21: 새로 열면 창이 데스크톱 밖으로 삐져나가 옮기기 어려웠다(1320×860 고정 크기 · 자리는 윈도우가 정함)."""
+    screen = _launch_screen()
+    if screen is None:
+        return False
+    spot = placement.place(_rect(screen.availableGeometry()), WINDOW_SIZE, MIN_SIZE)
+    window.setMinimumSize(spot.min_width, spot.min_height)
+    window.resize(spot.width, spot.height)
+    window.move(spot.x, spot.y)
+    return spot.maximize
+
+
+def keep_on_screen(window: QWidget) -> None:
+    """보인 뒤 — 실제 창틀(제목 줄 · 테두리) 두께로 다시 보고, 창이 작업 영역 밖으로 나가 있으면 줄여서 들여놓는다.
+    창틀 두께는 보인 뒤에야 알 수 있다(배율마다 다르다). 최대화 · 최소화 · 전체 화면이면 그대로 둔다."""
+    if window.isMaximized() or window.isMinimized() or window.isFullScreen():
+        return
+    screen = window.screen() or _launch_screen()
+    if screen is None:
+        return
+    area = _rect(screen.availableGeometry())
+    outer, inner = window.frameGeometry(), window.geometry()
+    if placement.inside(area, _rect(outer)):
+        return
+    frame = (inner.x() - outer.x(), inner.y() - outer.y(), outer.right() - inner.right(), outer.bottom() - inner.bottom())
+    spot = placement.place(area, (inner.width(), inner.height()), (window.minimumWidth(), window.minimumHeight()), frame)
+    window.setMinimumSize(spot.min_width, spot.min_height)
+    window.resize(spot.width, spot.height)
+    window.move(spot.x, spot.y)
+    if spot.maximize:
+        window.showMaximized()
+
+
 def main() -> int:
     # 깨진 보관 PDF 를 읽을 때 pypdf 가 경고를 쏟아낸다. 스캔은 그런 파일을 건너뛴다.
     logging.getLogger("pypdf").setLevel(logging.CRITICAL)
@@ -503,7 +552,12 @@ def main() -> int:
         app.setFont(base)
     app.setStyleSheet(stylesheet())
     window = MainWindow()
-    window.show()
+    if place_window(window):
+        window.showMaximized()
+    else:
+        window.show()
+        QTimer.singleShot(0, lambda: keep_on_screen(window))
+        QTimer.singleShot(500, lambda: keep_on_screen(window))     # 윈도우가 창틀을 늦게 그리는 경우
     shortcuts.remember_made()      # 바로가기는 만들지 않는다 — 업데이트 때마다 바탕화면에 다시 생기지 않게(shortcuts.py)
     return app.exec()
 
