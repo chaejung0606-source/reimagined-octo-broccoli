@@ -207,6 +207,7 @@ QFrame#dropZone {{
 QFrame#dropZone[active="true"] {{ background: {c['selection']}; border-color: {c['primary']}; }}
 QProgressBar {{ background: {c['surface_alt']}; border: 1px solid {c['border']}; border-radius: 4px; }}
 QProgressBar::chunk {{ background: {c['primary']}; border-radius: 3px; }}
+QProgressBar#thinBar {{ max-height: 0.5em; }}      /* 진행 막대는 가늘게 — 폭은 줄의 남는 자리를 따른다 */
 
 /* 준비 중 안내 띠 */
 QFrame#notice {{

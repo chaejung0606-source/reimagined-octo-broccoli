@@ -10,8 +10,18 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, Signal
-from PySide6.QtWidgets import QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtWidgets import (
+    QFrame,
+    QGraphicsOpacityEffect,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .art import Art
 from .flowlogic import CURRENT, DONE, HIDDEN, OPEN, flow_states  # noqa: F401 — 화면이 여기서 함께 가져다 쓴다
@@ -23,7 +33,8 @@ class FlowStep(QFrame):
 
     edit = Signal()
 
-    def __init__(self, number: str, title: str, hint: str = "", editable: bool = True, parent: QWidget | None = None):
+    def __init__(self, number: str, title: str, hint: str = "", editable: bool = True, edit_text: str = "바꾸기",
+                 parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("card")
         self.state = HIDDEN
@@ -50,7 +61,7 @@ class FlowStep(QFrame):
         self.side = QHBoxLayout()            # 펼쳤을 때 제목 줄 오른쪽에 얹는 것(상태 배지 등)
         self.side.setSpacing(8)
         head.addLayout(self.side)
-        self.edit_button = QPushButton("바꾸기")
+        self.edit_button = QPushButton(edit_text)
         self.edit_button.setObjectName("ghost")
         self.edit_button.clicked.connect(self.edit.emit)
         head.addWidget(self.edit_button, 0, Qt.AlignVCenter)
@@ -126,6 +137,7 @@ class FlowStep(QFrame):
         for widget in (self, self.number):
             widget.style().unpolish(widget)
             widget.style().polish(widget)
+        self.number.updateGeometry()
 
     def _fade_in(self) -> None:
         """앞 단계를 마치면 다음 단계가 옅게 떠오른다(0.22초). 끝나면 효과를 떼어 표 · 입력 칸 그리기에 끼어들지 않게 한다."""
@@ -188,3 +200,30 @@ class ChoiceCard(QFrame):
             self.chosen.emit(self.key)
             return
         super().keyPressEvent(event)
+
+
+class FlowArea(QScrollArea):
+    """단계들을 담는 스크롤 칸 — 창이 낮으면(1024×640) 칸을 눌러 겹치게 하지 않고 아래로 넘긴다.
+    다 들어가면 스크롤 막대 없이 그대로이고, stretch 를 준 단계(표)가 남는 높이를 받는다. 마지막에 filler 가 있어
+    표 단계가 아직 안 보일 때 단계들이 위쪽에 모여 있다."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QScrollArea.NoFrame)
+        body = QWidget()
+        body.setObjectName("pageBody")
+        self.steps = QVBoxLayout(body)
+        self.steps.setContentsMargins(0, 0, 0, 0)
+        self.steps.setSpacing(12)
+        self.filler = QWidget()
+        self.filler.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.steps.addWidget(self.filler, 1)
+        self.setWidget(body)
+
+    def add(self, widget: QWidget, stretch: int = 0) -> None:
+        self.steps.insertWidget(self.steps.indexOf(self.filler), widget, stretch)
+
+    def show_to(self, widget: QWidget) -> None:
+        """떠오른 단계가 창 아래에 있으면 보이는 곳까지 내린다 — 자리가 잡힌 뒤에."""
+        QTimer.singleShot(0, lambda: self.ensureWidgetVisible(widget, 0, 12))

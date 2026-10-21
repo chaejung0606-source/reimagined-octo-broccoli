@@ -295,6 +295,8 @@ class Pill(QLabel):
         self.setObjectName(f"pill_{status}")
         self.style().unpolish(self)
         self.style().polish(self)
+        # 스타일이 바뀌면 글자 폭도 바뀐다 — 글자만큼만 차지하는 배지라(fit_to_text) 레이아웃에 다시 재게 알린다(안 하면 '로그인됨' 이 잘렸다)
+        self.updateGeometry()
 
 
 class Field(QWidget):

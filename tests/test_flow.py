@@ -4,7 +4,8 @@ from __future__ import annotations
 import pytest
 
 from claim_downloader.ui.flowlogic import (
-    CURRENT, DONE, DOWNLOAD_ORDER, HIDDEN, OPEN, STRUCTURE_ORDER, download_stage, flow_states, parking_stage, structure_stage,
+    CURRENT, DONE, DOWNLOAD_ORDER, HIDDEN, MINUTES_ORDER, OPEN, STRUCTURE_ORDER, download_stage, flow_states, minutes_stage,
+    parking_stage, structure_stage,
 )
 
 
@@ -34,6 +35,15 @@ def test_parking_goes_what_work_result():
     assert parking_stage(picked=False, has_result=True) == "what"
     assert parking_stage(picked=True, has_result=False) == "work"       # 처음엔 할인 적용이 골라진 채 ② 부터(화면이 picked=True 로 연다)
     assert parking_stage(picked=True, has_result=True) == "result"
+
+
+def test_minutes_goes_folders_make_result():
+    assert minutes_stage(has_dirs=False, finished=True) == "folders"
+    assert minutes_stage(has_dirs=True, finished=False) == "make"          # 폴더를 더 넣으면(finished 를 푼다) 다시 ②
+    assert minutes_stage(has_dirs=True, finished=True) == "result"
+    # 폴더를 넣으면 ① 은 '회의 N건' 으로 접히고, [폴더 더 넣기] 를 누르면 펼친 채
+    assert flow_states(MINUTES_ORDER, "make", keep_open=("make",))["folders"] == DONE
+    assert flow_states(MINUTES_ORDER, "result", keep_open=("make", "folders")) == {"folders": OPEN, "make": OPEN, "result": CURRENT}
 
 
 def test_badges_take_only_their_text_width():

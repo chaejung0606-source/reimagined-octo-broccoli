@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 
-from PySide6.QtCore import QDateTime, Qt, QTimer
+from PySide6.QtCore import QDateTime, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -26,8 +26,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QScrollArea,
-    QSizePolicy,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -37,7 +35,7 @@ from PySide6.QtWidgets import (
 
 from ... import parking_link, settings
 from ..art import Art
-from ..flow import CURRENT, ChoiceCard, FlowStep
+from ..flow import CURRENT, ChoiceCard, FlowArea, FlowStep
 from ..flowlogic import PARKING_ORDER, flow_states, parking_stage
 from ..widgets import EmptyState, Field, Pill, WrapLabel, muted_label
 from ..worker import SessionWorker
@@ -98,24 +96,11 @@ class ParkingPage(QWidget):
         self.step_work = self._build_work()
         self.step_result = self._build_result()
         self.steps = {"what": self.step_what, "work": self.step_work, "result": self.step_result}
-        # 단계는 스크롤 칸 안에 — 창이 낮으면(1024×640) 칸을 눌러 겹치게 하지 않고 아래로 넘긴다
-        body = QWidget()
-        body.setObjectName("pageBody")
-        steps = QVBoxLayout(body)
-        steps.setContentsMargins(0, 0, 0, 0)
-        steps.setSpacing(12)
+        # 단계는 스크롤 칸 안에 — 창이 낮으면(1024×640) 칸을 눌러 겹치게 하지 않고 아래로 넘긴다(ui/flow.FlowArea)
+        self.area = FlowArea()
         for step in self.steps.values():
-            steps.addWidget(step)
-        self.filler = QWidget()                # 할인 내역이 아니면 남는 높이를 채워 단계가 위쪽에 모여 있게
-        self.filler.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        steps.addWidget(self.filler, 1)
-        self._layout = steps
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        scroll.setWidget(body)
-        layout.addWidget(scroll, 1)
-        self._scroll = scroll
+            self.area.add(step)
+        layout.addWidget(self.area, 1)
 
         w = self.worker
         w.parking_opened.connect(self._on_opened)
@@ -464,8 +449,8 @@ class ParkingPage(QWidget):
         self.result.setText(lines)
         self._has_result = True
         self._sync()
-        # 칸이 길어(할인 링크) ③ 이 창 아래에 떠오르면 보이는 곳까지 내린다 — 자리가 잡힌 뒤에
-        QTimer.singleShot(0, lambda: self._scroll.ensureWidgetVisible(self.step_result, 0, 12))
+        # 칸이 길어(할인 링크) ③ 이 창 아래에 떠오르면 보이는 곳까지 내린다
+        self.area.show_to(self.step_result)
 
     def _clear_result(self) -> None:
         """결과를 본 뒤 칸을 고치면 ③ 을 접고 다시 ② 차례 — 다음 차 · 다음 링크."""
@@ -537,8 +522,8 @@ class ParkingPage(QWidget):
         self.links_button.setVisible(job == LINK)
         self.result_links_button.setVisible(job == LINK and self.result_state.text() == "등록됨")
         # 할인 내역은 표가 남는 높이를 쓰고, 나머지는 단계가 위쪽에 모여 있게
-        self._layout.setStretchFactor(self.step_work, 1 if job == HISTORY and self._picked else 0)
-        self.filler.setVisible(not (job == HISTORY and self._picked))
+        self.area.steps.setStretchFactor(self.step_work, 1 if job == HISTORY and self._picked else 0)
+        self.area.filler.setVisible(not (job == HISTORY and self._picked))
         self.step_what.edit_button.setEnabled(not self._busy)
         for button in (self.open_button, self.register_button, self.links_button, self.apply_button, self.history_button,
                        self.result_links_button):
