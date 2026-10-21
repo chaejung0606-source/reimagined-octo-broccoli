@@ -148,14 +148,17 @@ def test_diagnose_only_reads():
 
 def test_navigation_presses_only_project_claim_tab_and_new_sheet():
     """로그인 뒤 이동(navigate.py, 담당자 허락 2026-10-19)이 누르는 것은 과제현황의 과제명 링크 · 과제정보의 '청구서' 탭 ·
-    결의서 목록의 [일반청구](#P10) · [카드청구](#P11, 담당자 허락 2026-10-20) · 위쪽 탭 '메인화면' · '과제정보'(가려진 화면을 앞으로) 여섯뿐이다.
+    결의서 목록의 [일반청구](#P10) · [카드청구](#P11, 담당자 허락 2026-10-20) · 위쪽 탭 '메인화면' · '과제정보'(가려진 화면을 앞으로) ·
+    과제현황 쪽 넘김(#prevBtn · #nextBtn — 고른 과제가 다른 쪽에 있을 때, 과제 폴더별 받기 2026-10-21) 일곱뿐이다.
     로그인 화면 · 신청 · 삭제 · 청구서복사 · 작성 화면의 '새 청구서' · 탭 닫기는 누르지 않고 값도 넣지 않는다."""
     from claim_downloader import navigate
     text = (SRC / "navigate.py").read_text(encoding="utf-8")
     pressing = {"CLICK_PROJECT_JS": navigate.CLICK_PROJECT_JS, "CLICK_CLAIM_TAB_JS": navigate.CLICK_CLAIM_TAB_JS,
                 "CLICK_NEW_SHEET_JS": navigate.CLICK_NEW_SHEET_JS, "CLICK_MAIN_TAB_JS": navigate.CLICK_MAIN_TAB_JS,
-                "CLICK_PROJECT_TAB_JS": navigate.CLICK_PROJECT_TAB_JS, "CLICK_CARD_SHEET_JS": navigate.CLICK_CARD_SHEET_JS}
-    assert text.count(".click()") == 6 and sum(js.count(".click()") for js in pressing.values()) == 6
+                "CLICK_PROJECT_TAB_JS": navigate.CLICK_PROJECT_TAB_JS, "CLICK_CARD_SHEET_JS": navigate.CLICK_CARD_SHEET_JS,
+                "CLICK_PAGE_JS": navigate.CLICK_PAGE_JS}
+    assert text.count(".click()") == 7 and sum(js.count(".click()") for js in pressing.values()) == 7
+    assert "which !== 'nextBtn' && which !== 'prevBtn'" in navigate.CLICK_PAGE_JS          # 쪽 넘김 단추 둘 밖은 받지 않는다
     assert "getElementById('P11')" in navigate.CLICK_CARD_SHEET_JS and "!== '카드청구'" in navigate.CLICK_CARD_SHEET_JS
     assert "fnPage\\\\(\\\\s*'01'" in navigate.CLICK_PROJECT_JS                  # 과제명 링크(fnPage('01', 과제번호))만
     assert "=== '청구서'" in navigate.CLICK_CLAIM_TAB_JS

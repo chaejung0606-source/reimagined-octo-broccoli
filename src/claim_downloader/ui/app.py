@@ -62,6 +62,18 @@ class WorkSurface(QStackedWidget):
         self.resized.emit()
 
 
+def _follow_project_folders() -> None:
+    """저장 폴더가 사라졌고 그 위 폴더에 과제 폴더('(과제번호)_…')가 있으면 그 위 폴더로 바꾼다 — 담당자가 2026-10-21 에
+    '지출결의서\\2026년도(e나라도움)' 을 과제 폴더로 옮겨 정리했다. 그대로 두면 보관 스캔이 '저장 폴더가 없습니다' 로 멈춘다."""
+    from .. import project_folders
+    from ..session import file_logger
+    old = settings.load().out_root
+    new = project_folders.migrate(old)
+    if new:
+        settings.update(out_root=new)
+        file_logger(lambda _t: None)(f"저장 폴더가 없어져 과제 폴더가 있는 위 폴더로 바꿨습니다: {old} → {new}")
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -71,6 +83,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1024, 640)
         self._pages: dict[str, QWidget] = {}
         self._session_worker = None       # 브라우저 스레드 — 청구서 받기와 일반청구가 함께 쓴다
+        _follow_project_folders()
 
         central = QWidget()
         central.setObjectName("root")

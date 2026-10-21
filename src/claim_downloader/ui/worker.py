@@ -132,6 +132,11 @@ class SessionWorker(QObject):
         """project_no — 받기 화면에서 고른 과제. 그 과제의 결의서 목록을 앞에 띄운 뒤 읽는다(session.read_list)."""
         self._put("read_list", (project_no,), "download")
 
+    def read_lists(self, projects: list[str]) -> None:
+        """받기 화면의 '폴더 만든 과제 모두' — 과제마다 결의서 목록을 띄워 읽고 합친다(session.read_lists)."""
+        self._stop.clear()
+        self._put("read_lists", (list(projects),), "download")
+
     def forget_archive(self) -> None:
         """저장 폴더가 바뀌었다 — 다음 목록 읽기 전에 보관 폴더를 다시 훑게 한다."""
         self._put("forget_archive", (), "download")
@@ -446,6 +451,19 @@ class SessionWorker(QObject):
         try:
             selection = session.read_list(project_no)
         except (ListNotFound, BrowserClosed) as error:
+            self.list_failed.emit(str(error))
+            return
+        self.listed.emit(selection)
+
+    def _do_read_lists(self, session: ErpSession, projects: list[str]) -> None:
+        if session.browser_open and session.erp_page() is None:
+            self._do_read_list(session, "")          # 주차등록만 열린 브라우저 — ERP 를 열고 로그인을 기다린다(위와 같음)
+            return
+        self._ensure_scanned(session)
+        self.busy.emit(True, f"과제 {len(projects)}개의 결의서 목록을 읽는 중…")
+        try:
+            selection = session.read_lists(projects)
+        except BrowserClosed as error:
             self.list_failed.emit(str(error))
             return
         self.listed.emit(selection)

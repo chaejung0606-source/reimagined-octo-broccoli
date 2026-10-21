@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import ai, archive, settings
+from ... import ai, archive, project_folders, settings
 from .. import ai_status
 from ..widgets import Card, ElideLabel, Field, PageHeader, Pill, muted_label
 
@@ -74,11 +74,12 @@ class SettingsPage(QWidget):
         # 저장 폴더 — 가장 중요하므로 맨 위, 그림을 붙인다
         folder_card = Card("저장 폴더", "받은 청구서가 들어갈 곳", art="archive")
         self.out_root = QLineEdit(cfg.out_root)
-        self.out_root.setPlaceholderText(r"예: C:\Users\…\지출결의서\2026년도(e나라도움)")
+        self.out_root.setPlaceholderText(r"예: C:\Users\…\Desktop\지출결의서")
         self.out_root.editingFinished.connect(self._save_out_root)
         self.folder_field = Field(
             "폴더 경로", self.out_root,
-            "비목 폴더(01. 인건비 · 02. 장학금 …)가 바로 아래 있는 폴더를 고르세요. "
+            "과제 폴더('(과제번호)_…')가 바로 아래 있는 폴더를 고르세요 — 청구서는 그 과제의 폴더 안 비목 폴더(01. 인건비 …)에 둡니다. "
+            "과제 폴더가 없으면 비목 폴더가 바로 아래 있는 폴더를 고릅니다. "
             "플랫폼 업로드를 마친 파일은 직접 '업로드' 폴더로 옮기세요 — 앱은 그 폴더를 읽기만 합니다.",
             required=True)
         browse = QPushButton("폴더 선택")
@@ -402,7 +403,16 @@ class SettingsPage(QWidget):
             self.folder_pill.set_status("지정 안 됨", "warning")
             self.folder_status.setText("저장 폴더를 지정해야 청구서를 받을 수 있습니다.")
             return
+        projects = project_folders.folders(cfg.out_root)
         folders = archive.folder_status(cfg.out_root)
+        if projects:
+            self.folder_field.set_error("")
+            self.folder_pill.set_status(f"과제 폴더 {len(projects)}개", "success")
+            self.folder_status.setText(
+                " · ".join(f.short() for f in projects) + "\n"
+                + (" · ".join(f"{f.name.split('. ', 1)[0]} 대기 {f.waiting} / 완료 {f.uploaded}" for f in folders)
+                   or "과제 폴더 안에 아직 비목 폴더가 없습니다 — 받으면 앱이 만듭니다."))
+            return
         if not folders:
             if not os.path.isdir(cfg.out_root):
                 self.folder_field.set_error("이 폴더가 없습니다. 경로를 확인하세요.")
@@ -412,7 +422,7 @@ class SettingsPage(QWidget):
                 self.folder_field.set_error("")
                 self.folder_pill.set_status("확인 필요", "warning")
                 self.folder_status.setText(
-                    "이 폴더 바로 아래에 비목 폴더(01. 인건비 …)가 없습니다. 한 단계 위나 아래 폴더가 아닌지 확인하세요.")
+                    "이 폴더 바로 아래에 과제 폴더('(과제번호)_…')도 비목 폴더(01. 인건비 …)도 없습니다. 한 단계 위나 아래 폴더가 아닌지 확인하세요.")
             return
         self.folder_field.set_error("")
         self.folder_pill.set_status(f"비목 폴더 {len(folders)}개", "success")

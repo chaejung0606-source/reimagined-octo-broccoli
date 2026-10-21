@@ -87,7 +87,13 @@ def scan_archive(out_root: str, cache_path: Path, done: set[str],
 
     report = ScanReport(ok=True)
     walk_errors: list[str] = []
-    for root, _, files in os.walk(out_root, onerror=lambda error: walk_errors.append(str(getattr(error, "filename", "") or error))):
+    # 과제 폴더('(과제번호)_…')로 나뉜 저장 폴더면 과제 폴더 안만 훑는다 — 같은 저장 폴더의 다른 자료(점검 자료 · 엑셀 묶음)는 보관본이 아니다
+    from .project_folders import folders as project_dirs
+
+    roots = [str(f.path) for f in project_dirs(out_root)] or [out_root]
+    walks = (step for top in roots
+             for step in os.walk(top, onerror=lambda error: walk_errors.append(str(getattr(error, "filename", "") or error))))
+    for root, _, files in walks:
         for fn in files:
             if not fn.lower().endswith(".pdf"):
                 continue
@@ -135,17 +141,25 @@ class FolderCount:
 
 
 def folder_status(out_root: str) -> list[FolderCount]:
-    """비목 폴더별 대기·완료 PDF 수. 읽기만 한다."""
+    """비목 폴더별 대기·완료 PDF 수. 읽기만 한다. 저장 폴더가 과제 폴더로 나뉘어 있으면(project_folders) 과제마다의 비목 폴더를 합친다."""
+    from .project_folders import folders as project_dirs
+
     if not out_root or not os.path.isdir(out_root):
         return []
+    roots = [f.path for f in project_dirs(out_root)] or [Path(out_root)]
     names = list(BIMOK.values()) + [UNSORTED]
     out = []
     for name in names:
-        folder = Path(out_root) / name
-        if not folder.is_dir():
-            continue
-        waiting = sum(1 for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".pdf")
-        upload = folder / UPLOAD_DIR
-        uploaded = sum(1 for p in upload.rglob("*.pdf")) if upload.is_dir() else 0
-        out.append(FolderCount(name, waiting, uploaded))
+        waiting = uploaded = 0
+        found = False
+        for root in roots:
+            folder = root / name
+            if not folder.is_dir():
+                continue
+            found = True
+            waiting += sum(1 for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".pdf")
+            upload = folder / UPLOAD_DIR
+            uploaded += sum(1 for p in upload.rglob("*.pdf")) if upload.is_dir() else 0
+        if found:
+            out.append(FolderCount(name, waiting, uploaded))
     return out

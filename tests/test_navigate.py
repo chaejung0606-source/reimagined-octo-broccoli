@@ -35,6 +35,12 @@ class Screen:
         self.clicks: list[str] = []
         self.sheets = 0
         self.list_rows: list[dict] = []  # 결의서내역 그리드의 행 (erp._PARSE_ROWS_JS 모양)
+        self.pages: list[list[str]] | None = None   # 과제현황 쪽 나눔(#prevBtn · #nextBtn) — 쪽마다 보이는 과제번호
+        self.page_index = 0
+        self.lists: dict[str, list[dict]] = {}      # 과제마다 결의서내역 행(있으면 list_rows 대신)
+
+    def on_page(self, no: str) -> bool:
+        return self.pages is None or no in self.pages[self.page_index]
 
 
 class Frame:
@@ -47,15 +53,25 @@ class Frame:
         s = self.s
         if js is navigate.PROJECTS_JS:
             # 과제현황은 메인화면 탭이 앞일 때만 보인다. visible_projects=False 는 "고른 과제가 다음 쪽에 있음"
-            return [dict(r, visible=s.active == "main") for r in ROWS] if self.kind == "dash" and s.dashboard else []
+            return ([dict(r, visible=s.active == "main" and s.on_page(r["no"])) for r in ROWS]
+                    if self.kind == "dash" and s.dashboard else [])
         if js is navigate.CLICK_PROJECT_JS:
             # 과제현황은 메인화면 탭이 앞에 있을 때만 보인다
             if self.kind != "dash" or not s.dashboard or s.active != "main":
                 return {"ok": False, "why": "과제현황에 이 과제가 보이지 않음"}
-            if not s.visible or args[0] not in {r["no"] for r in ROWS}:
+            if not s.visible or args[0] not in {r["no"] for r in ROWS} or not s.on_page(args[0]):
                 return {"ok": False, "why": "과제현황에 이 과제가 보이지 않음"}
             s.clicks.append("project:" + args[0])
             s.toolbar_prj, s.grid_prj, s.active = args[0], "", "project"     # 과제정보 탭을 그 과제로 다시 연다
+            return {"ok": True}
+        if js is navigate.CLICK_PAGE_JS:
+            if self.kind != "dash" or s.active != "main" or s.pages is None:
+                return {"ok": False, "why": "쪽 단추가 없음"}
+            step = 1 if args[0] == "nextBtn" else -1
+            if not 0 <= s.page_index + step < len(s.pages):
+                return {"ok": False, "why": "끝 쪽"}
+            s.page_index += step
+            s.clicks.append("page:" + args[0])
             return {"ok": True}
         if js is navigate.CLICK_PROJECT_TAB_JS:
             if self.kind != "layout" or not s.toolbar_prj:
@@ -108,7 +124,8 @@ class Frame:
                 return False
             return {"toolbar": "project", "grid": "project", "form": "sheet", "card": "sheet"}.get(self.kind, s.active) == s.active
         if js is erp._PARSE_ROWS_JS:
-            return [dict(r) for r in s.list_rows] if self.kind == "grid" and s.grid_prj else []
+            rows = s.lists.get(s.grid_prj, s.list_rows)
+            return [dict(r) for r in rows] if self.kind == "grid" and s.grid_prj else []
         if js in (erp._SCROLL_TOP_JS, erp._SCROLL_INFO_JS):
             return None                  # 한 화면에 다 보인다 — 내리지 않는다
         if js is form.STATE_JS:
@@ -122,6 +139,8 @@ class Frame:
 class Page:
     def __init__(self, screen: Screen):
         self.frames = [Frame(screen, k) for k in ("layout", "dash", "toolbar", "grid", "form", "card")]
+        for frame in self.frames:
+            frame.page = self                    # Playwright 의 frame.page 처럼
 
     def wait_for_timeout(self, ms):
         pass
@@ -468,3 +487,79 @@ def test_hidden_list_that_cannot_be_shown_is_not_read_in_part(isolated_home, mon
             s.read_list(project)
         assert "뒤에" in str(caught.value) and "과제정보" in str(caught.value)
     assert not any(line.startswith("대상 ") for line in logs)
+
+
+def test_project_on_another_page_is_found_by_turning_pages():
+    """과제 폴더별 받기(담당자 2026-10-21) — 끝난 과제는 과제현황 둘째 쪽에 있다. 쪽 넘김(#nextBtn)으로 찾아 열고,
+    다음 과제는 앞 쪽(#prevBtn)으로 돌아가 찾는다. 쪽 단추 밖의 것은 누르지 않는다."""
+    screen = Screen()
+    screen.pages = [["202408470003", "202409710003"], ["202603130001", "202408470002"]]
+    ok, message = navigate.go_to_claims(Context(screen), "202408470002", lambda m: None, no_wait)
+    assert ok, message
+    assert screen.clicks == ["page:nextBtn", "project:202408470002", "청구서"] and screen.grid_prj == "202408470002"
+    ok, _ = navigate.go_to_claims(Context(screen), "202409710003", lambda m: None, no_wait)
+    assert ok and screen.clicks[3:] == ["메인화면", "page:prevBtn", "project:202409710003", "청구서"]
+    ok, message = navigate.go_to_claims(Context(screen), "209999999999", lambda m: None, no_wait)      # 어느 쪽에도 없음
+    assert not ok and "보이지 않습니다" in message and screen.clicks[-1].startswith("page:")
+
+
+def _folders(tmp_path, *names):
+    for name in names:
+        (tmp_path / name).mkdir()
+    return str(tmp_path)
+
+
+def _folder_session(screen, out_root):
+    from claim_downloader.session import ErpSession
+
+    logs, saved = [], []
+
+    def process(page, row, root, name_date_first, wait_sec, log):
+        saved.append((row["docNo"], root))
+        return "09", __import__("pathlib").Path(root) / "x.pdf"
+
+    s = ErpSession(logs.append, lambda m: True, process=process,
+                   load_settings=lambda: settings.Settings(out_root=out_root, freeze_reload=False))
+    s.page = Page(screen)
+    s.page.context = Context(screen)
+    s.claim_form_open = lambda: False
+    return s, logs, saved
+
+
+def test_read_lists_and_download_go_into_each_project_folder(isolated_home, monkeypatch, tmp_path):
+    """담당자 2026-10-21: 저장 폴더를 '(과제번호)_…' 폴더로 나눴다 — 과제마다 결의서내역을 읽고, 그 과제 폴더에 받는다.
+    폴더가 없는 과제는 받지 않는다("일단 지금 폴더 만든 과제만")."""
+    from claim_downloader.session import ErpSession
+    monkeypatch.setattr(ErpSession, "browser_open", property(lambda self: True))
+    root = _folders(tmp_path, "(202408470003)_2026년도 사업비_4,438,000,000", "(202408470002)_2025년도 사업비(출연금)_4,462,000,000",
+                    "e나라도움 부정징후 현장점검 자료(24년도)")
+    screen = Screen()
+    screen.pages = [["202408470003", "202409710003"], ["202603130001", "202408470002"]]
+    screen.lists = {
+        "202408470003": [_approved("1", "09_사무용품")],
+        "202408470002": [dict(_approved("2", "03_등록비"), docNo="202408470002-20250901-2")],
+        "202409710003": [dict(_approved("3", "03_대응"), docNo="202409710003-20261001-3")],
+    }
+    s, logs, saved = _folder_session(screen, root)
+    sel = s.read_lists(["202408470003", "202408470002", "202409710003"])
+    assert [t["project"] for t in sel.targets] == ["202408470003", "202408470002"]
+    assert sel.blocked and sel.blocked[0][0] == "202409710003" and "폴더가 없어" in sel.blocked[0][1]
+    summary = s.download(sel.targets)
+    assert summary.ok == 2 and not summary.failed
+    assert [(doc, __import__("os").path.basename(where)) for doc, where in saved] == [
+        ("202408470003-20261001-1", "(202408470003)_2026년도 사업비_4,438,000,000"),
+        ("202408470002-20250901-2", "(202408470002)_2025년도 사업비(출연금)_4,462,000,000")]
+    assert screen.grid_prj == "202408470002"                      # 받을 때도 그 과제의 목록을 앞에 두었다
+
+
+def test_download_refuses_a_row_of_another_project_or_without_folder(isolated_home, monkeypatch, tmp_path):
+    from claim_downloader.session import ErpSession
+    monkeypatch.setattr(ErpSession, "browser_open", property(lambda self: True))
+    root = _folders(tmp_path, "(202408470003)_2026년도 사업비")
+    screen = Screen()
+    s, logs, saved = _folder_session(screen, root)
+    wrong = dict(_approved("5", "03_다른"), docNo="202409710003-20261001-5", project="202408470003")
+    nowhere = dict(_approved("6", "03_폴더 없음"), docNo="202603130001-20260501-6", project="202603130001")
+    summary = s.download([wrong, nowhere])
+    assert summary.ok == 0 and len(summary.failed) == 2 and saved == []
+    assert any("다른 과제(202409710003)" in line for line in logs) and any("폴더가 없어" in line for line in logs)

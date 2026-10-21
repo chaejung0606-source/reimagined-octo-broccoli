@@ -16,6 +16,8 @@ MANY_TARGETS = 20
 class Selection:
     targets: list[dict] = field(default_factory=list)
     skipped: int = 0      # 이미 받은(보관된) 건
+    projects: list[str] = field(default_factory=list)        # 읽은 과제(목록의 #PRJ_NO) — 받는 건마다 'project' 에도 적는다
+    blocked: list[tuple[str, str]] = field(default_factory=list)   # (과제번호, 까닭) — 과제 폴더가 없거나 목록을 못 띄워 받지 않는 과제
 
 
 def select_targets(rows: list[dict], done: set[str]) -> Selection:

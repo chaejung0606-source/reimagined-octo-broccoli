@@ -21,7 +21,7 @@ from .claims import form as claim_form
 from .claims import payee as claim_payee
 from .claims import scholarship as claim_scholarship
 from .claims import taxbill as claim_taxbill
-from . import archive, diagnose, erp, logout as logout_mod, navigate, settings as settings_mod
+from . import archive, diagnose, erp, logout as logout_mod, navigate, project_folders, settings as settings_mod
 from .reconcile import reconcile
 from .targets import Selection, select_targets
 
@@ -1040,12 +1040,46 @@ class ErpSession:
         # 목록이 그려질 때까지(앱이 막 띄웠으면 늦다 · 빈 과제면 ~5초 뒤 0줄)
         navigate._wait(lambda: (navigate._evaluate(gfr, erp.GRID_ROWS_JS) or 0) > 0, self._wait, tries=10)
         self.page = page            # 목록이 있는 창을 작업 창으로 쓴다
-        self.log("결의서 목록 발견. 수집 중…")
+        listed = navigate.frame_project(gfr) or project
+        self.log("결의서 목록 발견" + (f"(과제 {listed})" if listed else "") + ". 수집 중…")
         rows = erp.collect_all(gfr)
         self.log("수집 %d행" % len(rows))
         sel = select_targets(rows, self.done)
-        self.log("대상 %d건 (이미 보관된 %d건은 건너뜀)" % (len(sel.targets), sel.skipped))
+        sel.projects = [listed] if listed else []
+        for row in sel.targets:
+            row["project"] = listed          # 받을 때 이 과제의 폴더에 둔다(project_folders)
+        root, why = project_folders.save_root(self._load_settings().out_root, listed)
+        if root is None:
+            # 과제 폴더가 없는 과제는 받지 않는다(담당자 2026-10-21 "지금 폴더 만든 과제만") — 목록에 보여도 받을 것에 넣지 않는다
+            self.log("⚠ " + why)
+            sel.blocked.append((listed, why))
+            sel.targets = []
+        self.log("대상 %d건 (이미 보관된 %d건은 건너뜀)" % (len(sel.targets), sel.skipped)
+                 + (f" → {root}" if root is not None and sel.targets else ""))
         return sel
+
+    def read_lists(self, projects: list[str]) -> Selection:
+        """폴더 만든 과제 모두(받기 화면의 '폴더 만든 과제 모두') — 과제마다 결의서 목록을 띄워 읽고 합친다.
+        목록을 못 띄운 과제는 건너뛰고 까닭을 남긴다(과제현황에 안 보이는 끝난 과제 등 — 사람이 그 과제를 골라 직접 띄우면 된다)."""
+        total = Selection()
+        for no in projects:
+            if self.should_stop():
+                total.blocked.append((no, "멈춤 요청으로 읽지 않음"))
+                continue
+            self.log(f"── 과제 {no} 의 결의서내역")
+            try:
+                sel = self.read_list(no)
+            except ListNotFound as error:
+                total.blocked.append((no, str(error).splitlines()[0]))
+                continue
+            total.targets += sel.targets
+            total.skipped += sel.skipped
+            total.projects += sel.projects
+            total.blocked += sel.blocked
+        self.log("── 과제 %d개를 읽음 · 받을 건 %d건 (이미 보관된 %d건은 건너뜀)%s"
+                 % (len(total.projects), len(total.targets), total.skipped,
+                    f" · 못 읽은 과제 {len(total.blocked)}개" if total.blocked else ""))
+        return total
 
     # ── 받기 ─────────────────────────────────────────────────────────────
     def download(self, targets: list[dict], on_item: ItemCallback | None = None, project_no: str = "") -> RunSummary:
@@ -1063,19 +1097,16 @@ class ErpSession:
             self.log("⚠ 일반청구 작성 화면이 열려 있어 받기 전에 닫게 합니다")
             if not self.ask_relogin("ERP 에 일반청구 작성 화면(청구서(일반) 탭)이 열려 있습니다. 받기가 그 화면을 상세화면으로 잘못 볼 수 "
                                     "있어요. 작성 중인 것이 있으면 [저장] 한 뒤 그 탭(위쪽 '청구서(일반)')을 닫고 계속하세요"
-                                    + (" — 결의서내역 목록은 앱이 앞에 띄웁니다." if project_no else ". 결의서내역 목록을 띄운 다음 계속하세요.")):
+                                    + (" — 결의서내역 목록은 앱이 앞에 띄웁니다." if project_no or any(r.get("project") for r in targets)
+                                       else ". 결의서내역 목록을 띄운 다음 계속하세요.")):
                 summary.stopped = True
                 self.log("사용자가 중단했습니다.")
                 return summary
-        # 목록을 읽은 과제의 결의서 목록이 앞에 있어야 행을 찾는다 — 숨은 목록은 스크롤이 움직이지 않는다(read_list 와 같은 까닭)
-        project = re.sub(r"\D", "", project_no or "")
-        if project:
-            shown, why = navigate.show_list(self.page.context, project, self.log, self._wait)
-            if shown is None or not erp.grid_shown(shown):
-                self.log(f"받기 멈춤 — 과제 {project} 의 결의서 목록을 앞에 띄우지 못했습니다: {why or '목록이 보이지 않음'}")
-                summary.stopped = True
-                return summary
-            self.page = getattr(shown, "page", self.page)
+        # 건마다 그 과제(목록을 읽은 과제 — row['project'])의 결의서 목록을 앞에 두고 그 과제의 폴더에 받는다. 숨은 목록은 스크롤이
+        # 움직이지 않아 행을 못 찾는다(read_list 와 같은 까닭). '폴더 만든 과제 모두' 면 과제가 바뀔 때마다 그 과제의 목록으로 옮긴다.
+        fallback = re.sub(r"\D", "", project_no or "")
+        current: str | None = None
+        root = None
         i = 0
         while i < len(targets):
             if self.should_stop():
@@ -1083,6 +1114,34 @@ class ErpSession:
                 self.log("멈춤 요청 — 여기서 그만 받습니다.")
                 break
             row = targets[i]
+            project = re.sub(r"\D", "", str(row.get("project") or "")) or fallback
+            if project != current:
+                current = project
+                root, why = project_folders.save_root(cfg.out_root, project)
+                if root is not None and project:
+                    shown, list_why = navigate.show_list(self.page.context, project, self.log, self._wait)
+                    if shown is None or not erp.grid_shown(shown):
+                        root, why = None, f"과제 {project} 의 결의서 목록을 앞에 띄우지 못했습니다: {list_why or '목록이 보이지 않음'}"
+                    else:
+                        self.page = getattr(shown, "page", self.page)
+                if root is not None:
+                    self.log(f"── 과제 {project or '(모름)'} → {root}")
+                else:
+                    self.log("⚠ 받기 건너뜀 — " + why)
+            if root is None:
+                summary.failed.append(row)
+                notify(i, "failed", why)
+                i += 1
+                continue
+            doc_project = re.match(r"(\d{12})-\d{8}-\d+$", str(row.get("docNo") or ""))
+            if project and doc_project and doc_project.group(1) != project:
+                # 문서번호 앞자리는 과제번호다 — 다른 과제의 청구서를 이 과제 폴더에 두지 않는다
+                why_doc = f"문서번호가 다른 과제({doc_project.group(1)})의 것이라 과제 {project} 폴더에 두지 않음"
+                self.log("      ✖ " + why_doc)
+                summary.failed.append(row)
+                notify(i, "failed", why_doc)
+                i += 1
+                continue
             if row.get("docNo") and row["docNo"] in self.done:
                 # 목록을 읽은 뒤 다시 훑은 보관 폴더에 이미 있는 건 — 표가 옛것이어도 다시 받지 않는다(2026-10-14 점검)
                 self.log("[%d/%d] No %s — 이미 받은 문서번호라 건너뜀" % (i + 1, len(targets), row.get("no")))
@@ -1093,7 +1152,7 @@ class ErpSession:
             self.log("[%d/%d] No %s (결의 %s) · %s" % (
                 i + 1, len(targets), row.get("no"), row.get("seq"), (row.get("cont") or "")[:30]))
             try:
-                _code, dest = self._process(self.page, row, cfg.out_root, cfg.name_date_first,
+                _code, dest = self._process(self.page, row, str(root), cfg.name_date_first,
                                             cfg.wait_sec, self.log)
             except Exception as error:   # noqa: BLE001
                 msg = str(error).splitlines()[0] if str(error) else type(error).__name__
@@ -1124,6 +1183,7 @@ class ErpSession:
                     page, gfr = erp.wait_for_grid(self.page.context)
                     if gfr:
                         self.page = page
+                    current = None      # 다시 로그인한 뒤에는 그 과제의 목록을 다시 앞에 둔다
                     continue            # 같은 건 재시도
                 summary.failed.append(row)
                 notify(i, "failed", msg)

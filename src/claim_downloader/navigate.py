@@ -18,7 +18,8 @@
   [일반청구] 를 다시 누르면 있던 작성 화면이 새 것으로 바뀐다고 본다 — 그래서 **지금 작성 화면이 저장된 청구서이고 입력 칸이 비었을 때만** 누른다
   (저장 전 입력이 있으면 날아간다). 누른 뒤 결의번호 없는 새 작성 화면이 떴는지 본다. 작성 화면의 '새 청구서' 단추는 누르지 않는다(무엇을 하는지 미실측).
 
-누르는 것은 과제명 링크 · '청구서' 탭 · 결의서 목록의 `#P10` 셋뿐이다(tests/test_safety.py). 값을 넣지 않는다. Playwright 를 들여오지 않는다(프레임의 evaluate 만).
+누르는 것은 과제명 링크 · '청구서' 탭 · 결의서 목록의 `#P10` · `#P11` · 위쪽 '메인화면' · '과제정보' 탭 · 과제현황 쪽 넘김(`#prevBtn` · `#nextBtn`,
+고른 과제가 다른 쪽에 있을 때만 — 2026-10-21)뿐이다(tests/test_safety.py). 값을 넣지 않는다. Playwright 를 들여오지 않는다(프레임의 evaluate 만).
 """
 from __future__ import annotations
 
@@ -63,6 +64,20 @@ CLICK_PROJECT_JS = r"""(no) => {
   shown[0].click();
   return {ok: true};
 }"""
+
+# 과제현황 표의 쪽 넘김(#prevBtn · #nextBtn, 실측 2026-10-19) — 고른 과제가 다른 쪽에 있을 때만 누른다(받기의 '폴더 만든 과제 모두' 가
+# 끝난 과제까지 찾아가게, 담당자 2026-10-21). 화면 이동일 뿐 값을 바꾸지 않는다. 보이고 막히지 않은 단추일 때만.
+CLICK_PAGE_JS = r"""(which) => {
+  if (which !== 'nextBtn' && which !== 'prevBtn') return {ok: false, why: '쪽 단추가 아님'};
+  const b = document.getElementById(which);
+  if (!b) return {ok: false, why: '쪽 단추가 없음'};
+  const r = b.getBoundingClientRect();
+  if (!(r.width > 0 && r.height > 0)) return {ok: false, why: '쪽 단추가 보이지 않음'};
+  if (b.disabled || /disabled/i.test(b.className || '') || b.getAttribute('aria-disabled') === 'true') return {ok: false, why: '끝 쪽'};
+  b.click();
+  return {ok: true};
+}"""
+MAX_PAGES = 6
 
 # 과제정보 프레임(rtask_0008_t00_01) — 숨은 #PRJ_NO 와 '기본정보' · '청구서' 하위 탭 링크가 함께 있는 프레임. 읽기만 한다.
 TOOLBAR_JS = r"""() => {
@@ -275,25 +290,62 @@ def _wait(check: Callable[[], object], wait: Callable[[float], None], tries: int
     return check()
 
 
-def _click_project(context, project_no: str) -> tuple[bool, str]:
-    """과제현황의 과제명 링크를 누른다. 과제현황이 가려져 있으면(다른 과제의 과제정보 · 청구서 탭이 앞) '메인화면' 탭을 먼저 누른다."""
+def _try_click(context, project_no: str) -> tuple[bool, str]:
+    for _page, frame in _frames(context):
+        result = _evaluate(frame, CLICK_PROJECT_JS, project_no)
+        if result and result.get("ok"):
+            return True, ""
+        if result and result.get("why") == "과제명 링크가 여럿":
+            return False, f"과제현황에 과제 {project_no} 링크가 여럿이라 누르지 않았습니다 — 직접 여세요"
+    return False, ""
+
+
+def _shown_projects(frame) -> frozenset:
+    return frozenset(r.get("no") for r in (_evaluate(frame, PROJECTS_JS) or []) if r.get("visible"))
+
+
+def _page_to(context, project_no: str, wait: Callable[[float], None]) -> bool:
+    """과제현황의 다른 쪽에서 그 과제를 찾는다 — 다음 쪽으로 끝까지, 없으면 앞 쪽으로 끝까지. 찾으면 True(그 쪽이 보인 채)."""
+    frame = next((f for _p, f in _frames(context) if _shown_projects(f)), None)
+    if frame is None:
+        return False
+    for which in ("nextBtn", "prevBtn"):
+        for _ in range(MAX_PAGES):
+            before = _shown_projects(frame)
+            result = _evaluate(frame, CLICK_PAGE_JS, which) or {}
+            if not result.get("ok"):
+                break
+            after = _wait(lambda: (lambda now: now if now and now != before else None)(_shown_projects(frame)), wait, tries=12)
+            if not after:
+                break                                    # 쪽이 바뀌지 않음 — 끝 쪽
+            if project_no in after:
+                return True
+    return False
+
+
+def _click_project(context, project_no: str, wait: Callable[[float], None] | None = None) -> tuple[bool, str]:
+    """과제현황의 과제명 링크를 누른다. 과제현황이 가려져 있으면(다른 과제의 과제정보 · 청구서 탭이 앞) '메인화면' 탭을 먼저 누르고,
+    wait 를 주면 그 과제가 다른 쪽에 있을 때 쪽을 넘겨 찾는다."""
     for attempt in range(2):
-        for _page, frame in _frames(context):
-            result = _evaluate(frame, CLICK_PROJECT_JS, project_no)
-            if result and result.get("ok"):
-                return True, ""
-            if result and result.get("why") == "과제명 링크가 여럿":
-                return False, f"과제현황에 과제 {project_no} 링크가 여럿이라 누르지 않았습니다 — 직접 여세요"
-        if attempt == 0:
-            # 과제현황이 이미 보이면(이 과제가 다음 쪽에 있는 것) 탭을 누를 까닭이 없다
-            shown = any(r.get("visible") for _p, f in _frames(context) for r in (_evaluate(f, PROJECTS_JS) or []))
-            tab = None if shown else next(
-                (r for r in (_evaluate(f, CLICK_MAIN_TAB_JS) for _p, f in _frames(context)) if r and r.get("ok")), None)
+        ok, why = _try_click(context, project_no)
+        if ok or why:
+            return ok, why
+        shown = any(_shown_projects(f) for _p, f in _frames(context))
+        if not shown and attempt == 0:
+            tab = next((r for r in (_evaluate(f, CLICK_MAIN_TAB_JS) for _p, f in _frames(context)) if r and r.get("ok")), None)
             if tab is None:
                 break
+            if wait is not None:
+                _wait(lambda: any(_shown_projects(f) for _p, f in _frames(context)), wait, tries=20)
+            continue
+        if shown and wait is not None and _page_to(context, project_no, wait):
+            ok, why = _try_click(context, project_no)
+            if ok or why:
+                return ok, why
+        break
     if logged_out(context):
         return False, "ERP 에 로그인돼 있지 않습니다 — 브라우저에서 로그인한 뒤 다시 하세요 (오래 쓰지 않으면 앱이 자동 로그아웃합니다)"
-    return False, (f"메인화면 과제현황에 과제 {project_no} 가 보이지 않습니다 — 다음 쪽에 있거나 다른 화면이 떠 있으면 "
+    return False, (f"메인화면 과제현황에 과제 {project_no} 가 보이지 않습니다 — 과제현황 목록(진행과제 · 전체과제)에 없거나 다른 화면이 떠 있으면 "
                    "직접 과제정보 → 청구서를 여세요")
 
 
@@ -307,7 +359,7 @@ def go_to_claims(context, project_no: str, log: Callable[[str], None], wait: Cal
         return True, f"과제 {project_no} 의 결의서내역 목록이 이미 떠 있습니다"
     toolbar = _toolbar(context, project_no)
     if toolbar is None:
-        ok, why = _click_project(context, project_no)
+        ok, why = _click_project(context, project_no, wait)
         if not ok:
             return False, why
         log(f"과제 {project_no} 를 엽니다 (과제현황의 과제명)")

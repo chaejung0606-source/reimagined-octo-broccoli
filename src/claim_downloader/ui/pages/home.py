@@ -40,8 +40,10 @@ def _recent_files(out_root: str) -> list[tuple[Path, float]]:
     root = Path(out_root) if out_root else None
     if root is None or not root.is_dir():
         return []
+    from ... import project_folders
+    roots = [f.path for f in project_folders.folders(root)] or [root]       # 과제 폴더로 나뉘었으면 그 안만
     found = []
-    for path in root.rglob("*.pdf"):
+    for path in (p for top in roots for p in top.rglob("*.pdf")):
         try:
             found.append((path, path.stat().st_mtime))
         except OSError:
