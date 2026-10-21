@@ -155,6 +155,12 @@ class SettingsPage(QWidget):
         claim_card.add(self.participants_field)
         column.addWidget(claim_card)
 
+        # 주차등록 로그인 정보 — 담당자 요청 2026-10-21: "주차등록 로그인 정보는 설정에서 입력하고 저장하는걸로"
+        from ..parking_login import ParkingLoginCard
+        self.parking_card = ParkingLoginCard()
+        self.parking_card.changed.connect(self.changed.emit)
+        column.addWidget(self.parking_card)
+
         # 동작
         behave = Card("동작", "받는 방식을 조절합니다", art="settings")
         self.freeze = QCheckBox("상세화면이 멈추면 ERP 를 새로 열고, 다시 로그인한 뒤 같은 건부터 이어받기 (건당 최대 2번)")
@@ -335,6 +341,12 @@ class SettingsPage(QWidget):
         box = self.ai_boxes.get(use) or self.ai_boxes.get("minutes")
         if box is not None:
             box.setFocus()
+
+    def focus_parking(self) -> None:
+        """주차등록 화면의 [설정에서 넣기] 로 왔을 때 — 로그인 정보 칸을 보이게, 아이디 칸에 초점."""
+        self.parking_card.reload()
+        self._scroll.ensureWidgetVisible(self.parking_card, 0, 24)
+        self.parking_card.user_edit.setFocus()
 
     def _rebuild_shortcuts(self) -> None:
         from ... import shortcuts

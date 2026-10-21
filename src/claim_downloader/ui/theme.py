@@ -218,7 +218,7 @@ QLabel#noticeText {{ color: {c['text']}; }}
 QLabel#fieldLabel {{ font-size: {f['small']}px; font-weight: 500; color: {c['text']}; }}
 QLabel#fieldHelp  {{ font-size: {f['caption']}px; color: {c['text_muted']}; }}
 QLabel#fieldError {{ font-size: {f['caption']}px; color: {c['danger']}; font-weight: 500; }}
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit, QTextBrowser {{
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QDateTimeEdit, QPlainTextEdit, QTextEdit, QTextBrowser {{
     background: {c['surface']};
     color: {c['text']};
     border: 1px solid {c['border']};
@@ -228,8 +228,8 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit, QText
     selection-background-color: {c['selection']};
     selection-color: {c['text']};
 }}
-QLineEdit:hover, QComboBox:hover, QDoubleSpinBox:hover {{ border-color: {c['border_strong']}; }}
-QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus, QTextEdit:focus {{
+QLineEdit:hover, QComboBox:hover, QDoubleSpinBox:hover, QDateTimeEdit:hover {{ border-color: {c['border_strong']}; }}
+QLineEdit:focus, QComboBox:focus, QDoubleSpinBox:focus, QDateTimeEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {{
     border: 2px solid {c['primary']};
     padding: 6px 9px;
 }}
@@ -240,6 +240,10 @@ QComboBox:focus {{ padding-right: 27px; }}
 QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right; width: 26px; border: none; background: transparent; }}
 QComboBox::down-arrow {{ image: url({CHEVRON_ICON}); width: 12px; height: 12px; }}
 QComboBox::down-arrow:disabled {{ image: url({CHEVRON_ICON}); }}
+/* 날짜시각 칸(주차등록 유효기간)의 달력 단추도 고르기 칸처럼 */
+QDateTimeEdit {{ padding-right: 28px; }}
+QDateTimeEdit::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right; width: 26px; border: none; background: transparent; }}
+QDateTimeEdit::down-arrow {{ image: url({CHEVRON_ICON}); width: 12px; height: 12px; }}
 QComboBox QAbstractItemView {{
     background: {c['surface']}; color: {c['text']}; border: 1px solid {c['border']};
     selection-background-color: {c['selection']}; selection-color: {c['text']}; outline: 0;

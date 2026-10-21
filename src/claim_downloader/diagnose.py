@@ -68,7 +68,8 @@ _PROBE_JS = r"""() => {
     }
     // 이름이 로그인 · 비밀번호를 뜻하는 칸은 값을 적지 않는다 — 로그인 화면에서 누르면 아이디 · 숨은 비밀번호 사본이 남을 수 있었다
     const key = ((e.id || '') + ' ' + (e.getAttribute('name') || '')).toLowerCase();
-    if (/(pw|pass|pwd|secret|비밀|login|userid|user_id|usr_id|loginid|암호)/.test(key)) value = value ? '(가림)' : '';
+    // 로그인 · 비밀번호 칸, 그리고 접속 열쇠(authKey · SSO_KEY · token) — 2026-10-21 실측에 ERP 틀의 authKey 앞부분이 그대로 찍혔다
+    if (/(pw|pass|pwd|secret|비밀|login|userid|user_id|usr_id|loginid|암호|auth|token|csrf|sso)/.test(key)) value = value ? '(가림)' : '';
     const clickable = tag === 'button' || tag === 'a' || e.getAttribute('role') === 'button'
                       || type === 'button' || type === 'submit' || type === 'image';
     out.push({

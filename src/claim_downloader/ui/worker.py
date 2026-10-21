@@ -53,6 +53,7 @@ class SessionWorker(QObject):
     list_ready = Signal()               # 받기: 브라우저를 연 뒤 결의서내역 목록이 보인다 — 화면이 [목록 읽기] 를 저절로
     projects_read = Signal()            # 로그인 뒤 메인화면 과제현황에서 과제 목록을 읽어 _과제목록.json 에 남겼다 — 일반청구의 과제 고르기 칸이 다시 읽는다
     parking_opened = Signal(object)     # 주차등록: parking.OpenReport — 사이트를 열고 자동 로그인했는지
+    parking_registered = Signal(object) # 주차등록: parking_link.LinkReport — 앱의 [등록] 으로 할인 링크를 만들었는지
 
     def __init__(self) -> None:
         super().__init__()
@@ -111,6 +112,10 @@ class SessionWorker(QObject):
     def open_parking(self) -> None:
         """주차등록 사이트를 앱 브라우저에서 열고(열려 있으면 그 탭) 로그인 정보가 있으면 한 번 자동 로그인(parking.py)."""
         self._put("open_parking", (), "parking")
+
+    def register_parking(self, request) -> None:
+        """앱 칸의 값(parking_link.LinkRequest)으로 주차 사이트의 [새 링크] 창을 채우고 [저장] 까지."""
+        self._put("register_parking", (request,), "parking")
 
     def read_list(self, project_no: str = "") -> None:
         """project_no — 받기 화면에서 고른 과제. 그 과제의 결의서 목록을 앞에 띄운 뒤 읽는다(session.read_list)."""
@@ -396,6 +401,13 @@ class SessionWorker(QObject):
         self.busy.emit(True, "주차등록 사이트를 여는 중…")
         login = parking.load_login() if cfg.parking_auto_login else None
         self.parking_opened.emit(session.open_parking(cfg.parking_url or parking.DEFAULT_URL, login))
+
+    def _do_register_parking(self, session: ErpSession, request) -> None:
+        from .. import parking
+        cfg = settings.load()
+        self.busy.emit(True, "주차 사이트에 할인 링크를 넣는 중…")
+        login = parking.load_login() if cfg.parking_auto_login else None
+        self.parking_registered.emit(session.register_parking_link(request, cfg.parking_url or parking.DEFAULT_URL, login))
 
     def _do_read_list(self, session: ErpSession, project_no: str = "") -> None:
         if session.browser_open and session.erp_page() is None:

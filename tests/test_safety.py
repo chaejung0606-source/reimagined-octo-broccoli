@@ -38,7 +38,8 @@ def test_no_typing_into_erp():
 
 # 로그인 정보를 다뤄도 되는 곳 — 주차등록 사이트뿐(담당자 허락 2026-10-21: "여기엔 개인정보같은게 없어서 자동 로그인해도 괜찮습니다").
 # ERP 로그인 정보는 여전히 어디에도 두지 않는다(CLAUDE.md 9절).
-PARKING_FILES = {SRC / "parking.py", SRC / "ui" / "pages" / "parking.py"}
+# 로그인 정보 칸은 설정 화면의 ui/parking_login.py 에 있다(담당자 요청 2026-10-21: "주차등록 로그인 정보는 설정에서 입력하고 저장하는걸로")
+PARKING_FILES = {SRC / "parking.py", SRC / "ui" / "parking_login.py"}
 
 
 def test_no_credentials_anywhere():
@@ -76,6 +77,27 @@ def test_parking_login_stays_with_parking():
         assert "secret" not in call, call
     # 실패하면 다시 시도하지 않는다(계정 잠김) — 한 번 실패를 기억한다
     assert "_failed[\"why\"] = report.note" in text
+
+
+def test_parking_link_presses_only_new_link_and_save():
+    """주차등록 2단계(parking_link.py, 담당자 허락 2026-10-21: "어플에서 등록 누르면 사이트에도 눌리는걸로")가 누르는 것은
+    할인 링크 화면의 [새 링크] 와 그 창의 [저장] 둘뿐이다. 값은 표시를 붙인 칸(링크 이름 · 주차장 · 상품 · 유효기간 · 활성 · '처음으로')에만.
+    '삭제' · '수정' · '취소' · 'QR 보기' · 로그아웃 · 비밀번호 변경은 누르지 않고, ERP 에 가지 않으며 로그인 정보도 읽지 않는다."""
+    from claim_downloader import parking_link
+    text = (SRC / "parking_link.py").read_text(encoding="utf-8")
+    assert re.findall(r"\.fill\(([A-Z_]+),", text) == ["NAME_SELECTOR", "START_SELECTOR", "END_SELECTOR"]
+    assert re.findall(r"\.select_option\(([A-Z_]+),", text) == ["LOT_SELECTOR", "PRODUCT_SELECTOR"]
+    assert re.findall(r"\.set_checked\(([A-Z_]+),", text) == ["ACTIVE_SELECTOR", "RESTART_SELECTOR"]
+    assert re.findall(r"\.click\(([A-Z_]+)\)", text) == ["SAVE_SELECTOR"]
+    assert text.count(".click()") == 1 and parking_link.OPEN_JS.count(".click()") == 1
+    assert "'새링크'" in parking_link.OPEN_JS and "cands.length !== 1" in parking_link.OPEN_JS
+    assert "squash(b.innerText) === '저장'" in parking_link.MARK_FORM_JS and "saves.length !== 1" in parking_link.MARK_FORM_JS
+    for name in ("press(", "type(", "keyboard.", "set_input_files(", "dispatchEvent", "load_login", "ERP_URL", "knu-icf"):
+        assert name not in text, name
+    for js in (parking_link.OPEN_JS, parking_link.MARK_FORM_JS):
+        for word in ("삭제", "수정", "취소", "QR", "로그아웃", "비밀번호"):
+            assert word not in js, word
+    assert "import playwright" not in text and "from playwright" not in text
 
 
 def test_auto_logout_presses_only_logout():

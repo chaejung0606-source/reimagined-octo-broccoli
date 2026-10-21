@@ -536,6 +536,32 @@ class ErpSession:
         finally:
             self.hands_on = was
 
+    def register_parking_link(self, request, url: str = "", login: tuple[str, str] | None = None):
+        """주차등록 2단계 — 사이트를 열고(로그인 정보가 있으면 한 번 자동 로그인) 할인 링크 화면의 [새 링크] 창에 넣고 [저장] 까지(parking_link.py).
+        담당자가 앱의 [등록] 을 누른 것이 허락이다(2026-10-21). ERP 창은 건드리지 않는다."""
+        from . import parking, parking_link
+        url = url or parking.DEFAULT_URL
+        opened = self.open_parking(url, login)
+        page = next((p for p in self._pages() if parking.is_site(p.url, url)), None)
+        if not opened.opened or page is None:
+            report = parking_link.LinkReport()
+            report.note = opened.note or "주차 사이트를 열지 못했습니다"
+            return report
+        scheme, _, rest = url.partition("://")
+        base = scheme + "://" + rest.split("/", 1)[0]                    # 주소의 앞부분(포트까지) — 할인 링크 화면으로 옮겨 갈 때
+        was, self.hands_on = self.hands_on, False      # 넣는 동안 사이트 알림은 앱이 받는다(parking_link 의 처리기)
+        try:
+            report = parking_link.create(page, request, self.log, wait=lambda s: page.wait_for_timeout(int(s * 1000)), base_url=base)
+        finally:
+            self.hands_on = was
+        for line in report.lines():
+            self.log(line)
+        try:
+            page.bring_to_front()
+        except Exception:  # noqa: BLE001
+            pass
+        return report
+
     def _project(self, project_no: str = "") -> str:
         """폴더에 붙은 과제(일반청구 화면에서 고름) — 없으면 마지막으로 고른 과제, 그것도 없으면 담당자가 정한 기본 과제."""
         cfg = self._load_settings()

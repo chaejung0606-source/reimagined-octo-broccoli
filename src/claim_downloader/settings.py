@@ -80,6 +80,8 @@ class Settings:
     # 주차등록 사이트(parking.py) — 담당자 요청 2026-10-21. 로그인 정보는 여기가 아니라 _주차로그인.json(비밀번호는 윈도우 DPAPI 로 감쌈)에
     parking_url: str = "https://traffic.kangwon.ac.kr/login"
     parking_auto_login: bool = True        # 로그인 정보가 있으면 사이트를 열 때 한 번 자동 로그인(담당자 허락 2026-10-21)
+    parking_product: str = ""              # 마지막으로 고른 할인권 상품(남은 수를 뗀 이름) — 앱의 [등록](parking_link.py)
+    parking_products: str = ""             # 사이트에서 본 할인권 상품 보기(줄마다 하나, 남은 수 포함) — 화면의 고르기 칸을 채운다
 
 
 def data_dir() -> Path:
