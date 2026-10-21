@@ -328,11 +328,11 @@ class ClaimPage(QWidget):
         self._show_row_project(self._current)
 
     def _show_row_project(self, row: int) -> None:
-        if 0 <= row < len(self._projects):
+        shown = 0 <= row < len(self._projects)
+        if shown:
             self._fill_project_box(self.row_project, self._projects[row])
-            self.row_project.show()
-        else:
-            self.row_project.hide()
+        self.row_project.setVisible(shown)
+        self._project_label.setVisible(shown)
 
     def _add_project_changed(self, _index: int) -> None:
         no = str(self.add_project.currentData() or "")
@@ -506,14 +506,20 @@ class ClaimPage(QWidget):
         self.row_kind.currentIndexChanged.connect(self._row_kind_changed)
         kind_label.setBuddy(self.row_kind)
         choose.addWidget(self.row_kind, 0, Qt.AlignVCenter)
+        choose.addStretch(1)
+        card.add_layout(choose)
+        # 과제는 이름이 길다 — 줄 하나를 다 쓰게 따로 둔다(한 줄에 두면 좁은 오른쪽 칸에서 과제명이 잘렸다, 담당자 2026-10-21)
+        project_row = QHBoxLayout()
+        project_row.setSpacing(8)
         project_label = QLabel("과제")
         project_label.setObjectName("fieldLabel")
-        choose.addWidget(project_label, 0, Qt.AlignVCenter)
+        project_row.addWidget(project_label, 0, Qt.AlignVCenter)
         self.row_project = self._project_box()
         self.row_project.currentIndexChanged.connect(self._row_project_changed)
         project_label.setBuddy(self.row_project)
-        choose.addWidget(self.row_project, 1, Qt.AlignVCenter)
-        card.add_layout(choose)
+        project_row.addWidget(self.row_project, 1, Qt.AlignVCenter)
+        card.add_layout(project_row)
+        self._project_label = project_label
         self.form_stack = QStackedWidget()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)

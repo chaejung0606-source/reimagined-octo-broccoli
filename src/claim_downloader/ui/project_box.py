@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QStyle,
+    QStyleOptionComboBox,
     QVBoxLayout,
     QWidget,
 )
@@ -21,12 +23,44 @@ from PySide6.QtWidgets import (
 from .. import navigate, project_folders, settings
 
 
+class ProjectBox(QComboBox):
+    """과제 칸 — 고른 과제명만큼 넓어지고, 펼친 목록은 가장 긴 과제명까지 보인다.
+
+    담당자 2026-10-21: "과제명이 잘 안보이네요. 과제명에 따라서 길이가 수정되도록 설정"(+ "하드코딩 하지 말아주세요").
+    전에는 13글자 폭으로 고정하고 과제명을 16자에서 잘라 '202408470003 첨단분' 처럼 보였다. 폭은 글자 길이로만 정한다 —
+    줄이 좁으면 과제번호까지는 보이게 줄어들고(minimumSizeHint), 나머지는 말풍선."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.currentIndexChanged.connect(lambda _i: self.updateGeometry())
+
+    def _hint_for(self, text: str) -> QSize:
+        """이 글을 담는 칸의 크기 — 테두리 · 여백 · 펼침 단추는 스타일이 더한다(Qt 가 자기 크기를 셈하는 방식 그대로)."""
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        metrics = self.fontMetrics()
+        content = QSize(metrics.horizontalAdvance(text), metrics.height())
+        return self.style().sizeFromContents(QStyle.CT_ComboBox, option, content, self)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return self._hint_for(self.currentText())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return self._hint_for(self.currentText().split(" ")[0])        # 좁은 줄에서도 과제번호까지는
+
+    def showPopup(self) -> None:  # noqa: N802
+        # 펼친 목록은 가장 긴 보기만큼 — 칸보다 좁게 잘리지 않게
+        view = self.view()
+        metrics = view.fontMetrics()
+        longest = max((metrics.horizontalAdvance(self.itemText(i)) for i in range(self.count())), default=0)
+        pad = metrics.horizontalAdvance("    ") + view.verticalScrollBar().sizeHint().width() + 2 * view.frameWidth()
+        view.setMinimumWidth(longest + pad)
+        super().showPopup()
+
+
 def project_box() -> QComboBox:
-    """좁게 두고(과제번호 + 과제명 앞부분) 전체는 말풍선."""
-    box = QComboBox()
-    box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-    box.setMinimumContentsLength(13)
-    return box
+    """과제 고르기 칸 — 과제번호 + 과제명(자르지 않음). 기간은 말풍선."""
+    return ProjectBox()
 
 
 def last_project() -> str:
@@ -44,6 +78,7 @@ def fill_project_box(box: QComboBox, selected: str) -> None:
     box.setToolTip("ERP 과제: " + navigate.label_of(str(box.currentData() or selected))
                    + "\n보기는 로그인 뒤 메인화면 과제현황에서 읽은 과제 중 과제기간에 오늘이 든 것입니다.")
     box.blockSignals(False)
+    box.updateGeometry()          # 신호를 막고 채웠으니 고른 과제명 폭을 여기서 다시 잰다
 
 
 def remember(no: str) -> None:
@@ -93,6 +128,7 @@ def fill_download_box(box: QComboBox, selected: str) -> None:
     box.setToolTip("받을 과제 — 청구서는 그 과제의 폴더(저장 폴더 아래 '(과제번호)_…') 안 비목 폴더에 둡니다.\n"
                    "폴더가 없는 과제는 받지 않습니다.")
     box.blockSignals(False)
+    box.updateGeometry()
 
 
 class ProjectPickDialog(QDialog):

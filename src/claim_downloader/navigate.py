@@ -298,9 +298,9 @@ class Project:
         return f"{self.no}  {self.name}  ({period})" if self.name else f"{self.no}  ({period})"
 
     def short(self) -> str:
-        """일반청구 화면의 좁은 고르기 칸 — 과제번호와 과제명 앞부분. 전체는 말풍선(label)."""
-        name = self.name if len(self.name) <= 16 else self.name[:15] + "…"
-        return f"{self.no} {name}" if name else self.no
+        """과제 고르기 칸 — 과제번호와 과제명(과제기간은 말풍선 label). 과제명을 자르지 않는다 — 칸이 고른 과제명만큼 넓어진다
+        (ui/project_box.ProjectBox, 담당자 2026-10-21 "과제명이 잘 안보이네요. 과제명에 따라서 길이가 수정되도록")."""
+        return f"{self.no} {self.name}" if self.name else self.no
 
 
 def _frames(context):
