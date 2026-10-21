@@ -6,7 +6,17 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QComboBox
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .. import navigate, project_folders, settings
 
@@ -52,17 +62,28 @@ def folder_projects() -> list[project_folders.ProjectFolder]:
     return out
 
 
+def chosen_projects() -> list[str]:
+    """'고른 과제 여럿' 에 담긴 과제 — 지금 폴더가 있는 것만, 폴더 차례대로."""
+    return project_folders.pick([f.no for f in folder_projects()], settings.load().download_projects)
+
+
 def fill_download_box(box: QComboBox, selected: str) -> None:
-    """청구서 받기의 과제 칸(담당자 2026-10-21: "과제번호로 과제 구분해서" · "지금 폴더 만든 과제만") — 저장 폴더 아래에 `(과제번호)_…`
-    폴더가 있으면 그 과제들과 맨 위 '폴더 만든 과제 모두'. 과제 폴더가 없는 옛 저장 폴더면 일반청구와 같은 보기."""
+    """청구서 받기의 과제 칸(담당자 2026-10-21: "과제번호로 과제 구분해서" · "지금 폴더 만든 과제만" · "여러개 과제를 선택해서 연속적으로") —
+    저장 폴더 아래에 `(과제번호)_…` 폴더가 있으면 맨 위 '폴더 만든 과제 모두' · '고른 과제 N개'(여러 과제 고르기 창) · 과제 폴더 하나씩.
+    과제 폴더가 없는 옛 저장 폴더면 일반청구와 같은 보기."""
     found = folder_projects()
     if not found:
-        fill_project_box(box, selected if selected != project_folders.ALL else last_project())
+        fill_project_box(box, selected if selected not in (project_folders.ALL, project_folders.SOME) else last_project())
         return
+    chosen = chosen_projects()
+    names = {f.no: f.path.name for f in found}
     box.blockSignals(True)
     box.clear()
     box.addItem(f"폴더 만든 과제 모두 ({len(found)}개)", project_folders.ALL)
     box.setItemData(0, "저장 폴더 아래 과제 폴더가 있는 과제를 차례로 읽고 받습니다:\n" + "\n".join(f.path.name for f in found), Qt.ToolTipRole)
+    box.addItem(f"고른 과제 {len(chosen)}개 (다시 고르려면 여기를 누르세요)" if chosen else "여러 과제 고르기…", project_folders.SOME)
+    box.setItemData(1, ("고른 과제를 차례로 읽고 받습니다:\n" + "\n".join(names[no] for no in chosen)) if chosen
+                    else "받을 과제를 여러 개 골라 차례로 받습니다", Qt.ToolTipRole)
     for folder in found:
         box.addItem(folder.short(), folder.no)
         known = navigate.label_of(folder.no)
@@ -72,3 +93,94 @@ def fill_download_box(box: QComboBox, selected: str) -> None:
     box.setToolTip("받을 과제 — 청구서는 그 과제의 폴더(저장 폴더 아래 '(과제번호)_…') 안 비목 폴더에 둡니다.\n"
                    "폴더가 없는 과제는 받지 않습니다.")
     box.blockSignals(False)
+
+
+class ProjectPickDialog(QDialog):
+    """받을 과제를 여러 개 고르는 창 — 과제 폴더마다 체크 상자. 고른 과제는 위에서부터 차례로 읽고 받는다."""
+
+    def __init__(self, parent: QWidget | None, folders: list[project_folders.ProjectFolder], chosen: list[str]):
+        super().__init__(parent)
+        self.setObjectName("reportDialog")
+        self.setWindowTitle("받을 과제 고르기")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 18, 22, 16)
+        layout.setSpacing(10)
+        heading = QLabel("받을 과제를 고르세요")
+        heading.setObjectName("cardTitle")
+        layout.addWidget(heading)
+        hint = QLabel("고른 과제를 위에서부터 차례로 열어 결의서내역을 읽고, 받을 청구서를 한 번에 보여 준 뒤 묻고 받습니다.\n"
+                      "청구서는 그 과제의 폴더 안 비목 폴더에 들어갑니다.")
+        hint.setObjectName("muted")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        holder = QWidget()
+        holder.setObjectName("pageBody")              # 바탕 없이 — 창의 흰 면이 그대로 보이게(theme)
+        rows = QVBoxLayout(holder)
+        rows.setContentsMargins(0, 4, 0, 4)
+        rows.setSpacing(8)
+        self.checks: list[tuple[str, QCheckBox]] = []
+        for folder in folders:
+            check = QCheckBox(folder.short())
+            check.setToolTip(folder.path.name)
+            check.setChecked(folder.no in chosen)
+            check.toggled.connect(self._sync)
+            rows.addWidget(check)
+            self.checks.append((folder.no, check))
+        rows.addStretch(1)
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setFrameShape(QScrollArea.NoFrame)
+        area.setWidget(holder)
+        area.viewport().setAutoFillBackground(False)
+        area.setMinimumHeight(min(36 * len(folders) + 12, 340))
+        layout.addWidget(area, 1)
+        tools = QHBoxLayout()
+        tools.setSpacing(8)
+        every = QPushButton("모두 고르기")
+        every.setObjectName("ghost")
+        every.clicked.connect(lambda: self._set_all(True))
+        tools.addWidget(every)
+        none = QPushButton("모두 풀기")
+        none.setObjectName("ghost")
+        none.clicked.connect(lambda: self._set_all(False))
+        tools.addWidget(none)
+        tools.addStretch(1)
+        self.count = QLabel("")
+        self.count.setObjectName("muted")
+        tools.addWidget(self.count)
+        layout.addLayout(tools)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = QPushButton("취소")
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        self.ok = QPushButton("이 과제들로")
+        self.ok.setObjectName("primary")
+        self.ok.setDefault(True)
+        self.ok.clicked.connect(self.accept)
+        buttons.addWidget(self.ok)
+        layout.addLayout(buttons)
+        self.resize(460, self.sizeHint().height())
+        self._sync()
+
+    def _set_all(self, on: bool) -> None:
+        for _no, check in self.checks:
+            check.setChecked(on)
+
+    def _sync(self) -> None:
+        n = len(self.chosen())
+        self.count.setText(f"{n}개 고름" if n else "하나 이상 고르세요")
+        self.ok.setEnabled(n > 0)
+
+    def chosen(self) -> list[str]:
+        return [no for no, check in self.checks if check.isChecked()]
+
+
+def pick_projects(parent: QWidget | None) -> bool:
+    """여러 과제 고르기 창을 띄우고, 고르면 설정(download_projects)에 남긴다. 골랐으면 True."""
+    folders = folder_projects()
+    dialog = ProjectPickDialog(parent, folders, chosen_projects())
+    if dialog.exec() != QDialog.Accepted or not dialog.chosen():
+        return False
+    settings.update(download_projects=",".join(dialog.chosen()), download_scope="some")
+    return True

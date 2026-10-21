@@ -72,3 +72,11 @@ def test_counts_and_scan_cover_only_project_folders(tmp_path, isolated_home):
     report = archive.scan_archive(str(root), isolated_home / "cache.json", done,
                                   reader=lambda p: read.append(p.name) or "202408470003-20261001-1")
     assert report.ok and report.total_pdfs == 2 and not any("현장" in name for name in read)     # 점검 자료 폴더는 보관본이 아니다
+
+
+def test_chosen_projects_keep_folder_order_and_drop_missing():
+    """여러 과제 고르기(담당자 요청 2026-10-21) — 설정에 남긴 번호 중 지금 폴더가 있는 것만, 폴더 차례대로."""
+    found = ["202408470001", "202408470002", "202408470003", "202502320001"]
+    assert pf.pick(found, "202502320001,202408470001") == ["202408470001", "202502320001"]
+    assert pf.pick(found, "202409710003, 202408470003") == ["202408470003"]              # 폴더 없는 과제는 빠진다
+    assert pf.pick(found, "") == [] and pf.pick([], "202408470001") == []

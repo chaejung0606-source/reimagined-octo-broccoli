@@ -140,9 +140,14 @@ class DownloadPage(QWidget):
         project_label.setObjectName("fieldLabel")
         head.addWidget(project_label, 0, Qt.AlignVCenter)
         self.project_box = project_box.project_box()
-        # 저장 폴더가 과제 폴더로 나뉘어 있으면 그 과제들 + '폴더 만든 과제 모두'(기본) — 담당자 2026-10-21
-        project_box.fill_download_box(self.project_box, project_folders.ALL)
+        # 저장 폴더가 과제 폴더로 나뉘어 있으면 '폴더 만든 과제 모두' · '고른 과제 여럿' · 과제 하나씩 — 담당자 2026-10-21. 마지막 고른 것을 다시 쓴다
+        scope = settings.load().download_scope
+        start = {"some": project_folders.SOME, "one": project_box.last_project()}.get(scope, project_folders.ALL)
+        if start == project_folders.SOME and not project_box.chosen_projects():
+            start = project_folders.ALL
+        project_box.fill_download_box(self.project_box, start)
         self.project_box.currentIndexChanged.connect(self._project_changed)
+        self.project_box.activated.connect(self._project_activated)
         project_label.setBuddy(self.project_box)
         head.addWidget(self.project_box, 0, Qt.AlignVCenter)
         self.folder_button = QPushButton()
@@ -479,27 +484,59 @@ class DownloadPage(QWidget):
         return no or "—"
 
     def _all(self) -> bool:
-        return self._project() == project_folders.ALL
+        """여러 과제를 차례로 — '폴더 만든 과제 모두' 이거나 '고른 과제 여럿'."""
+        return self._project() in (project_folders.ALL, project_folders.SOME)
+
+    def _projects(self) -> list[str]:
+        if self._project() == project_folders.ALL:
+            return [f.no for f in project_box.folder_projects()]
+        if self._project() == project_folders.SOME:
+            return project_box.chosen_projects()
+        return [self._project()]
 
     def _project_text(self) -> str:
-        if self._all():
+        if self._project() == project_folders.ALL:
             return f"폴더 만든 과제 {len(project_box.folder_projects())}개"
+        if self._project() == project_folders.SOME:
+            return f"고른 과제 {len(project_box.chosen_projects())}개"
         return f"과제 {self._project()}"
 
     def _read_list(self) -> None:
         if self._all():
-            projects = [f.no for f in project_box.folder_projects()]
-            self._set_state("목록 읽는 중", "info", f"폴더 만든 과제 {len(projects)}개의 결의서내역을 차례로 읽고 있습니다…")
+            projects = self._projects()
+            if not projects:
+                self._auto_run = False
+                self._set_state("과제 없음", "warning", "받을 과제를 고르세요 — 과제 칸의 '여러 과제 고르기…'.")
+                return
+            self._set_state("목록 읽는 중", "info", f"{self._project_text()}의 결의서내역을 차례로 읽고 있습니다…")
             self.worker.read_lists(projects)
             return
         self._set_state("목록 읽는 중", "info", f"과제 {self._project()} 의 결의서내역을 읽고 있습니다…")
         self.worker.read_list(self._project())
 
+    def _project_activated(self, index: int) -> None:
+        """'여러 과제 고르기…' 를 누르면(이미 골라져 있어도 다시 누르면) 체크 창을 띄운다."""
+        if self.project_box.itemData(index) != project_folders.SOME:
+            return
+        before = project_box.chosen_projects()
+        if project_box.pick_projects(self):
+            project_box.fill_download_box(self.project_box, project_folders.SOME)       # 칸 글자 '고른 과제 N개'
+            if project_box.chosen_projects() != before:
+                self._project_changed(index)
+        elif not before:
+            self.project_box.setCurrentIndex(max(self.project_box.findData(project_folders.ALL), 0))   # 하나도 안 골랐으면 '모두' 로
+
     def _project_changed(self, _index: int) -> None:
         no = self._project()
-        if no != project_folders.ALL:
+        if no == project_folders.ALL:
+            settings.update(download_scope="all")
+        elif no == project_folders.SOME:
+            settings.update(download_scope="some")
+        else:
             self.project_box.setToolTip("ERP 과제: " + navigate.label_of(no))
             project_box.remember(no)
+            if project_box.folder_projects():
+                settings.update(download_scope="one")
         if self._listed and not self._busy:
             # 읽어 둔 목록은 앞 과제의 것이다 — 받기 전에 새 과제의 목록을 다시 읽게 한다
             self._listed = False

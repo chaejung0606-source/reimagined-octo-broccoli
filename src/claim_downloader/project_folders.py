@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 ALL = "*"                    # 받기 화면의 '폴더 만든 과제 모두'
+SOME = "+"                   # 받기 화면의 '고른 과제 여럿'(담당자 요청 2026-10-21 "여러개 과제를 선택해서 연속적으로")
 PROJECT_DIR = re.compile(r"^\s*\(\s*(\d{6,})\s*\)\s*[_\-\s]*(.*)$")
 
 
@@ -61,6 +62,12 @@ def by_project(out_root: str | Path) -> dict[str, list[ProjectFolder]]:
     for folder in folders(out_root):
         found.setdefault(folder.no, []).append(folder)
     return found
+
+
+def pick(found: list[str], saved: str) -> list[str]:
+    """고른 과제(설정에 쉼표로 남긴 번호) 중 지금 폴더가 있는 것 — 폴더 차례대로. 폴더를 지웠으면 빠진다."""
+    wanted = set(re.findall(r"\d{6,}", str(saved or "")))
+    return [no for no in found if no in wanted]
 
 
 def save_root(out_root: str | Path, project_no: str) -> tuple[Path | None, str]:

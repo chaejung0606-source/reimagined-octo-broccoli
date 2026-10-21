@@ -54,6 +54,10 @@ class Settings:
     auto_open_project: bool = True
     # 마지막으로 고른 ERP 과제 — 과제는 일반청구 화면에서 폴더마다 고르고(담당자 2026-10-19), 로그인 뒤 이동 · 과제 없는 폴더가 이것을 쓴다
     project_no: str = DEFAULT_PROJECT_NO
+    # 청구서 받기의 과제 칸(과제 폴더가 있을 때, 22절) — 'all' 폴더 만든 과제 모두 · 'some' 고른 과제 여럿(download_projects, 쉼표로) ·
+    # 'one' 과제 하나(project_no). 담당자 요청 2026-10-21: "여러개 과제를 선택해서 연속적으로 진행"
+    download_scope: str = "all"
+    download_projects: str = ""
     # 명단 폴더를 넣을 때 다른(저장된) 청구서가 떠 있으면 결의서 목록의 [일반청구] 로 새 청구서를 앱이 띄운다(담당자 허락 2026-10-19).
     # 카드청구도 [카드청구](#P11)로 같이(담당자 허락 2026-10-20)
     auto_new_sheet: bool = True
