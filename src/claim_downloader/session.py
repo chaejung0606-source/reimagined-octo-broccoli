@@ -33,8 +33,8 @@ MAX_RETRY = 2
 class ListNotFound(RuntimeError):
     """결의서내역 목록을 못 찾음. dump 에 열린 창·프레임 구조가 들어 있다."""
 
-    def __init__(self, dump: str):
-        super().__init__("결의서내역 목록(그리드)을 찾지 못했습니다.")
+    def __init__(self, dump: str, message: str = ""):
+        super().__init__(message or "결의서내역 목록(그리드)을 찾지 못했습니다.")
         self.dump = dump
 
 
@@ -632,12 +632,24 @@ class ErpSession:
             return claim_scholarship.check_sheet(frame, job, self.log, wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)))
 
     # ── 목록 ─────────────────────────────────────────────────────────────
-    def read_list(self) -> Selection:
+    def read_list(self, project_no: str = "") -> Selection:
+        """결의서내역 목록을 끝까지 읽어 받을 건을 고른다. project_no 를 주면(받기 화면의 과제 칸 — 담당자 요청 2026-10-21) 그 과제의
+        결의서 목록을 앞에 띄운 뒤 읽는다(다른 과제 · 다른 탭이 앞이면 navigate.show_list 가 옮긴다 — 화면 이동, 6절)."""
         if not self.browser_open:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
         ctx = self.page.context
         self.log("결의서 목록 찾는 중…")
-        page, gfr = erp.wait_for_grid(ctx)
+        project = re.sub(r"\D", "", project_no or "")
+        page, gfr = erp.wait_for_grid(ctx, tries=6 if project else 40)     # 첫 evaluate 함정(7절 1번) — 고른 과제가 있으면 짧게 보고 옮긴다
+        if project and (gfr is None or navigate.frame_project(gfr) != project or not erp.grid_shown(gfr)):
+            shown, why = navigate.show_list(ctx, project, self.log, self._wait)
+            if shown is None or not erp.grid_shown(shown):
+                dump = erp.dump_context(ctx)
+                message = (f"과제 {project} 의 결의서내역 목록을 띄우지 못했습니다" + (f" — {why}" if why else "")
+                           + ". 로그인했는지 보고, 브라우저에서 과제정보 → 청구서 → 결의서내역 목록을 띄운 뒤 다시 누르세요.")
+                self.log(message)
+                raise ListNotFound(dump, message)
+            gfr, page = shown, getattr(shown, "page", page)
         if not gfr:
             dump = erp.dump_context(ctx)
             self.log("결의서내역 목록(그리드)을 찾지 못했습니다. 지금 열려 있는 창/프레임 구조:")
@@ -645,6 +657,22 @@ class ErpSession:
             self.log(dump)
             self.log("─" * 60)
             raise ListNotFound(dump)
+        if not erp.grid_shown(gfr):
+            # 다른 탭(일반청구 · 카드청구 작성 화면) 뒤에 숨은 목록은 끝까지 내려 읽을 수 없다 — 위쪽 '과제정보' 탭으로 앞에 가져온다
+            # (화면 이동 — 담당자 허락 2026-10-19). 그래도 숨어 있으면 일부만 읽은 목록으로 받지 않는다(7절 4번처럼 조용히 빠뜨린다).
+            self.log("결의서 목록이 다른 탭 뒤에 있어 앞으로 가져옵니다")
+            shown, why = navigate.show_list(ctx, navigate.frame_project(gfr), self.log, self._wait)
+            if shown is not None and erp.grid_shown(shown):
+                gfr = shown
+                page = getattr(shown, "page", page)
+            else:
+                message = ("결의서내역 목록이 다른 탭(일반청구 · 카드청구 작성 화면 등) 뒤에 있어 끝까지 읽지 못했습니다"
+                           + (f" ({why})" if why and "뒤에" not in why else "")
+                           + ". 브라우저 위쪽의 '과제정보' 탭을 눌러 목록을 앞에 띄운 뒤 다시 누르세요.")
+                self.log(message)
+                raise ListNotFound(erp.dump_context(ctx), message)
+        # 목록이 그려질 때까지(앱이 막 띄웠으면 늦다 · 빈 과제면 ~5초 뒤 0줄)
+        navigate._wait(lambda: (navigate._evaluate(gfr, erp.GRID_ROWS_JS) or 0) > 0, self._wait, tries=10)
         self.page = page            # 목록이 있는 창을 작업 창으로 쓴다
         self.log("결의서 목록 발견. 수집 중…")
         rows = erp.collect_all(gfr)
@@ -654,7 +682,7 @@ class ErpSession:
         return sel
 
     # ── 받기 ─────────────────────────────────────────────────────────────
-    def download(self, targets: list[dict], on_item: ItemCallback | None = None) -> RunSummary:
+    def download(self, targets: list[dict], on_item: ItemCallback | None = None, project_no: str = "") -> RunSummary:
         cfg = self._load_settings()
         notify = on_item or (lambda *_: None)
         summary = RunSummary()
@@ -668,10 +696,20 @@ class ErpSession:
         if form_open:
             self.log("⚠ 일반청구 작성 화면이 열려 있어 받기 전에 닫게 합니다")
             if not self.ask_relogin("ERP 에 일반청구 작성 화면(청구서(일반) 탭)이 열려 있습니다. 받기가 그 화면을 상세화면으로 잘못 볼 수 "
-                                    "있어요. 작성 중인 것이 있으면 [저장] 한 뒤 그 탭을 닫고, 결의서내역 목록을 띄운 다음 계속하세요."):
+                                    "있어요. 작성 중인 것이 있으면 [저장] 한 뒤 그 탭(위쪽 '청구서(일반)')을 닫고 계속하세요"
+                                    + (" — 결의서내역 목록은 앱이 앞에 띄웁니다." if project_no else ". 결의서내역 목록을 띄운 다음 계속하세요.")):
                 summary.stopped = True
                 self.log("사용자가 중단했습니다.")
                 return summary
+        # 목록을 읽은 과제의 결의서 목록이 앞에 있어야 행을 찾는다 — 숨은 목록은 스크롤이 움직이지 않는다(read_list 와 같은 까닭)
+        project = re.sub(r"\D", "", project_no or "")
+        if project:
+            shown, why = navigate.show_list(self.page.context, project, self.log, self._wait)
+            if shown is None or not erp.grid_shown(shown):
+                self.log(f"받기 멈춤 — 과제 {project} 의 결의서 목록을 앞에 띄우지 못했습니다: {why or '목록이 보이지 않음'}")
+                summary.stopped = True
+                return summary
+            self.page = getattr(shown, "page", self.page)
         i = 0
         while i < len(targets):
             if self.should_stop():

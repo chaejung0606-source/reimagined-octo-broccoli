@@ -53,7 +53,7 @@ from ...claims import participants as part_mod
 from ...claims import kinds, record, rules, schema
 from ...claims import scholarship as sch
 from ...minutes.backends import claude_cli
-from .. import ai_status
+from .. import ai_status, project_box
 from ..art import Art
 from ..claim_worker import ClaimExtractWorker
 from ..report_dialog import ReportRow, show_report, show_structure_saved
@@ -302,30 +302,10 @@ class ClaimPage(QWidget):
                 box.model().item(index).setEnabled(False)
         return box
 
-    @staticmethod
-    def _project_box() -> QComboBox:
-        """ERP 과제 고르기 칸 — 좁게 두고(과제번호 + 과제명 앞부분) 전체는 말풍선."""
-        box = QComboBox()
-        box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        box.setMinimumContentsLength(13)
-        return box
-
-    @staticmethod
-    def _last_project() -> str:
-        return str(getattr(settings.load(), "project_no", "") or settings.DEFAULT_PROJECT_NO)
-
-    @staticmethod
-    def _fill_project_box(box: QComboBox, selected: str) -> None:
-        box.blockSignals(True)
-        box.clear()
-        for no, text in navigate.choices(selected, short=True):
-            box.addItem(text, no)
-            box.setItemData(box.count() - 1, navigate.label_of(no), Qt.ToolTipRole)
-        index = box.findData(selected)
-        box.setCurrentIndex(index if index >= 0 else 0)
-        box.setToolTip("ERP 과제: " + navigate.label_of(str(box.currentData() or selected))
-                       + "\n보기는 로그인 뒤 메인화면 과제현황에서 읽은 과제 중 과제기간에 오늘이 든 것입니다.")
-        box.blockSignals(False)
+    # 과제 칸은 받기 화면과 같이 쓴다(ui/project_box.py)
+    _project_box = staticmethod(project_box.project_box)
+    _last_project = staticmethod(project_box.last_project)
+    _fill_project_box = staticmethod(project_box.fill_project_box)
 
     def _refresh_projects(self) -> None:
         """로그인 뒤 과제현황을 새로 읽었으면(worker.projects_read) 고르기 칸 둘을 다시 채운다 — 폴더에 붙은 과제는 그대로."""

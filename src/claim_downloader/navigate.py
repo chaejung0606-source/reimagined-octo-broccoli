@@ -331,7 +331,8 @@ def show_list(context, project_no: str, log: Callable[[str], None], wait: Callab
     frame = list_frame(context, project_no) if ok else None
     if frame is not None and _shown(frame):
         return frame, ""
-    return None, why or "결의서 목록이 화면에 보이지 않습니다"
+    # go_to_claims 가 '목록이 이미 떠 있습니다' 로 끝났는데 보이지 않으면 — 다른 탭 뒤에 있고 '과제정보' 탭을 누르지 못한 것이다
+    return None, ("결의서 목록이 다른 탭 뒤에 있는데 위쪽 '과제정보' 탭을 누르지 못했습니다" if ok else why) or "결의서 목록이 화면에 보이지 않습니다"
 
 
 def _squash(text: str) -> str:

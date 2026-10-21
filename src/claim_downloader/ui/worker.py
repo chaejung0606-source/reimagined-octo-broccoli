@@ -106,16 +106,18 @@ class SessionWorker(QObject):
         self._stop.clear()
         self._put("fill_card", (job, sheet_index, dry_run, project_no, test_mode), "claim")
 
-    def read_list(self) -> None:
-        self._put("read_list", (), "download")
+    def read_list(self, project_no: str = "") -> None:
+        """project_no — 받기 화면에서 고른 과제. 그 과제의 결의서 목록을 앞에 띄운 뒤 읽는다(session.read_list)."""
+        self._put("read_list", (project_no,), "download")
 
     def forget_archive(self) -> None:
         """저장 폴더가 바뀌었다 — 다음 목록 읽기 전에 보관 폴더를 다시 훑게 한다."""
         self._put("forget_archive", (), "download")
 
-    def download(self, targets: list[dict]) -> None:
+    def download(self, targets: list[dict], project_no: str = "") -> None:
+        """project_no — 목록을 읽은 과제. 받기 전에 그 과제의 결의서 목록을 앞에 둔다(session.download)."""
         self._stop.clear()
-        self._put("download", (targets,), "download")
+        self._put("download", (targets, project_no), "download")
 
     def capture_structure(self, owner: str = "download") -> None:
         """진단 모드 — 지금 열린 화면의 구조를 파일로. 읽기만 한다.
@@ -349,18 +351,18 @@ class SessionWorker(QObject):
     def _do_forget_archive(self, session: ErpSession) -> None:
         session.archive_report = None
 
-    def _do_read_list(self, session: ErpSession) -> None:
+    def _do_read_list(self, session: ErpSession, project_no: str = "") -> None:
         self._ensure_scanned(session)
         self.busy.emit(True, "결의서 목록을 읽는 중…")
         try:
-            selection = session.read_list()
+            selection = session.read_list(project_no)
         except (ListNotFound, BrowserClosed) as error:
             self.list_failed.emit(str(error))
             return
         self.listed.emit(selection)
 
-    def _do_download(self, session: ErpSession, targets: list[dict]) -> None:
+    def _do_download(self, session: ErpSession, targets: list[dict], project_no: str = "") -> None:
         self._ensure_scanned(session)
         self.busy.emit(True, "청구서를 받는 중…")
-        summary = session.download(targets, on_item=self.item.emit)
+        summary = session.download(targets, on_item=self.item.emit, project_no=project_no)
         self.finished.emit(summary)

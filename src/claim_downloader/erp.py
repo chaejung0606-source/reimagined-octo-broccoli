@@ -63,12 +63,25 @@ def find_grid(context):
 
 
 GRID_ROWS_JS = "() => document.querySelectorAll('.jgrid-row').length"
+# 목록의 스크롤 칸이 화면에 보이는지 — ERP 는 위쪽 탭마다 iframe 을 두고 뒤에 있는 탭은 숨긴다. 숨은 목록은 높이가 0 이라
+# 가상 스크롤이 움직이지 않고, 처음 그려 둔 26~32행만 읽힌다(담당자 실제 2026-10-21: 일반청구 작성 탭이 앞에 있는 채 [목록 읽기] →
+# '수집 26행 · 대상 0건' — 받을 청구서가 있었는데 못 찾았다).
+GRID_SHOWN_JS = """() => { const v = document.querySelector('.jgrid-viewport'); if (!v) return false;
+  const r = v.getBoundingClientRect(); return r.width > 0 && r.height > 0; }"""
+
+
+def grid_shown(fr) -> bool:
+    try:
+        return fr.evaluate(GRID_SHOWN_JS) is True
+    except Exception:  # noqa: BLE001 — 그리는 중 · 프레임이 바뀌는 중
+        return False
 
 
 def grid_rows_shown(context) -> int:
-    """결의서내역 목록(그리드)에 그려진 행 수 — 목록이 없으면 0. 읽기만 한다(목록이 뜨기를 기다릴 때)."""
+    """결의서내역 목록(그리드)에 그려진 행 수 — 목록이 없거나 다른 탭 뒤에 숨어 있으면 0. 읽기만 한다(목록이 뜨기를 기다릴 때).
+    숨은 목록을 세면 목록 자동 읽기가 사람이 다른 화면(일반청구 작성)을 보는 중에 끼어든다."""
     _page, fr = find_grid(context)
-    if fr is None:
+    if fr is None or not grid_shown(fr):
         return 0
     try:
         return int(fr.evaluate(GRID_ROWS_JS) or 0)

@@ -38,6 +38,8 @@ class Screen:
 
 
 class Frame:
+    url = ""                                 # 진단 줄(erp.dump_context)이 읽는다
+
     def __init__(self, screen: Screen, kind: str):
         self.s, self.kind = screen, kind
 
@@ -100,8 +102,10 @@ class Frame:
             return 26 if self.kind == "grid" and s.grid_prj else 0
         if js is form.PROBE_JS:
             return self.kind == "form" and s.form is not None
-        if js is form.FRAME_VISIBLE_JS:
+        if js in (form.FRAME_VISIBLE_JS, erp.GRID_SHOWN_JS):
             # 위쪽 탭 중 앞에 있는 것의 프레임만 크기가 있다 — 결의서 목록은 과제정보 탭, 작성 화면은 청구서(일반) 탭
+            if js is erp.GRID_SHOWN_JS and self.kind != "grid":
+                return False
             return {"toolbar": "project", "grid": "project", "form": "sheet", "card": "sheet"}.get(self.kind, s.active) == s.active
         if js is erp._PARSE_ROWS_JS:
             return [dict(r) for r in s.list_rows] if self.kind == "grid" and s.grid_prj else []
@@ -129,6 +133,8 @@ class Page:
 class Context:
     def __init__(self, screen: Screen):
         self.pages = [Page(screen)]
+        for page in self.pages:
+            page.context = self              # Playwright 의 page.context 처럼 — 목록을 찾은 창을 작업 창으로 쓴다(session.read_list)
 
 
 def no_wait(_seconds):
@@ -408,3 +414,54 @@ def test_test_mode_skips_the_erp_check(isolated_home):
     s, logs = _session(screen)
     assert s._duplicate_check(SUMMARY, "202408470003", lambda m: False, True) == ""
     assert screen.clicks == [] and any("시험" in line for line in logs)
+
+
+def _approved(doc, cont):
+    return {"r": doc, "no": doc, "seq": doc, "gubun": "일반청구", "cont": cont, "amt": "10000", "state": "승인",
+            "docNo": "202408470003-20261001-" + doc, "expDt": "2026-10-01"}
+
+
+def test_download_list_is_brought_in_front_of_a_sheet_before_reading(isolated_home, monkeypatch):
+    """담당자 실제(2026-10-21): 일반청구 작성 탭이 앞인 채 [목록 읽기] → 숨은 목록은 스크롤이 안 돼 '수집 26행 · 대상 0건'.
+    받기 화면에서 고른 과제의 목록을 '과제정보' 탭으로 앞에 띄운 뒤 읽는다."""
+    from claim_downloader.session import ErpSession
+    monkeypatch.setattr(ErpSession, "browser_open", property(lambda self: True))
+    screen = Screen()
+    s, logs = _session(screen)
+    assert navigate.go_to_claims(s.page.context, "202408470003", logs.append, no_wait)[0]
+    screen.list_rows = [_approved("1", "09_사무용품"), _approved("2", "03_등록비")]
+    screen.active = "sheet"                                   # 일반청구 작성 탭이 앞 — 결의서 목록은 숨음
+    assert erp.grid_rows_shown(s.page.context) == 0          # 숨은 목록은 목록 자동 읽기도 세지 않는다
+    sel = s.read_list("202408470003")
+    assert len(sel.targets) == 2 and screen.clicks[-1] == "과제정보" and screen.active == "project"
+    # 과제를 고르지 않은 경로(콘솔)도 숨은 목록은 앞에 가져온다
+    screen.active = "sheet"
+    assert len(s.read_list().targets) == 2 and screen.clicks[-1] == "과제정보"
+
+
+def test_download_list_goes_to_the_chosen_project(isolated_home, monkeypatch):
+    """받기 화면의 과제 칸(담당자 요청 2026-10-21) — 다른 과제의 목록이 떠 있으면 고른 과제의 결의서내역으로 옮겨 읽는다."""
+    from claim_downloader.session import ErpSession
+    monkeypatch.setattr(ErpSession, "browser_open", property(lambda self: True))
+    screen = Screen()
+    s, logs = _session(screen)
+    assert navigate.go_to_claims(s.page.context, "202408470003", logs.append, no_wait)[0]
+    screen.list_rows = [_approved("7", "03_다른 과제")]
+    s.read_list("202409710003")
+    assert screen.grid_prj == "202409710003" and "project:202409710003" in screen.clicks
+
+
+def test_hidden_list_that_cannot_be_shown_is_not_read_in_part(isolated_home, monkeypatch):
+    """'과제정보' 탭을 누를 수 없으면 그려진 26행만 읽고 '대상 0건' 이라 하지 않는다 — 멈추고 까닭을 알린다."""
+    from claim_downloader.session import ErpSession, ListNotFound
+    monkeypatch.setattr(ErpSession, "browser_open", property(lambda self: True))
+    screen = Screen()
+    s, logs = _session(screen)
+    assert navigate.go_to_claims(s.page.context, "202408470003", logs.append, no_wait)[0]
+    screen.list_rows = [_approved("1", "09_사무용품")]
+    screen.active, screen.toolbar_prj = "sheet", ""          # 위쪽 '과제정보' 탭이 보이지 않는 화면
+    for project in ("202408470003", ""):
+        with pytest.raises(ListNotFound) as caught:
+            s.read_list(project)
+        assert "뒤에" in str(caught.value) and "과제정보" in str(caught.value)
+    assert not any(line.startswith("대상 ") for line in logs)

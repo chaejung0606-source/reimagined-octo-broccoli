@@ -1,7 +1,10 @@
 """청구서 받기 화면 — 요약 → 단계 → 받을 목록 · 진행 기록.
 
-    ① ERP 열기 → [사람: 로그인 · 결의서내역 목록 띄우기]
+    ① ERP 열기 → [사람: 로그인] → 고른 과제의 결의서내역(앱이 감)
     → ② 목록 읽기 → 대상 확인 → ③ 받기
+
+① [브라우저 열기] 한 번으로 끝까지 간다(담당자 요청 2026-10-21): 브라우저가 닫혀 있으면 열고 로그인을 기다렸다가, 열려 있으면 바로
+고른 과제의 결의서내역을 읽어(다른 과제 · 다른 탭이 앞이면 옮긴다) 아직 안 받은 청구서만 받는다. 받기 전 '받을까요?' 확인은 그대로다(9절).
 
 로그인과 '받을까요?' 확인은 언제나 사람이 한다. 이 화면은 그 차례가 왔을 때
 무엇을 해야 하는지 알려 주고 기다린다.
@@ -17,7 +20,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -36,7 +39,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import archive, settings
+from ... import archive, navigate, settings
+from .. import project_box
 from ...targets import volume_warning
 from ..art import Art
 from ..report_dialog import show_structure_saved
@@ -56,13 +60,15 @@ ROW_STATUS = {
     "failed": ("실패", "danger"),
 }
 
-GUIDE_START = "① 브라우저 열기를 누르면 ERP 창이 열립니다. 그 창에서 로그인하고 결의서내역 목록을 띄우세요."
-GUIDE_BROWSER = ("열린 브라우저에서 로그인하세요. 그 뒤 설정의 과제를 열어 [청구서] → '결의서내역' 목록까지 앱이 갑니다"
-                 "(못 가면 직접 띄우세요). 목록이 보이면 앱이 ② 목록 읽기를 저절로 합니다(안 되면 직접 누르세요).")
+GUIDE_START = ("과제를 고르고 ① 브라우저 열기를 누르세요. 열린 ERP 창에서 로그인하면 그 과제의 결의서내역에서 "
+               "아직 안 받은 청구서를 찾아 받습니다(받기 전에 한 번 묻습니다).")
+GUIDE_BROWSER = ("열린 브라우저에서 로그인하세요. 그 뒤 고른 과제의 [청구서] → '결의서내역' 목록까지 앱이 가서 "
+                 "안 받은 청구서를 찾습니다(못 가면 직접 띄우세요).")
 GUIDE_LISTED = "받을 건을 확인하고 ③ 받기를 누르세요. 처음이라면 '앞 1건만 시험'으로 흐름부터 확인하세요."
 GUIDE_DETAIL = (
     "• ① ERP 열기 — 앱이 새 브라우저 창을 엽니다. 평소 쓰는 Edge/크롬이 아니라 이 창에서 로그인해야 합니다. "
-    "아이디·비밀번호는 어디에도 저장하지 않습니다.\n"
+    "아이디·비밀번호는 어디에도 저장하지 않습니다. 로그인하면 고른 과제의 결의서내역을 읽고 안 받은 청구서를 받습니다(받기 전에 묻습니다). "
+    "브라우저가 이미 열려 있으면 이 단추가 바로 그 일을 합니다.\n"
     "• ② 목록 읽기 — 결의서내역 목록을 끝까지 읽어 승인 + 문서번호 + 지출예정일 조건의 건만 고르고, "
     "문서번호가 보관 폴더에 이미 있는 건은 제외합니다.\n"
     "• ③ 받기 — 건마다 상세조회 → 청구서출력 → PDF 저장. 비목을 판정해 '0N_(지출예정일) 적요_이체자_(금액).pdf' "
@@ -111,6 +117,7 @@ class DownloadPage(QWidget):
         self._run_ok = 0
         self._run_failed = 0
         self._attempted = False               # 한 번이라도 받기를 시작했는지 (이어서 작업하기 판단)
+        self._auto_run = False                # ① 을 눌렀다 — 목록을 읽으면 이어서 받는다(받기 전 확인은 그대로)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 18, 24, 26)
@@ -128,6 +135,15 @@ class DownloadPage(QWidget):
         self.page_desc = muted_label("승인된 청구서를 ERP 에서 받아 비목 폴더에 둡니다. ERP 에 입력·제출하지 않습니다.")
         texts.addWidget(self.page_desc)
         head.addLayout(texts, 1)
+        # ERP 과제 — 일반청구와 같은 칸 · 같은 기본값(ui/project_box.py). 목록 읽기가 이 과제의 결의서내역으로 간다
+        project_label = QLabel("과제")
+        project_label.setObjectName("fieldLabel")
+        head.addWidget(project_label, 0, Qt.AlignVCenter)
+        self.project_box = project_box.project_box()
+        project_box.fill_project_box(self.project_box, project_box.last_project())
+        self.project_box.currentIndexChanged.connect(self._project_changed)
+        project_label.setBuddy(self.project_box)
+        head.addWidget(self.project_box, 0, Qt.AlignVCenter)
         self.folder_button = QPushButton()
         self.folder_button.setObjectName("ghost")
         self.folder_button.setToolTip("저장 폴더를 바꾸려면 누르세요")
@@ -172,6 +188,7 @@ class DownloadPage(QWidget):
         w.browser_state.connect(self._on_browser_state)
         w.structure_saved.connect(self._on_structure_saved)
         w.list_ready.connect(self._on_list_ready)
+        w.projects_read.connect(self._refresh_projects)
 
         self.refresh_counts()
         self._sync_buttons()
@@ -180,7 +197,7 @@ class DownloadPage(QWidget):
     def _build_steps(self) -> QHBoxLayout:
         row = QHBoxLayout()
         row.setSpacing(12)
-        self.step1 = Step("1", "ERP 열기", "앱이 연 창에서 직접 로그인합니다.", "login")
+        self.step1 = Step("1", "ERP 열기", "로그인하면 고른 과제에서 안 받은 청구서를 찾아 받습니다.", "login")
         self.open_button = QPushButton("브라우저 열기")
         self.open_button.clicked.connect(self._open)
         self.step1.add_action(self.open_button)
@@ -389,7 +406,12 @@ class DownloadPage(QWidget):
 
     def _sync_buttons(self) -> None:
         busy = self._busy
-        self.open_button.setEnabled(not busy and not self._browser_open)
+        # 브라우저가 열려 있으면 ① 은 '고른 과제의 목록을 읽고 받기' 다(담당자 요청 2026-10-21)
+        self.open_button.setEnabled(not busy)
+        self.open_button.setText("안 받은 청구서 받기" if self._browser_open else "브라우저 열기")
+        self.open_button.setToolTip("고른 과제의 결의서내역을 읽고 아직 안 받은 청구서를 받습니다(받기 전에 묻습니다)"
+                                    if self._browser_open else "ERP 창을 엽니다. 로그인하면 고른 과제의 안 받은 청구서를 찾아 받습니다")
+        self.project_box.setEnabled(not busy)
         self.list_button.setEnabled(not busy and self._browser_open)
         remaining = len(self._remaining())
         can_run = not busy and self._browser_open and remaining > 0
@@ -438,10 +460,35 @@ class DownloadPage(QWidget):
                 "받은 청구서를 넣을 폴더를 먼저 지정해 주세요.\n비목 폴더(01. 인건비 …)가 바로 아래 있는 폴더입니다.")
             self.need_settings.emit()
             return
-        self.worker.open_browser(watch=bool(settings.load().auto_read_list))
+        self._auto_run = True
+        if self._browser_open:
+            self._read_list()
+        else:
+            self.worker.open_browser(watch=True)    # 로그인 뒤 목록이 보이면 list_ready → 읽고 받기
+
+    def _project(self) -> str:
+        return str(self.project_box.currentData() or project_box.last_project())
 
     def _read_list(self) -> None:
-        self.worker.read_list()
+        self._set_state("목록 읽는 중", "info", f"과제 {self._project()} 의 결의서내역을 읽고 있습니다…")
+        self.worker.read_list(self._project())
+
+    def _project_changed(self, _index: int) -> None:
+        no = self._project()
+        self.project_box.setToolTip("ERP 과제: " + navigate.label_of(no))
+        project_box.remember(no)
+        if self._listed and not self._busy:
+            # 읽어 둔 목록은 앞 과제의 것이다 — 받기 전에 새 과제의 목록을 다시 읽게 한다
+            self._listed = False
+            self._targets, self._status = [], []
+            self.table.setRowCount(0)
+            self._set_state("과제 바뀜", "info", "과제가 바뀌었습니다. ① 을 누르면 이 과제의 결의서내역을 읽고 안 받은 청구서를 받습니다.")
+            self._sync_empty()
+            self._sync_buttons()
+
+    def _refresh_projects(self) -> None:
+        """로그인 뒤 과제현황을 새로 읽었으면 보기를 다시 채운다 — 고른 과제는 그대로."""
+        project_box.fill_project_box(self.project_box, self._project())
 
     def _download(self, limit: int) -> None:
         rows = self._remaining()
@@ -480,7 +527,7 @@ class DownloadPage(QWidget):
         for row in rows:
             self._set_status(row, "waiting")
         self._set_state("받는 중", "info", f"{len(rows)}건을 받고 있습니다. 브라우저 창은 닫지 마세요.")
-        self.worker.download([self._targets[i] for i in rows])
+        self.worker.download([self._targets[i] for i in rows], self._project())
 
     def _stop(self) -> None:
         self.worker.request_stop()
@@ -529,7 +576,9 @@ class DownloadPage(QWidget):
 
     def _on_list_ready(self) -> None:
         """브라우저를 연 뒤 결의서내역 목록이 보인다 — 아직 안 읽었고 다른 일이 없으면 [목록 읽기] 를 대신 누른다(읽기만)."""
-        if self._listed or self._busy or not self._browser_open or not settings.load().auto_read_list:
+        if self._busy or not self._browser_open:
+            return
+        if not self._auto_run and (self._listed or not settings.load().auto_read_list):
             return
         self._set_state("목록 발견", "info", "결의서내역 목록이 보여 저절로 읽습니다…")
         self._read_list()
@@ -538,6 +587,7 @@ class DownloadPage(QWidget):
         """사용자가 브라우저 창을 닫아 버렸으면 ① 부터 다시 하게 한다."""
         if self._browser_open and not alive:
             self._browser_open = False
+            self._auto_run = False
             self._set_state("브라우저 닫힘", "neutral", "브라우저 창이 닫혔습니다. " + GUIDE_START)
         self._sync_buttons()
         self.counts_changed.emit()
@@ -563,21 +613,27 @@ class DownloadPage(QWidget):
                     item.setToolTip(str(value))   # 말줄임된 내용 전체 보기
                 self.table.setItem(row, col, item)
             self._set_status(row, "waiting")
+        auto, self._auto_run = self._auto_run, False
         if self._targets:
             self._set_state("확인 대기", "info", GUIDE_LISTED)
+            if auto:
+                QTimer.singleShot(0, lambda: self._download(limit=0))     # 받기 전 확인 창은 그대로(9절)
         else:
-            self._set_state("받을 건 없음", "success", "새로 받을 건이 없습니다. 목록이 바뀌면 ② 를 다시 누르세요.")
+            self._set_state("받을 건 없음", "success",
+                            f"과제 {self._project()} 에 새로 받을 청구서가 없습니다(이미 받은 {selection.skipped}건은 건너뜀). "
+                            "목록이 바뀌면 ① 을 다시 누르세요.")
         self.tabs.setCurrentIndex(0)
         self._sync_empty()
         self._sync_buttons()
         self.counts_changed.emit()
 
     def _on_list_failed(self, message: str) -> None:
+        self._auto_run = False
         self._set_state("목록 못 찾음", "danger", GUIDE_BROWSER)
         QMessageBox.warning(
             self, "목록을 찾지 못했습니다",
             f"{message}\n\n앱이 연 브라우저 창에서 로그인하고 [과제관리 → 과제정보 → 청구서] 의 "
-            "'결의서내역' 목록을 띄웠는지 확인한 뒤 ② 를 다시 누르세요.\n열린 창 구조는 [진행 기록] 탭에 남겼습니다.")
+            "'결의서내역' 목록을 띄웠는지 확인한 뒤 ① 을 다시 누르세요.\n열린 창 구조는 [진행 기록] 탭에 남겼습니다.")
         self._sync_buttons()
 
     def _set_status(self, row: int, status: str, detail: str = "") -> None:
@@ -652,6 +708,7 @@ class DownloadPage(QWidget):
         self._on_error(message)
 
     def _on_error(self, message: str) -> None:
+        self._auto_run = False
         self.banner.hide()
         if "Executable doesn't exist" in message or "msedge" in message:
             message = ("브라우저를 띄우지 못했습니다. [앱 실행.bat] 을 다시 실행해 준비를 마치거나, "
