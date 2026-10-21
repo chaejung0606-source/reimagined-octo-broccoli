@@ -16,15 +16,16 @@ class ParkingLoginCard(Card):
     changed = Signal()
 
     def __init__(self, parent=None):
-        super().__init__("주차등록 로그인 정보", "주차 사이트(traffic.kangwon.ac.kr)에 앱이 로그인할 때 씁니다. 이 PC 에만 두고 "
-                         "비밀번호는 이 윈도우 사용자 계정으로만 풀리게 암호화합니다. ERP 로그인 정보는 저장하지 않습니다.", art="login")
+        super().__init__("주차등록 로그인 정보", "주차 사이트(traffic.kangwon.ac.kr)에 앱이 로그인할 때 씁니다 — 할인 적용 · 링크 만들기 · "
+                         "할인 내역은 브라우저 창 없이 이 정보로 합니다. 이 PC 에만 두고 비밀번호는 이 윈도우 사용자 계정으로만 풀리게 "
+                         "암호화합니다. ERP 로그인 정보는 저장하지 않습니다.", art="login")
         self.user_edit = QLineEdit()
         self.user_edit.setPlaceholderText("사이트 아이디")
         self.add(Field("아이디", self.user_edit))
         self.secret_edit = QLineEdit()
         self.secret_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.add(Field("비밀번호", self.secret_edit, "저장한 비밀번호는 다시 보여 주지 않습니다 — 바꿀 때만 넣으세요."))
-        self.auto_check = QCheckBox("사이트를 열 때 자동 로그인 (실패하면 다시 시도하지 않고 직접 로그인하게 둡니다)")
+        self.auto_check = QCheckBox("[브라우저에서 사이트 열기] 때도 자동 로그인 (실패하면 다시 시도하지 않고 직접 로그인하게 둡니다)")
         self.add(self.auto_check)
         row = QHBoxLayout()
         row.setSpacing(8)

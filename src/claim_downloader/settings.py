@@ -16,6 +16,7 @@
       장학금규칙.txt    장학금 청구 대표적요·행 적요 규칙 (claims/scholarship.py)
       혁신인재지원금규칙.txt  혁신인재지원금 청구 규칙 (같은 모양, 대표적요 03_)
       _주차로그인.json  주차등록 사이트 자동 로그인(아이디 · 윈도우 DPAPI 로 감싼 비밀번호) — parking.py. ERP 로그인은 어디에도 두지 않는다
+      _공무확인증관리대장.json  주차 공무확인증 구입 · 배부(사용자 · 내용 · 차량번호) — parking_ledger.py. 엑셀로 받을 수 있다
 
 개인 경로를 기본값으로 넣지 않는다. 동료에게 그대로 공유할 수 있어야 한다.
 """
@@ -110,6 +111,11 @@ def archive_cache_path() -> Path:
 
 def log_path() -> Path:
     return data_dir() / "_실행로그.txt"
+
+
+def parking_ledger_path() -> Path:
+    """공무확인증 관리대장(parking_ledger.py) — 사용자 이름 · 차량번호가 있어 저장소 · 배포에서 뺀다."""
+    return data_dir() / "_공무확인증관리대장.json"
 
 
 def skip_path() -> Path:

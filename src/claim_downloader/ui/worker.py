@@ -54,7 +54,7 @@ class SessionWorker(QObject):
     projects_read = Signal()            # 로그인 뒤 메인화면 과제현황에서 과제 목록을 읽어 _과제목록.json 에 남겼다 — 일반청구의 과제 고르기 칸이 다시 읽는다
     parking_opened = Signal(object)     # 주차등록: parking.OpenReport — 사이트를 열고 자동 로그인했는지
     parking_registered = Signal(object) # 주차등록: parking_link.LinkReport — 앱의 [등록] 으로 할인 링크를 만들었는지
-    parking_applied = Signal(object)    # 주차등록: parking_screens.ApplyReport — 할인 적용 화면에 차량번호를 넣었는지
+    parking_applied = Signal(object)    # 주차등록: parking_screens.ApplyReport — 창 없이 할인을 적용했는지
     parking_history = Signal(object)    # 주차등록: parking_screens.HistoryReport — 할인 내역 표(읽기만)
     rebudget_planned = Signal(object)   # 대응자금 파일 정리: rebudget.Plan — 옮기기 전 표
     sites_changed = Signal(object)      # 화면 구조 저장: 앱 브라우저에 열린 사이트 {browser, erp, erp_login, parking}(session.open_sites)
@@ -124,15 +124,15 @@ class SessionWorker(QObject):
         self._put("open_parking", (path,), "parking")
 
     def apply_parking(self, car: str) -> None:
-        """할인 적용 화면을 열고 차량번호 칸에 넣어 둔다(parking_screens.py — 실측 전이라 누르지 않는다)."""
+        """창 없이 할인 적용 — 차량번호 → 보유 할인권 '공무확인증' → 할인 선택 '공무확인증' → [종료](parking_screens.py)."""
         self._put("apply_parking", (car,), "parking")
 
     def read_parking_history(self) -> None:
-        """운영 → 할인 내역 표를 읽는다(읽기만)."""
+        """창 없이 운영 → 할인 내역 표를 읽는다(읽기만)."""
         self._put("read_parking_history", (), "parking")
 
     def register_parking(self, request) -> None:
-        """앱 칸의 값(parking_link.LinkRequest)으로 주차 사이트의 [새 링크] 창을 채우고 [저장] 까지."""
+        """창 없이 앱 칸의 값(parking_link.LinkRequest)으로 주차 사이트의 [새 링크] 창을 채우고 [저장] 까지."""
         self._put("register_parking", (request,), "parking")
 
     def read_list(self, project_no: str = "") -> None:
@@ -461,10 +461,11 @@ class SessionWorker(QObject):
         session.archive_report = None
 
     @staticmethod
-    def _parking_site() -> tuple[str, tuple[str, str] | None]:
+    def _parking_site(hidden: bool = False) -> tuple[str, tuple[str, str] | None]:
+        """주소 · 로그인 정보. 창 없이 하는 일(hidden)은 '열 때 자동 로그인' 체크와 상관없이 로그인 정보를 쓴다 — 사람이 로그인할 창이 없다."""
         from .. import parking
         cfg = settings.load()
-        return cfg.parking_url or parking.DEFAULT_URL, parking.load_login() if cfg.parking_auto_login else None
+        return cfg.parking_url or parking.DEFAULT_URL, parking.load_login() if (hidden or cfg.parking_auto_login) else None
 
     def _do_open_parking(self, session: ErpSession, path: str = "") -> None:
         self.busy.emit(True, "주차등록 사이트를 여는 중…")
@@ -473,17 +474,17 @@ class SessionWorker(QObject):
 
     def _do_register_parking(self, session: ErpSession, request) -> None:
         self.busy.emit(True, "주차 사이트에 할인 링크를 넣는 중…")
-        url, login = self._parking_site()
+        url, login = self._parking_site(hidden=True)
         self.parking_registered.emit(session.register_parking_link(request, url, login))
 
     def _do_apply_parking(self, session: ErpSession, car: str) -> None:
-        self.busy.emit(True, "주차 사이트의 할인 적용 화면을 여는 중…")
-        url, login = self._parking_site()
+        self.busy.emit(True, "주차 사이트에서 할인을 적용하는 중…")
+        url, login = self._parking_site(hidden=True)
         self.parking_applied.emit(session.apply_parking_discount(car, url, login))
 
     def _do_read_parking_history(self, session: ErpSession) -> None:
         self.busy.emit(True, "주차 사이트의 할인 내역을 읽는 중…")
-        url, login = self._parking_site()
+        url, login = self._parking_site(hidden=True)
         self.parking_history.emit(session.read_parking_history(url, login))
 
     def _do_read_list(self, session: ErpSession, project_no: str = "") -> None:

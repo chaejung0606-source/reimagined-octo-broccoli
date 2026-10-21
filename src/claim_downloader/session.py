@@ -117,6 +117,7 @@ class ErpSession:
         self.done: set[str] = set()
         self.archive_report: archive.ScanReport | None = None
         self._pw = None
+        self._hidden = None                   # 주차 사이트 일(할인 적용 · 링크 · 내역)을 하는 보이지 않는 브라우저 — (browser, page)
         self.browser = None
         self.page = None
         # 사람이 브라우저를 쓰는 중인지(앱이 쉬거나 노란 띠 · 재로그인 띠에서 기다릴 때) — 앱의 브라우저 스레드가 바꾼다(ui/worker.py).
@@ -429,6 +430,7 @@ class ErpSession:
                     pass
 
     def close(self) -> None:
+        self._close_hidden()
         try:
             if self.browser is not None:
                 self.browser.close()
@@ -605,8 +607,7 @@ class ErpSession:
         return page, scheme + "://" + rest.split("/", 1)[0], ""
 
     def _on_parking_tab(self, url: str, login, work):
-        """주차 사이트 탭에서 work(page, base, wait) 를 돌린다. 그동안 사이트 알림은 앱이 받는다(각 모듈의 처리기).
-        담당자가 앱의 단추를 누른 것이 허락이다(2026-10-21). ERP 창은 건드리지 않는다. 못 열었으면 None 과 까닭."""
+        """보이는 브라우저의 주차 사이트 탭에서 work(page, base, wait) 를 돌린다 — [목록 · QR 보기] 처럼 사람이 볼 화면만."""
         page, base, note = self._parking_tab(url, login)
         if page is None:
             return None, note
@@ -623,31 +624,130 @@ class ErpSession:
             pass
         return result, ""
 
-    def register_parking_link(self, request, url: str = "", login: tuple[str, str] | None = None):
-        """주차등록 — 할인 링크 화면의 [새 링크] 창에 넣고 [저장] 까지(parking_link.py)."""
-        from . import parking, parking_link
-        result, note = self._on_parking_tab(url or parking.DEFAULT_URL, login, lambda page, base, wait: parking_link.create(
-            page, request, self.log, wait=wait, base_url=base))
-        if result is None:
-            result = parking_link.LinkReport(note=note)
+    # ── 주차등록 — 창 없이(보이지 않는 브라우저) ──────────────────────────
+    # 담당자 2026-10-21: "할인적용과 할인링크 만들기는 브라우저 열기가 아니기 때문에 브라우저가 열리지 않은 상태에서 이루어져야 함".
+    # 그래서 할인 적용 · 할인 링크 만들기 · 할인 내역 읽기는 화면에 뜨지 않는 브라우저를 따로 띄워 한다. 로그인은 설정의 주차등록 로그인 정보로
+    # 앱이 한다(9절의 예외 — 주차 사이트만). 쿠키는 그 브라우저의 메모리에만 있고 앱을 닫으면 사라진다. ERP 는 이 브라우저에 열지 않는다.
+    # 사람이 직접 볼 때([브라우저에서 사이트 열기] · [목록 · QR 보기])만 보이는 브라우저를 쓴다.
+    NO_PARKING_LOGIN = ("설정 → '주차등록 로그인 정보' 에 아이디 · 비밀번호를 넣어 주세요 — 할인 적용 · 링크 만들기 · 할인 내역은 "
+                        "브라우저 창 없이 앱이 로그인해서 합니다")
+
+    def _hidden_alive(self) -> bool:
+        try:
+            return self._hidden is not None and self._hidden[0].is_connected() and not self._hidden[1].is_closed()
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _close_hidden(self) -> None:
+        hidden, self._hidden = self._hidden, None
+        if hidden is not None:
+            try:
+                hidden[0].close()
+            except Exception:  # noqa: BLE001 — 이미 닫힘
+                pass
+
+    def _hidden_parking_page(self, url: str, login: tuple[str, str] | None):
+        """창 없이 주차 사이트에 로그인한 창. 처음이면 보이지 않는 브라우저를 띄우고 로그인한다. 못 하면 (None, 까닭)."""
+        from . import parking
+        if self._hidden_alive():
+            return self._hidden[1], ""
+        self._close_hidden()
+        if not login:
+            return None, self.NO_PARKING_LOGIN
+        if parking.failed_before():
+            return None, "앞서 자동 로그인이 되지 않아 다시 시도하지 않습니다 — 설정에서 로그인 정보를 고쳐 저장하면 다시 합니다"
+        from playwright.sync_api import sync_playwright
+
+        if self._pw is None:
+            self._pw = sync_playwright().start()
+        try:
+            browser = self._pw.chromium.launch(headless=True)
+        except Exception as error:   # noqa: BLE001 — 크로미움을 못 받은 PC(open_browser 와 같은 까닭)
+            self.log("크로미움을 띄우지 못해 Edge 로 엽니다 (%s)" % str(error).splitlines()[0][:120])
+            browser = self._pw.chromium.launch(headless=True, channel="msedge")
+        try:
+            page = browser.new_context().new_page()
+            page.goto(url, wait_until="domcontentloaded")
+            report = parking.login(page, login[0], login[1], self.log, wait=lambda s: page.wait_for_timeout(int(s * 1000)))
+        except Exception as error:  # noqa: BLE001
+            browser.close()
+            return None, "주차 사이트에 닿지 못했습니다: " + (str(error).splitlines()[0][:120] if str(error) else type(error).__name__)
+        if not report.logged_in and parking.login_frame(page) is not None:
+            browser.close()
+            return None, report.note or "주차 사이트에 로그인하지 못했습니다"
+        self._hidden = (browser, page)
+        self.log("주차 사이트에 창 없이 로그인했습니다")
+        return page, ""
+
+    def _on_parking_hidden(self, url: str, login, work, empty):
+        """보이지 않는 브라우저에서 work(page, base, wait). 사이트 접속이 끝나 로그인 화면으로 돌아갔으면 한 번만 다시 로그인하고 다시 한다.
+        못 하면 empty(까닭) — 각 일의 보고 꼴."""
+        from . import parking
+        url = url or parking.DEFAULT_URL
+        scheme, _, rest = url.partition("://")
+        base = scheme + "://" + rest.split("/", 1)[0]
+        result = None
+        for again in (False, True):
+            page, note = self._hidden_parking_page(url, login)
+            if page is None:
+                result = empty(note)
+                break
+            result = work(page, base, lambda s, page=page: page.wait_for_timeout(int(s * 1000)))
+            if again or parking.login_frame(page) is None:
+                break
+            self.log("주차 사이트 접속이 끝나 다시 로그인합니다")
+            self._close_hidden()
+        for line in result.lines():
+            self.log(line)
         return result
 
+    def save_parking_screen(self, why: str, car: str = "") -> str:
+        """창 없이 하던 일이 멈춘 화면의 모양을 _화면구조.txt · _화면구조_모음.txt 에 — 실측 전 화면이라 그 파일로 고친다.
+        차량번호는 가린다(parking_screens.mask_cars). 남긴 파일 이름(못 남겼으면 '')."""
+        from . import parking_screens
+        if not self._hidden_alive():
+            return ""
+        try:
+            windows = diagnose.capture(self._hidden[1].context)
+            report = diagnose.format_report(windows, target="주차등록 사이트 · 앱이 창 없이 하다 멈춘 화면")
+            report = report.replace("읽기만 했습니다. 아무것도 누르거나 넣지 않았습니다.",
+                                    "앱이 멈춘 그대로 읽었습니다(멈춘 까닭: %s)." % parking_screens.mask_cars(why), 1)
+            number = re.sub(r"\s+", "", car or "")
+            if number:
+                report = report.replace(number, "(차량번호)")
+            report = parking_screens.mask_cars(report)
+            path = settings_mod.structure_path()
+            path.write_text(report, encoding="utf-8")
+            diagnose.append_to_book(settings_mod.structure_book_path(), report)
+        except Exception as error:  # noqa: BLE001 — 남기지 못해도 하던 일의 결과는 그대로 알린다
+            self.log("멈춘 화면을 남기지 못했습니다: " + (str(error).splitlines()[0][:100] if str(error) else type(error).__name__))
+            return ""
+        self.log("멈춘 화면의 모양을 남겼습니다 → " + settings_mod.structure_book_path().name)
+        return settings_mod.structure_book_path().name
+
+    def register_parking_link(self, request, url: str = "", login: tuple[str, str] | None = None):
+        """주차등록 — 할인 링크 화면의 [새 링크] 창에 넣고 [저장] 까지(parking_link.py). 창 없이."""
+        from . import parking_link
+        return self._on_parking_hidden(url, login, lambda page, base, wait: parking_link.create(
+            page, request, self.log, wait=wait, base_url=base), lambda note: parking_link.LinkReport(note=note))
+
     def apply_parking_discount(self, car: str, url: str = "", login: tuple[str, str] | None = None):
-        """주차등록 — 할인 적용 화면을 열고 차량번호 칸에 넣어 둔다. 실측 전이라 누르지 않는다(parking_screens.py)."""
-        from . import parking, parking_screens
-        result, note = self._on_parking_tab(url or parking.DEFAULT_URL, login, lambda page, base, wait: parking_screens.open_apply(
-            page, car, self.log, wait=wait, base_url=base))
-        if result is None:
-            result = parking_screens.ApplyReport(note=note)
+        """주차등록 — 할인 적용: 차량번호 → 보유 할인권 '공무확인증' → 할인 선택 '공무확인증' → [종료](parking_screens.py). 창 없이.
+        멈추면 그 화면의 모양을 남긴다(실측 전이라)."""
+        from . import parking_screens
+        result = self._on_parking_hidden(url, login, lambda page, base, wait: parking_screens.apply_discount(
+            page, car, self.log, wait=wait, base_url=base), lambda note: parking_screens.ApplyReport(note=note))
+        if result.capture:
+            result.saved = self.save_parking_screen(result.note, car)
         return result
 
     def read_parking_history(self, url: str = "", login: tuple[str, str] | None = None):
-        """주차등록 — 운영 → 할인 내역 화면의 표를 읽기만 한다(parking_screens.py)."""
-        from . import parking, parking_screens
-        result, note = self._on_parking_tab(url or parking.DEFAULT_URL, login, lambda page, base, wait: parking_screens.read_history(
-            page, self.log, wait=wait, base_url=base))
-        if result is None:
-            result = parking_screens.HistoryReport(note=note)
+        """주차등록 — 운영 → 할인 내역 화면의 표를 읽기만 한다(parking_screens.py). 창 없이. 표가 없으면 그 화면의 모양을 남긴다."""
+        from . import parking_screens
+        result = self._on_parking_hidden(url, login, lambda page, base, wait: parking_screens.read_history(
+            page, self.log, wait=wait, base_url=base), lambda note: parking_screens.HistoryReport(note=note))
+        if not result.ok and "표가 없습니다" in result.note:
+            self.save_parking_screen(result.note)
         return result
 
     def _project(self, project_no: str = "") -> str:
