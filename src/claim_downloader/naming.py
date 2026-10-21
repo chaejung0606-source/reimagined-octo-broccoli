@@ -211,7 +211,7 @@ def folder_name(code: str, budget=None) -> str:
     return BIMOK.get(code, UNSORTED)
 
 
-def _budget_folder(root: Path, code: str, budget) -> Path:
+def budget_folder(root: Path, code: str, budget) -> Path:
     """대응자금 비목 폴더 — 담당자가 이미 만든 같은 번호 · 같은 이름(띄어쓰기 · 가운뎃점 무시)의 폴더가 있으면 그것('02. 연구시설·장비비')."""
     name = folder_name(code, budget)
     if name != UNSORTED:
@@ -262,7 +262,7 @@ def fit_name(fname: str, room: int) -> str:
 def destination(out_root: str | Path, code: str, fname: str, budget=None) -> Path:
     """비목 폴더 바로 아래의 저장 경로. 같은 이름이 있으면 덮어쓰지 않고 _2, _3. 경로가 길면 적요를 줄인다.
     budget(대응자금의 예산 탭 비목)이 있으면 비목 폴더는 'NN. 비목명'(folder_name)."""
-    folder = _budget_folder(Path(out_root), code, budget) if budget else Path(out_root) / folder_name(code)
+    folder = budget_folder(Path(out_root), code, budget) if budget else Path(out_root) / folder_name(code)
     fname = fit_name(fname, MAX_PATH - len(str(folder)) - 1 - 3)      # 3 = 겹칠 때 붙는 _NN
     dest = folder / fname
     if dest.exists():

@@ -20,6 +20,8 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
@@ -39,11 +41,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import archive, navigate, project_folders, settings
+from ... import archive, navigate, project_folders, rebudget, settings
 from .. import project_box
 from ...targets import volume_warning
 from ..art import Art
-from ..report_dialog import show_structure_saved
+from ..report_dialog import ReportRow, show_report, show_structure_saved
 from ..widgets import Card, EmptyState, KpiCard, Pill, PillDelegate, Step, WrapLabel, muted_label
 from ..worker import SessionWorker
 
@@ -75,6 +77,13 @@ GUIDE_DETAIL = (
     "이름으로 비목 폴더 바로 아래에 둡니다. 플랫폼에 올린 파일은 직접 '업로드' 폴더로 옮기세요.\n"
     "• 상세화면이 멈추면 ERP 를 새로 열고 다시 로그인한 뒤 같은 건부터 이어받습니다(건당 최대 2번)."
 )
+
+
+def _rel_name(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root)).replace("\\", "/")
+    except ValueError:
+        return path.name
 
 
 def _money(amt: str) -> str:
@@ -195,6 +204,8 @@ class DownloadPage(QWidget):
         w.structure_saved.connect(self._on_structure_saved)
         w.list_ready.connect(self._on_list_ready)
         w.projects_read.connect(self._refresh_projects)
+        w.rebudget_planned.connect(self._on_rebudget_planned)
+        w.rebudget_applied.connect(self._on_rebudget_applied)
 
         self.refresh_counts()
         self._sync_buttons()
@@ -312,6 +323,14 @@ class DownloadPage(QWidget):
             "읽기만 하고 아무것도 누르거나 넣지 않습니다. 새 화면을 자동화하기 전 실측용입니다.")
         self.structure_button.clicked.connect(self._capture_structure)
         corner_row.addWidget(self.structure_button)
+        # 이미 받은 대응자금 청구서를 예산 탭 차례 번호로 고치기(담당자 2026-10-21) — 대응자금 과제 폴더가 있을 때만 보인다
+        self.rebudget_button = QPushButton("대응자금 파일 정리")
+        self.rebudget_button.setObjectName("ghost")
+        self.rebudget_button.setToolTip(
+            "이미 받은 대응자금 과제의 청구서 PDF 를 과제정보 → 예산 탭의 비목 차례(01 · 02 …)로 이름을 고치고 그 비목 폴더로 옮깁니다. "
+            "다시 받지 않습니다. 옮기기 전에 표로 보여 주고 묻습니다.")
+        self.rebudget_button.clicked.connect(self._rebudget)
+        corner_row.addWidget(self.rebudget_button)
         open_log = QPushButton("로그 파일 열기")
         open_log.setObjectName("ghost")
         open_log.clicked.connect(
@@ -362,6 +381,8 @@ class DownloadPage(QWidget):
         else:
             self.folder_button.setText("저장 폴더 지정하기")
             self.folder_button.setToolTip("")
+        names = {p.no: p.name for p in navigate.load_projects()[0]}
+        self.rebudget_button.setVisible(bool(rebudget.fund_folders(cfg.out_root, names)) if cfg.out_root else False)
         self._sync_empty()
         self.counts_changed.emit()
 
@@ -425,6 +446,7 @@ class DownloadPage(QWidget):
         self.all_button.setText(f"남은 {remaining}건 받기" if remaining else "받기")
         self.test_button.setEnabled(can_run)
         self.structure_button.setEnabled(not busy and self._browser_open)
+        self.rebudget_button.setEnabled(not busy)
         running = busy and bool(self._running_rows)
         self.stop_button.setVisible(running)
         self.stop_button.setEnabled(running)
@@ -765,6 +787,80 @@ class DownloadPage(QWidget):
         self.window().raise_()
         self.window().activateWindow()
 
+    # ── 대응자금 파일 정리(rebudget.py) ─────────────────────────────────
+    def _rebudget(self) -> None:
+        if self._busy:
+            return
+        if not self._browser_open:
+            QMessageBox.information(
+                self, "대응자금 파일 정리",
+                "대응자금 과제마다 ERP 의 과제정보 → 예산 탭에서 비목 차례를 읽어야 합니다.\n\n"
+                "① [브라우저 열기] 로 ERP 에 로그인한 뒤 이 단추를 다시 누르세요. (받기를 묻는 창이 뜨면 [아니요] 로 닫아도 됩니다)")
+            return
+        self._rebudget_asked = True
+        self._set_state("대응자금 파일 보는 중", "info",
+                        "대응자금 과제마다 예산 탭의 비목 차례를 읽고 받은 파일을 봅니다. 옮기기 전에 표로 보여 드립니다.")
+        self.worker.plan_rebudget()
+
+    def _on_rebudget_planned(self, plan) -> None:
+        if not getattr(self, "_rebudget_asked", False):
+            return
+        self._rebudget_asked = False
+        order = {rebudget.CHANGE: 0, rebudget.UNSURE: 1, rebudget.UPLOADED: 2, rebudget.OTHER: 3, rebudget.SAME: 4}
+        tone = {rebudget.CHANGE: "info", rebudget.SAME: "success", rebudget.UNSURE: "warning",
+                rebudget.UPLOADED: "warning", rebudget.OTHER: "neutral"}
+        rows = [ReportRow(m.status, tone.get(m.status, "neutral"),
+                          [m.project, m.place(), m.to() or "—"],
+                          detail=f"{m.why}\n지금: {m.source}" + (f"\n바꿀 곳: {m.target}" if m.target else ""))
+                for m in sorted(plan.moves, key=lambda m: (order.get(m.status, 9), str(m.source)))]
+        summary = []
+        for no, budget in plan.budgets.items():
+            moves = [m for m in plan.moves if m.project == no]
+            counts = " · ".join(f"{status} {n}" for status in order if (n := sum(1 for m in moves if m.status == status)))
+            summary.append(f"과제 {no} 예산 탭 비목: " + " · ".join("%02d %s" % (i, name) for i, (_c, name) in enumerate(budget, 1))
+                           + (f"  —  {counts}" if counts else "  —  PDF 없음"))
+        notes = [f"과제 {no}: 예산 탭을 읽지 못해 그대로 둠 — {why}" for no, why in plan.blocked]
+        unsure = sum(1 for m in plan.moves if m.status == rebudget.UNSURE)
+        if unsure:
+            notes.append(f"비목을 정하지 못한 파일 {unsure}개는 그대로 둡니다 — 열어 보고 직접 옮기세요")
+        uploaded = sum(1 for m in plan.moves if m.status == rebudget.UPLOADED)
+        if uploaded:
+            notes.append(f"업로드 폴더 안의 파일 {uploaded}개는 앱이 옮기지 않습니다 — 바꿀 이름을 보고 직접 고치세요")
+        changes = plan.changes()
+        if not plan.budgets and not plan.blocked:
+            QMessageBox.information(self, "대응자금 파일 정리", "저장 폴더에 대응자금 과제 폴더가 없습니다.")
+            self._set_state("준비", "neutral", GUIDE_START)
+            return
+        self._set_state("대응자금 파일 확인", "info", "표를 보고 바꿀지 정하세요.")
+        ok = show_report(
+            self, title="대응자금 파일 정리",
+            heading=f"이름 · 폴더를 바꿀 파일 {len(changes)}개" if changes else "바꿀 파일이 없습니다",
+            tone="info" if changes else "success", summary=summary, notes=notes,
+            columns=[("상태", 104), ("과제", 118), ("지금 (과제 폴더 안)", 400), ("바꿀 곳", None)], rows=rows,
+            footer="앞 번호를 예산 탭 차례로 바꾸고 'NN. 비목명' 폴더로 옮깁니다. 덮어쓰지 않고(같은 이름이면 _2), 업로드 폴더의 파일은 옮기지 않습니다. 빈 옛 폴더는 지우지 않습니다.",
+            accept_text=f"{len(changes)}개 바꾸기" if changes else "")
+        if ok and changes:
+            self._set_state("대응자금 파일 옮기는 중", "info")
+            self.worker.apply_rebudget(changes)
+        else:
+            self._set_state("준비", "neutral", GUIDE_START)
+
+    def _on_rebudget_applied(self, moves) -> None:
+        done = [m for m in moves if m.done]
+        failed = [m for m in moves if not m.done]
+        root = Path(settings.load().out_root or ".")
+        notes = [f"{m.project} {m.place()} — {m.why}" for m in failed]
+        empty = rebudget.emptied(moves)
+        if empty:
+            notes.append("비게 된 옛 폴더(필요 없으면 지우세요): " + " · ".join(_rel_name(p, root) for p in empty))
+        self.refresh_counts()
+        self._set_state("대응자금 파일 정리 끝", "success" if not failed else "warning", GUIDE_START)
+        show_report(self, title="대응자금 파일 정리", heading=f"옮김 {len(done)}개" + (f" · 못 옮김 {len(failed)}개" if failed else ""),
+                    tone="success" if not failed else "warning", notes=notes,
+                    columns=[("결과", 104), ("과제", 118), ("전 (과제 폴더 안)", 400), ("후", None)],
+                    rows=[ReportRow("옮김" if m.done else "못 옮김", "success" if m.done else "danger",
+                                    [m.project, m.place(), m.to()], detail=m.why) for m in moves])
+
     def _capture_structure(self) -> None:
         self._capture_asked = True              # 일반청구 화면도 같은 브라우저 스레드의 신호를 받는다 — 누른 쪽만 창을 띄운다
         self.worker.capture_structure()
@@ -780,6 +876,7 @@ class DownloadPage(QWidget):
         if owner != "download":
             return
         self._capture_asked = False
+        self._rebudget_asked = False
         self._on_error(message)
 
     def _on_error(self, message: str) -> None:

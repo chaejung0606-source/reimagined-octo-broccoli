@@ -56,6 +56,8 @@ class SessionWorker(QObject):
     parking_registered = Signal(object) # 주차등록: parking_link.LinkReport — 앱의 [등록] 으로 할인 링크를 만들었는지
     parking_applied = Signal(object)    # 주차등록: parking_screens.ApplyReport — 할인 적용 화면에 차량번호를 넣었는지
     parking_history = Signal(object)    # 주차등록: parking_screens.HistoryReport — 할인 내역 표(읽기만)
+    rebudget_planned = Signal(object)   # 대응자금 파일 정리: rebudget.Plan — 옮기기 전 표
+    rebudget_applied = Signal(object)   # 대응자금 파일 정리: 옮긴 결과(rebudget.Move 목록)
 
     def __init__(self) -> None:
         super().__init__()
@@ -136,6 +138,14 @@ class SessionWorker(QObject):
         """받기 화면의 '폴더 만든 과제 모두' — 과제마다 결의서 목록을 띄워 읽고 합친다(session.read_lists)."""
         self._stop.clear()
         self._put("read_lists", (list(projects),), "download")
+
+    def plan_rebudget(self) -> None:
+        """이미 받은 대응자금 파일 — 예산 탭 차례를 읽고 바꿀 이름을 정한다(옮기지 않음)."""
+        self._put("plan_rebudget", (), "download")
+
+    def apply_rebudget(self, moves: list) -> None:
+        """담당자가 표를 보고 [바꾸기] 를 누른 뒤 — 정한 대로 옮긴다."""
+        self._put("apply_rebudget", (list(moves),), "download")
 
     def forget_archive(self) -> None:
         """저장 폴더가 바뀌었다 — 다음 목록 읽기 전에 보관 폴더를 다시 훑게 한다."""
@@ -467,6 +477,14 @@ class SessionWorker(QObject):
             self.list_failed.emit(str(error))
             return
         self.listed.emit(selection)
+
+    def _do_plan_rebudget(self, session: ErpSession) -> None:
+        self.busy.emit(True, "대응자금 과제의 예산 탭을 읽고 받은 파일을 보는 중…")
+        self.rebudget_planned.emit(session.plan_rebudget())
+
+    def _do_apply_rebudget(self, session: ErpSession, moves: list) -> None:
+        self.busy.emit(True, "대응자금 파일을 옮기는 중…")
+        self.rebudget_applied.emit(session.apply_rebudget(moves))
 
     def _do_download(self, session: ErpSession, targets: list[dict], project_no: str = "") -> None:
         self._ensure_scanned(session)

@@ -795,3 +795,22 @@ def test_show_list_presses_claim_tab_when_budget_tab_is_in_front(isolated_home):
     screen.sub = "budget"
     frame, why = navigate.show_list(context, "202409710003", lambda _m: None, no_wait)
     assert frame is not None and not why and screen.clicks[-1] == "청구서" and "과제정보" not in screen.clicks
+
+
+def test_session_renames_already_downloaded_matching_fund_files(isolated_home, monkeypatch, tmp_path):
+    """담당자 2026-10-21: 이미 다 받은 뒤 "예산비목명이랑 순서만 확인하고 다운받은 파일명만 수정" — 예산 탭을 읽어 계획하고, 고른 것만 옮긴다."""
+    import test_rebudget as fake
+    from claim_downloader import rebudget
+    from claim_downloader.session import ErpSession
+    monkeypatch.setattr(ErpSession, "browser_open", property(lambda self: True))
+    root, fund, reader = fake.build(tmp_path)
+    monkeypatch.setattr(rebudget, "pdf_text", reader)
+    screen = Screen()
+    screen.budgets = {"202409710003": BUDGET}
+    s, logs, _saved = _folder_session(screen, str(root))
+    plan = s.plan_rebudget()
+    assert screen.clicks.count("예산") == 1 and screen.sub == "claims"
+    assert len(plan.changes()) == 3 and all(m.source.exists() for m in plan.changes())     # 계획만 — 아직 옮기지 않음
+    s.apply_rebudget(plan.changes())
+    assert (fund / "01. 장학금" / "01_(261001) 9월 근로장학금_홍길동 등 3명_(900,000).pdf").exists()
+    assert any("옮김 3 · 못 옮김 0" in line for line in logs)

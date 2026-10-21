@@ -1089,6 +1089,23 @@ class ErpSession:
                      + " · ".join("%02d %s" % (i, name) for i, (_code, name) in enumerate(budget, 1)))
         return self._budgets[project], ""
 
+    def plan_rebudget(self):
+        """이미 받은 대응자금 파일 정리(rebudget.py, 담당자 2026-10-21) — 대응자금 과제 폴더마다 예산 탭 차례를 읽고 파일마다 할 일을 정한다.
+        파일은 건드리지 않는다(옮기기는 담당자가 표를 보고 [바꾸기] 를 누른 뒤 apply_rebudget)."""
+        from . import rebudget
+        if not self.browser_open:
+            raise BrowserClosed("브라우저가 닫혀 있습니다. [브라우저 열기] 로 ERP 에 로그인한 뒤 다시 누르세요.")
+        erp_names = {p.no: p.name for p in navigate.load_projects()[0]}
+        self.log("── 대응자금 파일 정리: 과제마다 예산 탭의 비목 차례를 읽고 받은 파일을 봅니다 (아직 옮기지 않음)")
+        return rebudget.plan(self._load_settings().out_root, self._budget, erp_names, log=self.log)
+
+    def apply_rebudget(self, moves: list):
+        from . import rebudget
+        self.log(f"── 대응자금 파일 정리: {len(moves)}개를 옮깁니다")
+        rebudget.apply(moves, settings_mod.archive_cache_path(), self.log)
+        self.log("── 대응자금 파일 정리 끝: 옮김 %d · 못 옮김 %d" % (sum(1 for m in moves if m.done), sum(1 for m in moves if not m.done)))
+        return moves
+
     def _still_logged_in(self, tries: int = 40) -> bool:
         """ERP 를 새로 연 뒤 로그인이 그대로인지 — 메인화면 과제현황이 뜨면 True, 로그인 화면이면 False(최대 ~20초 본다)."""
         ctx = self.page.context
