@@ -496,9 +496,22 @@ class ErpSession:
         return next((p for p in self._pages() if _is_erp(p) and _opener(p) is None), None)
 
     # ── 주차등록 (parking.py) ──────────────────────────────────────────────
-    def open_parking(self, url: str = "", login: tuple[str, str] | None = None):
+    def open_parking(self, url: str = "", login: tuple[str, str] | None = None, path: str = ""):
         """주차등록 사이트를 앱 브라우저에서 연다(열려 있으면 그 탭을 앞으로, 없으면 새 탭). login 이 있고 로그인 화면이면 한 번만 자동 로그인.
+        path 를 주면(예: 할인 링크 목록 — 사람이 [QR 보기] 를 누르게) 그 화면으로 옮겨 간다. 누르지는 않는다.
         ERP 창(self.page)은 그대로 둔다 — ERP 일과 섞이지 않게."""
+        report = self._open_parking(url, login)
+        if path and report.opened:
+            page, base, _ = self._parking_tab(url, None, report)
+            try:
+                if page is not None and not page.url.split("?", 1)[0].endswith(path):
+                    page.goto(base + path, wait_until="domcontentloaded")
+                    page.bring_to_front()
+            except Exception as error:  # noqa: BLE001
+                report.note = path + " 화면을 열지 못했습니다: " + (str(error).splitlines()[0][:120] if str(error) else type(error).__name__)
+        return report
+
+    def _open_parking(self, url: str = "", login: tuple[str, str] | None = None):
         from . import parking
         url = url or parking.DEFAULT_URL
         report = parking.OpenReport()
@@ -524,7 +537,7 @@ class ErpSession:
         report.opened = True
         self.log("주차등록 사이트를 열었습니다: " + url)
         if not login:
-            report.note = "자동 로그인 정보가 없어 직접 로그인하세요(주차등록 화면의 '로그인 정보' 에 넣으면 다음부터 앱이 합니다)"
+            report.note = "자동 로그인 정보가 없어 직접 로그인하세요(설정 → '주차등록 로그인 정보' 에 넣으면 다음부터 앱이 합니다)"
             return report
         if parking.failed_before():
             report.note = "앞서 자동 로그인이 되지 않아 다시 시도하지 않습니다 — 로그인 정보를 고쳐 저장하면 다시 합니다"
@@ -536,31 +549,62 @@ class ErpSession:
         finally:
             self.hands_on = was
 
-    def register_parking_link(self, request, url: str = "", login: tuple[str, str] | None = None):
-        """주차등록 2단계 — 사이트를 열고(로그인 정보가 있으면 한 번 자동 로그인) 할인 링크 화면의 [새 링크] 창에 넣고 [저장] 까지(parking_link.py).
-        담당자가 앱의 [등록] 을 누른 것이 허락이다(2026-10-21). ERP 창은 건드리지 않는다."""
-        from . import parking, parking_link
+    def _parking_tab(self, url: str, login: tuple[str, str] | None, opened=None):
+        """사이트를 열고(로그인 정보가 있으면 한 번 자동 로그인 — 이미 열었으면 opened) 그 탭 · 주소 앞부분(포트까지) · 못 열었을 때의 까닭."""
+        from . import parking
         url = url or parking.DEFAULT_URL
-        opened = self.open_parking(url, login)
+        opened = opened or self._open_parking(url, login)
         page = next((p for p in self._pages() if parking.is_site(p.url, url)), None)
         if not opened.opened or page is None:
-            report = parking_link.LinkReport()
-            report.note = opened.note or "주차 사이트를 열지 못했습니다"
-            return report
+            return None, "", opened.note or "주차 사이트를 열지 못했습니다"
         scheme, _, rest = url.partition("://")
-        base = scheme + "://" + rest.split("/", 1)[0]                    # 주소의 앞부분(포트까지) — 할인 링크 화면으로 옮겨 갈 때
-        was, self.hands_on = self.hands_on, False      # 넣는 동안 사이트 알림은 앱이 받는다(parking_link 의 처리기)
+        return page, scheme + "://" + rest.split("/", 1)[0], ""
+
+    def _on_parking_tab(self, url: str, login, work):
+        """주차 사이트 탭에서 work(page, base, wait) 를 돌린다. 그동안 사이트 알림은 앱이 받는다(각 모듈의 처리기).
+        담당자가 앱의 단추를 누른 것이 허락이다(2026-10-21). ERP 창은 건드리지 않는다. 못 열었으면 None 과 까닭."""
+        page, base, note = self._parking_tab(url, login)
+        if page is None:
+            return None, note
+        was, self.hands_on = self.hands_on, False
         try:
-            report = parking_link.create(page, request, self.log, wait=lambda s: page.wait_for_timeout(int(s * 1000)), base_url=base)
+            result = work(page, base, lambda s: page.wait_for_timeout(int(s * 1000)))
         finally:
             self.hands_on = was
-        for line in report.lines():
+        for line in result.lines():
             self.log(line)
         try:
             page.bring_to_front()
         except Exception:  # noqa: BLE001
             pass
-        return report
+        return result, ""
+
+    def register_parking_link(self, request, url: str = "", login: tuple[str, str] | None = None):
+        """주차등록 — 할인 링크 화면의 [새 링크] 창에 넣고 [저장] 까지(parking_link.py)."""
+        from . import parking, parking_link
+        result, note = self._on_parking_tab(url or parking.DEFAULT_URL, login, lambda page, base, wait: parking_link.create(
+            page, request, self.log, wait=wait, base_url=base))
+        if result is None:
+            result = parking_link.LinkReport(note=note)
+        return result
+
+    def apply_parking_discount(self, car: str, url: str = "", login: tuple[str, str] | None = None):
+        """주차등록 — 할인 적용 화면을 열고 차량번호 칸에 넣어 둔다. 실측 전이라 누르지 않는다(parking_screens.py)."""
+        from . import parking, parking_screens
+        result, note = self._on_parking_tab(url or parking.DEFAULT_URL, login, lambda page, base, wait: parking_screens.open_apply(
+            page, car, self.log, wait=wait, base_url=base))
+        if result is None:
+            result = parking_screens.ApplyReport(note=note)
+        return result
+
+    def read_parking_history(self, url: str = "", login: tuple[str, str] | None = None):
+        """주차등록 — 운영 → 할인 내역 화면의 표를 읽기만 한다(parking_screens.py)."""
+        from . import parking, parking_screens
+        result, note = self._on_parking_tab(url or parking.DEFAULT_URL, login, lambda page, base, wait: parking_screens.read_history(
+            page, self.log, wait=wait, base_url=base))
+        if result is None:
+            result = parking_screens.HistoryReport(note=note)
+        return result
 
     def _project(self, project_no: str = "") -> str:
         """폴더에 붙은 과제(일반청구 화면에서 고름) — 없으면 마지막으로 고른 과제, 그것도 없으면 담당자가 정한 기본 과제."""

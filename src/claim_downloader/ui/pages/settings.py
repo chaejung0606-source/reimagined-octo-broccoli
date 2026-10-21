@@ -342,12 +342,6 @@ class SettingsPage(QWidget):
         if box is not None:
             box.setFocus()
 
-    def focus_parking(self) -> None:
-        """주차등록 화면의 [설정에서 넣기] 로 왔을 때 — 로그인 정보 칸을 보이게, 아이디 칸에 초점."""
-        self.parking_card.reload()
-        self._scroll.ensureWidgetVisible(self.parking_card, 0, 24)
-        self.parking_card.user_edit.setFocus()
-
     def _rebuild_shortcuts(self) -> None:
         from ... import shortcuts
         self.shortcut_button.setEnabled(False)

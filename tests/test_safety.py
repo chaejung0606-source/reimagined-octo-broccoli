@@ -100,6 +100,20 @@ def test_parking_link_presses_only_new_link_and_save():
     assert "import playwright" not in text and "from playwright" not in text
 
 
+def test_parking_screens_press_nothing():
+    """할인 적용 · 할인 내역(parking_screens.py, 담당자 요청 2026-10-21)은 실측 전이라 아무것도 누르지 않는다 — 할인 적용은 차량번호 칸
+    (표시를 붙인 칸 하나)에 넣어 두기만, 할인 내역은 표를 읽기만. [조회] · [적용] · 쪽 넘기기는 실측 뒤에."""
+    from claim_downloader import parking_screens
+    text = (SRC / "parking_screens.py").read_text(encoding="utf-8")
+    assert re.findall(r"\.fill\(([A-Z_]+),", text) == ["CAR_SELECTOR"]
+    for name in (".click(", "press(", "type(", "keyboard.", "select_option(", "set_checked(", "set_input_files(", "dispatchEvent",
+                 "submit(", ".value =", "load_login", "ERP_URL", "knu-icf"):
+        assert name not in text, name
+    for js in (parking_screens.MARK_CAR_JS, parking_screens.TABLE_JS):
+        assert "click" not in js and "setAttribute('data-coss-car'" in parking_screens.MARK_CAR_JS
+    assert "import playwright" not in text and "from playwright" not in text
+
+
 def test_auto_logout_presses_only_logout():
     """ERP 자동 로그아웃(담당자 요청 2026-10-21: 30분 활동 없음 · 로그아웃 없이 창을 닫음)이 누르는 것은 ERP 틀 위쪽의 [로그아웃]
     (#layoutMain_btn_logout, 글자 '로그아웃') 하나다. ERP 창에 미리 넣는 스크립트는 활동을 알리기만 하고 누르거나 값을 넣지 않는다."""

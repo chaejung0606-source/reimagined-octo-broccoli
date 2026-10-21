@@ -180,8 +180,6 @@ class MainWindow(QMainWindow):
             page.need_settings.connect(lambda: self.open("settings"))
             page.busy_changed.connect(lambda busy: self._on_busy(task.id, busy))
             page.counts_changed.connect(self._sync_home)
-        elif task.id == "parking":
-            page.need_settings.connect(self.open_parking_settings)
         elif task.id in ("meeting", "claim"):
             page.busy_changed.connect(lambda busy: self._on_busy(task.id, busy))
             use = "claim" if task.id == "claim" else "minutes"
@@ -202,11 +200,6 @@ class MainWindow(QMainWindow):
         """설정을 열고 AI 플랫폼 칸으로 — 위쪽 AI 단추 메뉴와 업무 화면의 [설정에서 바꾸기]. use 는 그 업무의 고르기 칸."""
         self.open("settings")
         self.page("settings").focus_ai(use)
-
-    def open_parking_settings(self) -> None:
-        """주차등록 화면의 [설정에서 넣기] — 설정을 열고 주차등록 로그인 정보 칸으로."""
-        self.open("settings")
-        self.page("settings").focus_parking()
 
     def open(self, task_id: str) -> None:
         """독·홈 카드·[+]·메뉴에서 부른다. 이미 열려 있으면 그 탭으로 간다."""
@@ -260,8 +253,6 @@ class MainWindow(QMainWindow):
     def _on_settings_changed(self) -> None:
         if "download" in self._pages:
             self._pages["download"].settings_changed()
-        if "parking" in self._pages:
-            self._pages["parking"].refresh_account()
         self._sync_home()
         # 설정에서 AI 플랫폼을 바꿨을 수 있다 — 새로 쓰는 플랫폼의 로그인 상태를 본다
         if set(ai.used_keys()) != {s.key for s in self.ai.statuses() if s.checked_at}:
