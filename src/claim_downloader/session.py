@@ -1058,6 +1058,17 @@ class ErpSession:
                  + (f" → {root}" if root is not None and sel.targets else ""))
         return sel
 
+    def _still_logged_in(self, tries: int = 40) -> bool:
+        """ERP 를 새로 연 뒤 로그인이 그대로인지 — 메인화면 과제현황이 뜨면 True, 로그인 화면이면 False(최대 ~20초 본다)."""
+        ctx = self.page.context
+        for _ in range(tries):
+            if navigate.read_projects(ctx):
+                return True
+            if navigate.logged_out(ctx):
+                return False
+            self._wait(0.5)
+        return False
+
     def read_lists(self, projects: list[str]) -> Selection:
         """폴더 만든 과제 모두(받기 화면의 '폴더 만든 과제 모두') — 과제마다 결의서 목록을 띄워 읽고 합친다.
         목록을 못 띄운 과제는 건너뛰고 까닭을 남긴다(과제현황에 안 보이는 끝난 과제 등 — 사람이 그 과제를 골라 직접 띄우면 된다)."""
@@ -1149,11 +1160,22 @@ class ErpSession:
                 i += 1
                 continue
             notify(i, "running", "")
-            self.log("[%d/%d] No %s (결의 %s) · %s" % (
-                i + 1, len(targets), row.get("no"), row.get("seq"), (row.get("cont") or "")[:30]))
+            self.log("[%d/%d] No %s (결의 %s%s) · %s" % (
+                i + 1, len(targets), row.get("no"), row.get("seq"),
+                f" · {row.get('gubun')}" if row.get("gubun") else "", (row.get("cont") or "")[:30]))
             try:
                 _code, dest = self._process(self.page, row, str(root), cfg.name_date_first,
                                             cfg.wait_sec, self.log)
+            except erp.NoPrintScreen as error:
+                # 청구서가 아닌 결의서(잔액조정 · 대체 …) — 다시 해도 같으니 건너뛰고, 그 과제의 결의서 목록을 다시 앞에 둔 뒤 다음 건으로
+                # (2026-10-21 실제: 이것을 멈춤으로 보고 ERP 를 새로 열어 다시 로그인을 물었다)
+                reason = str(error).splitlines()[0] if str(error) else "청구서출력 없음"
+                self.log("      ↷ 건너뜀 — %s (결의서구분 '%s')" % (reason, row.get("gubun") or "?"))
+                summary.failed.append(row)
+                notify(i, "failed", "건너뜀: " + reason)
+                current = None
+                i += 1
+                continue
             except Exception as error:   # noqa: BLE001
                 msg = str(error).splitlines()[0] if str(error) else type(error).__name__
                 self.log("      ✖ %s" % msg)
@@ -1167,11 +1189,16 @@ class ErpSession:
                 if cfg.freeze_reload and retried.get(key, 0) < MAX_RETRY and erp.is_freeze_error(msg):
                     retried[key] = retried.get(key, 0) + 1
                     self.log("      ↻ 새로고침 후 이어받기 (%d/%d)" % (retried[key], MAX_RETRY))
-                    notify(i, "retry", "다시 로그인 대기")
+                    notify(i, "retry", "ERP 를 새로 여는 중")
                     try:
                         self.page.goto(settings_mod.ERP_URL, wait_until="domcontentloaded")
                     except Exception:   # noqa: BLE001
                         pass
+                    if project and self._still_logged_in():
+                        # 쿠키가 이 브라우저 묶음에 그대로라 대개 로그인이 남아 있다 — 사람을 부르지 않고 그 과제의 목록을 다시 띄워 잇는다
+                        self.log("      ERP 를 새로 열었고 로그인이 그대로라 과제 %s 의 결의서 목록을 다시 띄워 이어받습니다" % project)
+                        current = None
+                        continue
                     if not self.ask_relogin(
                             "상세화면이 멈춰 ERP 를 새로 열었습니다. 다시 로그인하고 "
                             "'결의서내역' 목록을 띄운 뒤 계속하세요."):

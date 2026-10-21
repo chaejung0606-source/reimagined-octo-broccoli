@@ -68,7 +68,49 @@ def test_freeze_retries_same_item_after_relogin(monkeypatch):
     assert calls == ["A", "A"]
     assert len(asked) == 1 and s.page.gotos == 1
     assert summary.ok == 1 and not summary.failed
-    assert (0, "retry", "다시 로그인 대기") in items
+    assert (0, "retry", "ERP 를 새로 여는 중") in items
+
+
+def test_document_without_print_button_is_skipped_without_relogin(monkeypatch):
+    """2026-10-21 실제 — 끝난 과제의 '정산 완료 후 잔액조정' 처럼 상세화면에 청구서출력이 없는 결의서를 멈춤으로 보고 60초 기다린 뒤 ERP 를
+    새로 열어 다시 로그인을 물었다. 이제 건너뛰고(묻지 않고 · ERP 를 새로 열지 않고) 다음 건을 받는다. 기록에 결의서구분을 남긴다."""
+    def no_print(page, row, *rest):
+        if row["docNo"] == "A":
+            raise session_mod.erp.NoPrintScreen("상세화면에 '청구서출력' 이 없음 — 화면 rexpe_0099_01.act · 출력 단추 결의서출력")
+        return _ok(page, row, *rest)
+
+    s, logs, asked = _session(no_print, monkeypatch=monkeypatch)
+    items = []
+    summary = s.download([make_row(docNo="A", gubun="예산잔액조정"), make_row(docNo="B")], on_item=lambda *a: items.append(a))
+    assert asked == [] and s.page.gotos == 0
+    assert summary.ok == 1 and [r["docNo"] for r in summary.failed] == ["A"]
+    assert any(state == "failed" and text.startswith("건너뜀:") for _i, state, text in items)
+    assert any("↷ 건너뜀" in line and "예산잔액조정" in line for line in logs)
+    assert any("(결의 " in line and "· 예산잔액조정)" in line for line in logs)
+    assert archive.load_done(settings.done_path()) == {"B"}
+
+
+def test_freeze_resumes_by_itself_when_still_logged_in(monkeypatch, tmp_path):
+    """상세화면이 멈춰 ERP 를 새로 열었는데 로그인이 그대로면(쿠키가 이 브라우저에 남아 있다) 사람을 부르지 않고 그 과제의 목록을 다시 띄워 잇는다."""
+    calls = []
+
+    def flaky(page, row, *rest):
+        calls.append(row["docNo"])
+        if len(calls) == 1:
+            raise TimeoutError("상세화면(청구서출력)이 안 뜸")
+        return _ok(page, row, *rest)
+
+    s, logs, asked = _session(flaky, monkeypatch=monkeypatch)
+    (tmp_path / "(202408470001)_2024년도 사업비").mkdir()
+    settings.update(out_root=str(tmp_path))
+    shown = []
+    monkeypatch.setattr(s, "_still_logged_in", lambda: True)
+    monkeypatch.setattr(session_mod.navigate, "show_list", lambda ctx, project, log, wait: shown.append(project) or (object(), ""))
+    monkeypatch.setattr(session_mod.erp, "grid_shown", lambda frame: True)
+    summary = s.download([make_row(docNo="202408470001-20250201-1", project="202408470001")])
+    assert asked == [] and s.page.gotos == 1 and calls == ["202408470001-20250201-1"] * 2
+    assert summary.ok == 1 and shown == ["202408470001", "202408470001"]
+    assert any("로그인이 그대로라" in line for line in logs)
 
 
 def test_freeze_retry_is_capped(monkeypatch):

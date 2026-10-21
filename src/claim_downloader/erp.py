@@ -30,6 +30,59 @@ def is_freeze_error(message: str) -> bool:
     return any(hint in message for hint in FREEZE_HINTS)
 
 
+class NoPrintScreen(RuntimeError):
+    """상세조회로 뜬 화면에 '청구서출력' 이 없다 · 상세조회 뒤 ERP 알림이 떴다 — 멈춤(freeze)이 아니라 청구서가 아닌 결의서로 본다.
+
+    2026-10-21 실제: 끝난 과제(202408470001)의 'No 1 · 정산 완료 후 잔액조정' 에서 60초를 기다린 뒤 멈춤으로 보고 ERP 를 새로 열어
+    다시 로그인을 물었다. 청구서출력이 없는 결의서는 몇 번을 다시 해도 같으니 건너뛰고 다음 건으로 간다(session.download)."""
+
+
+# 상세조회 뒤 새로 뜨거나 바뀐 화면이 결의서 목록도 청구서 상세도 아닌지 — 읽기만 한다. 출력 단추 글자는 기록용.
+_OTHER_SCREEN_JS = r"""() => {
+  if (!document.body) return null;
+  if (document.querySelector('.k_REQ_DOC_NO') || document.querySelector('#btnDetail')) return null;
+  const t = document.body.innerText || '';
+  if (t.length < 200) return null;
+  const outs = [];
+  document.querySelectorAll('a,span,button,input').forEach(e => {
+    const s = (e.textContent || e.value || '').trim();
+    if (/출력/.test(s) && s.length <= 12 && !outs.includes(s)) outs.push(s);
+  });
+  if (outs.includes('청구서출력')) return null;
+  return {title: (document.title || '').slice(0, 40), outs: outs.slice(0, 6)};
+}"""
+OTHER_SCREEN_GRACE = 10      # 초 — 청구서가 아닌 화면이 이만큼 그대로면 건너뛴다(느린 청구서 상세가 아니라고 본다)
+ALERT_GRACE = 5              # 초 — 상세조회 뒤 ERP 알림이 왔는데 이만큼 청구서 상세가 안 뜨면 건너뛴다
+
+
+def _other_screen(page, before_frames: list, before_pages: list) -> dict | None:
+    """상세조회 뒤 새로 생겼거나 주소가 바뀐 프레임(새 창 포함) 중 청구서출력 없는 화면 하나."""
+    old = {id(fr): url for fr, url in before_frames}
+    frames = [fr for fr in page.frames if old.get(id(fr)) != fr.url]
+    for pg in list(page.context.pages):
+        if pg is not page and all(pg is not b for b in before_pages):
+            frames += list(pg.frames)
+    for fr in frames:
+        try:
+            got = fr.evaluate(_OTHER_SCREEN_JS)
+        except Exception:      # noqa: BLE001 — 그리는 중인 프레임
+            continue
+        if got:
+            got["url"] = str(fr.url or "").split("?", 1)[0].rsplit("/", 1)[-1]
+            return got
+    return None
+
+
+def _close_new_pages(page, before_pages: list) -> None:
+    """상세조회로 새로 뜬 창은 닫는다(ERP 단추가 아니라 창 닫기) — 다음 건이 그 창을 상세화면으로 보지 않게."""
+    for pg in list(page.context.pages):
+        if pg is not page and all(pg is not b for b in before_pages):
+            try:
+                pg.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def _frame_matches(fr, probe) -> bool:
     try:
         return fr.evaluate(probe) is True
@@ -361,23 +414,60 @@ def process_one(page, row: dict, out_root: str, name_date_first: bool, wait_sec:
     if not select_row(page, gfr, row):
         raise RuntimeError("목록에서 해당 행을 찾지 못함(스크롤/선택 실패)")
     page.wait_for_timeout(500)
+    before_frames = [(fr, fr.url) for fr in page.frames]
+    before_pages = list(page.context.pages)
+    alerts: list[str] = []
+
+    def heard(dialog) -> None:
+        # 듣기만 한다 — 닫는 것은 session 의 처리기(_on_dialog)가 한다
+        try:
+            alerts.append((dialog.message or "").strip())
+        except Exception:      # noqa: BLE001
+            pass
+
+    try:
+        page.context.on("dialog", heard)
+    except Exception:          # noqa: BLE001
+        pass
     gfr.evaluate("() => { const b=document.querySelector('#btnDetail'); if(b) b.click(); }")
 
     # 상세 프레임에 이 건의 문서번호와 '청구서출력' 이 함께 보일 때까지 기다린다.
     # 문서번호를 안 보면 직전 건의 상세화면을 이 건으로 착각해 이름이 뒤바뀐다.
     deadline = time.time() + 60
     dfr = None
-    while time.time() < deadline:
-        dfr = detail_frame(page)
-        if dfr:
-            try:
-                if dfr.evaluate(_DETAIL_READY_JS, row.get("docNo") or "") is True:
-                    break
-            except Exception:  # noqa: BLE001
-                pass
-        page.wait_for_timeout(500)
-    else:
-        raise TimeoutError("상세화면(청구서출력)이 안 뜸")
+    other_since = alert_since = None
+    try:
+        while True:
+            if time.time() >= deadline:
+                raise TimeoutError("상세화면(청구서출력)이 안 뜸")
+            dfr = detail_frame(page)
+            if dfr:
+                try:
+                    if dfr.evaluate(_DETAIL_READY_JS, row.get("docNo") or "") is True:
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+            now = time.time()
+            if alerts:
+                alert_since = alert_since or now
+                if now - alert_since >= ALERT_GRACE:
+                    _close_new_pages(page, before_pages)
+                    raise NoPrintScreen("상세조회 뒤 ERP 알림: " + alerts[-1][:120])
+            other = _other_screen(page, before_frames, before_pages)
+            if other:
+                other_since = other_since or now
+                if now - other_since >= OTHER_SCREEN_GRACE:
+                    _close_new_pages(page, before_pages)
+                    raise NoPrintScreen("상세화면에 '청구서출력' 이 없음 — 화면 " + (other.get("url") or other.get("title") or "?")
+                                        + (" · 출력 단추 " + ", ".join(other.get("outs") or []) if other.get("outs") else " · 출력 단추 없음"))
+            else:
+                other_since = None
+            page.wait_for_timeout(500)
+    finally:
+        try:
+            page.context.remove_listener("dialog", heard)
+        except Exception:      # noqa: BLE001
+            pass
 
     page.wait_for_timeout(800)
     info = read_owners_and_bimok(dfr)
