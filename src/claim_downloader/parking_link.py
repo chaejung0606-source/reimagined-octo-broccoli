@@ -115,6 +115,16 @@ FEEDBACK_JS = """() => {
 FORM_OPEN_JS = """() => { const a = document.getElementById('dl-active'); if (!a) return false;
   const r = a.getBoundingClientRect(); return r.width > 0 && r.height > 0; }"""
 
+# [새 링크] 창의 할인권 상품 보기 — '교환공무확인증4시간 (잔량 85)'(실측 ②). 보유 잔량을 읽으려고 보기만 읽는다(read_products)
+PRODUCTS_JS = """() => {
+  %s
+  const a = document.getElementById('dl-active');
+  if (!a || !vis(a)) return null;
+  const scope = a.closest('form') || a.closest('.modal') || document;
+  const lists = Array.from(scope.querySelectorAll('select')).filter(vis).map(s => Array.from(s.options).map(o => (o.text || '').trim()));
+  return lists.find(texts => texts.some(t => /잔량/.test(t))) || [];
+}""" % _VIS
+
 _QUOTA = re.compile(r"\s*\(\s*잔량[^)]*\)\s*$")
 CHOOSE = "선택"
 
@@ -184,6 +194,48 @@ def _evaluate(frame, js):
         return frame.evaluate(js)
     except Exception:  # noqa: BLE001 — 바뀌는 중인 화면
         return None
+
+
+@dataclass
+class ProductsReport:
+    ok: bool = False
+    products: list[str] = field(default_factory=list)   # 할인권 상품 보기(남은 수 포함)
+    note: str = ""
+
+
+def read_products(page, log: Callable[[str], None], wait: Callable[[float], None], base_url: str = "") -> ProductsReport:
+    """사이트 보유 잔량 — [새 링크] 창을 열어 할인권 상품 보기만 읽고, 저장하지 않고 화면을 다시 연다(창은 버려진다 — '취소' 도 누르지 않는다).
+    담당자 2026-10-22 "보유할인권을 보면 현재 잔여 개수가 있습니다" — 그 수는 실측된 이 보기에 '(잔량 N)' 으로 보인다."""
+    report = ProductsReport()
+    frame = page.main_frame
+    if base_url:
+        page.goto(base_url.rstrip("/") + LINKS_PATH, wait_until="domcontentloaded")
+    for _ in range(20):
+        if (_evaluate(frame, OPEN_COUNT_JS) or 0) > 0:
+            break
+        if (_evaluate(frame, parking.LOGIN_FORM_JS) or 0) > 0:
+            report.note = "주차 사이트에 로그인돼 있지 않습니다"
+            return report
+        wait(0.5)
+    products = _evaluate(frame, PRODUCTS_JS)
+    if products is None:
+        opened = _evaluate(frame, OPEN_JS) or {}
+        if not opened.get("ok"):
+            report.note = "보유 잔량을 읽지 못했습니다(" + (opened.get("why") or "[새 링크] 를 누르지 못함") + ")"
+            return report
+        for _ in range(10):
+            wait(0.5)
+            products = _evaluate(frame, PRODUCTS_JS)
+            if products is not None:
+                break
+    if base_url:                                  # 창을 저장하지 않고 버린다 — 화면을 다시 연다
+        page.goto(base_url.rstrip("/") + LINKS_PATH, wait_until="domcontentloaded")
+    report.products = [o for o in products or [] if o and product_name(o) != CHOOSE]
+    report.ok = bool(report.products)
+    if not report.ok:
+        report.note = "할인권 상품 보기를 읽지 못했습니다"
+    log("주차 보유 잔량: " + (" · ".join(report.products) or report.note))
+    return report
 
 
 def _names(rows) -> list[str]:

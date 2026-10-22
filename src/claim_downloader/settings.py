@@ -87,6 +87,8 @@ class Settings:
     parking_auto_login: bool = True        # 로그인 정보가 있으면 사이트를 열 때 한 번 자동 로그인(담당자 허락 2026-10-21)
     parking_product: str = ""              # 마지막으로 고른 할인권 상품(남은 수를 뗀 이름) — 앱의 [등록](parking_link.py)
     parking_products: str = ""             # 사이트에서 본 할인권 상품 보기(줄마다 하나, 남은 수 포함) — 화면의 고르기 칸을 채운다
+    parking_left: int = -1                 # 마지막으로 읽은 사이트 보유 잔량(공무확인증) — 관리대장 처음 수량을 셈한다(-1 = 아직 못 읽음)
+    parking_left_at: str = ""              # 그 잔량을 읽은 때(MM-DD HH:MM)
 
 
 def data_dir() -> Path:

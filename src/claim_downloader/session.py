@@ -215,7 +215,8 @@ class ErpSession:
             self.browser = self._pw.chromium.launch(headless=False, channel="msedge")
         # 묶음(context)을 따로 만든다 — browser.new_page() 의 묶음에는 앱이 새 탭을 더 열 수 없다(주차등록 · ERP 를 한 브라우저에, 2026-10-21).
         # 쿠키 · 로그인은 이 묶음의 메모리에만 있고 디스크에 남지 않는다(로그인 상태를 파일로 내보내지 않는다 — 9절)
-        self._context = self.browser.new_context(accept_downloads=True)
+        # no_viewport — 기본값은 화면을 1280×720 에 묶어 창을 키워도 화면이 그대로였다(담당자 2026-10-22 "처음 열린 크기에서 확장이 안 됨")
+        self._context = self.browser.new_context(accept_downloads=True, no_viewport=True)
         self.erp_logged_in = False
         self._watch_activity(self._context)
         self.page = self._context.new_page()
@@ -742,10 +743,17 @@ class ErpSession:
         return result
 
     def read_parking_history(self, url: str = "", login: tuple[str, str] | None = None):
-        """주차등록 — 운영 → 할인 내역 화면의 표를 읽기만 한다(parking_screens.py). 창 없이. 표가 없으면 그 화면의 모양을 남긴다."""
-        from . import parking_screens
-        result = self._on_parking_hidden(url, login, lambda page, base, wait: parking_screens.read_history(
-            page, self.log, wait=wait, base_url=base), lambda note: parking_screens.HistoryReport(note=note))
+        """주차등록 — 운영 → 할인 내역 화면의 표를 읽기만 한다(parking_screens.py) + 보유 잔량([새 링크] 창의 상품 보기, parking_link.read_products).
+        창 없이. 표가 없으면 그 화면의 모양을 남긴다."""
+        from . import parking_link, parking_screens
+
+        def work(page, base, wait):
+            report = parking_screens.read_history(page, self.log, wait=wait, base_url=base)
+            if report.ok:
+                report.products = parking_link.read_products(page, self.log, wait=wait, base_url=base).products
+            return report
+
+        result = self._on_parking_hidden(url, login, work, lambda note: parking_screens.HistoryReport(note=note))
         if not result.ok and "표가 없습니다" in result.note:
             self.save_parking_screen(result.note)
         return result

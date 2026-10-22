@@ -134,6 +134,7 @@ def test_apply_goes_through_the_described_steps():
     assert frame.clicked == ["ticket-0", "finish-0"] and frame.selected == [("[data-coss-apply=select-0]", 1)]
     assert page.went == ["https://traffic.kangwon.ac.kr/discount-apply"]
     assert report.ticket == "교환공무확인증4시간"                                        # 남은 수는 뗀다
+    assert report.left_before == 85                    # 보유 할인권 글자의 남은 수 — 화면이 관리대장 잔여를 맞춘다(85 → 적용 뒤 84)
     assert CAR not in "\n".join(logs + report.lines()) and "(차량번호)" in report.messages[-1]   # 차량번호는 기록에 남기지 않는다
     assert "✓ 할인을 적용했습니다" in report.lines()[0] and not page.handlers
 

@@ -33,7 +33,8 @@ _LOCK = threading.RLock()       # 화면(고치기)과 구글 시트 맞추기 �
 def now_stamp() -> str:
     """고친 때 — 세계시 ISO(구글 시트 스크립트의 toISOString 과 같은 꼴이라 글자로 견줄 수 있다)."""
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-SOURCES = {"apply": "할인 적용", "link": "할인 링크", "manual": "직접", "site": "사이트 할인 내역"}
+SOURCES = {"apply": "할인 적용", "link": "할인 링크", "manual": "직접", "site": "사이트 할인 내역", "carry": "처음 수량"}
+CARRY = "carry"         # 처음 수량 — 사이트 보유 잔량에서 거꾸로 센 줄(fit_to_site). 앱이 고친다(하나만)
 TITLE = "공무확인증 관리대장"
 
 
@@ -222,15 +223,49 @@ def totals(entries: list[Entry]) -> tuple[int, int, int]:
     return bought, given, bought - given
 
 
-def site_left(products_text: str, product: str = "") -> int | None:
-    """사이트가 보여 준 할인권 잔량 — 할인 링크 [새 링크] 창의 상품 보기 '교환공무확인증4시간 (잔량 85)'(실측 ②). 상품을 고르지
-    않았으면 보기가 하나일 때만. 마지막으로 [등록] 할 때 읽은 값이라 그 뒤에 쓴 것은 빠져 있을 수 있다."""
-    found = []
-    for label in (s.strip() for s in products_text.splitlines() if s.strip()):
-        m = re.search(r"잔량\s*([\d,]+)", label)
-        if m and (not product or label.startswith(product)):
-            found.append(int(m.group(1).replace(",", "")))
-    return found[0] if len(found) == 1 else None
+def left_of(text: str) -> int | None:
+    """할인권 글자의 남은 수 — '교환공무확인증4시간 (잔량 85)'(실측 ②) · '… 85매' · '… (85)'. 없으면 None."""
+    text = str(text or "")
+    for pattern in (r"잔량\s*([\d,]+)", r"잔여\s*([\d,]+)", r"보유\s*([\d,]+)", r"([\d,]+)\s*(?:매|장|개)\b", r"\(\s*([\d,]+)\s*\)\s*$"):
+        m = re.search(pattern, text)
+        if m:
+            return int(m.group(1).replace(",", ""))
+    return None
+
+
+def site_count(products) -> int | None:
+    """사이트가 보여 준 할인권 상품 보기(줄마다 하나) 중 이름에 '공무확인증' 이 든 것의 남은 수 합. 없으면 None."""
+    lines = products.splitlines() if isinstance(products, str) else list(products or [])
+    found = [left_of(line) for line in lines if TICKET in _squash(line)]
+    found = [n for n in found if n is not None]
+    return sum(found) if found else None
+
+
+@dataclass
+class Fit:
+    entries: list
+    start: int = 0           # 처음 수량
+    short: int = 0           # 대장의 구입이 사이트 잔량으로 설명되지 않는 수 — 대장에 없는 사용이 있다
+    changed: bool = False
+
+
+def fit_to_site(entries: list[Entry], count: int, when: str) -> Fit:
+    """사이트 보유 잔량(count)에 대장을 맞춘다(담당자 2026-10-22 "보유할인권을 보면 현재 잔여 개수가 있습니다 … 처음에 있었던 수량과 현재
+    수량 건별로 잔여 수량 다시 계산"). 처음 수량 = 지금 잔량 + 대장의 배부 − 다른 구입 — 맨 앞 줄(CARRY, 대장의 첫 일자)로 두면 마지막 잔여가
+    사이트 잔량과 같고 줄마다 잔여가 다시 셈해진다. 잔량을 **막 읽었을 때만** 부른다 — 오래된 잔량으로 다시 맞추면 그 뒤의 사용이 처음 수량에 묻힌다."""
+    others = [e for e in entries if e.source != CARRY]
+    old = next((e for e in entries if e.source == CARRY), None)
+    start = count + sum(e.given for e in others) - sum(e.bought for e in others)
+    short = max(0, -start)
+    start = max(start, 0)
+    first = min((e.date for e in others), default=dt.date.today().isoformat())
+    note = f"사이트 보유 잔량 {count:,}({when})에서 거꾸로 셈"
+    carry = old or Entry(date=first, source=CARRY, created="0000-00-00 00:00:00")
+    changed = old is None or (old.date, old.bought, old.note) != (first, start, note)
+    carry.date, carry.bought, carry.given, carry.content, carry.note = first, start, 0, "처음 수량", note
+    if changed:
+        carry.updated = now_stamp()
+    return Fit(entries=ordered(others + [carry]), start=start, short=short, changed=changed)
 
 
 # ── 사이트 할인 내역과 맞춰 보기 ───────────────────────────────────────────
@@ -257,9 +292,8 @@ class SiteMatch:
     date_col: int = -1
     product_col: int = -1
     method_col: int = -1
-    matched: list[int] = field(default_factory=list)     # 대장에 이미 있는 사이트 줄
-    missing: list[int] = field(default_factory=list)     # 대장에 없는 공무확인증 줄(사이트에서 직접 적용 — 넣는다)
-    linked: list[int] = field(default_factory=list)      # 대장에 없지만 링크 · QR 로 쓴 줄 — 링크를 만들 때 배부로 적었을 수 있어 저절로 넣지 않는다
+    matched: list[int] = field(default_factory=list)     # 대장에 이미 있는 사이트 줄(같은 날 · 같은 차)
+    missing: list[int] = field(default_factory=list)     # 대장에 없는 공무확인증 줄 — 넣는다(사이트에서 직접 적용한 것도 링크 · QR 로 쓴 것도)
     others: list[int] = field(default_factory=list)      # 공무확인증이 아닌 할인 — 대장과 상관없다
     note: str = ""
 
@@ -301,7 +335,8 @@ def _column(headers: list[str], words: tuple[str, ...]) -> int:
 def match_site(entries: list[Entry], headers: list[str], rows: list[list[str]]) -> SiteMatch:
     """사이트 할인 내역의 줄마다 대장에 같은 날 같은 차량번호의 배부 줄이 있는지. 대장 줄 하나는 사이트 줄 하나에만 맞춘다
     (같은 차가 같은 날 두 번이면 대장에도 두 줄이어야 맞다). 할인명이 공무확인증이 아닌 줄은 대장과 상관없다(할인명 열이 없으면 모두 본다).
-    차량 · 일시 열을 못 찾으면 맞춰 보지 않는다."""
+    링크 · QR 로 쓴 줄도 사용 한 건씩 넣는다(담당자 2026-10-22 "할인링크나 qr로 사용한 내역도 바로바로 관리대장에 반영") — 그래서 할인 링크를 만들 때는
+    배부를 적지 않는다(배부 0 인 기록 줄). 차량 · 일시 열을 못 찾으면 맞춰 보지 않는다."""
     result = SiteMatch(car_col=_column(headers, CAR_WORDS), date_col=_column(headers, DATE_WORDS),
                        product_col=_column(headers, PRODUCT_WORDS), method_col=_column(headers, METHOD_WORDS))
     if not result.ok:
@@ -321,8 +356,6 @@ def match_site(entries: list[Entry], headers: list[str], rows: list[list[str]]) 
         if all(key) and pool.get(key, 0) > 0:
             pool[key] -= 1
             result.matched.append(i)
-        elif result.method_col >= 0 and _squash(cell(row, result.method_col)) not in ("", MANUAL):
-            result.linked.append(i)
         else:
             result.missing.append(i)
     return result
@@ -336,7 +369,9 @@ def from_site(headers: list[str], rows: list[list[str]], indexes: list[int], mat
         row = rows[i]
         cell = lambda c: row[c] if 0 <= c < len(row) else ""  # noqa: E731
         when = cell(match.date_col)
-        note = " · ".join(x for x in (cell(match.product_col).strip(), (_time_of(when) + " 할인") if _time_of(when) else "") if x)
+        method = cell(match.method_col).strip()
+        note = " · ".join(x for x in (cell(match.product_col).strip(), (_time_of(when) + " 할인") if _time_of(when) else "",
+                                      method if method and method != MANUAL else "") if x)        # 링크 · QR 로 쓴 것은 그 적용방식을 함께
         out.append(Entry(date=day_of(when) or dt.date.today().isoformat(), given=1, car=cell(match.car_col).strip(),
                          note=note, source="site"))
     return out

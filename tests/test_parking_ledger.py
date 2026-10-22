@@ -39,10 +39,40 @@ def test_broken_file_is_kept_aside_not_overwritten(isolated_home):
     assert json.loads(settings.parking_ledger_path().read_text(encoding="utf-8"))["entries"][0]["bought"] == 10
 
 
-def test_site_left_reads_remaining_from_product_label():
-    assert ledger.site_left("교환공무확인증4시간 (잔량 85)") == 85
-    assert ledger.site_left("가 (잔량 3)\n나 (잔량 9)") is None                 # 여럿이면 어느 것인지 모른다
-    assert ledger.site_left("가 (잔량 3)\n나 (잔량 9)", "나") == 9
+def test_left_of_and_site_count_read_held_tickets():
+    assert ledger.left_of("교환공무확인증4시간 (잔량 85)") == 85            # 실측 ② — [새 링크] 창의 할인권 상품 보기
+    assert ledger.left_of("공무확인증4시간 1,204매") == 1204
+    assert ledger.left_of("공무확인증4시간 (12)") == 12
+    assert ledger.left_of("공무확인증4시간") is None
+    assert ledger.site_count(["선택", "교환공무확인증4시간 (잔량 85)"]) == 85
+    assert ledger.site_count("교환공무확인증4시간 (잔량 85)\n공무확인증2시간 (잔량 5)\n정기권 (잔량 9)") == 90   # 공무확인증만 더한다
+    assert ledger.site_count(["정기권 (잔량 9)"]) is None and ledger.site_count([]) is None
+
+
+def test_fit_to_site_counts_back_the_starting_amount(isolated_home):
+    """담당자 2026-10-22: 구입이 비어 잔여가 마이너스였다 — 사이트 보유 잔량에서 거꾸로 처음 수량을 셈하고 줄마다 잔여를 다시."""
+    ledger.add(ledger.Entry(date="2026-10-02", given=1, car="12가3456", source="site"))
+    ledger.add(ledger.Entry(date="2026-09-29", given=1, car="34나5678", source="site"))
+    ledger.add(ledger.Entry(date="2026-10-05", bought=10, content="공무확인증 구입"))
+    ledger.add(ledger.Entry(date="2026-10-06", given=3, content="워크숍", source="manual"))
+    fit = ledger.fit_to_site(ledger.load(), 85, "10-22 09:00")
+    assert fit.changed and fit.start == 85 + 5 - 10 and fit.short == 0
+    ledger.save(fit.entries)
+    rows = ledger.with_balance(ledger.load())
+    assert rows[0][0].source == ledger.CARRY and rows[0][0].date == "2026-09-29"       # 대장의 첫 일자 맨 앞
+    assert rows[0][0].content == "처음 수량" and "85" in rows[0][0].note
+    assert [left for _, left in rows] == [80, 79, 78, 88, 85]                          # 마지막 잔여 = 사이트 잔량
+    again = ledger.fit_to_site(ledger.load(), 85, "10-22 09:00")
+    assert not again.changed and len([e for e in again.entries if e.source == ledger.CARRY]) == 1   # 처음 수량 줄은 하나
+    ledger.add(ledger.Entry(date="2026-10-22", given=1, car="56다7890", source="apply"))
+    later = ledger.fit_to_site(ledger.load(), 84, "10-22 10:00")
+    assert later.start == 80 and ledger.with_balance(later.entries)[-1][1] == 84
+
+
+def test_fit_to_site_reports_buys_it_cannot_explain(isolated_home):
+    entries = [ledger.Entry(date="2026-10-01", bought=100), ledger.Entry(date="2026-10-02", given=10)]
+    fit = ledger.fit_to_site(entries, 50, "10-22 09:00")
+    assert fit.start == 0 and fit.short == 40          # 대장에 없는 사용이 있거나 구입 줄이 틀렸다
 
 
 def test_site_history_rows_are_matched_by_car_and_day():
@@ -62,7 +92,7 @@ def test_site_history_rows_are_matched_by_car_and_day():
 
 def test_real_history_columns():
     """담당자 PC 에서 읽힌 할인 내역 열(2026-10-22) — 정렬 그림 글자가 붙은 '할인일시', 일시로 착각하기 쉬운 '입차시각' · '할인시간'(240분).
-    공무확인증이 아닌 할인은 대장과 상관없고, 링크 · QR 로 쓴 줄(적용방식이 수동이 아님)은 저절로 넣지 않는다."""
+    공무확인증이 아닌 할인은 대장과 상관없고, 링크 · QR 로 쓴 줄(적용방식이 수동이 아님)도 바로 넣는다(담당자 2026-10-22) — 비고에 적용방식."""
     headers = ["할인일시arrow_downward", "차량번호", "입차시각", "할인명", "바코드", "할인유형", "적용방식", "입주사", "구분", "할인시간"]
     rows = [["2026-10-20 17:37:04", "09주5782", "2026-10-20 14:07:16", "공무확인증4시간", "", "할인권", "수동", "사업단", "무료", "240분"],
             ["2026-10-19 11:33:29", "38어3853", "2026-10-19 11:31:34", "공무확인증4시간", "", "할인권", "QR", "사업단", "무료", "240분"],
@@ -70,10 +100,11 @@ def test_real_history_columns():
     assert ledger.clean_header(headers[0]) == "할인일시"
     match = ledger.match_site([], headers, rows)
     assert (match.date_col, match.car_col, match.product_col, match.method_col) == (0, 1, 3, 6)
-    assert match.missing == [0] and match.linked == [1] and match.others == [2]
-    (entry,) = ledger.from_site(headers, rows, match.missing, match)
-    assert (entry.date, entry.given, entry.car, entry.note, entry.user, entry.content) == (
+    assert match.missing == [0, 1] and match.others == [2]
+    manual, qr = ledger.from_site(headers, rows, match.missing, match)
+    assert (manual.date, manual.given, manual.car, manual.note, manual.user, manual.content) == (
         "2026-10-20", 1, "09주5782", "공무확인증4시간 · 17:37 할인", "", "")
+    assert (qr.date, qr.car, qr.note) == ("2026-10-19", "38어3853", "공무확인증4시간 · 11:33 할인 · QR")
 
 
 def test_unknown_history_columns_are_not_guessed():

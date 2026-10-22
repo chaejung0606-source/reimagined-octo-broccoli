@@ -55,6 +55,8 @@ class Frame:
             v = s.values
             return {"name": v.get("name", ""), "lot": s.lots[v.get("lot", 1)], "product": s.products[v.get("product", 0)],
                     "start": v.get("start", ""), "end": v.get("end", ""), "active": v.get("active", True)}
+        if js == pl.PRODUCTS_JS:
+            return list(s.products) if s.form_open else None
         if js == pl.FEEDBACK_JS:
             return ["유효기간을 확인하세요"]
         raise AssertionError(js[:60])
@@ -143,6 +145,16 @@ def test_not_logged_in_says_so():
     site = Site(logged_in=False)
     report, _, _ = run(site)
     assert not report.ok and "로그인돼 있지 않습니다" in report.note and site.clicked == []
+
+
+def test_read_products_opens_new_link_but_never_saves():
+    """보유 잔량 — [새 링크] 창의 할인권 보기만 읽고 화면을 다시 연다(담당자 2026-10-22 "보유할인권을 보면 현재 잔여 개수가 있습니다")."""
+    site = Site()
+    page, logs = Page(site), []
+    report = pl.read_products(page, logs.append, wait=lambda s: None, base_url="https://traffic.kangwon.ac.kr")
+    assert report.ok and report.products == [PRODUCT] and site.clicked == ["새 링크"]          # [저장] · '취소' 없음
+    assert page.went == ["https://traffic.kangwon.ac.kr/discount-links"] * 2 and "잔량 85" in logs[0]
+    assert pl.read_products(Page(Site(logged_in=False)), logs.append, wait=lambda s: None).note == "주차 사이트에 로그인돼 있지 않습니다"
 
 
 def test_product_choice():
