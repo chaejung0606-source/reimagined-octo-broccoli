@@ -45,6 +45,7 @@ from ... import archive, navigate, project_folders, purchase, rebudget, settings
 from .. import project_box
 from ...targets import volume_warning
 from ..art import Art
+from ..log_button import LogSendButton, warn
 from ..report_dialog import ReportRow, show_report
 from ..flow import CURRENT, FlowStep
 from ..flowlogic import DOWNLOAD_ORDER, download_stage, flow_states
@@ -207,6 +208,7 @@ class DownloadPage(QWidget):
         self.log_button.setToolTip("앱이 한 일을 차례로 적은 기록을 아래에 펼칩니다")
         self.log_button.toggled.connect(lambda on: self.log_card.setVisible(on))
         head.addWidget(self.log_button, 0, Qt.AlignVCenter)
+        head.addWidget(LogSendButton("증빙 다운로드"), 0, Qt.AlignVCenter)
         self.tools_button = QPushButton("도구")
         self.tools_button.setObjectName("ghost")
         self.tools_menu = QMenu(self.tools_button)
@@ -1095,7 +1097,7 @@ class DownloadPage(QWidget):
                        "Microsoft Edge 가 설치되어 있는지 확인하세요.\n\n" + message)
         self._reading = False
         self._set_state("오류", "danger")
-        QMessageBox.warning(self, "문제가 생겼습니다", f"{message}\n\n자세한 내용은 위쪽 [진행 기록] 과 로그 파일에 있습니다.")
+        warn(self, "문제가 생겼습니다", message, "증빙 다운로드", "자세한 내용은 위쪽 [진행 기록] 과 로그 파일에 있습니다.")
         self._sync_buttons()
 
     def resizeEvent(self, event) -> None:  # noqa: N802

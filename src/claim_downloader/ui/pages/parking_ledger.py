@@ -393,7 +393,7 @@ class LedgerPanel(QWidget):
         self.sheet_button.setVisible(bool(config.connected and config.sheet_url))
         if not config.connected:
             self.sheet_state.set_status("구글 시트 연결 안 됨", "neutral")
-            self.sheet_note.setText("설정 → '관리대장 구글 시트' 에서 연결하면 시트에서도 보고 고칠 수 있습니다.")
+            self.sheet_note.setText("설정 → '구글 시트 연동' 에서 연결하면 시트에서도 보고 고칠 수 있습니다.")
             return
         result = result or sheet_sync().last
         name = f"'{config.sheet_name}' " if config.sheet_name else ""

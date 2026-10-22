@@ -94,7 +94,7 @@ def already_saved(folder, people) -> list[dict]:
 
 
 def saved_names() -> set[str]:
-    """임시저장한 사람 이름 전부 — 문제 보내기(share_log)가 기록에서 가릴 이름으로 쓴다."""
+    """임시저장한 사람 이름 전부 — 로그 보내기(share_log)가 기록에서 가릴 이름으로 쓴다."""
     names = set()
     for entry in _load().values():
         if isinstance(entry, dict):

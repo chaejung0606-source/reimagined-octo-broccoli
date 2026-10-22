@@ -54,6 +54,7 @@ from ...claims import scholarship as sch
 from ...minutes.backends import claude_cli
 from .. import ai_status, project_box
 from ..art import Art
+from ..log_button import LogSendButton, warn
 from ..claim_worker import ClaimExtractWorker
 from ..flow import HIDDEN, FlowArea, FlowStep
 from ..flowlogic import CLAIM_ORDER, claim_stage, flow_states
@@ -279,6 +280,7 @@ class ClaimPage(QWidget):
         self.log_button.setToolTip("앱이 한 일을 차례로 적은 기록을 아래에 펼칩니다")
         self.log_button.toggled.connect(self._toggle_log)
         head.addWidget(self.log_button, 0, Qt.AlignVCenter)
+        head.addWidget(LogSendButton("일반청구"), 0, Qt.AlignVCenter)
         tools = QPushButton("도구")
         tools.setObjectName("ghost")
         menu = QMenu(tools)
@@ -1917,7 +1919,7 @@ class ClaimPage(QWidget):
         self.busy_changed.emit(self.is_running())
         self._set_state("오류", "danger")
         self._sync_buttons()
-        QMessageBox.warning(self, "문제가 생겼습니다", f"{message}\n\n자세한 내용은 머리의 [진행 기록] 과 로그 파일에 있습니다.")
+        warn(self, "문제가 생겼습니다", message, "일반청구", "자세한 내용은 머리의 [진행 기록] 과 로그 파일에 있습니다.")
 
     def _on_browser_failed(self, owner: str, message: str) -> None:
         """브라우저 스레드의 오류 — 이 화면이 넣은 명령의 것만. 받기 화면의 오류로 AI 읽기 상태가 풀리던 것을 막는다."""
@@ -1933,7 +1935,7 @@ class ClaimPage(QWidget):
         self.busy_changed.emit(self.is_running())
         self._set_state("오류", "danger")
         self._sync_buttons()
-        QMessageBox.warning(self, "문제가 생겼습니다", f"{message}\n\n자세한 내용은 머리의 [진행 기록] 과 로그 파일에 있습니다.")
+        warn(self, "문제가 생겼습니다", message, "일반청구", "자세한 내용은 머리의 [진행 기록] 과 로그 파일에 있습니다.")
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         """창이 낮으면 머리 · 끌어다 놓기 칸을 줄여 목록과 학생 표에 자리를 준다 — 1366×768 노트북(창 안쪽 ~690)에서

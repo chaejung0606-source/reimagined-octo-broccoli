@@ -231,7 +231,7 @@ class SettingsPage(QWidget):
         column.addWidget(behave)
 
         # 기록
-        records = Card("기록", "문제가 생기면 _실행로그.txt 를 담당자에게 보내 주세요", art="journal")
+        records = Card("기록", "문제가 생기면 업무 화면 오른쪽 위 [로그 보내기] 를 누르세요", art="journal")
         data_path = QLineEdit(str(settings.data_dir()))
         data_path.setReadOnly(True)
         records_field = Field(

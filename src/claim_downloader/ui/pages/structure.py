@@ -16,10 +16,11 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget
 
 from ... import settings
 from ..art import Art
+from ..log_button import LogSendButton, warn
 from ..flow import CURRENT, HIDDEN, ChoiceCard, FlowStep
 from ..flowlogic import STRUCTURE_ORDER, flow_states, structure_stage
 from ..report_dialog import save_structure_to_desktop, show_structure_saved
@@ -91,6 +92,7 @@ class StructurePage(QWidget):
             menu.addAction(text, lambda path=path: self._open_file(path()))
         files.setMenu(menu)
         head.addWidget(files, 0, Qt.AlignVCenter)
+        head.addWidget(LogSendButton("화면 구조 저장"), 0, Qt.AlignVCenter)
         return head
 
     def _build_site(self) -> FlowStep:
@@ -285,7 +287,7 @@ class StructurePage(QWidget):
             return
         self._asked = False
         self.state.set_status("못 함", "danger")
-        QMessageBox.warning(self, "화면 구조 저장", message)
+        warn(self, "화면 구조 저장", message, "화면 구조 저장", "고른 사이트의 창이 열려 있는지 보세요.")
         self._sync()
 
     @staticmethod

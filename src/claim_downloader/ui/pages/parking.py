@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from ... import parking_ledger, parking_link, parking_screens, settings
 from ..art import Art
+from ..log_button import LogSendButton
 from ..flow import CURRENT, ChoiceCard, FlowArea, FlowStep
 from ..flowlogic import PARKING_ORDER, flow_states, parking_stage
 from ..widgets import Field, Pill, WrapLabel, muted_label
@@ -143,6 +144,7 @@ class ParkingPage(QWidget):
         self.open_button.setToolTip("앱 브라우저(ERP 와 같은 창)에 사이트를 열고, 로그인 정보가 있으면 자동으로 로그인합니다 — 사이트를 직접 볼 때")
         self.open_button.clicked.connect(self._open)
         head.addWidget(self.open_button, 0, Qt.AlignVCenter)
+        head.addWidget(LogSendButton("주차등록"), 0, Qt.AlignVCenter)
         return head
 
     def _build_what(self) -> FlowStep:

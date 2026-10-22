@@ -7,6 +7,8 @@
 - '할인내역' 탭: 사이트 '운영 → 할인 내역' 에서 읽은 줄을 쌓는다(같은 할인일시 · 차량번호는 한 번만). 사이트는 처음 쪽만 보여 주지만 시트에는 계속 쌓인다.
 - '관리대장' 탭: 앱의 공무확인증 관리대장과 같은 것(parking_ledger.SHEET_HEAD). 앱은 시트를 읽어 이 PC 의 사본과 줄 id 로 맞추고(parking_ledger.merge)
   맞춘 대장을 시트에 다시 쓴다 — 시트에서 고친 줄은 스크립트가 '수정시각' 을 찍어 앱보다 늦으면 시트 것이 이긴다.
+- '로그' 탭: 업무 화면의 [로그 보내기] 가 개인정보를 가린 실행 기록을 보낸다(log_send.py, 담당자 2026-10-22 — 깃허브 대신 구글 시트).
+  스크립트의 doGet 이 열쇠(log_key)가 맞는 요청에만 그 기록을 글로 돌려준다 — 그 주소를 채팅에 붙이면 Claude 가 읽는다. 열쇠로는 기록만 읽힌다.
 웹 앱은 '모든 사용자' 접근으로 배포해야 앱이 로그인 없이 부를 수 있다 — 그래서 앱이 만든 토큰을 스크립트에 넣어, 토큰이 없는 요청은 아무것도 주지 않는다.
 주소 · 토큰은 이 PC 의 `_구글시트연동.json` 에만(저장소 · 배포 · 기록에는 두지 않는다). 시트의 줄(이름 · 차량번호)은 기록에 남기지 않는다.
 """
@@ -27,13 +29,20 @@ TIMEOUT = 40          # 구글 웹 앱은 처음 부를 때 몇 초 걸린다
 # 담당자가 시트의 확장 프로그램 → Apps Script 에 붙여 넣는 글. __TOKEN__ 은 앱이 바꿔 넣는다(script_text).
 SCRIPT = r"""// COSS 업무데스크 — 공무확인증 관리대장 연동 스크립트 (앱이 만든 글입니다. 고치지 마세요)
 // 배포: 배포 → 새 배포 → 유형 '웹 앱' · 실행 사용자 '나' · 액세스 권한 '모든 사용자' → 배포 → 웹 앱 URL 을 앱 설정에 붙여 넣기
+// 이 글을 새로 붙여 넣었으면: 배포 → 배포 관리 → (연필) 수정 → 버전 '새 버전' → 배포 (주소는 그대로)
 const TOKEN = '__TOKEN__';
+const LOG_KEY = '__LOGKEY__';   // [로그 보내기] 로 쌓은 기록을 읽는 열쇠 — 기록만 읽힌다(관리대장은 TOKEN)
 const LEDGER = '관리대장';
 const HISTORY = '할인내역';
 const LEDGER_HEAD = ['일자', '구입', '배부', '잔여', '내용', '사용자', '차량번호', '비고', '적은 곳', 'id', '수정시각', '적은 때'];
 const TEXT_COLS = [1, 10, 11, 12];   // 날짜 · id · 시각은 글자 그대로(시트가 날짜로 바꾸지 않게)
+const LOGS = '로그';
+const LOG_HEAD = ['id', '보낸 때', '업무', '오류', '앱', '조각', '내용'];
+const LOG_KEEP = 30;                  // 최근 30번 보낸 것만 남긴다
 
 function doGet(e) {
+  const p = (e && e.parameter) || {};
+  if (p.key && LOG_KEY.indexOf('__') !== 0 && p.key === LOG_KEY) return ContentService.createTextOutput(readLog(String(p.id || '')));
   return ContentService.createTextOutput('COSS 업무데스크 관리대장 연동 스크립트가 켜져 있습니다. 이 주소를 앱 설정에 넣으세요.');
 }
 
@@ -46,7 +55,8 @@ function doPost(e) {
   try {
     const ss = SpreadsheetApp.getActive();
     const info = {name: ss.getName(), url: ss.getUrl()};
-    if (body.action === 'ping') { ledgerSheet(); return out(Object.assign({ok: true}, info)); }
+    if (body.action === 'ping') { ledgerSheet(); return out(Object.assign({ok: true, logs: true}, info)); }
+    if (body.action === 'log_add') return out(Object.assign({ok: true, id: addLog(body)}, info));
     if (body.action === 'ledger_get') return out(Object.assign({ok: true, rows: readLedger()}, info));
     if (body.action === 'ledger_put') { writeLedger(body.rows || []); return out(Object.assign({ok: true, count: (body.rows || []).length}, info)); }
     if (body.action === 'history_add') return out(Object.assign({ok: true, added: addHistory(body.headers || [], body.rows || [], body.keys || [])}, info));
@@ -131,6 +141,62 @@ function addHistory(headers, rows, keys) {
   }
   return add.length;
 }
+
+// ── 로그 보내기 — 앱이 개인정보를 가린 실행 기록을 보낸다. 칸 하나에 5만 자까지라 앱이 나눠 보낸 조각을 한 줄씩 ──
+function logSheet() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(LOGS);
+  if (!sh) sh = ss.insertSheet(LOGS);
+  if (sh.getLastRow() === 0) {
+    sh.getRange(1, 1, 1, LOG_HEAD.length).setValues([LOG_HEAD]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+function addLog(body) {
+  const sh = logSheet();
+  const zone = Session.getScriptTimeZone();
+  const now = new Date();
+  const id = Utilities.formatDate(now, zone, 'yyyyMMdd-HHmmss') + '-' + Utilities.getUuid().slice(0, 4);
+  const when = Utilities.formatDate(now, zone, 'yyyy-MM-dd HH:mm:ss');
+  const parts = (body.parts && body.parts.length) ? body.parts : [''];
+  // 조각 앞에 '[조각 i/n]' 줄을 붙인다 — 글이 '=' · '+' 로 시작해 시트가 수식으로 읽지 않게. 읽을 때 뗀다
+  const rows = parts.map((part, i) => [id, when, String(body.task || ''), String(body.error || '').slice(0, 500), String(body.version || ''),
+    (i + 1) + '/' + parts.length, '[조각 ' + (i + 1) + '/' + parts.length + ']\n' + String(part)]);
+  const start = sh.getLastRow() + 1;
+  sh.getRange(start, 1, rows.length, LOG_HEAD.length).setNumberFormat('@').setValues(rows);
+  const n = sh.getLastRow();
+  const ids = sh.getRange(2, 1, n - 1, 1).getDisplayValues().map(r => r[0]);
+  const order = Array.from(new Set(ids));
+  if (order.length > LOG_KEEP) {
+    const drop = new Set(order.slice(0, order.length - LOG_KEEP));
+    let k = 0;
+    while (k < ids.length && drop.has(ids[k])) k++;
+    if (k > 0) sh.deleteRows(2, k);
+  }
+  return id;
+}
+
+// 읽기 — id 가 없으면 가장 최근 것, 'list' 면 남은 것의 목록
+function readLog(id) {
+  const sh = logSheet();
+  const n = sh.getLastRow();
+  if (n < 2) return '보낸 로그가 없습니다.';
+  const rows = sh.getRange(2, 1, n - 1, LOG_HEAD.length).getDisplayValues();
+  if (id === 'list') {
+    const seen = {};
+    const lines = [];
+    rows.forEach(r => { if (!seen[r[0]]) { seen[r[0]] = true; lines.push([r[0], r[1], r[2], r[3].split('\n')[0]].join(' · ')); } });
+    return lines.reverse().join('\n');
+  }
+  const want = id || rows[rows.length - 1][0];
+  const mine = rows.filter(r => r[0] === want);
+  if (!mine.length) return '그 로그가 없습니다: ' + want + ' (최근 ' + LOG_KEEP + '번만 남깁니다)';
+  const h = mine[0];
+  const head = ['id ' + h[0], '보낸 때 ' + h[1], '업무 ' + h[2], '앱 ' + h[4], '오류 ' + (h[3] || '없음'), '────────────────────'];
+  return head.join('\n') + '\n' + mine.map(r => r[6].replace(/^\[조각 [^\]]*\]\n/, '')).join('');
+}
 """
 
 
@@ -141,6 +207,7 @@ class Config:
     token: str = ""
     sheet_url: str = ""
     sheet_name: str = ""
+    log_key: str = ""        # [로그 보내기] 로 쌓은 기록을 읽는 열쇠 — 스크립트에 박힌다(TOKEN 과 따로: 이 열쇠로는 기록만 읽힌다)
 
     @property
     def connected(self) -> bool:
@@ -152,7 +219,7 @@ def load_config() -> Config:
         data = json.loads(settings.parking_sheet_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return Config()
-    return Config(**{k: str(data.get(k, "")) for k in ("url", "token", "sheet_url", "sheet_name")})
+    return Config(**{k: str(data.get(k, "")) for k in ("url", "token", "sheet_url", "sheet_name", "log_key")})
 
 
 def save_config(config: Config) -> None:
@@ -173,10 +240,11 @@ def forget() -> None:
 def script_text(config: Config | None = None) -> tuple[str, Config]:
     """붙여 넣을 스크립트 — 토큰이 없으면 새로 만들어 남긴다(같은 토큰을 다시 쓴다: 스크립트를 다시 복사해도 연동이 끊기지 않게)."""
     config = config or load_config()
-    if not config.token:
-        config.token = secrets.token_urlsafe(24)
+    if not config.token or not config.log_key:
+        config.token = config.token or secrets.token_urlsafe(24)
+        config.log_key = config.log_key or secrets.token_hex(16)   # 글자만 — 스크립트의 '__' 확인과 겹치지 않게
         save_config(config)
-    return SCRIPT.replace("__TOKEN__", config.token), config
+    return SCRIPT.replace("__TOKEN__", config.token).replace("__LOGKEY__", config.log_key), config
 
 
 def looks_like_web_app(url: str) -> bool:
@@ -192,7 +260,7 @@ class SheetError(RuntimeError):
 def call(config: Config, action: str, opener=None, **payload) -> dict:
     """웹 앱에 POST — 구글은 302 로 결과 주소를 돌려주고 urllib 가 GET 으로 따라간다."""
     if not config.connected:
-        raise SheetError("구글 시트가 연결돼 있지 않습니다 — 설정 → '관리대장 구글 시트' 에서 연결하세요")
+        raise SheetError("구글 시트가 연결돼 있지 않습니다 — 설정 → '구글 시트 연동' 에서 연결하세요")
     body = json.dumps(dict(payload, action=action, token=config.token), ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(config.url.strip(), data=body, method="POST",
                                      headers={"Content-Type": "text/plain;charset=utf-8"})
@@ -228,6 +296,7 @@ class Result:
     total: int = 0           # 맞춘 뒤 대장 줄
     changed: bool = False    # 이 PC 의 대장이 바뀌었는지(화면을 다시 그린다)
     added: int = 0           # 할인내역 탭에 더한 줄
+    logs: bool = False       # 붙여 넣은 스크립트가 [로그 보내기] 를 받는 판인지(ping)
     when: str = field(default_factory=lambda: time.strftime("%H:%M"))
 
 
@@ -239,7 +308,8 @@ def check(config: Config | None = None, opener=None) -> Result:
     except SheetError as error:
         return Result(note=str(error))
     _remember(config, data)
-    return Result(ok=True, note=f"연결됐습니다 — 시트 '{data.get('name', '')}'", sheet_url=config.sheet_url, sheet_name=config.sheet_name)
+    return Result(ok=True, note=f"연결됐습니다 — 시트 '{data.get('name', '')}'", sheet_url=config.sheet_url, sheet_name=config.sheet_name,
+                  logs=bool(data.get("logs")))
 
 
 def sync_ledger(config: Config | None = None, opener=None) -> Result:

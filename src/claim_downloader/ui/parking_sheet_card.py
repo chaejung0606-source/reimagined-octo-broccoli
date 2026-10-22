@@ -1,4 +1,5 @@
-"""설정 화면의 '관리대장 구글 시트' 칸 — 담당자 2026-10-22: "할인내역을 구글시트에 저장하고 그 구글시트를 연동해서 어플에서 관리대장을 확인".
+"""설정 화면의 '구글 시트 연동' 칸 — 담당자 2026-10-22: "할인내역을 구글시트에 저장하고 그 구글시트를 연동해서 어플에서 관리대장을 확인".
+같은 날 [로그 보내기] 도 이 시트의 '로그' 탭으로 보낸다("깃허브를 사용하지 않고 구글시트를 사용해서") — 같은 스크립트 · 같은 주소.
 
 담당자가 할 일은 넷: 시트 만들기 → [스크립트 복사] 를 Apps Script 에 붙여 넣기 → 웹 앱으로 배포 → 그 주소를 여기에 붙여 넣고 [연결 확인].
 주소 · 토큰은 이 PC 의 `_구글시트연동.json` 에만(parking_sheet.py).
@@ -16,15 +17,18 @@ from .widgets import Card, Field, Pill, WrapLabel, muted_label
 STEPS = ("1. 구글 드라이브에서 새 스프레드시트를 만듭니다(이름은 자유 — 예: 공무확인증 관리대장).\n"
          "2. 그 시트의 메뉴 확장 프로그램 → Apps Script 를 열고, 원래 있던 글을 모두 지운 뒤 아래 [스크립트 복사] 로 복사한 글을 붙여 넣고 저장합니다.\n"
          "3. 오른쪽 위 배포 → 새 배포 → 유형 선택(톱니) '웹 앱' → 실행 사용자 '나', 액세스 권한이 있는 사용자 '모든 사용자' → 배포 → 권한 허용.\n"
-         "4. 나온 웹 앱 URL(https://script.google.com/…/exec)을 아래 칸에 붙여 넣고 [저장하고 연결 확인].")
+         "4. 나온 웹 앱 URL(https://script.google.com/…/exec)을 아래 칸에 붙여 넣고 [저장하고 연결 확인].\n"
+         "이미 연결해 두었는데 스크립트를 새로 붙여 넣었으면: 배포 → 배포 관리 → (연필) 수정 → 버전 '새 버전' → 배포 (주소는 그대로).")
 
 
 class ParkingSheetCard(Card):
     changed = Signal()
 
     def __init__(self, parent=None):
-        super().__init__("관리대장 구글 시트", "주차등록 사이트의 할인 내역을 구글 시트 '할인내역' 탭에 쌓고, 공무확인증 관리대장을 그 시트의 '관리대장' 탭과 "
-                         "맞춥니다 — 시트에서 고친 것도 앱에 보입니다. 시트는 담당자 구글 계정에 만듭니다.", art="overview")
+        super().__init__("구글 시트 연동 — 관리대장 · 로그 보내기",
+                         "주차등록 사이트의 할인 내역을 구글 시트 '할인내역' 탭에 쌓고, 공무확인증 관리대장을 그 시트의 '관리대장' 탭과 "
+                         "맞춥니다 — 시트에서 고친 것도 앱에 보입니다. 업무 화면의 [로그 보내기] 도 이 시트의 '로그' 탭으로 보냅니다. "
+                         "시트는 담당자 구글 계정에 만듭니다.", art="overview")
         self.add(WrapLabel(STEPS))
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -96,7 +100,10 @@ class ParkingSheetCard(Card):
         self.save_button.setEnabled(True)
         if result.ok:
             self.state.set_status("연결됨", "success")
-            self.note.setText(result.note + " — 주차등록 → 관리대장에서 시트와 맞춥니다.")
+            self.note.setText(result.note + " — 주차등록 → 관리대장에서 시트와 맞춥니다."
+                              + (" [로그 보내기] 도 됩니다." if result.logs else
+                                 "\n스크립트가 옛 판이라 [로그 보내기] 는 아직 안 됩니다 — [스크립트 복사] 로 새 글을 붙여 넣고 "
+                                 "배포 → 배포 관리 → (연필) 수정 → 버전 '새 버전' → 배포."))
             self.open_button.show()
             sheet_sync().run_now()
         else:

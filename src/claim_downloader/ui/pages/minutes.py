@@ -42,6 +42,7 @@ from ...minutes import rules
 from ...minutes.backends import claude_cli
 from .. import ai_status
 from ..art import Art
+from ..log_button import LogSendButton, warn
 from ..flow import CURRENT, HIDDEN, FlowArea, FlowStep
 from ..flowlogic import MINUTES_ORDER, flow_states, minutes_stage
 from ..minutes_worker import MinutesWorker
@@ -141,6 +142,7 @@ class MinutesPage(QWidget):
         self.log_button.setToolTip("앱이 한 일을 차례로 적은 기록을 아래에 펼칩니다")
         self.log_button.toggled.connect(self._toggle_log)
         head.addWidget(self.log_button, 0, Qt.AlignVCenter)
+        head.addWidget(LogSendButton("회의록 생성"), 0, Qt.AlignVCenter)
         tools = QPushButton("도구")
         tools.setObjectName("ghost")
         menu = QMenu(tools)
@@ -585,7 +587,7 @@ class MinutesPage(QWidget):
         self._set_state("오류", "danger", "")
         self._set_result("오류", "danger", message)
         self._sync_buttons()
-        QMessageBox.warning(self, "문제가 생겼습니다", f"{message}\n\n자세한 내용은 머리의 [진행 기록] 과 로그 파일에 있습니다.")
+        warn(self, "문제가 생겼습니다", message, "회의록 생성", "자세한 내용은 머리의 [진행 기록] 과 로그 파일에 있습니다.")
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         """창이 낮으면 설명 줄을 접어 표에 자리를 준다."""

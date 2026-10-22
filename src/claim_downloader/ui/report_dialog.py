@@ -195,7 +195,7 @@ def show_report(parent: QWidget | None, **kwargs) -> bool:
 def show_structure_saved(parent: QWidget | None, path: str) -> None:
     """[화면 구조 저장] 을 마친 뒤 — '화면 구조 저장' 업무(pages/structure.py)가 쓴다. path 가 비었으면 못 한 것."""
     if not path:
-        QMessageBox.warning(parent, "화면 구조 저장", "화면 구조를 저장하지 못했습니다. 고른 사이트의 창이 열려 있는지 보고, 그대로면 [문제 보내기] 로 기록을 보내 주세요.")
+        QMessageBox.warning(parent, "화면 구조 저장", "화면 구조를 저장하지 못했습니다. 고른 사이트의 창이 열려 있는지 보고, 그대로면 [로그 보내기] 로 기록을 보내 주세요.")
         return
     box = QMessageBox(QMessageBox.Question, "화면 구조 저장",
                       f"지금 열린 화면의 구조를 저장했습니다.\n{path}\n\n"

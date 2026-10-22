@@ -84,7 +84,33 @@ def _is_document_number(text: str) -> bool:
     return bool(re.fullmatch(r"20\d{6}", head)) or bool(re.fullmatch(r"20\d{2}-\d{1,2}-\d{1,2}", text))
 
 
-def mask_text(text: str, names: Iterable[str] = ()) -> str:
+def project_numbers() -> set[str]:
+    """앱이 아는 과제번호(과제현황에서 읽은 목록 · 저장 폴더의 과제 폴더) — 12자리라 계좌번호 규칙에 걸려 가려지던 것을 남긴다.
+    과제번호는 개인정보가 아니고, 로그로 진단할 때 어느 과제의 일인지 알아야 한다(로그 보내기 2026-10-22)."""
+    numbers: set[str] = set()
+    try:
+        from . import navigate
+        numbers.update(p.no for p in navigate.load_projects()[0])
+    except Exception:  # noqa: BLE001 — 목록이 없어도 가리기는 한다
+        pass
+    try:
+        from . import project_folders
+        root = settings.load().out_root
+        if root:
+            numbers.update(f.no for f in project_folders.folders(root))
+    except Exception:  # noqa: BLE001
+        pass
+    return {n for n in numbers if re.fullmatch(r"\d{12}", n or "")}
+
+
+def mask_text(text: str, names: Iterable[str] = (), keep: Iterable[str] = ()) -> str:
+    """keep 의 번호(과제번호)는 가리지 않는다 — 가리기 전에 표시로 바꿔 두었다가 되돌린다."""
+    saved: dict[str, str] = {}
+    for i, number in enumerate(sorted({str(k) for k in keep if k}, key=len, reverse=True)):
+        if number in text:
+            mark = "\x00" + "".join(chr(0x41 + int(d)) for d in str(i)) + "\x00"     # 숫자 없는 표시 — 번호 규칙에 걸리지 않게
+            text = text.replace(number, mark)
+            saved[mark] = number
     text = _SSN.sub("******-*******", text)
     text = _PHONE.sub(lambda m: m.group(0)[:3] + "-****-****", text)
     text = _MAIL.sub(lambda m: "***@" + m.group(1), text)
@@ -97,6 +123,8 @@ def mask_text(text: str, names: Iterable[str] = ()) -> str:
     every = {str(n).strip() for n in names if n and len(str(n).strip()) >= 2} | harvest_names(text)
     for name in sorted(every, key=len, reverse=True):          # '김민수' 를 '김민' 보다 먼저
         text = text.replace(name, mask_name(name))
+    for mark, number in saved.items():
+        text = text.replace(mark, number)
     return text
 
 
@@ -108,17 +136,25 @@ def tail(path: Path, lines: int = TAIL_LINES) -> str:
     return "\n".join(raw.splitlines()[-lines:])
 
 
-def build(names: Iterable[str] = (), version: str = "", lines: int = TAIL_LINES) -> tuple[str, Path]:
-    """가린 사본을 _공유용로그.txt 로 쓰고 (글, 경로) 를 돌려준다. 기록이 없으면 글이 비어 있다."""
+def compose(names: Iterable[str] = (), version: str = "", lines: int = TAIL_LINES, extra: Iterable[str] = (),
+            keep: Iterable[str] = ()) -> str:
+    """가린 사본의 글 — 기록이 없으면 빈 글. extra 는 머리에 더할 줄(로그 보내기의 업무 · 오류). 머리 줄도 가린다(오류 글에 이름이 섞일 수 있다)."""
     body = tail(settings.log_path(), lines)
-    path = settings.data_dir() / "_공유용로그.txt"
     if not body.strip():
-        return "", path
+        return ""
     head = [
         "COSS 업무데스크 공유용 기록 — 주민번호 · 계좌 · 학번 · 전화 · 메일 · 이름을 가렸습니다.",
         f"만든 때 {time.strftime('%Y-%m-%d %H:%M')}" + (f" · 앱 {version}" if version else "") + f" · 최근 {lines}줄",
+        *[str(line) for line in extra if str(line).strip()],
         "─" * 40,
     ]
-    text = "\n".join(head) + "\n" + mask_text(body, names) + "\n"
-    path.write_text(text, encoding="utf-8")
+    return mask_text("\n".join(head) + "\n" + body, names, keep) + "\n"
+
+
+def build(names: Iterable[str] = (), version: str = "", lines: int = TAIL_LINES) -> tuple[str, Path]:
+    """가린 사본을 _공유용로그.txt 로 쓰고 (글, 경로) 를 돌려준다. 기록이 없으면 글이 비어 있다."""
+    path = settings.data_dir() / "_공유용로그.txt"
+    text = compose(names, version, lines)
+    if text:
+        path.write_text(text, encoding="utf-8")
     return text, path
