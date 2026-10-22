@@ -55,8 +55,25 @@ def test_site_history_rows_are_matched_by_car_and_day():
     match = ledger.match_site(entries, headers, rows)
     assert match.ok and match.matched == [0] and match.missing == [1, 2]
     new = ledger.from_site(headers, rows, match.missing, match)
-    assert [(e.date, e.given, e.car, e.note, e.source) for e in new] == [
-        ("2026-10-21", 1, "12가3456", "교환공무확인증4시간", "site"), ("2026-10-21", 1, "34나5678", "교환공무확인증4시간", "site")]
+    assert [(e.date, e.given, e.car, e.note, e.source, e.user, e.content) for e in new] == [
+        ("2026-10-21", 1, "12가3456", "교환공무확인증4시간 · 15:00 할인", "site", "", ""),
+        ("2026-10-21", 1, "34나5678", "교환공무확인증4시간 · 11:00 할인", "site", "", "")]
+
+
+def test_real_history_columns():
+    """담당자 PC 에서 읽힌 할인 내역 열(2026-10-22) — 정렬 그림 글자가 붙은 '할인일시', 일시로 착각하기 쉬운 '입차시각' · '할인시간'(240분).
+    공무확인증이 아닌 할인은 대장과 상관없고, 링크 · QR 로 쓴 줄(적용방식이 수동이 아님)은 저절로 넣지 않는다."""
+    headers = ["할인일시arrow_downward", "차량번호", "입차시각", "할인명", "바코드", "할인유형", "적용방식", "입주사", "구분", "할인시간"]
+    rows = [["2026-10-20 17:37:04", "09주5782", "2026-10-20 14:07:16", "공무확인증4시간", "", "할인권", "수동", "사업단", "무료", "240분"],
+            ["2026-10-19 11:33:29", "38어3853", "2026-10-19 11:31:34", "공무확인증4시간", "", "할인권", "QR", "사업단", "무료", "240분"],
+            ["2026-10-18 09:00:00", "11가1111", "2026-10-18 08:00:00", "정기권 할인", "", "할인권", "수동", "사업단", "무료", "60분"]]
+    assert ledger.clean_header(headers[0]) == "할인일시"
+    match = ledger.match_site([], headers, rows)
+    assert (match.date_col, match.car_col, match.product_col, match.method_col) == (0, 1, 3, 6)
+    assert match.missing == [0] and match.linked == [1] and match.others == [2]
+    (entry,) = ledger.from_site(headers, rows, match.missing, match)
+    assert (entry.date, entry.given, entry.car, entry.note, entry.user, entry.content) == (
+        "2026-10-20", 1, "09주5782", "공무확인증4시간 · 17:37 할인", "", "")
 
 
 def test_unknown_history_columns_are_not_guessed():

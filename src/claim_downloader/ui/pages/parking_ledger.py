@@ -1,4 +1,4 @@
-"""주차등록 화면의 '할인 내역 · 관리대장' — 공무확인증 관리대장(앱에 적은 것) + 사이트 할인 내역(읽기만). 담당자 요청 2026-10-21.
+"""주차등록 화면의 '관리대장'(1단계 카드 이름 — 담당자 2026-10-22) — 공무확인증 관리대장(앱에 적은 것) + 사이트 할인 내역(읽기만). 담당자 요청 2026-10-21.
 
 담당자: "할인내역을 볼때 공무확인증 관리대장으로 확인하고 엑셀파일로 다운받을 수 있도록" · "이전 공무확인증 관리대장에는 일자, 수량(구입,배부,잔여),
 내용, 사용자 항목이 있었습니다". 대장은 parking_ledger.py(사용자 폴더의 _공무확인증관리대장.json)에 있다.
@@ -190,9 +190,9 @@ class LedgerPanel(QWidget):
         self.match_label = muted_label("")
         self.match_label.setWordWrap(True)
         match_row.addWidget(self.match_label, 1)
-        self.import_button = QPushButton("대장에 넣기")
-        self.import_button.setObjectName("primary")
-        self.import_button.setToolTip("대장에 없는 사이트 줄을 배부 1 줄씩 넣습니다 — 사용자 · 내용은 표에서 채우세요")
+        self.import_button = QPushButton("링크 · QR 로 쓴 줄도 넣기")
+        self.import_button.setObjectName("ghost")
+        self.import_button.setToolTip("링크 · QR 로 쓴 공무확인증은 링크를 만들 때 배부로 적었을 수 있어 저절로 넣지 않습니다 — 적지 않았으면 누르세요")
         self.import_button.clicked.connect(self._import_site)
         match_row.addWidget(self.import_button, 0, Qt.AlignVCenter)
         self.site_card.add_layout(match_row)
@@ -346,7 +346,7 @@ class LedgerPanel(QWidget):
             return
         rows = report.rows
         width = max([len(report.headers)] + [len(r) for r in rows] + [1])
-        headers = list(report.headers) + [f"칸 {i + 1}" for i in range(len(report.headers), width)]
+        headers = [ledger.clean_header(h) for h in report.headers] + [f"칸 {i + 1}" for i in range(len(report.headers), width)]
         self._site_headers, self._site_rows = headers, rows
         table = self.site_table
         table.clearContents()
@@ -369,7 +369,24 @@ class LedgerPanel(QWidget):
             info.append("사이트가 처음 보여 주는 쪽만 읽었습니다 — 다른 쪽 · 다른 기간은 브라우저 화면에서 봅니다.")
         self.site_info.setText(" · ".join(info))
         self._rematch()
+        added = self._fill_from_site()
+        if added:
+            self.site_info.setText(self.site_info.text() + f"\n대장에 없던 공무확인증 사용 {added}줄을 관리대장에 넣었습니다(배부 1 · 일자 · 차량번호 · 비고). "
+                                   "사용자 · 내용은 사이트에 없어 비워 두었습니다 — 표에서 두 번 눌러 채우세요.")
         self._filter_site(self.site_filter.text())
+
+    def _fill_from_site(self) -> int:
+        """사이트 할인 내역 중 대장에 없는 공무확인증 줄을 관리대장 양식으로 넣는다(담당자 2026-10-22 "관리대장 양식에 맞춰서 정보 기입해주세요.
+        없는 정보는 공란으로"). 같은 날 · 같은 차는 한 번만 — 다시 불러와도 겹치지 않는다. 링크 · QR 로 쓴 줄은 단추로(match.linked)."""
+        match = self._match
+        if match is None or not match.ok or not match.missing:
+            return 0
+        entries = ledger.from_site(self._site_headers, self._site_rows, match.missing, match)
+        stored = ledger.load() + entries
+        ledger.save(stored)
+        self._show(stored)
+        self.changed.emit()
+        return len(entries)
 
     def _rematch(self) -> None:
         """사이트 줄마다 대장에 있는지 — 차량번호 · 일자. 없는 줄은 [대장에 넣기]."""
@@ -383,11 +400,17 @@ class LedgerPanel(QWidget):
             self.match_label.setText(match.note + " — 표를 보고 [줄 추가] 로 직접 적으세요.")
             self.import_button.hide()
             return
-        self.match_label.setText(f"대장에 있는 줄 {len(match.matched)} · 대장에 없는 줄 {len(match.missing)}"
-                                 + (" — 대장에 넣은 뒤 표에서 사용자 · 내용을 채우세요." if match.missing else " — 모두 대장에 있습니다."))
-        self.import_button.setVisible(bool(match.missing))
-        self.import_button.setText(f"대장에 넣기 ({len(match.missing)}줄)")
-        missing = set(match.missing)
+        parts = [f"공무확인증 {len(match.matched) + len(match.missing) + len(match.linked)}줄 중 대장에 있는 줄 {len(match.matched)}"]
+        if match.missing:
+            parts.append(f"대장에 없는 줄 {len(match.missing)}")
+        if match.linked:
+            parts.append(f"링크 · QR 로 쓴 줄 {len(match.linked)}(대장에 없음 — 링크를 만들 때 배부로 적었으면 넣지 않아도 됩니다)")
+        if match.others:
+            parts.append(f"공무확인증이 아닌 할인 {len(match.others)}줄은 대장과 상관없음")
+        self.match_label.setText(" · ".join(parts))
+        self.import_button.setVisible(bool(match.linked))
+        self.import_button.setText(f"링크 · QR 로 쓴 줄도 넣기 ({len(match.linked)}줄)")
+        missing = set(match.missing) | set(match.linked)
         for r in range(self.site_table.rowCount()):
             for c in range(self.site_table.columnCount()):
                 item = self.site_table.item(r, c)
@@ -397,13 +420,14 @@ class LedgerPanel(QWidget):
                     item.setFont(font)
 
     def _import_site(self) -> None:
+        """링크 · QR 로 쓴 줄 — 링크를 만들 때 배부로 적지 않았을 때만 사람이 넣는다(겹쳐 세지 않게)."""
         match = self._match
-        if match is None or not match.ok or not match.missing:
+        if match is None or not match.ok or not match.linked:
             return
-        entries = ledger.from_site(self._site_headers, self._site_rows, match.missing, match)
-        if QMessageBox.question(self, "대장에 넣기", f"사이트 할인 내역 {len(entries)}줄을 배부 1 줄씩 관리대장에 넣을까요?\n"
-                                "사용자 · 내용은 비어 있으니 넣은 뒤 표에서 두 번 눌러 채우세요.",
-                                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+        entries = ledger.from_site(self._site_headers, self._site_rows, match.linked, match)
+        if QMessageBox.question(self, "링크 · QR 로 쓴 줄 넣기", f"링크 · QR 로 쓴 공무확인증 {len(entries)}줄을 배부 1 줄씩 관리대장에 넣을까요?\n"
+                                "링크를 만들 때 배부 수량으로 이미 적었다면 두 번 세게 됩니다.",
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         stored = ledger.load() + entries
         ledger.save(stored)

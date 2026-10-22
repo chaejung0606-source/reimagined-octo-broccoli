@@ -142,12 +142,33 @@ def site_left(products_text: str, product: str = "") -> int | None:
 
 
 # ── 사이트 할인 내역과 맞춰 보기 ───────────────────────────────────────────
+# 할인 내역 화면의 열(담당자 PC 에서 읽힌 것 2026-10-22): 할인일시 | 차량번호 | 입차시각 | 할인명 | 바코드 | 할인유형 | 적용방식 | 입주사 | 구분 |
+# 할인시간 | 할인율 | 할인금액 | 적용금액 | 절사금액 | 결제금액. 머리글 글자 끝에 정렬 그림 글자('arrow_downward')가 붙어 읽힌다.
+# 열은 글자로 찾고(차례에 기대지 않는다), 앞의 낱말이 먼저 — '시간' 만으로 찾으면 '할인시간'(240분)을 일시로 잘못 본다.
+DATE_WORDS = ("할인일시", "적용일시", "사용일시", "일시", "일자", "날짜")
+CAR_WORDS = ("차량번호", "차량", "차번", "번호판")
+PRODUCT_WORDS = ("할인명", "상품", "할인권", "템플릿")
+METHOD_WORDS = ("적용방식",)
+TICKET = "공무확인증"
+MANUAL = "수동"                # 적용방식 — 사이트 화면에서 직접 적용한 것(할인 적용). 링크 · QR 로 쓴 것은 다른 글자로 보인다(추정)
+_ICON = re.compile(r"(arrow_(up|down)ward|arrow_drop_(up|down)|unfold_(more|less)|expand_(more|less)|keyboard_arrow_\w+|swap_vert|sort)\s*$")
+
+
+def clean_header(text: str) -> str:
+    """'할인일시arrow_downward' → '할인일시' — 정렬 단추의 그림 글자를 뗀다."""
+    return _ICON.sub("", str(text or "")).strip()
+
+
 @dataclass
 class SiteMatch:
     car_col: int = -1
     date_col: int = -1
+    product_col: int = -1
+    method_col: int = -1
     matched: list[int] = field(default_factory=list)     # 대장에 이미 있는 사이트 줄
-    missing: list[int] = field(default_factory=list)     # 대장에 없는 사이트 줄
+    missing: list[int] = field(default_factory=list)     # 대장에 없는 공무확인증 줄(사이트에서 직접 적용 — 넣는다)
+    linked: list[int] = field(default_factory=list)      # 대장에 없지만 링크 · QR 로 쓴 줄 — 링크를 만들 때 배부로 적었을 수 있어 저절로 넣지 않는다
+    others: list[int] = field(default_factory=list)      # 공무확인증이 아닌 할인 — 대장과 상관없다
     note: str = ""
 
     @property
@@ -170,18 +191,27 @@ def day_of(text: str) -> str:
         return ""
 
 
+def _time_of(text: str) -> str:
+    m = re.search(r"(\d{1,2}):(\d{2})", str(text or ""))
+    return f"{int(m.group(1)):02d}:{m.group(2)}" if m else ""
+
+
 def _column(headers: list[str], words: tuple[str, ...]) -> int:
-    for i, head in enumerate(headers):
-        if any(w in _squash(head) for w in words):
-            return i
+    """앞의 낱말부터 — 그 낱말이 든 첫 머리글."""
+    names = [_squash(clean_header(h)) for h in headers]
+    for word in words:
+        for i, name in enumerate(names):
+            if word in name:
+                return i
     return -1
 
 
 def match_site(entries: list[Entry], headers: list[str], rows: list[list[str]]) -> SiteMatch:
     """사이트 할인 내역의 줄마다 대장에 같은 날 같은 차량번호의 배부 줄이 있는지. 대장 줄 하나는 사이트 줄 하나에만 맞춘다
-    (같은 차가 같은 날 두 번이면 대장에도 두 줄이어야 맞다). 할인 내역 화면의 열 이름은 실측 전 — 차량 · 일시 열을 못 찾으면 맞춰 보지 않는다."""
-    result = SiteMatch(car_col=_column(headers, ("차량", "차번", "번호판")),
-                       date_col=_column(headers, ("일시", "일자", "날짜", "적용시간", "시간")))
+    (같은 차가 같은 날 두 번이면 대장에도 두 줄이어야 맞다). 할인명이 공무확인증이 아닌 줄은 대장과 상관없다(할인명 열이 없으면 모두 본다).
+    차량 · 일시 열을 못 찾으면 맞춰 보지 않는다."""
+    result = SiteMatch(car_col=_column(headers, CAR_WORDS), date_col=_column(headers, DATE_WORDS),
+                       product_col=_column(headers, PRODUCT_WORDS), method_col=_column(headers, METHOD_WORDS))
     if not result.ok:
         result.note = "할인 내역의 차량번호 · 일시 열을 알아보지 못해 대장과 맞춰 보지 못했습니다"
         return result
@@ -190,27 +220,33 @@ def match_site(entries: list[Entry], headers: list[str], rows: list[list[str]]) 
         if e.given and e.car:
             key = (e.date, _squash(e.car))
             pool[key] = pool.get(key, 0) + e.given
+    cell = lambda row, c: row[c] if 0 <= c < len(row) else ""  # noqa: E731
     for i, row in enumerate(rows):
-        car = _squash(row[result.car_col]) if result.car_col < len(row) else ""
-        day = day_of(row[result.date_col]) if result.date_col < len(row) else ""
-        key = (day, car)
-        if car and day and pool.get(key, 0) > 0:
+        if result.product_col >= 0 and TICKET not in _squash(cell(row, result.product_col)):
+            result.others.append(i)
+            continue
+        key = (day_of(cell(row, result.date_col)), _squash(cell(row, result.car_col)))
+        if all(key) and pool.get(key, 0) > 0:
             pool[key] -= 1
             result.matched.append(i)
+        elif result.method_col >= 0 and _squash(cell(row, result.method_col)) not in ("", MANUAL):
+            result.linked.append(i)
         else:
             result.missing.append(i)
     return result
 
 
 def from_site(headers: list[str], rows: list[list[str]], indexes: list[int], match: SiteMatch) -> list[Entry]:
-    """대장에 없는 사이트 줄 → 배부 1 줄. 사용자 · 내용은 비어 있다 — 표에서 채운다."""
-    product_col = _column(headers, ("상품", "할인권", "템플릿"))
+    """사이트 줄 → 관리대장 양식의 배부 1 줄(담당자 2026-10-22 "관리대장 양식에 맞춰서 정보 기입 … 없는 정보는 공란"):
+    일자 = 할인일시의 날짜 · 배부 1 · 차량번호 · 비고 = 할인명과 할인 시각. 사용자 · 내용은 사이트에 없어 비워 둔다."""
     out = []
     for i in indexes:
         row = rows[i]
         cell = lambda c: row[c] if 0 <= c < len(row) else ""  # noqa: E731
-        out.append(Entry(date=day_of(cell(match.date_col)) or dt.date.today().isoformat(), given=1,
-                         car=cell(match.car_col).strip(), note=cell(product_col).strip(), source="site"))
+        when = cell(match.date_col)
+        note = " · ".join(x for x in (cell(match.product_col).strip(), (_time_of(when) + " 할인") if _time_of(when) else "") if x)
+        out.append(Entry(date=day_of(when) or dt.date.today().isoformat(), given=1, car=cell(match.car_col).strip(),
+                         note=note, source="site"))
     return out
 
 

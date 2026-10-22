@@ -49,7 +49,7 @@ APPLY, LINK, HISTORY = "apply", "link", "history"
 JOBS = (
     (APPLY, "할인 적용 (차량번호)", "들어온 차에 바로 할인을 줍니다", "register", "차량번호를 넣으세요"),
     (LINK, "할인 링크 · QR 만들기", "정한 기간 동안 쓰는 할인 링크 — 사이트가 QR 도 만듭니다", "upload", "링크 내용을 넣고 [등록] 하세요"),
-    (HISTORY, "할인 내역 · 관리대장", "공무확인증을 누가 무엇에 썼는지 — 관리대장 · 사이트 할인 내역 · 엑셀", "overview",
+    (HISTORY, "관리대장", "공무확인증을 누가 무엇에 썼는지 — 사이트 할인 내역으로 채우고 엑셀로 받기", "overview",
      "공무확인증 관리대장"),
 )
 NAMES = {key: name for key, name, _d, _a, _t in JOBS}
@@ -271,7 +271,7 @@ class ParkingPage(QWidget):
         if report.messages:
             lines.append("사이트 알림: " + " / ".join(report.messages))
         if report.pressed_finish:
-            lines.append("[종료] 는 눌렀습니다 — '할인 내역 · 관리대장' 에서 사이트 할인 내역을 불러와 적용됐는지 보세요.")
+            lines.append("[종료] 는 눌렀습니다 — '관리대장' 에서 사이트 할인 내역을 불러와 적용됐는지 보세요.")
         elif report.opened:
             lines.append("[종료] 는 누르지 않았습니다 — 할인은 적용되지 않았습니다. [브라우저에서 직접 하기] 로 사이트에서 할 수 있습니다.")
         if report.saved:
@@ -342,7 +342,7 @@ class ParkingPage(QWidget):
         who.addWidget(Field("배부 수량", self.link_count, "링크로 쓸 공무확인증 수"), 1)
         layout.addLayout(who)
         layout.addWidget(muted_label("등록되면 공무확인증 관리대장에 배부 수량만큼 한 줄을 적습니다(사용자 · 내용 · 링크 이름). 실제로 쓴 수가 다르면 "
-                                     "'할인 내역 · 관리대장' 에서 고치세요."))
+                                     "'관리대장' 에서 고치세요."))
         row = QHBoxLayout()
         self.register_button = QPushButton("등록")
         self.register_button.setObjectName("primary")
