@@ -31,7 +31,8 @@ from . import settings
 from .minutes.logbook import log
 
 TIMEOUT = 40          # 구글 웹 앱은 처음 부를 때 몇 초 걸린다
-CONNECT_TIMEOUT = 12  # 주소 하나에 붙어 보는 시간 — 구글은 보통 1초 안에 붙는다. 넘으면 다음 주소로(_connect)
+CONNECT_WAITS = (6, 10, 15)   # 주소 하나에 붙어 보는 시간 — 바퀴마다 길게. 구글은 보통 1초 안에 붙는다. 다 실패하면 다음 바퀴(_connect)
+CONNECT_PAUSE = 1.0           # 바퀴 사이에 쉬는 시간
 
 # 담당자가 시트의 확장 프로그램 → Apps Script 에 붙여 넣는 글. __TOKEN__ 은 앱이 바꿔 넣는다(script_text).
 SCRIPT = r"""// COSS 업무데스크 — 공무확인증 관리대장 연동 스크립트 (앱이 만든 글입니다. 고치지 마세요)
@@ -269,9 +270,11 @@ class NetworkError(SheetError):
 
 
 # 담당자 PC(2026-10-22): [저장하고 연결 확인] 이 '[WinError 10060] 연결된 구성원으로부터 응답이 없어 …' 로 끝났다. 같은 PC 에서 git(깃허브) ·
-# Claude Code(node) · 브라우저는 인터넷에 닿는다 — 그것들은 IPv6 · IPv4 주소를 함께 시도하는데, 파이썬 urllib 는 운영체제가 준 차례(대개 IPv6 먼저)대로
-# 하나씩 붙어 보며 주소마다 운영체제가 포기할 때(약 21초)까지 기다린다. 깃허브는 IPv6 주소가 없고 구글은 있다. 그래서 IPv4 를 먼저, 주소마다
-# CONNECT_TIMEOUT 만 기다린다(까닭은 추정 — 그래도 안 되면 network_report 가 무엇이 막혔는지 적는다).
+# Claude Code(node) · 브라우저는 인터넷에 닿는다. 파이썬 urllib 는 운영체제가 준 차례(대개 IPv6 먼저)대로 주소마다 운영체제가 포기할 때(약 21초)까지
+# 기다린다 — 그래서 IPv4 를 먼저, 주소마다 짧게 붙어 본다. 이 판의 진단(같은 날 21:xx)이 실제 까닭을 보여 줬다: 구글 주소 몇 개가 **잠깐씩 응답하지 않는다** —
+# script.googleusercontent.com(302 로 돌린 결과 주소) 의 IPv4 하나가 12초 동안 응답이 없었는데 몇 초 뒤 진단에서는 0.0초에 붙었고, script.google.com 주소 넷 가운데
+# 하나도 응답이 없었다. 브라우저는 이런 것을 저절로 다시 해 본다. 그래서 다 실패하면 이름을 다시 찾아(구글은 주소를 돌려 준다) 바퀴를 더 돈다(CONNECT_WAITS).
+# 붙기 전에 실패한 것이라 보낸 것이 없다 — 시트의 일이 두 번 되지 않는다.
 def _short(error: BaseException) -> str:
     code = getattr(error, "winerror", None) or getattr(error, "errno", None)
     if isinstance(error, (TimeoutError, socket.timeout)) or code in (10060, 110):
@@ -284,29 +287,40 @@ def _short(error: BaseException) -> str:
 
 
 def _connect(address, timeout=None, source_address=None, *rest, **extra) -> socket.socket:
-    """socket.create_connection 대신 — IPv4 주소 먼저, 주소마다 짧게. 다 실패하면 주소마다의 까닭을 한 글로."""
+    """socket.create_connection 대신 — IPv4 주소 먼저, 주소마다 짧게, 다 실패하면 이름을 다시 찾아 한 바퀴 더(CONNECT_WAITS).
+    끝내 못 붙으면 마지막 바퀴의 주소마다 까닭을 한 글로."""
     host, port = address[0], address[1]
     wait_total = timeout if isinstance(timeout, (int, float)) else socket.getdefaulttimeout()
-    wait = min(wait_total, CONNECT_TIMEOUT) if wait_total else CONNECT_TIMEOUT
-    infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
-    infos.sort(key=lambda info: info[0] != socket.AF_INET)       # 같은 꼴 안에서는 운영체제 차례 그대로
-    errors = []
-    for family, kind, proto, _name, where in infos:
-        sock = None
-        try:
-            sock = socket.socket(family, kind, proto)              # IPv6 를 못 쓰는 PC 면 여기서부터 실패 — 다음 주소로
-            sock.settimeout(wait)
-            if source_address:
-                sock.bind(source_address)
-            sock.connect(where)
-        except OSError as error:
-            if sock is not None:
-                sock.close()
-            errors.append(f"{'IPv6' if family == socket.AF_INET6 else 'IPv4'} {where[0]} {_short(error)}")
-            continue
-        sock.settimeout(wait_total)
-        return sock
-    raise OSError(f"{host} 에 붙지 못함 — " + " · ".join(errors) if errors else f"{host} 의 주소가 없음")
+    errors: list[str] = []
+    first: list[str] = []
+    for turn, limit in enumerate(CONNECT_WAITS):
+        if turn:
+            time.sleep(CONNECT_PAUSE)
+        wait = min(wait_total, limit) if wait_total else limit
+        infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+        infos.sort(key=lambda info: info[0] != socket.AF_INET)   # 같은 꼴 안에서는 운영체제 차례 그대로
+        errors = []
+        for family, kind, proto, _name, where in infos:
+            sock = None
+            try:
+                sock = socket.socket(family, kind, proto)          # IPv6 를 못 쓰는 PC 면 여기서부터 실패 — 다음 주소로
+                sock.settimeout(wait)
+                if source_address:
+                    sock.bind(source_address)
+                sock.connect(where)
+            except OSError as error:
+                if sock is not None:
+                    sock.close()
+                errors.append(f"{'IPv6' if family == socket.AF_INET6 else 'IPv4'} {where[0]} {_short(error)}")
+                continue
+            sock.settimeout(wait_total)
+            if turn:
+                log(f"구글 연결: {host} 에 {turn + 1}번째에 붙음 (처음: {' · '.join(first)})")
+            return sock
+        first = first or errors
+    if not errors:
+        raise OSError(f"{host} 의 주소가 없음")
+    raise OSError(f"{host} 에 붙지 못함({len(CONNECT_WAITS)}번 시도) — " + " · ".join(errors))
 
 
 class _Https(http.client.HTTPSConnection):

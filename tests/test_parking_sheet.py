@@ -224,7 +224,7 @@ def test_connect_tries_ipv4_first_and_keeps_the_read_timeout(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _addrinfo(
         (socket.AF_INET6, ("2404:6800::1", 443, 0, 0)), (socket.AF_INET, ("127.0.0.1", port))))
     monkeypatch.setattr(socket, "socket", Recording)
-    monkeypatch.setattr(sheet, "CONNECT_TIMEOUT", 1)
+    monkeypatch.setattr(sheet, "CONNECT_WAITS", (1,))
     try:
         sock = sheet._connect(("script.google.com", 443), timeout=40)
         assert made == [socket.AF_INET] and sock.getpeername()[0] == "127.0.0.1"
@@ -238,10 +238,45 @@ def test_connect_failure_names_every_address(monkeypatch):
     closed = _closed_port()
     monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _addrinfo(
         (socket.AF_INET6, ("::1", closed, 0, 0)), (socket.AF_INET, ("127.0.0.1", closed))))
+    monkeypatch.setattr(sheet, "CONNECT_PAUSE", 0)
     with pytest.raises(OSError) as caught:
         sheet._connect(("script.google.com", 443), timeout=5)
     text = str(caught.value)
-    assert text.startswith("script.google.com 에 붙지 못함 — IPv4 127.0.0.1 거절됨 · IPv6 ::1 ")   # IPv6 를 못 쓰는 곳이어도 그 까닭으로
+    assert text.startswith("script.google.com 에 붙지 못함(3번 시도) — IPv4 127.0.0.1 거절됨 · IPv6 ::1 ")   # IPv6 를 못 쓰는 곳이어도 그 까닭으로
+
+
+def test_connect_tries_again_when_google_does_not_answer_for_a_moment(isolated_home, monkeypatch):
+    # 담당자 PC 진단(2026-10-22): googleusercontent 주소가 12초 동안 응답이 없다가 몇 초 뒤에는 0.0초에 붙었다
+    server, port = _listener()
+    real = socket.socket
+    waits, lookups = [], []
+
+    class Flaky(real):
+        tries = 0
+
+        def connect(self, where):
+            waits.append(self.gettimeout())
+            Flaky.tries += 1
+            if Flaky.tries == 1:
+                raise TimeoutError("timed out")
+            return super().connect(where)
+
+    def lookup(*args, **kwargs):
+        lookups.append(args[0])
+        return _addrinfo((socket.AF_INET, ("127.0.0.1", port)))
+
+    monkeypatch.setattr(socket, "getaddrinfo", lookup)
+    monkeypatch.setattr(socket, "socket", Flaky)
+    monkeypatch.setattr(sheet, "CONNECT_PAUSE", 0)
+    try:
+        sock = sheet._connect(("script.googleusercontent.com", 443), timeout=40)
+        assert sock.getpeername()[0] == "127.0.0.1" and sock.gettimeout() == 40
+        assert waits == list(sheet.CONNECT_WAITS[:2]) and lookups == ["script.googleusercontent.com"] * 2   # 바퀴마다 길게 · 이름도 다시
+        sock.close()
+    finally:
+        server.close()
+    from claim_downloader import settings
+    assert "구글 연결: script.googleusercontent.com 에 2번째에 붙음 (처음: IPv4 127.0.0.1 응답 없음)" in settings.log_path().read_text(encoding="utf-8")
 
 
 def test_https_requests_use_the_ipv4_first_connection():
