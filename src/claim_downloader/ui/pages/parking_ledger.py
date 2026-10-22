@@ -386,7 +386,7 @@ class LedgerPanel(QWidget):
     def _on_synced(self, result) -> None:
         if result.ok and result.changed:
             self._show(ledger.load())
-            self.changed.emit()                # 사용자 · 내용 보기를 새로(다시 맞추지는 않는다)
+            self.changed.emit()                # 다시 맞추지는 않는다
         self._sheet_row(result)
 
     def _on_history_saved(self, result) -> None:
@@ -399,12 +399,6 @@ class LedgerPanel(QWidget):
         url = parking_sheet.load_config().sheet_url
         if url:
             QDesktopServices.openUrl(QUrl(url))
-
-    def users(self) -> list[str]:
-        return sorted({e.user for e in self._entries if e.user})
-
-    def contents(self) -> list[str]:
-        return sorted({e.content for e in self._entries if e.content})
 
     # ── 사이트 할인 내역 ─────────────────────────────────────────────────
     def site_loading(self) -> None:
