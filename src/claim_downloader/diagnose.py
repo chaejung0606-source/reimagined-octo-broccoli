@@ -10,7 +10,7 @@
 들어 있을 수 있다. 담당자에게는 **빈 작성 화면**에서 돌리라고 안내한다.
 
 목록(그리드)도 적는다(2026-10-13 입금처 팝업 실측 뒤 추가) — 입력 요소만 적으면 검색 결과 목록의 열과 행을 고르는
-방법을 알 수 없어서다. JGM 그리드(`.jgrid-row` · `k_열이름` 셀)와 머리글(th)이 있는 표의 열 이름 · 행 수 · 첫 행 값을
+방법을 알 수 없어서다. JGM 그리드(`.jgrid-row` · `k_열이름` 셀)와 머리글(th)이 있는 표, IBSheet 표(`div.SheetMain`, 구매·자산 메뉴)의 열 이름 · 행 수 · 첫 행 값을
 적되, 첫 행 값에서 6자리 이상 숫자(계좌번호 · 사업자번호)는 가린다.
 
 Playwright 를 들여오지 않는다(브라우저를 띄우는 곳은 session.py 하나). 프레임 객체의 evaluate 만 쓴다.
@@ -143,6 +143,26 @@ _GRID_JS = r"""() => {
     out.push({kind: 'table', visible: vis(t), rows: body.length, heads, first, picks,
               onclick: (body[0].getAttribute('onclick') || '').slice(0, 60)});
   });
+  // IBSheet 표(구매·자산 메뉴 — 2026-10-22 구매진행관리 · 구매요구서작성). JGM 이 아니라 셀 class 가 k_… 가 아니고 th 도 없어
+  // 위 둘로는 'div.SheetMain' 한 줄만 남았다. 안쪽 tr 을 글자 있는 칸이 둘 이상인 줄로 읽고, 열을 알아볼 단서로 첫 칸의 속성 이름을 적는다.
+  // 줄이 하나도 안 잡히면(표가 table 이 아닐 때) 안쪽 class 이름을 적어 다음 판에서 읽는 법을 정한다.
+  document.querySelectorAll('.SheetMain, [onclick*="IBSheet"]').forEach(root => {
+    if (out.some(g => g.root === root)) return;
+    const rows = Array.from(root.querySelectorAll('tr'))
+      .map(tr => Array.from(tr.children).map(td => mask(td.getAttribute('title') || txt(td))))
+      .filter(cells => cells.filter(Boolean).length >= 2);
+    const cell = root.querySelector('td');
+    const attrs = cell ? Array.from(cell.attributes).map(a => a.name).filter(n => n !== 'style').slice(0, 8) : [];
+    const classes = [];
+    for (const e of root.querySelectorAll('*')) {
+      const c = (typeof e.className === 'string' ? e.className : '').trim().split(/\s+/)[0];
+      if (c && !classes.includes(c)) classes.push(c);
+      if (classes.length >= 8) break;
+    }
+    out.push({kind: 'ibsheet', root, visible: vis(root), rows: rows.length, tables: root.querySelectorAll('table').length,
+              attrs, classes, sample: rows.slice(0, 3)});
+  });
+  out.forEach(g => delete g.root);
   return out.slice(0, 12);
 }"""
 
@@ -250,6 +270,13 @@ def _grid_lines(grids: list[dict]) -> list[str]:
             sample = " | ".join(f"{c['key']}={c['sample']}" for c in g.get("cols", []) if c.get("sample"))
             if sample:
                 out.append(f"{hidden}  첫 행: {sample}")
+        elif g.get("kind") == "ibsheet":
+            # 머리글과 줄이 한 표인지 따로인지 모르므로 앞 세 줄을 그대로 적는다 — 첫 줄이 머리글일 가능성이 크다
+            out.append(f"{hidden}IBSheet 표: 글자 줄 {g.get('rows', 0)} · table {g.get('tables', 0)}개"
+                       + (" · 칸 속성: " + ",".join(g["attrs"]) if g.get("attrs") else "")
+                       + (" · 안쪽 class: " + ",".join(g["classes"]) if not g.get("rows") and g.get("classes") else ""))
+            for i, cells in enumerate(g.get("sample", [])[:3], 1):
+                out.append(f"{hidden}  줄 {i}: " + " | ".join(v for v in cells if v))
         else:
             out.append(f"{hidden}표: 행 {g.get('rows', 0)} · 머리글: " + " | ".join(g.get("heads", [])))
             extra = []

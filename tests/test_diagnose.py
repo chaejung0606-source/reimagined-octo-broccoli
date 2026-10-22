@@ -81,6 +81,43 @@ def test_grids_are_listed_with_columns_and_masked_first_row():
     assert "\\d{6,}" in diagnose._GRID_JS                    # 긴 숫자(계좌·사업자번호)는 가린다
 
 
+def test_ibsheet_tables_are_listed_with_their_first_rows():
+    """구매진행관리(IBSheet) 목록이 'div.SheetMain' 한 줄로만 잡혀 열을 알 수 없었다(2026-10-22 실측 1 · 2번)."""
+    grids = [
+        {"kind": "ibsheet", "visible": True, "rows": 5, "tables": 2, "attrs": ["id", "col"], "classes": ["GMHeader"],
+         "sample": [["", "구매요구번호", "대표건명"], ["1", "20…", "노트북 구입"], ["2", "20…", "전산용품"]]},
+        {"kind": "ibsheet", "visible": False, "rows": 0, "tables": 0, "attrs": [], "classes": ["GMBody", "GMRow"], "sample": []},
+    ]
+    lines = diagnose._grid_lines(grids)
+    assert lines[0] == "IBSheet 표: 글자 줄 5 · table 2개 · 칸 속성: id,col"
+    assert lines[1] == "  줄 1: 구매요구번호 | 대표건명" and lines[3] == "  줄 3: 2 | 20… | 전산용품"
+    assert lines[4] == "[숨김] IBSheet 표: 글자 줄 0 · table 0개 · 안쪽 class: GMBody,GMRow"   # 줄을 못 읽으면 모양 단서만
+
+
+def test_ibsheet_rows_are_read_in_a_real_browser():
+    """실제 Chromium 이 있을 때만 — IBSheet 흉내(머리글 table + 줄 table, 긴 번호)에서 줄과 첫 칸 속성을 읽는다."""
+    import os
+    import pytest
+    sync_api = pytest.importorskip("playwright.sync_api")
+    html = ("<div class='SheetMain RERPMain' onclick='return IBSheet[0].SheetClick(event)'>"
+            "<div class='GMHeader'><table><tr><td id='S0_H_0'>선택</td><td id='S0_H_1'>구매요구번호</td><td id='S0_H_2'>대표건명</td></tr></table></div>"
+            "<div class='GMBody'><table><tr><td id='S0_1_0'><input type=checkbox></td><td id='S0_1_1'>202604130007</td><td id='S0_1_2'>노트북 구입</td></tr>"
+            "<tr><td id='S0_2_0'></td><td id='S0_2_1'>202609290005</td><td id='S0_2_2'>용역</td></tr></table></div></div>")
+    try:
+        with sync_api.sync_playwright() as p:
+            path = "/opt/pw-browsers/chromium"
+            browser = p.chromium.launch(executable_path=path if os.path.exists(path) else None)
+            page = browser.new_page()
+            page.set_content(html)
+            got = page.evaluate(diagnose._GRID_JS)
+            browser.close()
+    except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
+        pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
+    assert len(got) == 1 and got[0]["kind"] == "ibsheet" and got[0]["rows"] == 3 and got[0]["tables"] == 2
+    assert got[0]["sample"][0] == ["선택", "구매요구번호", "대표건명"] and got[0]["sample"][1][1] == "20…"   # 긴 번호는 가림
+    assert got[0]["attrs"] == ["id"] and "root" not in got[0]
+
+
 def test_menu_text_without_link_is_marked_pressable():
     """메뉴 · 탭 글자(li · span — a · button 이 아님)도 적는다 — 로그인 뒤 메뉴 이동을 실측하려고(2026-10-19)."""
     line = diagnose._element_line(_el(tag="span", type="", id="menu_1", text="과제관리", pointer=True))
