@@ -228,6 +228,33 @@ def forget_done() -> None:
     done_path().unlink(missing_ok=True)
 
 
+def fix_photo_names(root: Path) -> list[Path]:
+    """잘못된 확장자(.html 등)로 받아 둔 물품 사진을 매직 바이트대로 바꾼다 — 2026-10-22 18:35 실제: 사진 6장이 '.html' 로 저장돼 Edge 로 열렸다.
+    덮어쓰지 않는다(바른 이름이 이미 있으면 그대로 둔다). 바꾼 경로 목록을 돌려준다."""
+    fixed: list[Path] = []
+    if root is None or not root.is_dir():
+        return fixed
+    for path in root.rglob("물품사진_*"):
+        if not path.is_file() or path.suffix.lower() in (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif"):
+            continue
+        try:
+            ext = image_ext(path.read_bytes()[:12])
+        except OSError:
+            continue
+        if not ext:
+            continue
+        stem = path.name if path.suffix.lower() not in (".html", ".htm", ".bin", ".txt") else path.stem
+        target = path.with_name(stem + ext)
+        if target.exists():
+            continue
+        try:
+            path.rename(target)
+            fixed.append(target)
+        except OSError:
+            continue
+    return fixed
+
+
 def existing_files(folder: Path | None) -> int:
     """건 폴더(검사처리 하위 포함)에 이미 있는 파일 수 — 표의 '폴더 있음' 표시용."""
     if folder is None or not folder.is_dir():
@@ -246,8 +273,22 @@ def file_name(name: str, fallback: str = "파일") -> str:
     return clean[: NAME_ROOM - 1].rstrip() + "…"
 
 
-def photo_name(item: str, index: int, content_type: str) -> str:
-    ext = mimetypes.guess_extension((content_type or "").split(";")[0].strip()) or ".jpg"
+IMAGE_MAGIC = ((b"\xff\xd8\xff", ".jpg"), (b"\x89PNG", ".png"), (b"GIF8", ".gif"), (b"BM", ".bmp"), (b"RIFF", ".webp"), (b"II*\x00", ".tif"), (b"MM\x00*", ".tif"))
+
+
+def image_ext(body: bytes) -> str:
+    """그림 파일의 앞글자(매직 바이트)로 확장자 — ERP 가 사진에도 Content-Type 을 text/html 로 붙여(2026-10-22 실제) 이름으로는 못 정한다."""
+    head = (body or b"")[:12]
+    for magic, ext in IMAGE_MAGIC:
+        if head.startswith(magic):
+            return ext
+    return ""
+
+
+def photo_name(item: str, index: int, content_type: str, body: bytes = b"") -> str:
+    ext = image_ext(body) or mimetypes.guess_extension((content_type or "").split(";")[0].strip()) or ".jpg"
+    if ext in (".html", ".htm", ".bin"):
+        ext = ".jpg"
     ext = {".jpe": ".jpg", ".jpeg": ".jpg"}.get(ext, ext)
     return f"물품사진_{_trim(item or '물품', 60)}_{index}{ext}"
 
@@ -965,7 +1006,7 @@ def item_photos(context, page, frame, item: dict, folder: Path, result: CaseResu
                 result.failed.append(f"물품사진 {name} {index}: {why}")
                 result.ok = False
                 continue
-            dest = folder / INSPECT_DIR / photo_name(name, index, ctype)
+            dest = folder / INSPECT_DIR / photo_name(name, index, ctype, body)
             if dest.exists():
                 result.existed += 1
                 continue
@@ -1050,6 +1091,9 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
     summary = PurchaseSummary()
     if not targets:
         return summary
+    fixed = fix_photo_names(purchase_home(out_root))
+    if fixed:
+        log(f"물품 사진 {len(fixed)}장의 확장자를 그림 파일대로 바꿨습니다(.html 로 저장돼 있던 것)")
     days = [t.get("expDt") or req_date(t.get("req_no", "")) for t in targets]
     days = [d for d in days if d]
     start, end = widen(min(days), max(days)) if days else ("", "")

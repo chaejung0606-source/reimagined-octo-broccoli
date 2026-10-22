@@ -376,3 +376,18 @@ def test_done_record_skips_finished_cases_only(tmp_path, monkeypatch):
     assert "202502030002" in done and "202502030003" not in done
     purchase.forget_done()
     assert purchase.load_done() == {}
+
+
+def test_photo_ext_comes_from_bytes_and_bad_names_are_fixed(tmp_path):
+    jpg = b"\xff\xd8\xff\xe0" + b"x" * 20
+    assert purchase.photo_name("모니터", 1, "text/html; charset=utf-8", jpg) == "물품사진_모니터_1.jpg"
+    assert purchase.photo_name("모니터", 1, "image/png", b"\x89PNG\r\n") == "물품사진_모니터_1.png"
+    assert purchase.photo_name("모니터", 1, "text/html", b"") == "물품사진_모니터_1.jpg"
+    folder = tmp_path / "(과제)" / "(250110) 건_(1)" / "검사처리"
+    folder.mkdir(parents=True)
+    (folder / "물품사진_모니터_1.html").write_bytes(jpg)
+    (folder / "물품사진_모니터_2").write_bytes(b"\x89PNG\r\n" + b"y" * 10)
+    (folder / "물품사진_모니터_3.html").write_bytes(b"<html>login</html>")
+    fixed = purchase.fix_photo_names(tmp_path)
+    assert sorted(p.name for p in fixed) == ["물품사진_모니터_1.jpg", "물품사진_모니터_2.png"]
+    assert (folder / "물품사진_모니터_3.html").exists()
