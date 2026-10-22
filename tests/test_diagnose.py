@@ -122,6 +122,65 @@ def test_ibsheet_rows_are_read_in_a_real_browser():
     assert got[0]["attrs"] == ["id"] and "root" not in got[0]
 
 
+def test_ibsheet_api_and_images_are_written():
+    """IBSheet 스크립트로 읽은 열 · 줄과 그림(물품 사진) 주소가 보고서에 적힌다 — 2026-10-22 13:46 · 13:49 실측에서 DOM 만으로는
+    머리글 27칸 · 자료 줄 20칸이라 열을 못 맞췄고, 물품 사진은 숨은 번호 칸만 잡혔다."""
+    grids = [{"kind": "ibsheet-api", "index": 0, "version": "7.0", "total": 58, "lastCol": 2, "headerRows": 1,
+              "funcs": ["GetTotalRows", "LastCol"], "cols": [{"save": "sChk", "head": ""}, {"save": "PURCH_REQ_NO", "head": "구매요청번호"},
+                                                            {"save": "PURCH_CONT", "head": "내용"}],
+              "sample": [["", "20…", "노트북 구입"]]}]
+    lines = diagnose._grid_lines(grids)
+    assert lines[0] == "IBSheet 스크립트 [0] 판 7.0 · 줄 58 · 열 3 · 머리글 줄 1"
+    assert lines[1] == "  함수: GetTotalRows LastCol"
+    assert lines[2] == "  열: sChk | PURCH_REQ_NO(구매요청번호) | PURCH_CONT(내용)"
+    assert lines[3] == "  줄 1: - | 20… | 노트북 구입"
+    images = [{"src": "/comm0008_01.act?ATTFILE_SEQ_NO=19…", "alt": "물품사진", "w": 120, "h": 90, "nw": 640, "nh": 480,
+               "id": "img1", "onclick": "", "visible": True},
+              {"src": "/img/x.png", "alt": "", "w": 0, "h": 0, "nw": 0, "nh": 0, "id": "", "onclick": "", "visible": False}]
+    got = diagnose._image_lines(images)
+    assert got[0] == "그림: /comm0008_01.act?ATTFILE_SEQ_NO=19…  120×90 (원본 640×480)  #img1  alt='물품사진'"
+    assert got[1] == "[숨김] 그림: /img/x.png  0×0"
+    windows = [{"title": "물품내역팝업", "url": "https://erp/pop", "frames": [
+        {"url": "https://erp/pop", "title": "", "kind": "", "elements": [], "grids": grids, "images": images}]}]
+    text = diagnose.format_report(windows, when="x")
+    assert "    IBSheet 스크립트 [0]" in text and "    그림: /comm0008_01.act" in text
+
+
+def test_ibsheet_api_and_images_are_read_in_a_real_browser():
+    """실제 Chromium 이 있을 때만 — 가짜 IBSheet 객체(Get… 함수만)와 그림에서 열 이름 · 앞 줄 · 그림 주소를 읽고, 작은 아이콘은 뺀다."""
+    import os
+    import pytest
+    sync_api = pytest.importorskip("playwright.sync_api")
+    html = """<img src='/img/icon.gif' width=16 height=16><img id='photo' src='/comm0008_01.act?USEFAC_SEQ_NO=10&ATTFILE_SEQ_NO=1922592' width=120 height=90 alt='사진'>
+    <div class='SheetMain' onclick='return IBSheet[0].SheetClick(event)'></div>
+    <script>
+      const rows = [['', '선택', '구매요청번호', '대표건명'], ['', '', '202604130007', '노트북 구입'], ['', '', '202609290005', '용역']];
+      window.IBSheet = [{version: '7.0', SheetClick: () => true, SetCellValue: () => { throw new Error('눌림'); },
+        GetTotalRows: () => 2, LastCol: () => 2, HeaderRows: () => 1, LastRow: () => 2,
+        ColSaveName: c => ['sChk', 'PURCH_REQ_NO', 'PURCH_CONT'][c],
+        GetHeaderText: c => rows[0][c + 1], GetCellText: (r, c) => rows[r][c + 1]}];
+    </script>"""
+    try:
+        with sync_api.sync_playwright() as p:
+            path = "/opt/pw-browsers/chromium"
+            browser = p.chromium.launch(executable_path=path if os.path.exists(path) else None)
+            page = browser.new_page()
+            page.set_content(html)
+            grids = page.evaluate(diagnose._GRID_JS)
+            probe = page.evaluate(diagnose._PROBE_JS)
+            browser.close()
+    except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
+        pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
+    api = [g for g in grids if g["kind"] == "ibsheet-api"]
+    assert len(api) == 1 and api[0]["total"] == 2 and api[0]["lastCol"] == 2 and api[0]["headerRows"] == 1
+    assert [c["save"] for c in api[0]["cols"]] == ["sChk", "PURCH_REQ_NO", "PURCH_CONT"]
+    assert api[0]["cols"][1]["head"] == "구매요청번호"
+    assert api[0]["sample"] == [["", "20…", "노트북 구입"], ["", "20…", "용역"]]        # 머리글 다음 줄부터 · 긴 번호는 가림
+    assert "GetTotalRows" in api[0]["funcs"] and "SetCellValue" not in api[0]["funcs"]
+    images = probe["images"]
+    assert len(images) == 1 and images[0]["id"] == "photo" and "ATTFILE_SEQ_NO=1922592" in images[0]["src"] and images[0]["alt"] == "사진"
+
+
 def test_menu_text_without_link_is_marked_pressable():
     """메뉴 · 탭 글자(li · span — a · button 이 아님)도 적는다 — 로그인 뒤 메뉴 이동을 실측하려고(2026-10-19)."""
     line = diagnose._element_line(_el(tag="span", type="", id="menu_1", text="과제관리", pointer=True))

@@ -10,8 +10,9 @@
 들어 있을 수 있다. 담당자에게는 **빈 작성 화면**에서 돌리라고 안내한다.
 
 목록(그리드)도 적는다(2026-10-13 입금처 팝업 실측 뒤 추가) — 입력 요소만 적으면 검색 결과 목록의 열과 행을 고르는
-방법을 알 수 없어서다. JGM 그리드(`.jgrid-row` · `k_열이름` 셀)와 머리글(th)이 있는 표, IBSheet 표(`div.SheetMain`, 구매·자산 메뉴)의 열 이름 · 행 수 · 첫 행 값을
-적되, 첫 행 값에서 6자리 이상 숫자(계좌번호 · 사업자번호)는 가린다.
+방법을 알 수 없어서다. JGM 그리드(`.jgrid-row` · `k_열이름` 셀)와 머리글(th)이 있는 표, IBSheet 표(`div.SheetMain`, 구매·자산 메뉴 — DOM 줄과 함께
+IBSheet 객체의 Get… 함수로 열 SaveName · 앞 줄도)의 열 이름 · 행 수 · 첫 행 값을 적되, 첫 행 값에서 6자리 이상 숫자(계좌번호 · 사업자번호)는 가린다.
+그림(`<img>`)은 크거나 서버 파일을 가리키는 것만 주소 · 크기로 적는다(2026-10-22 물품내역팝업의 물품 사진 주소를 보려고).
 
 Playwright 를 들여오지 않는다(브라우저를 띄우는 곳은 session.py 하나). 프레임 객체의 evaluate 만 쓴다.
 """
@@ -103,7 +104,21 @@ _PROBE_JS = r"""() => {
               cls: (typeof e.className === 'string' ? e.className : '').trim(), label: '', text: t, value: '', options: null,
               onclick: '', href: '', disabled: false, readonly: false, visible: visible(e), pointer: true});
   });
-  return {title: document.title || '', elements: out};
+  // 그림(img) — 물품내역팝업(2026-10-22 13:49 실측)에 물품 사진이 있었는데 숨은 칸 IMGFILE_SEQ_NO 만 잡혀 사진 파일의 주소 모양을 알 수 없었다.
+  // 작은 아이콘(단추 그림)은 빼고, 크거나 주소가 서버 파일(.act · FILE_SEQ …)을 가리키는 것만 적는다. 읽기만 한다.
+  const images = [];
+  document.querySelectorAll('img').forEach(img => {
+    if (images.length >= 40) return;
+    const src = img.getAttribute('src') || '';
+    if (!src || src.startsWith('data:')) return;
+    const r = img.getBoundingClientRect();
+    const big = r.width >= 48 || r.height >= 48 || img.naturalWidth >= 48;
+    if (!big && !/\.act|FILE_SEQ|ATTFILE/i.test(src)) return;
+    images.push({src: src.slice(0, 160), alt: (img.getAttribute('alt') || img.getAttribute('title') || '').slice(0, 40),
+                 w: Math.round(r.width), h: Math.round(r.height), nw: img.naturalWidth || 0, nh: img.naturalHeight || 0,
+                 id: img.id || '', onclick: (img.getAttribute('onclick') || '').slice(0, 80), visible: visible(img)});
+  });
+  return {title: document.title || '', elements: out, images};
 }"""
 
 # 프레임 안의 목록(그리드·표). 읽기만 한다. 첫 행 값은 짧게 자르고 긴 숫자는 가린다.
@@ -166,7 +181,39 @@ _GRID_JS = r"""() => {
               attrs, classes, sample: rows.slice(0, 3)});
   });
   out.forEach(g => delete g.root);
-  return out.slice(0, 12);
+  // IBSheet 의 스크립트(읽기 함수만) — DOM 의 tr 로는 머리글 줄과 자료 줄의 칸 수가 달라(고정 열 · 가로 스크롤 table 로 나뉜다) 열을 자리로 못 맞췄다
+  // (2026-10-22 13:46 구매진행관리 실측: 머리글 27칸 · 자료 줄 20칸). IBSheet 가 화면에 둔 객체(IBSheet[0] …)의 Get… 함수로 줄 수 · 열 이름(SaveName) ·
+  // 머리글 · 앞 세 줄을 읽는다. 판마다 함수 이름이 달라 있는 것만 부르고, 있는 함수 이름도 적어 다음 판에서 읽는 법을 정한다. Set… · Select… 는 부르지 않는다.
+  try {
+    const sheets = window.IBSheet;
+    const list = !sheets ? [] : (Array.isArray(sheets) || typeof sheets.length === 'number') ? Array.from(sheets) : Object.values(sheets);
+    list.slice(0, 6).forEach((s, i) => {
+      if (!s || typeof s !== 'object') return;
+      const call = (name, ...args) => { try { return typeof s[name] === 'function' ? s[name](...args) : undefined; } catch (err) { return undefined; } };
+      const num = v => (typeof v === 'number' && isFinite(v)) ? v : (typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : undefined);
+      const funcs = [];
+      try {
+        for (const k in s) { if (typeof s[k] === 'function' && /^(Get|Last|Col|Row|Header|Save|Total|Data|Fix)/.test(k)) funcs.push(k); if (funcs.length >= 40) break; }
+      } catch (err) { /* 열거가 막힌 객체 */ }
+      const total = num(call('GetTotalRows')) ?? num(call('RowCount')) ?? num(call('GetDataRows')) ?? num(call('LastRow'));
+      const lastCol = num(call('LastCol')) ?? num(call('GetColCount')) ?? num(call('ColCount'));
+      const headerRows = num(call('HeaderRows')) ?? num(call('GetHeaderRows'));
+      const cols = [];
+      if (lastCol !== undefined) for (let c = 0; c <= lastCol && c < 60; c++) {
+        const save = call('ColSaveName', c) ?? call('GetColSaveName', c) ?? '';
+        const head = call('GetHeaderText', c) ?? (headerRows ? call('GetCellText', headerRows - 1, c) : undefined) ?? '';
+        cols.push({save: String(save || '').slice(0, 24), head: String(head || '').replace(/\s+/g, ' ').slice(0, 16)});
+      }
+      const sample = [];
+      const firstRow = headerRows !== undefined ? headerRows : 1;
+      if (total && cols.length) for (let r = firstRow; r < firstRow + 3 && r <= (num(call('LastRow')) ?? firstRow + total - 1); r++) {
+        sample.push(cols.map((c, idx) => mask(String(call('GetCellText', r, idx) ?? call('GetCellValue', r, idx) ?? ''))));
+      }
+      out.push({kind: 'ibsheet-api', index: i, version: String(s.version || s.Version || s.ver || '').slice(0, 20),
+                total, lastCol, headerRows, funcs, cols, sample});
+    });
+  } catch (err) { /* IBSheet 없음 */ }
+  return out.slice(0, 16);
 }"""
 
 VALUE_LIMIT = 40        # 값은 여기서 자른다 — 계좌번호·긴 적요가 통째로 남지 않게
@@ -280,6 +327,20 @@ def _grid_lines(grids: list[dict]) -> list[str]:
                        + (" · 안쪽 class: " + ",".join(g["classes"]) if not g.get("rows") and g.get("classes") else ""))
             for i, cells in enumerate(g.get("sample", [])[:3], 1):
                 out.append(f"{hidden}  줄 {i}: " + " | ".join(v for v in cells if v))
+        elif g.get("kind") == "ibsheet-api":
+            # IBSheet 스크립트로 읽은 것 — 열은 SaveName(머리글), 줄은 칸 차례 그대로(빈 칸은 '-')
+            head = f"IBSheet 스크립트 [{g.get('index', 0)}]"
+            head += f" 판 {g['version']}" if g.get("version") else ""
+            head += f" · 줄 {g['total']}" if g.get("total") is not None else " · 줄 수 모름"
+            head += f" · 열 {g['lastCol'] + 1}" if g.get("lastCol") is not None else " · 열 수 모름"
+            head += f" · 머리글 줄 {g['headerRows']}" if g.get("headerRows") is not None else ""
+            out.append(head)
+            if g.get("funcs"):
+                out.append("  함수: " + " ".join(g["funcs"][:40]))
+            if g.get("cols"):
+                out.append("  열: " + " | ".join((c.get("save") or "?") + (f"({c['head']})" if c.get("head") else "") for c in g["cols"]))
+            for i, cells in enumerate(g.get("sample", [])[:3], 1):
+                out.append(f"  줄 {i}: " + " | ".join(v or "-" for v in cells))
         else:
             out.append(f"{hidden}표: 행 {g.get('rows', 0)} · 머리글: " + " | ".join(g.get("heads", [])))
             extra = []
@@ -290,6 +351,26 @@ def _grid_lines(grids: list[dict]) -> list[str]:
             first = " | ".join(v for v in g.get("first", []) if v)
             if first or extra:
                 out.append(f"{hidden}  첫 행: {first}" + (("  (" + " · ".join(extra) + ")") if extra else ""))
+    return out
+
+
+def _image_lines(images: list[dict]) -> list[str]:
+    """그림(img) 한 줄씩 — 주소 · 크기 · alt. 물품 사진처럼 서버 파일을 가리키는 그림의 주소 모양을 보려는 것."""
+    out = []
+    for img in images or []:
+        hidden = "" if img.get("visible", True) else "[숨김] "
+        parts = [f"{hidden}그림: {img.get('src', '')}"]
+        size = f"{img.get('w', 0)}×{img.get('h', 0)}"
+        if img.get("nw") or img.get("nh"):
+            size += f" (원본 {img.get('nw', 0)}×{img.get('nh', 0)})"
+        parts.append(size)
+        if img.get("id"):
+            parts.append("#" + img["id"])
+        if img.get("alt"):
+            parts.append(f"alt='{img['alt']}'")
+        if img.get("onclick"):
+            parts.append("onclick=" + img["onclick"])
+        out.append("  ".join(parts))
     return out
 
 
@@ -333,6 +414,8 @@ def format_report(windows: list[dict], when: str | None = None, target: str = ""
             hidden = [e for e in elements if not e.get("visible")]
             out.append(f"    요소 {len(elements)}개 (보임 {len(shown)} · 숨김 {len(hidden)})")
             for line in _grid_lines(fr.get("grids", [])):
+                out.append("    " + line)
+            for line in _image_lines(fr.get("images", [])):
                 out.append("    " + line)
             for line in _collapsed(shown)[:PER_FRAME_LIMIT]:
                 out.append("    " + line)
