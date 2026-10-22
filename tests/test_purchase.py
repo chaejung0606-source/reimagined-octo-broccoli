@@ -614,3 +614,26 @@ def test_clicked_download_does_not_stay_in_the_temp_folder(tmp_path):
     bad = Download(b"<!DOCTYPE html><html>login</html>")
     size, why = purchase.click_download(frame, Page(bad), "/comm0008_01.act?ATTFILE_SEQ_NO=2", tmp_path / "b.pdf")
     assert size is None and "HTML" in why and bad.deleted and not (tmp_path / "b.pdf.part").exists()
+
+
+def test_pc_drive_is_watched_when_saving_elsewhere(tmp_path, monkeypatch):
+    """MYBOX(N:) 에 받아도 그 프로그램이 C: 에 사본을 둘 수 있다 — C: 남은 공간을 시작 · 끝에 적고, 받는 동안 10GB 아래로 줄면 멈춘다."""
+    monkeypatch.setenv("CLAIM_DOWNLOADER_HOME", str(tmp_path))
+    from claim_downloader import settings
+    cfg = settings.load()
+    cfg.purchase_root = "N:\\개인\\구매요청(계약) 서류"
+    settings.save(cfg)
+    monkeypatch.setattr(purchase, "system_root", lambda: "C:\\")
+    pc_room = iter([30 << 30, 30 << 30, 8 << 30])            # 시작 · 첫 건 앞 · 둘째 건 앞(8GB 로 줄음)
+    monkeypatch.setattr(purchase, "free_space", lambda p: next(pc_room, 8 << 30) if str(p).startswith("C:") else 1 << 40)
+    monkeypatch.setattr(purchase, "fix_photo_names", lambda _p: [])
+    monkeypatch.setattr(purchase, "open_list", lambda *a, **k: (object(), ""))
+    monkeypatch.setattr(purchase, "ensure_range", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(purchase, "inspect_cases", lambda *a, **k: pytest.fail("멈췄는데 검사처리로 갔다"))
+    monkeypatch.setattr(purchase, "receive_case", lambda c, p, frame, t, *a: (purchase.CaseResult(t["req_no"]), frame))
+    lines = []
+    targets = [{"req_no": f"20260617000{n}", "cont": str(n), "project": "202408470003", "expDt": "2026-06-17"} for n in (1, 2)]
+    got = purchase.run(None, None, targets, str(tmp_path / "지출결의서"), lines.append, lambda _s: None, lambda *_a: None)
+    assert [c.req_no for c in got.cases] == ["202606170001"] and got.stopped and "PC(C:) 남은 공간이 8.0 GB" in got.note
+    assert any(line.startswith("PC(C:) 남은 공간 30.0 GB") for line in lines)
+    assert any("받기 전보다 22.0 GB 줄었습니다" in line for line in lines)

@@ -260,6 +260,11 @@ def free_space(path: str | Path) -> int | None:
     return None
 
 
+def system_root() -> str:
+    """윈도우가 깔린 드라이브의 뿌리('C:\\'). 윈도우가 아니면 ''."""
+    return (os.environ.get("SystemDrive", "C:") + "\\") if os.name == "nt" else ""
+
+
 def reserve_for(path: str | Path, system: str | None = None) -> int:
     """그 위치에 남겨 둘 공간 — 윈도우가 깔린 드라이브면 SYSTEM_RESERVE, 아니면 MIN_FREE."""
     if system is None:
@@ -1272,6 +1277,12 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
                 summary.cases.append(CaseResult(str(t.get("req_no") or ""), t.get("cont", ""), t.get("project", ""), note=why, ok=False))
                 notify(i, "failed", why)
             return summary
+    # 저장 위치가 MYBOX 처럼 C: 밖이어도 그 프로그램이 C: 에 사본(캐시 · 1:1 동기화)을 둘 수 있다 — 담당자 2026-10-22
+    # "데스크톱 용량에는 영향이 가지 않게". C: 남은 공간을 시작 · 끝에 적고, 받는 동안 줄어 10GB 아래가 되면 멈춘다
+    pc = system_root()
+    pc_start = free_space(pc) if pc and _drive_letter(pc) != _drive_letter(home) else None
+    if pc_start is not None:
+        log(f"PC({pc.rstrip(chr(92))}) 남은 공간 {size_text(pc_start)} — 받는 동안 줄어 {size_text(SYSTEM_RESERVE)} 아래가 되면 멈춥니다")
     fixed = fix_photo_names(home)
     if fixed:
         log(f"물품 사진 {len(fixed)}장의 확장자를 그림 파일대로 바꿨습니다(.html 로 저장돼 있던 것)")
@@ -1295,9 +1306,15 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
             log("멈춤 요청 — 여기서 그만 받습니다.")
             break
         left = free_space(home)
+        pc_left = free_space(pc) if pc_start is not None else None
+        why = ""
         if left is not None and left < need:
             why = (f"저장 위치에 남은 공간이 {size_text(left)} 로 줄어 여기서 멈춥니다(남겨 둘 공간 {size_text(need)}) — "
                    "설정 → '구매요청(계약) 서류 저장 위치' 를 공간이 넉넉한 드라이브(네이버 MYBOX 등)로 바꾸세요")
+        elif pc_left is not None and pc_left < SYSTEM_RESERVE and pc_left < pc_start:
+            why = (f"PC({pc.rstrip(chr(92))}) 남은 공간이 {size_text(pc_left)} 로 줄어 여기서 멈춥니다(받기 전 {size_text(pc_start)}) — "
+                   f"저장 위치({home})를 올려 주는 프로그램(MYBOX 등)이 C: 에 사본을 두는지 그 프로그램 설정을 확인하세요")
+        if why:
             log("⚠ " + why)
             summary.note = why
             summary.stopped = True
@@ -1365,4 +1382,9 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
     after = free_space(home)
     if after is not None:
         log(f"   저장 위치 남은 공간 {size_text(after)}")
+    pc_end = free_space(pc) if pc_start is not None else None
+    if pc_end is not None:
+        used = pc_start - pc_end
+        log(f"   PC({pc.rstrip(chr(92))}) 남은 공간 {size_text(pc_end)} — 받기 전보다 "
+            + (f"{size_text(used)} 줄었습니다" if used > 0 else "줄지 않았습니다"))
     return summary
