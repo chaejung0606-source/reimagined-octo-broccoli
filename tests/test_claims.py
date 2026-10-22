@@ -773,3 +773,108 @@ def test_taxbill_does_not_pick_from_an_unfiltered_list():
     data = {"evidence": "세금계산서", "amount": 51900, "supplyAmount": 47182, "expenseDate": "2026-09-30"}
     report = taxbill.search(FakePage(popup), frame, data, lambda m: None, wait=lambda s: None)
     assert not report.picked and taxbill.CONFIRM_BUTTON_ID not in popup.clicks
+
+
+# ── 세금계산서 종류 (2026-10-22) ──────────────────────────────────────
+def test_schema_normalizes_approval_number_email_and_claim_div():
+    data = schema.normalize(sample(approvalNo="2026 1001 41000000 12345678", receiverEmail="Me@Kangwon.AC.KR", claimDiv="(25) 물품구매(일반)"))
+    assert data["approvalNo"] == "20261001-41000000-12345678" and data["receiverEmail"] == "me@kangwon.ac.kr" and data["claimDiv"] == "물품구매"
+    assert schema.normalize(sample(approvalNo="ABC-1"))["approvalNo"] == "ABC-1"        # 모르는 꼴은 지우지 않는다
+    lines = schema.summary_lines(data)
+    assert any("승인번호 20261001-41000000-12345678" in line and "수신메일" in line for line in lines)
+    assert "청구종류: 물품구매" in lines
+    assert "approvalNo" in extract.build_prompt("/폴더", "/tmp/x.json", rules="r") and "claimDiv" in extract.build_prompt("/폴더", "/tmp/x.json", rules="r")
+
+
+def test_process_keeps_the_kind_fixed_evidence_and_tells_the_ai(tmp_path):
+    """세금계산서 종류 — AI 가 증빙구분을 다르게 읽어도 세금계산서로 두고, 규칙에 그 한 줄을 더해 보낸다."""
+    class Other(FakeExtractor):
+        def generate(self, folder, rules_text):
+            super().generate(folder, rules_text)
+            return sample(evidence="기타")
+
+    folders = _folders(tmp_path, 2)
+    backend = Other()
+    events = list(process.run(folders, backend, rules="r", fixed=[{"evidence": "세금계산서"}, None]))
+    first, second = events[1][2], events[3][2]
+    assert first.data["evidence"] == "세금계산서" and second.data["evidence"] == "기타"
+    assert "세금계산서" in backend.calls[0][1] and backend.calls[0][1].startswith("r\n") and backend.calls[1][1] == "r"
+
+
+class ApprovalPopup(FakePopup):
+    """승인번호(거래처명/승인번호 칸) · 사업자번호 칸 어느 쪽으로 조회했는지에 따라 결과가 다른 세금계산서 팝업."""
+
+    def __init__(self, by_name=None, by_bizno=None, **kw):
+        super().__init__(kind="taxbill", **kw)
+        self.by_name, self.by_bizno = dict(by_name or {}), dict(by_bizno or {})
+        self.queries = []
+
+    def evaluate(self, js, arg=None):
+        if js is payee.CLICK_ID_JS and arg == taxbill.INQUIRY_BUTTON_ID:
+            name, bizno = self.values.get(taxbill.NAME_TEXT_ID, ""), self.values.get(taxbill.BIZNO_TEXT_ID, "")
+            self.queries.append((name, bizno))
+            rows = self.by_name.get(name) if name else self.by_bizno.get(bizno)
+            self.rows = len(rows or []) if rows is not None else 0
+            self.listing = list(rows or [])
+            self.clicks.append(arg)
+            return {"ok": True}
+        return super().evaluate(js, arg)
+
+
+def _approval_rows(*approvals, bal=None):
+    return _grid_rows(*[dict(_bill(bal=bal), **{taxbill.COL_APPROVAL: a}) for a in approvals])
+
+
+def test_taxbill_search_tries_the_approval_number_first_and_picks_by_it():
+    """담당자(2026-10-22): 승인번호로 찾으면 그 세금계산서가 뜬다 — 하이픈 꼴을 '(거래처명/승인번호)' 칸에 넣고 사업자번호 칸은 비운 채 조회,
+    결과의 승인번호 열이 같은 행이 하나면 금액을 따지지 않고 그것."""
+    frame = FakeFormFrame()
+    rows = _approval_rows("20261001-41000000-12345678")
+    popup = ApprovalPopup(by_name={"20261001-41000000-12345678": rows}, form=frame)
+    data = {"evidence": "세금계산서", "approvalNo": "20261001-41000000-12345678", "payeeBizNo": "578-86-00021", "amount": 99}
+    report = taxbill.search(FakePage(popup), frame, data, lambda m: None, wait=lambda s: None)
+    assert report.ok and report.picked and report.pick_note == "승인번호 일치" and popup.queries == [("20261001-41000000-12345678", "")]
+    assert frame.values["TAXBILL_SEQ_NO"] == "TB0"
+    assert taxbill.has_query({"approvalNo": "1"}) and not taxbill.has_query({}) and taxbill.has_query({"receiverEmail": "a@b"})
+    # 이미 다 청구된 계산서(잔액 0)는 승인번호가 같아도 사람에게
+    popup = ApprovalPopup(by_name={"20261001-41000000-12345678": _approval_rows("20261001-41000000-12345678", bal=0)}, form=FakeFormFrame())
+    report = taxbill.search(FakePage(popup), FakeFormFrame(), data, lambda m: None, wait=lambda s: None)
+    assert report.ok and not report.picked and "잔액 0" in report.pick_note
+
+
+def test_taxbill_search_falls_back_to_bizno_and_reports_missing_when_nothing_shows():
+    """승인번호로 안 뜨면(하이픈 → 숫자만) 승인번호 칸을 비우고 사업자번호(+ 수신메일)로 — 그래도 0행이면 missing(본부 등록 전)."""
+    frame = FakeFormFrame()
+    popup = ApprovalPopup(by_bizno={"5788600021": _grid_rows(_bill())}, form=frame)
+    data = sample(approvalNo="20261001-41000000-12345678", payeeBizNo="578-86-00021", amount=51900, receiverEmail="me@kangwon.ac.kr")
+    report = taxbill.search(FakePage(popup), frame, schema.normalize(data), lambda m: None, wait=lambda s: None)
+    assert report.ok and report.picked and not report.missing
+    assert [q[0] for q in popup.queries[:2]] == ["20261001-41000000-12345678", "202610014100000012345678"]
+    assert popup.queries[2] == ("", "5788600021")
+    assert popup.values[taxbill.EMAIL_TEXT_ID] == "me@kangwon.ac.kr"      # 설정 메일이 없으면 서류의 수신메일로
+    popup = ApprovalPopup(form=FakeFormFrame())
+    report = taxbill.search(FakePage(popup), FakeFormFrame(), schema.normalize(data), lambda m: None, wait=lambda s: None)
+    assert report.ok and report.missing and report.rows == 0 and not report.picked
+    assert any("본부" in line for line in report.lines())
+    assert taxbill.CONFIRM_BUTTON_ID not in popup.clicks
+
+
+def test_taxbill_run_plan_and_problems(tmp_path):
+    from claim_downloader.claims import taxbill_run
+
+    folder = tmp_path / "정수기 9월"
+    folder.mkdir()
+    (folder / "세금계산서.pdf").write_bytes(b"%PDF-")
+    good = taxbill_run.TaxbillItem(0, str(folder), schema.normalize(sample(approvalNo="20261001-41000000-12345678")), "202408470003")
+    bad = taxbill_run.TaxbillItem(1, str(folder), schema.normalize(sample(evidence="기타", payeeBizNo="", payeeName="", attachments=["없는.pdf"])), "")
+    assert good.attachments() == [str(folder / "세금계산서.pdf")] and good.problems() == []
+    assert bad.attachments() == [] and [p[:6] for p in bad.problems()] == ["증빙구분이 ", "세금계산서를", "첨부할 파일"]
+    report = taxbill_run.plan([good, bad])
+    assert report.dry_run and [r.status for r in report.results] == ["planned", "planned"] and "승인번호" in " ".join(report.results[0].detail)
+    rows = taxbill_run.table_rows(report, [good, bad])
+    assert rows[0][0] == "넣을 예정" and rows[0][2][3] == "20261001-41000000-12345678" and rows[0][2][4] == "1"
+    done = taxbill_run.TaxbillRunReport(dry_run=False, results=[
+        taxbill_run.ItemResult(0, "a", "saved", req_cnt="340", review=["증빙 확인"]), taxbill_run.ItemResult(1, "b", "missing", "없음")])
+    assert done.saved == 1 and done.missing == 1 and done.review_items() == ["a — 증빙 확인"]
+    assert done.lines()[0] == "세금계산서 청구: 임시저장 1건 · 세금계산서 없음(건너뜀) 1건"
+

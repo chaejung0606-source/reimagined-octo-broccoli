@@ -32,9 +32,10 @@ class ClaimExtractWorker(QObject):
         self._thread = threading.Thread(target=self._loop, name="claims", daemon=True)
         self._thread.start()
 
-    def run(self, folders: list[str], key: str) -> None:
+    def run(self, folders: list[str], key: str, fixed: list[dict | None] | None = None) -> None:
+        """fixed 는 폴더마다 청구 종류가 정해 둔 값(kinds.fixed_values) — 세금계산서 종류의 증빙구분."""
         self._stop.clear()
-        self._queue.put(("run", (list(folders), key)))
+        self._queue.put(("run", (list(folders), key, list(fixed or []))))
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -59,12 +60,12 @@ class ClaimExtractWorker(QObject):
             finally:
                 self.busy.emit(False, "")
 
-    def _do_run(self, folders: list[str], key: str) -> None:
+    def _do_run(self, folders: list[str], key: str, fixed: list[dict | None] | None = None) -> None:
         backend = extract.get(key)
         self.busy.emit(True, "지출 자료를 읽는 중…")
         logbook.log("일반청구 읽기 시작: %d건 · %s" % (len(folders), backend.label))
         stop, ok_count, fail_count = "", 0, 0
-        for index, event, payload in process.run(folders, backend, should_stop=self._stop.is_set):
+        for index, event, payload in process.run(folders, backend, should_stop=self._stop.is_set, fixed=fixed):
             if event == "start":
                 self.started.emit(index)
             elif event == "done":

@@ -18,10 +18,14 @@ from pathlib import Path
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from .claims import attach as claim_attach
 from .claims import form as claim_form
+from .claims import kinds as claim_kinds
 from .claims import payee as claim_payee
+from .claims import record as claim_record
 from .claims import scholarship as claim_scholarship
 from .claims import taxbill as claim_taxbill
+from .claims import taxbill_run
 from . import archive, diagnose, erp, logout as logout_mod, naming, navigate, project_folders, settings as settings_mod, skiplist
 from .reconcile import reconcile
 from .targets import Selection, select_targets
@@ -915,6 +919,199 @@ class ErpSession:
             return report
         return claim_payee.search(page, frame, data, self.log, wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)),
                                   auto_pick=self._popup_options()[0])
+
+    # ── 세금계산서 청구 이어 넣기 ───────────────────────────────────────
+    def fill_taxbill_claims(self, items: list[taxbill_run.TaxbillItem], dry_run: bool = True, test_mode: bool = False,
+                            ask=None, on_item=None) -> taxbill_run.TaxbillRunReport:
+        """청구 종류 '세금계산서' 폴더들을 하나씩 — 새 청구서 → 비목 · 증빙(세금계산서) → 조회 팝업(승인번호 → 사업자번호 + 수신메일) →
+        뜨면 골라 [확인] → 나머지 칸 → (사람) 청구종류 · 증빙 창 → 입금처 → 첨부 → [저장] → 다음 폴더. 조회 결과가 없으면 그 폴더는
+        '세금계산서 없음' 으로 건너뛰고 다음 폴더로(담당자 2026-10-22). [신청] 은 누르지 않는다.
+
+        ask(글) 은 노란 띠 — True 면 [계속], False 면 [멈추기](남은 폴더는 두고 끝). on_item(row, status, note) 은 폴더마다 화면에."""
+        ask = ask or (lambda _m: False)
+        on_item = on_item or (lambda _r, _s, _n: None)
+        if dry_run:
+            return taxbill_run.plan(items)
+        if not self.browser_open:
+            raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
+        report = taxbill_run.TaxbillRunReport(dry_run=False)
+        self.log("세금계산서 청구 시작: %d개 폴더%s" % (len(items), " (시험)" if test_mode else ""))
+        for item in items:
+            if self.should_stop():
+                report.stopped = True
+                break
+            on_item(item.row, "erp", "")
+            result = self._fill_taxbill_item(item, test_mode, ask)
+            report.results.append(result)
+            on_item(item.row, result.status, result.note)
+            self.log("%s: %s%s" % (item.name, result.label, (" — " + result.note) if result.note else ""))
+            if result.status in ("stopped", "failed") and result.note.startswith(("브라우저", "작성 화면")):
+                report.blocked = result.note
+                report.stopped = True
+                break
+            if result.status == "stopped":
+                report.stopped = True
+                break
+        done = {r.row for r in report.results}
+        for item in items:
+            if item.row not in done:
+                on_item(item.row, "waiting", "")
+        return report
+
+    def _fill_taxbill_item(self, item: taxbill_run.TaxbillItem, test_mode: bool, ask) -> taxbill_run.ItemResult:
+        result = taxbill_run.ItemResult(item.row, item.name, "failed")
+        data = dict(item.data, evidence=claim_taxbill.EVIDENCE_TAXBILL)
+        if test_mode and not str(data.get("summary", "")).startswith(claim_scholarship.TEST_PREFIX.strip()):
+            data["summary"] = claim_scholarship.TEST_PREFIX + str(data.get("summary", ""))
+        wait = self._wait
+        page, frame = claim_form.wait_for_form(self.page.context, log=self.log)
+        typed = self._typed_sheet(frame)
+        if typed:
+            result.note = (f"작성 화면에 저장하지 않은 입력({' · '.join(typed)})이 있습니다 — 그 청구서를 [저장] 하거나 비운 뒤 다시 누르세요. "
+                           "앱은 그 화면을 바꾸지 않습니다.")
+            result.status = "stopped"
+            return result
+        project = self._project(item.project_no)
+        stop = self._duplicate_check(str(data.get("summary", "")), project, ask, test_mode,
+                                     lambda: (f"이 폴더는 {claim_record.previous(item.folder).get('when')} 에 넣은 적이 있습니다."
+                                              if claim_record.previous(item.folder) else ""))
+        if stop:
+            result.status, result.note = "stopped", stop
+            return result
+        page, frame = self._fresh_sheet(page, frame, project)
+        if frame is None:
+            result.status = "stopped"
+            result.note = "작성 화면을 찾지 못했습니다. 앱이 연 브라우저에서 결의서내역 → [일반청구] 를 눌러 새 청구서 화면을 띄운 뒤 다시 누르세요."
+            return result
+        # ① 비목 · 세목 · 증빙구분(세금계산서) — [선택] 이 보이게 된다
+        head = claim_form.fill(frame, data, self.log, dry_run=False, wait=wait, keys=("expCategory", "expDetail", "evidence"))
+        if head.blocked:
+            result.status, result.note = "stopped", head.blocked
+            return result
+        result.detail += [f"{'✓' if st.ok else '✗'} {st.label}: {st.value}" + (f" — {st.note}" if st.note else "") for st in head.steps]
+        # ② 세금계산서 조회 — 승인번호 → 사업자번호(+ 수신메일). 없으면 이 폴더는 건너뛴다
+        auto_pick, email = self._popup_options()
+        tb = claim_taxbill.search(page, frame, data, self.log, wait=wait, auto_pick=auto_pick, email=email)
+        result.detail += tb.lines()
+        if not tb.ok:
+            result.note = "세금계산서 팝업: " + (tb.note or "열지 못함")
+            return result
+        if tb.missing:
+            self._close_popup(page, claim_taxbill.POPUP_PROBE_JS)
+            result.status = "missing"
+            result.note = f"'{tb.query}' 로 조회했지만 결과가 없음 — 본부가 아직 등록하지 않았을 수 있습니다. 등록된 뒤 다시 넣으세요"
+            return result
+        if not tb.picked:
+            ok, why = self._ask_until(lambda: self._taxbill_attached(page, frame), ask, taxbill_run.TAXBILL_ASK + (f" ({tb.pick_note})" if tb.pick_note else ""))
+            if not ok:
+                result.status, result.note = "stopped", "세금계산서를 고르지 않음 — " + why
+                return result
+            result.detail.append("✓ 세금계산서: 사람이 골라 [확인]")
+        # ③ 나머지 칸 — 지출일자는 계산서가 채웠고, 금액 · 적요 · 결제방법 · 계좌
+        rest = claim_form.fill(frame, data, self.log, dry_run=False, wait=wait,
+                               keys=tuple(k for k, *_ in claim_form.FIELDS if k not in ("expCategory", "expDetail", "evidence")))
+        result.detail += [f"{'✓' if st.ok else '✗'} {st.label}: {st.value}" + (f" — {st.note}" if st.note else "") for st in rest.steps]
+        if rest.blocked:
+            result.status, result.note = "stopped", rest.blocked
+            return result
+        for st in rest.steps:
+            if not st.ok:
+                result.review.append(f"{st.label} 을 넣지 못함({st.note}) — ERP 에서 확인")
+        # ④ 청구종류 · 증빙 창 — 사람(미실측). 증빙이 붙었는지(#REQ_DIV_LNK)만 본다
+        div = str(data.get("claimDiv") or "물품구매 · 용역구매 등")
+        if not ask(taxbill_run.EVIDENCE_ASK.format(div=div)):
+            result.status, result.note = "stopped", "청구종류 · 증빙 창에서 멈춤"
+            return result
+        if not self._evidence_link(frame):
+            result.review.append("청구종류의 증빙(#REQ_DIV_LNK)이 붙지 않음 — [신청] 전에 증빙 창을 확인")
+        # ⑤ 입금처 — 거래처 팝업. 확실하면 앱이, 아니면 사람
+        if claim_payee.query_for(data):
+            pr = claim_payee.search(page, frame, data, self.log, wait=wait, auto_pick=auto_pick)
+            result.detail += pr.lines()
+            picked = bool(pr.ok and pr.picked)
+        else:
+            picked = False
+        if not picked:
+            ok, why = self._ask_until(lambda: self._payee_filled(frame), ask, taxbill_run.PAYEE_ASK)
+            if not ok:
+                result.status, result.note = "stopped", "입금처를 고르지 않음 — " + why
+                return result
+        # ⑥ 첨부 — AI 가 고른 폴더 파일. 없거나 못 올리면 사람
+        files = item.attachments()
+        if files:
+            messages: list[str] = []
+            at = claim_attach.upload(page, frame, files, self.log, wait=wait, messages=messages)
+            result.detail += at.lines()
+            if not at.ok and not ask(taxbill_run.ATTACH_ASK + (f" ({at.note})" if at.note else "")):
+                result.status, result.note = "stopped", "첨부에서 멈춤"
+                return result
+        else:
+            result.review.append("첨부할 파일을 폴더에서 찾지 못해 올리지 않음 — [신청] 전에 첨부")
+        # ⑦ [저장](임시저장) — [신청] 은 사람
+        sr = self.save_claim_draft()
+        result.detail += sr.lines()
+        if not sr.ok:
+            result.status = "stopped"
+            result.note = "임시저장이 안 됨 — " + (sr.note or " · ".join(sr.messages) or "ERP 에서 [저장] 을 직접 누른 뒤 다음 폴더를 다시 넣으세요")
+            return result
+        result.status = "saved"
+        result.req_cnt = str((sr.after or {}).get("REQ_CNT") or "")
+        if not test_mode:
+            try:
+                claim_record.remember(item.folder, data, kind=claim_kinds.TAXBILL)
+            except Exception as error:  # noqa: BLE001 — 기록을 못 남겨도 저장은 됐다
+                self.log("채운 기록을 남기지 못했습니다: %s" % (str(error).splitlines()[0] if str(error) else type(error).__name__))
+        return result
+
+    def _ask_until(self, check, ask, message: str, tries: int = 3) -> tuple[bool, str]:
+        """노란 띠로 묻고 [계속] 뒤 check() 가 참이면 이어 간다. 세 번까지."""
+        for _ in range(tries):
+            if not ask(message):
+                return False, "멈춤"
+            if check():
+                return True, ""
+            message = "아직 되지 않았습니다. " + message
+        return False, "세 번 물어도 되지 않음"
+
+    def _taxbill_attached(self, page, frame) -> bool:
+        """작성 화면에 계산서가 붙었는지(#TAXBILL_SEQ_NO) — 사람이 팝업에서 고른 뒤."""
+        try:
+            state = claim_form.read_state(frame, ["TAXBILL_SEQ_NO"])
+            if (state.get("TAXBILL_SEQ_NO") or {}).get("value"):
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        popup = claim_payee.find_popup(page.context, claim_taxbill.POPUP_PROBE_JS)
+        return popup is None and self._taxbill_date_set(frame)
+
+    @staticmethod
+    def _taxbill_date_set(frame) -> bool:
+        try:
+            return bool((claim_form.read_state(frame, ["EXP_DT"]).get("EXP_DT") or {}).get("value"))
+        except Exception:  # noqa: BLE001
+            return False
+
+    @staticmethod
+    def _payee_filled(frame) -> bool:
+        try:
+            return bool((claim_form.read_state(frame, ["RCV_NM"]).get("RCV_NM") or {}).get("value"))
+        except Exception:  # noqa: BLE001
+            return False
+
+    @staticmethod
+    def _evidence_link(frame) -> bool:
+        from .claims import card_erp
+        return bool(card_erp._link(frame, "REQ_DIV_LNK"))
+
+    def _close_popup(self, page, probe_js: str) -> None:
+        """앱이 연 팝업 창을 닫는다(창 닫기 — ERP 단추가 아니다). 세금계산서가 없을 때 다음 폴더로 가기 전에."""
+        popup = claim_payee.find_popup(page.context, probe_js)
+        if popup is None:
+            return
+        try:
+            popup.close()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _popup_options(self) -> tuple[bool, str]:
         """팝업 설정 — (결과가 확실하면 앱이 고르나, 세금계산서 조회에 넣을 계산서수신메일)."""

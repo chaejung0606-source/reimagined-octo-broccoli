@@ -7,6 +7,12 @@
 k_BUYR_CHRG_EMAIL1(수신메일). **목록에는 산학협력단 전체 계산서가 다 뜬다** — 담당자(2026-10-13): 계산서수신메일(#self_enter 체크 →
 #TAX_RCV_EMAIL_V)에 내 메일을 넣고 조회해야 내 건만 보인다. 메일은 사용자별 값이라 설정(taxbill_email)에 둔다.
 
+담당자 설명(2026-10-22): 팝업에서 **수신이메일로 찾거나 승인번호로 찾으면** 그 세금계산서가 뜬다 — 승인번호는 계산서마다 하나라 가장 확실하다.
+그래서 서류에서 읽은 승인번호(approvalNo)가 있으면 '(거래처명/승인번호)' 칸(#CORP_NM)에 넣어 먼저 조회하고, 결과 열 k_ISSU_ID(승인번호)가 같은 행이
+하나면 그 행을 고른다. 없으면 전처럼 사업자번호(+ 수신메일). 수신메일은 설정(taxbill_email)이 없으면 서류의 공급받는자 이메일(receiverEmail).
+세금계산서는 본부가 등록하므로 아직 안 떠 있을 수 있다 — 결과가 0행이면 report.missing 으로 알리고, 세금계산서 종류의 이어 넣기(session.fill_taxbill_claims)는
+그 폴더를 건너뛰고 다음 폴더로 간다(담당자 2026-10-22 "조회가 되지 않으면 다음 청구로 넘어가기 · 뜨면 선택").
+
 담당자 결정(2026-10-13): **확실한 것은 앱이 고르고 애매하면 사람**. 열 값으로 공급자 사업자번호가 같고 합계(또는 공급가액)가 같은 행이
 하나일 때(여럿이면 수신메일·작성일자까지 맞는 행이 하나일 때) 고르고 [확인](btn_out) 을 누른 뒤 작성 화면에 계산서가 붙었는지
 (TAXBILL_SEQ_NO 또는 지출일자 변화) 확인한다. 이미 다 청구된 계산서(잔액 0)는 후보에서 뺀다. 설정 `claim_auto_pick` 으로 끌 수 있다.
@@ -61,6 +67,7 @@ COL_SUPPLY = "k_CHRG_AMT"            # 공급가액
 COL_DATE = "k_REGS_DATE"             # 작성일자 'YYYY-MM-DD'
 COL_BALANCE = "k_INQ_REQ_BAL_AMT"    # 아직 청구되지 않은 잔액 — 0 이면 이미 다 청구된 계산서
 COL_EMAIL = "k_BUYR_CHRG_EMAIL1"     # 공급받는자 담당 메일(계산서수신메일)
+COL_APPROVAL = "k_ISSU_ID"           # 승인번호(실측 2026-10-13 저녁) — 서류의 승인번호와 같은 행이 하나면 그것(담당자 2026-10-22)
 LONG_LIST = 25                       # JGM 가상 스크롤 — 이보다 길면 화면 밖 행은 DOM 에 없어 못 읽었을 수 있다
 
 POPUP_PROBE_JS = """() => !!(document.querySelector('#SELR_CORP') && document.querySelector('#CORP_TXT')
@@ -85,9 +92,16 @@ class TaxbillReport:
     picked: bool = False               # 앱이 골라 [확인] 까지 누르고 작성 화면에 붙은 것을 확인함
     pick_note: str = ""
 
+    @property
+    def missing(self) -> bool:
+        """조회는 됐는데 한 행도 없음 — 본부가 아직 등록하지 않은 세금계산서로 본다(담당자 2026-10-22)."""
+        return self.ok and self.rows == 0
+
     def lines(self) -> list[str]:
         if self.ok and self.picked:
             out = [f"✓ 세금계산서: 계산서를 골라 [확인] 까지 눌렀습니다 ({self.pick_note})"]
+        elif self.missing:
+            out = [f"↷ 세금계산서 팝업: '{self.query}' 로 조회했지만 결과가 없습니다 — 본부가 아직 등록하지 않았을 수 있습니다. 등록된 뒤 다시 넣으세요"]
         elif self.ok:
             found = f"결과 {self.rows}행" if self.rows is not None else "결과 수는 세지 못함"
             why = f" — {self.pick_note}" if self.pick_note else ""
@@ -152,6 +166,16 @@ def match(rows: list[dict], data: dict, email: str = "") -> tuple[int | None, st
     """
     if not rows:
         return None, "조회 결과가 없음"
+    approval = digits(data.get("approvalNo"))
+    if approval and any(COL_APPROVAL in (r.get("cells") or {}) for r in rows):
+        # 승인번호는 계산서마다 하나 — 같은 행이 하나면 금액 · 사업자번호를 따지지 않고 그 행(담당자 2026-10-22). 이미 다 청구됐으면 사람.
+        same = [r for r in rows if digits((r.get("cells") or {}).get(COL_APPROVAL)) == approval]
+        if len(same) == 1:
+            if _num((same[0].get("cells") or {}).get(COL_BALANCE)) == 0:
+                return None, "승인번호가 같은 계산서가 이미 모두 청구됨(잔액 0)"
+            return int(same[0]["index"]), "승인번호 일치"
+        if len(same) > 1:
+            return None, f"승인번호가 같은 행이 {len(same)}개 — 어느 것인지 애매함"
     amount = data.get("amount") or data.get("supplyAmount")
     if not _num(amount):
         return None, "금액을 몰라 고르지 않음"
@@ -228,6 +252,26 @@ def query_for(data: dict) -> str:
     return str(data.get("payeeName") or "").strip()
 
 
+def approval_forms(number) -> list[str]:
+    """승인번호를 넣어 볼 형식들 — 국세청 표기 '8-8-8'(세금계산서에 그대로 적힌 꼴) 다음 숫자만. 어느 쪽을 받는지 미실측.
+    24자리가 아니면 적힌 그대로 한 번."""
+    raw = str(number or "").replace(" ", "")
+    plain = digits(raw)
+    if len(plain) == 24:
+        return [f"{plain[:8]}-{plain[8:16]}-{plain[16:]}", plain]
+    return [raw] if raw else []
+
+
+def email_for(data: dict, email: str = "") -> str:
+    """조회에 넣을 계산서수신메일 — 설정의 메일이 먼저, 없으면 서류(세금계산서)의 공급받는자 이메일."""
+    return str(email or "").strip() or str(data.get("receiverEmail") or "").strip()
+
+
+def has_query(data: dict, email: str = "") -> bool:
+    """조회 조건이 하나라도 있는지 — 승인번호 · 사업자번호(거래처명) · 수신메일."""
+    return bool(approval_forms(data.get("approvalNo")) or query_for(data) or email_for(data, email))
+
+
 def bizno_forms(number: str) -> list[str]:
     """사업자번호를 넣어 볼 형식들 — 숫자만, 그다음 그리드가 보여 주는 '578-86-00021' 형식. 어느 쪽을 받는지 미실측."""
     number = digits(number)
@@ -271,11 +315,12 @@ def search(page, frame, data: dict, log: Callable[[str], None],
     메일로만 한 번 더 조회해 사람이 볼 목록을 남긴다. auto_pick 이면 결과가 하나로 확실할 때 골라 [확인] 까지 누른다(pick).
     """
     messages = messages if messages is not None else []
-    email = str(email or "").strip()
+    email = email_for(data, email)
     query = query_for(data)
-    report = TaxbillReport(ok=False, query=query, messages=messages)
-    if not query and not email:
-        report.note = "거래처 사업자번호도 이름도 없습니다"
+    approvals = approval_forms(data.get("approvalNo"))
+    report = TaxbillReport(ok=False, query=approvals[0] if approvals else query, messages=messages)
+    if not query and not email and not approvals:
+        report.note = "세금계산서 승인번호도 거래처 사업자번호 · 이름도 없습니다"
         return report
     try:
         if frame.evaluate(LINK_VISIBLE_JS, SELECT_LINK_ID) is not True:
@@ -323,13 +368,32 @@ def search(page, frame, data: dict, log: Callable[[str], None],
             if not dated.get("ok"):
                 log("세금계산서 팝업: 조회 시작일을 넣지 못해 기본 기간으로 조회합니다")
         period = start or current or "기본"
+        rows = None
+        for text in approvals:
+            # 승인번호가 가장 확실하다(담당자 2026-10-22) — '(거래처명/승인번호)' 칸에 넣고, 사업자번호 칸은 비운 채 조회
+            typed = popup.evaluate(SET_TEXT_JS, [NAME_TEXT_ID, text])
+            if not typed.get("ok"):
+                log("세금계산서 팝업: 승인번호를 넣지 못해(%s) 사업자번호로 조회합니다" % typed.get("why", ""))
+                break
+            popup.evaluate(SET_TEXT_JS, [BIZNO_TEXT_ID, ""])
+            report.query = text
+            rows = _inquire(popup, wait, log, "승인번호 '%s'%s (%s~)" % (text, " + 수신메일" if mailed else "", period))
+            if rows:
+                break
+        if rows:
+            report.rows = rows
+            report.ok = True
+            if auto_pick:
+                report.picked, report.pick_note = pick(popup, frame, data, log, wait, email)
+            return report
+        if approvals:
+            popup.evaluate(SET_TEXT_JS, [NAME_TEXT_ID, ""])       # 승인번호로는 없음 — 비우고 사업자번호(+ 수신메일)로
         attempts = bizno_forms(query) if query.isdigit() else ([query] if query else [])
         if attempts and query.isdigit():
             chosen = popup.evaluate(SET_SELECT_JS, [SELLER_SELECT_ID, SELLER_OPTION])
             if not chosen.get("ok"):
                 report.note = "조회 구분을 공급자 사업자번호로 바꾸지 못했습니다: " + str(chosen.get("why", ""))
                 return report
-        rows = None
         for text in attempts:
             typed = popup.evaluate(SET_TEXT_JS, [BIZNO_TEXT_ID if query.isdigit() else NAME_TEXT_ID, text])
             if not typed.get("ok"):
@@ -343,9 +407,11 @@ def search(page, frame, data: dict, log: Callable[[str], None],
             popup.evaluate(SET_TEXT_JS, [BIZNO_TEXT_ID, ""])      # 번호를 비우고 메일로만 — 사람이 볼 목록이라도 남긴다
             report.query = email
             rows = _inquire(popup, wait, log, "수신메일만 (%s~)" % period)
-        elif not attempts:
+        elif not attempts and mailed:
             report.query = email
             rows = _inquire(popup, wait, log, "수신메일만 (%s~)" % period)
+        elif not attempts and approvals:
+            rows = 0                     # 승인번호로만 조회할 수 있었고 없었다 — 조건 없이 전체 목록을 띄우지 않는다
         report.rows = rows
         report.ok = True
         if auto_pick and not (query or mailed):

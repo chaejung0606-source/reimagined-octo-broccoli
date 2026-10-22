@@ -7,6 +7,10 @@
   expenseDate    지출(증빙) 일자 'YYYY-MM-DD'
   amount         청구액(원, 정수) · supplyAmount 공급가액 · taxAmount 부가세
   payeeName      입금처(거래처) 이름 · payeeBizNo 사업자등록번호 — 입금처 팝업 검색어
+  approvalNo     세금계산서 승인번호(국세청, 24자리) — 세금계산서 조회 팝업의 '거래처명/승인번호' 검색어(담당자 2026-10-22)
+  receiverEmail  세금계산서의 공급받는자(수신) 이메일 — 설정에 계산서수신메일이 없을 때 조회에 쓴다
+  claimDiv       청구종류(청구구분) — CLAIM_DIVS 중 하나. 일반청구 탭에서 증빙구분 다음에 고르고 그 증빙 창을 작성한다(담당자 2026-10-22).
+                 그 증빙 창은 미실측이라 앱이 누르지 않고 사람에게 보여 주기만 한다
   bank · accountNo · owner     은행 · 계좌번호 · 예금주
   settleMethod   결제방법 — SETTLE_METHODS 중 하나 (보통 계좌이체)
   attachments    첨부 후보 파일 이름 목록 (폴더 안)
@@ -21,8 +25,8 @@ import re
 from ..naming import normnm
 
 KEYS = ("summary", "expCategory", "expDetail", "evidence", "expenseDate", "amount", "supplyAmount",
-        "taxAmount", "payeeName", "payeeBizNo", "bank", "accountNo", "owner", "settleMethod",
-        "attachments", "notes")
+        "taxAmount", "payeeName", "payeeBizNo", "approvalNo", "receiverEmail", "claimDiv", "bank", "accountNo", "owner",
+        "settleMethod", "attachments", "notes")
 AMOUNT_KEYS = ("amount", "supplyAmount", "taxAmount")
 
 # ERP #PAY_EXP_CD 의 보기 (실측 그대로). 적요 앞의 비목 번호와 짝지어 둔다.
@@ -39,6 +43,9 @@ _CATEGORY_ALIASES = {
 }
 EVIDENCE_KINDS = ("세금계산서", "계산서", "법인카드", "개인카드", "기타")
 SETTLE_METHODS = ("계좌이체", "현금/지로", "수기이체", "자동이체")
+# 일반청구 탭의 청구구분(name=REQ_DIV_CD, 14절) 중 세금계산서 지출에 쓰이는 것 — 사람이 고를 때 앱이 알려 주는 이름
+CLAIM_DIVS = ("물품구매", "용역구매", "도서구매", "학회비", "기타")
+EVIDENCE_TAXBILL = "세금계산서"
 REQUIRED = ("summary", "expCategory", "evidence", "expenseDate", "amount")
 
 
@@ -106,6 +113,9 @@ def normalize(data: dict) -> dict:
             out[key] = str(data.get(key) or "").strip()
     out["expCategory"] = category_name(out["expCategory"])
     out["expenseDate"] = normalize_date(out["expenseDate"])
+    out["approvalNo"] = normalize_approval(out["approvalNo"])
+    out["receiverEmail"] = out["receiverEmail"].lower()
+    out["claimDiv"] = normalize_claim_div(out["claimDiv"])
     if out["evidence"] and out["evidence"] not in EVIDENCE_KINDS:
         for kind in EVIDENCE_KINDS:
             if normnm(kind) in normnm(out["evidence"]):
@@ -114,6 +124,26 @@ def normalize(data: dict) -> dict:
     if not out["settleMethod"]:
         out["settleMethod"] = "계좌이체"
     return out
+
+
+def normalize_approval(text) -> str:
+    """세금계산서 승인번호 — 숫자 24자리면 국세청 표기 '8-8-8' 하이픈 꼴로, 아니면 공백만 뗀 글자 그대로(모르는 꼴은 지우지 않는다)."""
+    raw = str(text or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) == 24:
+        return f"{digits[:8]}-{digits[8:16]}-{digits[16:]}"
+    return raw.replace(" ", "")
+
+
+def normalize_claim_div(text) -> str:
+    """청구구분 — '(25) 물품구매(일반)' · '물품 구매' 같은 표기를 CLAIM_DIVS 의 이름으로. 모르면 입력 그대로."""
+    key = normnm(text)
+    if not key:
+        return ""
+    for name in CLAIM_DIVS:
+        if normnm(name) in key:
+            return name
+    return str(text).strip()
 
 
 def problems(data: dict) -> list[str]:
@@ -150,11 +180,20 @@ def summary_lines(data: dict) -> list[str]:
     """사람이 읽을 요약 — 확인 창 · 로그에 같은 글로."""
     def money(v):
         return f"{v:,}원" if isinstance(v, int) else "—"
-    return [
+    out = [
         f"적요: {data.get('summary') or '—'}",
         f"비목: {data.get('expCategory') or '—'}" + (f" / 세목: {data['expDetail']}" if data.get("expDetail") else ""),
         f"증빙: {data.get('evidence') or '—'} · 일자: {data.get('expenseDate') or '—'} · 결제: {data.get('settleMethod') or '—'}",
         f"청구액: {money(data.get('amount'))} (공급가액 {money(data.get('supplyAmount'))} · 부가세 {money(data.get('taxAmount'))})",
         f"입금처: {data.get('payeeName') or '—'}" + (f" ({data['payeeBizNo']})" if data.get("payeeBizNo") else ""),
         f"계좌: {data.get('bank') or '—'} {data.get('accountNo') or '—'} · 예금주 {data.get('owner') or '—'}",
-    ] + ([f"확인: {data['notes']}"] if data.get("notes") else [])
+    ]
+    if data.get("approvalNo") or data.get("receiverEmail"):
+        out.append("세금계산서: " + " · ".join(bit for bit in (
+            f"승인번호 {data['approvalNo']}" if data.get("approvalNo") else "",
+            f"수신메일 {data['receiverEmail']}" if data.get("receiverEmail") else "") if bit))
+    if data.get("claimDiv"):
+        out.append(f"청구종류: {data['claimDiv']}")
+    if data.get("notes"):
+        out.append(f"확인: {data['notes']}")
+    return out
