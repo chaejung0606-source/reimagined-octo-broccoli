@@ -17,6 +17,7 @@
       혁신인재지원금규칙.txt  혁신인재지원금 청구 규칙 (같은 모양, 대표적요 03_)
       _주차로그인.json  주차등록 사이트 자동 로그인(아이디 · 윈도우 DPAPI 로 감싼 비밀번호) — parking.py. ERP 로그인은 어디에도 두지 않는다
       _공무확인증관리대장.json  주차 공무확인증 구입 · 배부(사용자 · 내용 · 차량번호) — parking_ledger.py. 엑셀로 받을 수 있다
+      _공무확인증잔량기록.json  사이트에서 본 공무확인증 보유 잔량과 그 때 — 적용금액 0 인 사용이 차감되는지 가린다(parking_ledger.drain_study)
 
 개인 경로를 기본값으로 넣지 않는다. 동료에게 그대로 공유할 수 있어야 한다.
 """
@@ -89,10 +90,9 @@ class Settings:
     parking_products: str = ""             # 사이트에서 본 할인권 상품 보기(줄마다 하나, 남은 수 포함) — 화면의 고르기 칸을 채운다
     parking_left: int = -1                 # 마지막으로 읽은 사이트 보유 잔량(공무확인증) — 관리대장 처음 수량을 셈한다(-1 = 아직 못 읽음)
     parking_left_at: str = ""              # 그 잔량을 읽은 때(MM-DD HH:MM)
-    parking_seen_left: int = -1            # 사이트에서 실제로 본 잔량(적용 뒤 하나 뺀 셈이 아니라) — 다음에 읽을 때 줄어든 수와 그 사이 사용을 맞춰 본다
-    parking_seen_at: str = ""              # 그 잔량을 본 때(YYYY-MM-DD HH:MM:SS)
-    parking_free_rule: str = ""            # 적용금액 0 인 사용이 차감되는지 — "all"(차감됨) · "paid"(차감 안 됨) · ""(아직 모름). parking_ledger.check_drain
-    parking_free_rule_at: str = ""         # 그렇게 확인한 때와 근거 한 줄
+    parking_free_rule: str = ""            # 적용금액 0 인 사용이 차감되는지 — "all"(차감됨) · "paid"(차감 안 됨) · ""(아직 모름). parking_ledger.drain_study
+    parking_free_rule_at: str = ""         # 그렇게 정한 때(MM-DD HH:MM)
+    parking_free_note: str = ""            # 그 분석의 지금 상태 한 줄(관리대장 잔여 상자에 보임)
 
 
 def data_dir() -> Path:
@@ -122,6 +122,11 @@ def log_path() -> Path:
 def parking_ledger_path() -> Path:
     """공무확인증 관리대장(parking_ledger.py) — 사용자 이름 · 차량번호가 있어 저장소 · 배포에서 뺀다."""
     return data_dir() / "_공무확인증관리대장.json"
+
+
+def parking_readings_path() -> Path:
+    """사이트에서 본 공무확인증 보유 잔량과 그 때 — 적용금액 0 인 사용이 차감되는지 날이 지나며 가린다(parking_ledger.drain_study)."""
+    return data_dir() / "_공무확인증잔량기록.json"
 
 
 def parking_sheet_path() -> Path:
