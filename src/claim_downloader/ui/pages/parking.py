@@ -86,7 +86,7 @@ class ParkingPage(QWidget):
         self._busy = False
         self._mine = ""                       # 지금 도는 일 — 'link' · 'apply' · 'history' · 'open'. 받기 · 일반청구도 같은 스레드를 쓴다
         self._site_open = False               # 이 화면에서 사이트를 열었는지 — 브라우저가 닫히면 상태를 '닫힘' 으로
-        self._applying = None                 # 지금 적용하는 차 · 관리대장 칸(차량번호, 사용자, 내용, 적을지) — 결과가 오면 대장에
+        self._applying = None                 # 지금 적용하는 차 · 관리대장 칸(차량번호, 사용자, 내용) — 결과가 오면 대장에(늘 — 담당자 2026-10-22 "필수")
         self._done_cars: list[str] = []      # 이번에 적용한 차(앱 화면에만 — 차량번호는 기록에 남기지 않는다)
         self._pending_link = None             # [등록] 한 링크와 관리대장 칸 — 등록되면 대장에 적는다
         self._job = APPLY                     # ① 에서 고른 일 — 고르기 전에는 단계 제목 · 칸을 채울 기본값일 뿐
@@ -210,8 +210,8 @@ class ParkingPage(QWidget):
         self.apply_user.setPlaceholderText("예: 홍길동(행정팀)")
         self.apply_content = QLineEdit()
         self.apply_content.setPlaceholderText("예: 외부 자문위원 방문")
-        who.addWidget(Field("사용자", self.apply_user, "관리대장의 사용자"), 1)
-        who.addWidget(Field("내용", self.apply_content, "관리대장의 내용(용무)"), 2)
+        who.addWidget(Field("사용자 (필수)", self.apply_user, "공무확인증 관리대장의 사용자"), 1)
+        who.addWidget(Field("내용 (필수)", self.apply_content, "공무확인증 관리대장의 내용(용무)"), 2)
         layout.addLayout(who)
         car_row = QHBoxLayout()
         car_row.setSpacing(8)
@@ -227,36 +227,37 @@ class ParkingPage(QWidget):
         car_holder.setLayout(car_row)
         car_row.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(Field("차량번호", car_holder, "넣고 Enter — 적용되면 이 칸만 비워지고 사용자 · 내용은 남습니다. 다음 차는 번호만 넣으세요."))
-        self.apply_record = QCheckBox("적용되면 공무확인증 관리대장에 적기 (배부 1)")
-        self.apply_record.setChecked(True)
-        layout.addWidget(self.apply_record)
         layout.addWidget(muted_label("앱이 브라우저 창 없이 사이트에 로그인해 차량번호 → 보유 할인권 '공무확인증' → 할인 선택 '공무확인증' → [종료] "
-                                     "까지 합니다. 화면이 생각과 다르면 [종료] 전에 멈추고 그 화면의 모양을 남깁니다(_화면구조_모음.txt — "
-                                     "보내 주시면 고칩니다)."))
+                                     "까지 하고, 적용되면 공무확인증 관리대장에 배부 1 줄을 적습니다(사용자 · 내용 · 차량번호). 화면이 생각과 다르면 "
+                                     "[종료] 전에 멈추고 그 화면의 모양을 남깁니다(_화면구조_모음.txt — 보내 주시면 고칩니다)."))
         return holder
 
     def _apply(self) -> None:
         if self._busy:
             return
         car = parking_screens.car_number(self.car_edit.text())
-        if not car:
-            self._show_result("확인", "warning", "차량번호를 넣어 주세요.")
-            self.car_edit.setFocus()
+        user, content = self.apply_user.text().strip(), self.apply_content.text().strip()
+        # 관리대장에 적는 것은 필수다(담당자 2026-10-22) — 사용자 · 내용이 없으면 사이트에 가지 않는다
+        missing = [(name, edit) for name, edit, value in (("사용자", self.apply_user, user), ("내용", self.apply_content, content),
+                                                          ("차량번호", self.car_edit, car)) if not value]
+        if missing:
+            self._show_result("확인", "warning", " · ".join(name for name, _e in missing) + " 칸을 채워 주세요 — "
+                              "공무확인증 관리대장에 적어야 할인을 적용합니다.")
+            missing[0][1].setFocus()
             return
         self._mine = APPLY
-        self._applying = (car, self.apply_user.text().strip(), self.apply_content.text().strip(), self.apply_record.isChecked())
+        self._applying = (car, user, content)
         self._show_result("적용 중", "info", f"{car} — 주차 사이트에서 할인을 적용하는 중입니다(창 없이)…")
         self.worker.apply_parking(car)
 
     def _on_applied(self, report) -> None:
         self._mine = ""
-        car, user, content, wanted = self._applying or ("", "", "", False)
+        car, user, content = self._applying or ("", "", "")
         if report.applied:
             line = f"✓ {dt.datetime.now():%H:%M} {car} — {report.ticket or '공무확인증'} 적용" + ("" if report.confirmed else "(사이트 완료 글은 못 봄)")
-            if wanted:
-                entry = self.ledger.add_entry(parking_ledger.Entry(date=dt.date.today().isoformat(), given=1, content=content, user=user,
-                                                                   car=car, source="apply"))
-                line += f" · 관리대장 배부 1 · 잔여 {self.ledger.left_after(entry):,}"
+            entry = self.ledger.add_entry(parking_ledger.Entry(date=dt.date.today().isoformat(), given=1, content=content, user=user,
+                                                               car=car, source="apply"))
+            line += f" · 관리대장 배부 1 · 잔여 {self.ledger.left_after(entry):,}"
             self._done_cars.insert(0, line)
             self._applying = None
             if parking_screens.car_number(self.car_edit.text()) == car:
@@ -332,18 +333,16 @@ class ParkingPage(QWidget):
         self.link_user = QLineEdit()
         self.link_user.setPlaceholderText("예: 홍길동(행정팀)")
         self.link_content = QLineEdit()
-        self.link_content.setPlaceholderText("비우면 링크 이름")
+        self.link_content.setPlaceholderText("예: 외부 자문위원 방문")
         self.link_count = QSpinBox()
-        self.link_count.setRange(0, 9999)
+        self.link_count.setRange(1, 9999)
         self.link_count.setValue(1)
-        who.addWidget(Field("사용자", self.link_user, "관리대장의 사용자"), 2)
-        who.addWidget(Field("내용", self.link_content, "관리대장의 내용(용무)"), 3)
+        who.addWidget(Field("사용자 (필수)", self.link_user, "공무확인증 관리대장의 사용자"), 2)
+        who.addWidget(Field("내용 (필수)", self.link_content, "공무확인증 관리대장의 내용(용무)"), 3)
         who.addWidget(Field("배부 수량", self.link_count, "링크로 쓸 공무확인증 수"), 1)
         layout.addLayout(who)
-        self.link_record = QCheckBox("등록되면 공무확인증 관리대장에 적기")
-        self.link_record.setChecked(True)
-        self.link_record.setToolTip("모르면 배부 수량을 0 으로 두고, 쓴 뒤 '할인 내역 · 관리대장' 에서 사이트 할인 내역으로 맞춰 넣으세요")
-        layout.addWidget(self.link_record)
+        layout.addWidget(muted_label("등록되면 공무확인증 관리대장에 배부 수량만큼 한 줄을 적습니다(사용자 · 내용 · 링크 이름). 실제로 쓴 수가 다르면 "
+                                     "'할인 내역 · 관리대장' 에서 고치세요."))
         row = QHBoxLayout()
         self.register_button = QPushButton("등록")
         self.register_button.setObjectName("primary")
@@ -380,13 +379,17 @@ class ParkingPage(QWidget):
         if self._busy:
             return
         request = self._request()
+        user, content = self.link_user.text().strip(), self.link_content.text().strip()
         problems = request.problems()
+        # 관리대장에 적는 것은 필수다(담당자 2026-10-22 "할인링크도 동일") — 사용자 · 내용이 없으면 사이트에 가지 않는다
+        empty = [name for name, value in (("사용자", user), ("내용", content)) if not value]
+        if empty:
+            problems.append(" · ".join(empty) + " 칸을 채워 주세요 — 공무확인증 관리대장에 적어야 링크를 등록합니다")
         if problems:
             self._show_result("확인", "warning", "\n".join(problems))
             return
         self._mine = LINK
-        self._pending_link = (request, self.link_user.text().strip(), self.link_content.text().strip(), self.link_count.value(),
-                              self.link_record.isChecked())
+        self._pending_link = (request, user, content, self.link_count.value())
         self._show_result("넣는 중", "info", "주차 사이트(창 없이)의 [새 링크] 창에 넣는 중입니다…")
         self.worker.register_parking(request)
 
@@ -443,11 +446,10 @@ class ParkingPage(QWidget):
 
     def _record_apply(self) -> None:
         """앱이 할인 적용을 끝내지 못해 사람이 사이트에서 직접 적용한 뒤 누른다. 배부 1."""
-        car, user, content, _wanted = self._applying or (parking_screens.car_number(self.car_edit.text()), "", "", True)
+        car, user, content = self._applying or (parking_screens.car_number(self.car_edit.text()), "", "")
         user, content = user or self.apply_user.text().strip(), content or self.apply_content.text().strip()
-        if not (user or content) and QMessageBox.question(
-                self, "관리대장에 적기", "사용자 · 내용이 비어 있습니다. 그래도 적을까요?\n(나중에 '할인 내역 · 관리대장' 표에서 채울 수 있습니다)",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        if not (car and user and content):
+            QMessageBox.information(self, "관리대장에 적기", "차량번호 · 사용자 · 내용을 넣은 뒤 다시 눌러 주세요(관리대장에 꼭 적습니다).")
             return
         entry = self.ledger.add_entry(parking_ledger.Entry(date=dt.date.today().isoformat(), given=1, content=content, user=user,
                                                            car=car, source="apply", note="사이트에서 직접 적용"))
@@ -459,18 +461,15 @@ class ParkingPage(QWidget):
         self._show_result("적음", "success", self._applied_text())
 
     def _record_link(self, pending) -> str:
-        """할인 링크가 등록되면 — 담당자가 적은 배부 수량. 한 줄 안내를 돌려준다(적지 않았으면 '')."""
+        """할인 링크가 등록되면 늘 — 담당자가 적은 배부 수량(필수, 2026-10-22). 한 줄 안내를 돌려준다."""
         if not pending:
             return ""
-        request, user, content, count, wanted = pending
-        if not wanted:
-            return ""
+        request, user, content, count = pending
         product = request.product or ""
         entry = self.ledger.add_entry(parking_ledger.Entry(
-            date=request.start.date().isoformat(), given=count, content=content or request.name, user=user,
+            date=request.start.date().isoformat(), given=count, content=content, user=user,
             note=f"할인 링크 '{request.name}'" + (f" · {product}" if product else ""), source="link"))
-        return f"관리대장에 적었습니다 — 배부 {count} · 잔여 {self.ledger.left_after(entry):,}." + (
-            " 배부 수량을 0 으로 두었으면 쓴 뒤 '할인 내역 · 관리대장' 에서 맞춰 넣으세요." if not count else "")
+        return f"관리대장에 적었습니다 — 배부 {count} · 잔여 {self.ledger.left_after(entry):,}."
 
     # ── 고르기 · 단계 ───────────────────────────────────────────────────
     def _choose(self, job: str) -> None:
