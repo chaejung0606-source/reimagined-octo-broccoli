@@ -1,6 +1,10 @@
 """진단 모드(diagnose.py) — 브라우저 없이 글 만들기와 가림 규칙만 본다. JS 는 모의 ERP 로 따로 돌린다."""
 from __future__ import annotations
 
+import datetime as dt
+
+import pytest
+
 from claim_downloader import diagnose, settings
 
 
@@ -143,3 +147,23 @@ def test_capture_keeps_only_the_chosen_site():
     erp_only = diagnose.capture(Context(), keep=lambda url: "knu-icf" in url)
     assert len(every) == 3 and [w["url"] for w in erp_only] == [Context.pages[0].url, Context.pages[2].url]
     assert "대상: ERP" in diagnose.format_report(erp_only, target="ERP").splitlines()[0]
+
+
+def test_copy_to_desktop_keeps_old_copies(tmp_path):
+    """바탕화면에 저장(담당자 2026-10-22) — 모음 파일이 있으면 그것을, 바탕화면의 파일은 덮어쓰지 않는다."""
+    desktop, data = tmp_path / "바탕 화면", tmp_path / "data"
+    desktop.mkdir()
+    data.mkdir()
+    book, single = data / "_화면구조_모음.txt", data / "_화면구조.txt"
+    when = dt.datetime(2026, 10, 22, 10, 7)
+    with pytest.raises(FileNotFoundError):
+        diagnose.copy_to_desktop(desktop, book, single, when)
+    single.write_text("마지막 화면", encoding="utf-8")
+    assert diagnose.copy_to_desktop(desktop, book, single, when).name == "화면구조_20261022_1007.txt"
+    book.write_text("모음", encoding="utf-8")
+    first = diagnose.copy_to_desktop(desktop, book, single, when)
+    again = diagnose.copy_to_desktop(desktop, book, single, when)
+    assert (first.name, again.name) == ("화면구조_모음_20261022_1007.txt", "화면구조_모음_20261022_1007_2.txt")
+    assert first.read_text(encoding="utf-8") == "모음" == again.read_text(encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        diagnose.copy_to_desktop(tmp_path / "없음", book, single, when)

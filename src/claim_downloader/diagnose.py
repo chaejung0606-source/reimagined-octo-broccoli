@@ -17,9 +17,12 @@ Playwright 를 들여오지 않는다(브라우저를 띄우는 곳은 session.p
 """
 from __future__ import annotations
 
+import datetime as dt
 import re
+import shutil
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 # 프레임 하나의 입력 요소. 값은 읽기만 한다(e.value 읽기 · 선택된 option 글자).
 _PROBE_JS = r"""() => {
@@ -318,6 +321,25 @@ def format_report(windows: list[dict], when: str | None = None, target: str = ""
 
 
 BOOK_LIMIT = 3_000_000      # 모음이 이보다 커지면 새로 시작한다(지난 실측이 끝없이 쌓이지 않게)
+
+
+def copy_to_desktop(desktop: Path, book: Path, single: Path, now: dt.datetime | None = None) -> Path:
+    """저장한 화면 구조를 바탕화면에 복사한다(담당자 2026-10-22 "바탕화면 저장하기 버튼" — 사용자 폴더(.claim-downloader)를 찾아 들어가기
+    번거롭다). 모음 파일이 있으면 그것(저장한 화면이 모두 들어 있다), 없으면 마지막 화면. 바탕화면의 파일은 덮어쓰지 않고 이름에 저장한 때를 붙인다
+    — 같은 분에 또 누르면 _2. 바탕화면 폴더가 없거나 복사하지 못하면 OSError."""
+    source = book if book.exists() and book.stat().st_size else single
+    if not source.exists():
+        raise FileNotFoundError("저장한 화면 구조가 없습니다 — 먼저 [화면 구조 저장] 을 누르세요")
+    if not desktop.is_dir():
+        raise FileNotFoundError(f"바탕화면 폴더를 찾지 못했습니다: {desktop}")
+    stem = ("화면구조_모음" if source == book else "화면구조") + (now or dt.datetime.now()).strftime("_%Y%m%d_%H%M")
+    target = desktop / f"{stem}.txt"
+    n = 2
+    while target.exists():
+        target = desktop / f"{stem}_{n}.txt"
+        n += 1
+    shutil.copyfile(source, target)
+    return target
 
 
 def append_to_book(path, report: str) -> int:
