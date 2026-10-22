@@ -33,7 +33,7 @@ def test_structure_goes_site_open_save_send():
 
 def test_parking_goes_what_work_result():
     assert parking_stage(picked=False, has_result=True) == "what"
-    assert parking_stage(picked=True, has_result=False) == "work"       # 처음엔 할인 적용이 골라진 채 ② 부터(화면이 picked=True 로 연다)
+    assert parking_stage(picked=True, has_result=False) == "work"       # 처음엔 ① 부터(화면이 picked=False 로 연다 — 담당자 2026-10-22)
     assert parking_stage(picked=True, has_result=True) == "result"
 
 

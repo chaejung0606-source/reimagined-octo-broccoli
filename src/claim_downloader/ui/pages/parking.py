@@ -10,7 +10,8 @@
 
 할 차례인 단계만 위에서 아래로 떠오른다(ui/flow.py, 같은 날 담당자 — "클릭해야 하는 이동 순서대로 하나 둘 떠오르게"):
     ① 무엇을 할까요?(할인 적용 · 할인 링크 · 할인 내역) → ② 그 일의 칸 → ③ 결과
-① 은 **할인 적용이 골라진 채** 열린다(담당자 요청 같은 날 — 들어온 차에 바로 할인하는 일이 가장 잦다). [바꾸기] 로 다른 일을 고른다.
+① 부터 고르게 연다 — 아무 일도 골라져 있지 않다(담당자 2026-10-22: "1단계부터 선택할 수 있도록". 전에는 할인 적용이 골라진 채 ② 가 열렸다).
+고른 뒤에는 [바꾸기] 로 다른 일을 고른다. 할인 적용 카드는 여전히 맨 앞이다.
 할인 내역은 ② 의 표가 곧 결과라 ③ 이 없다. 결과를 본 뒤 ② 의 칸을 고치면 ③ 은 접히고 다시 ② 차례다.
 """
 from __future__ import annotations
@@ -88,8 +89,9 @@ class ParkingPage(QWidget):
         self._applying = None                 # 지금 적용하는 차 · 관리대장 칸(차량번호, 사용자, 내용, 적을지) — 결과가 오면 대장에
         self._done_cars: list[str] = []      # 이번에 적용한 차(앱 화면에만 — 차량번호는 기록에 남기지 않는다)
         self._pending_link = None             # [등록] 한 링크와 관리대장 칸 — 등록되면 대장에 적는다
-        self._job = APPLY                     # ① 에서 고른 일 — 처음엔 할인 적용
-        self._picked = True
+        self._job = APPLY                     # ① 에서 고른 일 — 고르기 전에는 단계 제목 · 칸을 채울 기본값일 뿐
+        self._picked = False                  # 처음엔 ① 부터(담당자 2026-10-22)
+        self._chosen = False                  # 한 번이라도 골랐는지 — 고르기 전에는 ① 의 카드를 하나도 칠하지 않는다
         self._has_result = False              # ③ 결과가 떠 있는지(할인 적용 · 할인 링크)
         self._open_note = ""                  # [브라우저에서 사이트 열기] 결과 한 줄 — 지금 단계 아래에
 
@@ -477,7 +479,7 @@ class ParkingPage(QWidget):
         if job != self._job:
             self._has_result = False
         self._job = job
-        self._picked = True
+        self._picked = self._chosen = True
         self._open_note = ""
         self._sync()
         focus = {APPLY: self.car_edit, LINK: self.name_edit}.get(job)
@@ -556,7 +558,7 @@ class ParkingPage(QWidget):
         stage = parking_stage(self._picked, has_result)
         states = flow_states(PARKING_ORDER, stage, keep_open=("work",))
         for key, option in self.options.items():
-            option.set_selected(key == job)
+            option.set_selected(self._chosen and key == job)
             option.setEnabled(not self._busy)
         self.step_work.title.setText(TITLES[job])
         for key, holder in self.work.items():
