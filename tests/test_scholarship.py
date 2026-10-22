@@ -220,7 +220,7 @@ def test_load_job_splits_common_and_person_files(tmp_path):
     assert sorted(f.split("/")[-1].split("\\")[-1] for f in job.common_files) == ["명단.pdf", "지급 공문.pdf"]
     assert [len(job.person_files.get(i, [])) for i in range(2)] == [1, 2]
     assert len(job.files_for(1)) == 4                              # 공통 2 + 개별 2
-    assert [f.rsplit("/", 1)[-1] for f in job.unmatched] == ["누군지모름.pdf"]
+    assert [os.path.basename(f) for f in job.unmatched] == ["누군지모름.pdf"]      # 경로 구분자는 OS 마다 다르다
     assert any("모르는 개별증빙" in p for p in job.problems())
     assert job.main_summary.startswith("02_2026년도 7월 (가)형")
 

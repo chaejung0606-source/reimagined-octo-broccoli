@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import os
 import subprocess
 
 import pytest
@@ -180,7 +181,9 @@ def test_git_disables_line_ending_conversion(monkeypatch):
     monkeypatch.setattr(updater.subprocess, "run", run)
     updater._git("status", "--porcelain")
     assert "core.autocrlf=false" in seen["args"]
-    assert seen["args"][0].endswith("git") and seen["args"][-2:] == ["status", "--porcelain"]
+    # 윈도우에서는 PATH 의 git 이 `C:\Program Files\Git\...\git.EXE` 처럼 전체 경로 · 확장자로 잡힌다
+    assert os.path.splitext(os.path.basename(seen["args"][0]))[0].lower() == "git"
+    assert seen["args"][-2:] == ["status", "--porcelain"]
 
 
 def test_git_hides_console_window_on_windows(monkeypatch):
