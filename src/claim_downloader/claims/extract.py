@@ -24,7 +24,7 @@ from ..minutes.errors import _extract_json, _failure_reason
 from ..minutes.logbook import log
 from ..minutes.textfile import _read_text
 from .rules import load_rules
-from .schema import EVIDENCE_KINDS, EXP_CATEGORIES, SETTLE_METHODS
+from .schema import CLAIM_DIVS, EVIDENCE_KINDS, EXP_CATEGORIES, SETTLE_METHODS
 
 
 EXCEL_CHARS = 6000           # 프롬프트에 넣는 엑셀 글자 상한 — 명령 줄 길이(윈도우 32,767자) 안에 넉넉히
@@ -101,6 +101,8 @@ def build_prompt(folder: str, json_path: str, rules: str | None = None, excel: t
         '  "expenseDate": "YYYY-MM-DD",\n'
         '  "amount": 51900, "supplyAmount": 47182, "taxAmount": 4718,\n'
         '  "payeeName": "거래처 상호", "payeeBizNo": "000-00-00000",\n'
+        '  "approvalNo": "세금계산서 승인번호 24자리(없으면 빈 문자열)", "receiverEmail": "세금계산서 공급받는자 이메일(없으면 빈 문자열)",\n'
+        '  "claimDiv": "청구종류 — ' + " | ".join(CLAIM_DIVS) + ' (모르면 빈 문자열)",\n'
         '  "bank": "은행명", "accountNo": "계좌번호", "owner": "예금주",\n'
         '  "settleMethod": "' + " | ".join(SETTLE_METHODS) + '",\n'
         '  "attachments": ["첨부할 파일 이름"],\n'

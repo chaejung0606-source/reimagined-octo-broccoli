@@ -26,15 +26,23 @@ class ExtractResult:
     kind: str = ""                 # login · limit · balance 면 남은 폴더 건너뜀
 
 
-def process_folder(folder: str | Path, backend: MinutesBackend, rules: str | None = None) -> ExtractResult:
+FIXED_RULE = "- 이 지출의 증빙구분(evidence)은 '{value}' 입니다. 세금계산서(계산서)에서 공급자 상호 · 사업자등록번호 · 승인번호 · 공급받는자 이메일 · 작성일 · 공급가액 · 세액을 읽으세요."
+
+
+def process_folder(folder: str | Path, backend: MinutesBackend, rules: str | None = None,
+                   fixed: dict | None = None) -> ExtractResult:
+    """fixed 는 청구 종류가 정해 둔 값({'evidence': '세금계산서'}) — 규칙에 한 줄 더해 AI 에 알리고, 읽은 뒤에도 그 값으로 둔다."""
     folder = Path(folder)
     if not folder.is_dir():
         return ExtractResult(False, "폴더가 없음")
     if UPLOAD_DIR in folder.parts:
         # 업로드 폴더 안을 읽는 것은 막지 않지만, 거기 결과를 쓰는 일은 없어야 한다 — 읽기만 한다
         log("주의: 업로드 폴더 안의 자료를 읽음 — %s" % folder)
+    rules_text = load_rules() if rules is None else rules
+    if fixed and fixed.get("evidence"):
+        rules_text = rules_text.rstrip() + "\n" + FIXED_RULE.format(value=fixed["evidence"])
     try:
-        raw = backend.generate(folder, load_rules() if rules is None else rules)
+        raw = backend.generate(folder, rules_text)
         if not isinstance(raw, dict):
             raise BackendError("청구 데이터가 생성되지 않음")
     except BackendError as error:
@@ -43,6 +51,10 @@ def process_folder(folder: str | Path, backend: MinutesBackend, rules: str | Non
         log("폴더 처리 중 오류: %s\n%s" % (folder, traceback.format_exc()))
         return ExtractResult(False, "오류: " + str(error)[:60])
     data = normalize(raw)
+    for key, value in (fixed or {}).items():
+        if data.get(key) != value:
+            log("%s: AI 가 읽은 %s '%s' 대신 청구 종류의 '%s' 로 둡니다" % (folder, key, data.get(key) or "", value))
+            data[key] = value
     found = problems(data)
     log("읽음: %s\n  " % folder + "\n  ".join(summary_lines(data))
         + ("\n  확인: " + " · ".join(found) if found else ""))
@@ -50,9 +62,10 @@ def process_folder(folder: str | Path, backend: MinutesBackend, rules: str | Non
 
 
 def run(folders: list[str | Path], backend: MinutesBackend, rules: str | None = None,
-        should_stop: Callable[[], bool] | None = None) -> Iterator[tuple[int, str, object]]:
-    """(번호, 사건, 값): ('start', None) · ('done', ExtractResult) · ('skip', 종류) · ('stopped', None)."""
+        should_stop: Callable[[], bool] | None = None, fixed: list[dict | None] | None = None) -> Iterator[tuple[int, str, object]]:
+    """(번호, 사건, 값): ('start', None) · ('done', ExtractResult) · ('skip', 종류) · ('stopped', None). fixed 는 폴더마다의 고정값."""
     rules_text = load_rules() if rules is None else rules
+    fixed = list(fixed or [])
     stop = ""
     for index, folder in enumerate(folders):
         if should_stop is not None and should_stop():
@@ -62,7 +75,7 @@ def run(folders: list[str | Path], backend: MinutesBackend, rules: str | None = 
             yield index, "skip", stop
             continue
         yield index, "start", None
-        result = process_folder(folder, backend, rules_text)
+        result = process_folder(folder, backend, rules_text, fixed[index] if index < len(fixed) else None)
         if not result.ok:
             stop = result.kind
         yield index, "done", result

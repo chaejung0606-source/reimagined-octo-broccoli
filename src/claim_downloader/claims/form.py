@@ -339,8 +339,9 @@ def plan(data: dict) -> list[Step]:
 
 
 def fill(frame, data: dict, log: Callable[[str], None], dry_run: bool = True,
-         wait: Callable[[float], None] = time.sleep) -> FillReport:
-    """작성 화면에 값을 넣는다. dry_run 이면 화면 상태만 읽고 계획을 보여 준다."""
+         wait: Callable[[float], None] = time.sleep, keys: tuple[str, ...] | None = None) -> FillReport:
+    """작성 화면에 값을 넣는다. dry_run 이면 화면 상태만 읽고 계획을 보여 준다.
+    keys 를 주면 그 칸만(FIELDS 차례 그대로) — 세금계산서 이어 넣기가 비목 · 증빙구분을 먼저 넣고 계산서를 고른 뒤 나머지를 넣는다."""
     report = FillReport(dry_run=dry_run)
     state = read_state(frame, ["PROC_TYP_CD", "MOD_YN", "REQ_SEQ_NO", "REQ_CNT", "APPR_DIV_CD"])
     mod = (state.get("MOD_YN") or {}).get("value", "")
@@ -365,7 +366,7 @@ def fill(frame, data: dict, log: Callable[[str], None], dry_run: bool = True,
     detail_ready = True
     for key, element_id, kind, label in FIELDS:
         value = _value_for(key, data)
-        if not value:
+        if not value or (keys is not None and key not in keys):
             continue
         if key == "expDetail" and not detail_ready:
             # 이 과제는 세목이 없다 — 틀린 게 아니므로 ✓ 로 두고 넘어간다

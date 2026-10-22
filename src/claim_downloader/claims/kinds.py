@@ -16,6 +16,7 @@ GENERAL = "general"
 SCHOLARSHIP = "scholarship"
 INNOVATION = "innovation"      # 혁신인재지원금 — 장학금과 ERP 흐름이 같고 비목만 다르다(담당자 2026-10-14)
 PERSONAL = "personal"          # 개인 지급 — 일반청구 탭 · 증빙 기타 · 청구구분 (90) 기타로 사람마다(담당자 2026-10-19)
+TAXBILL = "taxbill"            # 세금계산서 — 일반과 같은 AI 읽기 · 일반청구 탭, 증빙구분을 세금계산서로 고정하고 폴더마다 이어 넣는다(담당자 2026-10-22)
 TRAVEL = "travel"
 CARD = "card"
 
@@ -30,7 +31,10 @@ class Kind:
 
 
 KINDS: tuple[Kind, ...] = (
-    Kind(GENERAL, "일반", "세금계산서 · 물품 · 용역 등 — AI 가 폴더의 서류를 읽어 값을 뽑습니다", "claim", True),
+    Kind(GENERAL, "일반", "물품 · 용역 등 — AI 가 폴더의 서류를 읽어 값을 뽑습니다(세금계산서 지출은 '세금계산서' 종류로)", "claim", True),
+    Kind(TAXBILL, "세금계산서", "세금계산서 지출 — AI 가 서류(세금계산서 · 지출품의서 · 통장사본)를 읽고, 폴더마다 일반청구 탭에 비목 → 증빙 "
+         "'세금계산서' → 조회 팝업에서 승인번호(없으면 사업자번호 · 수신메일)로 찾아 뜨면 고르고 → 입금처 · 첨부 · [저장] 까지 넣은 뒤 다음 폴더로. "
+         "조회에 안 뜨면(본부 등록 전) 그 폴더는 건너뜁니다", "claim", True),
     Kind(SCHOLARSHIP, "장학금", "명단 엑셀 + '공통증빙' · '개별증빙' 폴더 — 학생마다 인건비 탭에 넣고 저장합니다", "scholarship", True),
     Kind(INNOVATION, "혁신인재지원금", "장학금과 같은 폴더 모양 · 같은 흐름(인건비 탭, 소득구분 장학금) — 비목만 교육·연구프로그램개발·운영비",
          "scholarship", True),
@@ -43,6 +47,8 @@ KINDS: tuple[Kind, ...] = (
 )
 
 ROSTER_KINDS = (SCHOLARSHIP, INNOVATION, PERSONAL)
+AI_KINDS = (GENERAL, TAXBILL)   # AI 가 폴더의 서류를 읽어 값을 뽑는 종류 — 화면의 [내용 읽기] 대상
+TAXBILL_WORD = "세금계산서"     # 폴더 바로 아래 파일 이름에 이 말이 있으면 '자동' 은 세금계산서 종류로 본다
 ERP_LATER = (CARD,)       # 폴더 읽기 · 미리 보기는 되고 ERP 에 넣기는 아직 없는 종류     # 명단 엑셀 + 공통/개별증빙 폴더로 사람마다 넣는 종류
 COMMON_WORD = "공통"      # 장학금 폴더의 공통증빙 하위 폴더 이름에 든 글자
 PERSON_WORD = "개별"      # 장학금 폴더의 개별증빙 하위 폴더 이름에 든 글자
@@ -72,6 +78,26 @@ def looks_like_scholarship(folder: str) -> bool:
     has_excel = any(n.lower().endswith(EXCEL_SUFFIXES) and not n.startswith(("~$", ".")) for n in names)
     has_split = any((COMMON_WORD in n or PERSON_WORD in n) and os.path.isdir(os.path.join(folder, n)) for n in names)
     return has_excel and has_split
+
+
+def uses_ai(key: str) -> bool:
+    """AI 로 서류를 읽는 종류(일반 · 세금계산서) — 읽은 값을 오른쪽 칸에서 고치고 작성 화면에 채운다."""
+    return key in AI_KINDS
+
+
+def fixed_values(key: str) -> dict:
+    """종류가 정해 두는 값 — AI 가 다르게 읽어도 이것으로 둔다. 세금계산서 종류는 증빙구분이 세금계산서다(담당자 2026-10-22)."""
+    return {"evidence": TAXBILL_WORD} if key == TAXBILL else {}
+
+
+def looks_like_taxbill(folder: str) -> bool:
+    """폴더 바로 아래 파일 이름에 '세금계산서' 가 있으면 세금계산서 지출 폴더로 본다(하위 폴더 · 숨김 파일은 보지 않는다)."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return False
+    return any(TAXBILL_WORD in n.replace(" ", "") and not n.startswith(("~$", ".")) and os.path.isfile(os.path.join(folder, n))
+               for n in names)
 
 
 def uses_roster(key: str) -> bool:
@@ -174,6 +200,8 @@ def guess(folder: str) -> str:
         return PERSONAL
     if looks_like_scholarship(folder) and not _excels_under(folder, PERSONAL_EXCEL_WORDS):
         return SCHOLARSHIP          # 명단 폴더 모양인데 이름으로 못 정함 — 전처럼 장학금(표 위에서 바꾼다)
+    if looks_like_taxbill(folder):
+        return TAXBILL              # 파일 이름에 '세금계산서' — 증빙구분을 세금계산서로 두고 이어 넣는 종류(표 위에서 바꾼다)
     return GENERAL
 
 

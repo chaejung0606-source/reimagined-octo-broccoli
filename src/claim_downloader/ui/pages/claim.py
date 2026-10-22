@@ -1,6 +1,7 @@
 """일반청구 화면 — 지출 폴더를 넣고 [내용 읽기] → 값을 고치고 → [ERP 에 채우기] → 사람이 입금처·첨부 → [임시저장] → 사람이 검토·신청.
 
-폴더마다 **청구 종류**를 고른다(claims/kinds.py, 담당자 제안 2026-10-14) — 일반(AI 가 서류를 읽음) · 장학금(명단 엑셀 + 공통/개별증빙,
+폴더마다 **청구 종류**를 고른다(claims/kinds.py, 담당자 제안 2026-10-14) — 일반(AI 가 서류를 읽음) · 세금계산서(일반처럼 읽되 증빙구분을
+세금계산서로 두고, 폴더마다 조회 팝업 → 입금처 → 첨부 → [저장] 까지 이어 넣는다 — 조회에 안 뜨면 건너뛰고 다음 폴더, 담당자 2026-10-22) · 장학금(명단 엑셀 + 공통/개별증빙,
 오른쪽 칸이 학생 표로 바뀌고 [ERP 에 넣기] 가 학생마다 인건비 탭에 넣고 저장) · 카드(결제 기간 폴더를 읽어 비목마다 청구서로 나눠
 미리 보기만 — ERP 에 넣기는 카드청구 화면 실측 뒤) · 출장비(준비 중, 고를 수 없음). '자동' 이면 폴더 모양으로 정한다.
 
@@ -48,6 +49,7 @@ from ...claims import card as card_mod
 from ...claims import card_erp
 from ...claims import participants as part_mod
 from ...claims import kinds, record, rules, schema
+from ...claims import taxbill_run
 from ...claims import scholarship as sch
 from ...minutes.backends import claude_cli
 from .. import ai_status, project_box
@@ -76,6 +78,7 @@ ROW_STATUS = {
     "problem": ("확인 필요", "warning"),
     "erp": ("넣는 중", "info"),
     "partial": ("일부 저장", "warning"),
+    "missing": ("세금계산서 없음", "warning"),     # 세금계산서 종류 — 조회 팝업에 안 떠서(본부 등록 전) 건너뜀
 }
 
 GUIDE_START = "청구 종류를 고르고 지출 폴더를 추가하세요. 일반은 [내용 읽기], 장학금 · 혁신인재지원금은 바로 오른쪽에 학생 명단이 나옵니다."
@@ -90,6 +93,8 @@ GUIDE_PERSONAL = ("사람 표와 비목 · 대표적요(공통증빙의 지급 �
                   "입금처를 고르고 증빙 기타로 넣어 [저장] 합니다. 이미 올린 폴더로 시험하려면 [시험] 을 켜세요.")
 GUIDE_READ = ("값을 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [미리 보기] 로 확인하세요. "
               "실제로 넣으려면 '미리 보기만' 체크를 풀고 [ERP 에 채우기].")
+GUIDE_TAXBILL = ("세금계산서 폴더입니다 — 값(승인번호 · 사업자번호 · 금액)을 확인한 뒤 [ERP 에 넣기] 를 누르면 읽은 세금계산서 폴더를 하나씩 새 청구서에 "
+                 "넣고 [저장] 합니다(조회 팝업에 안 뜨는 폴더는 건너뜀). 청구종류 · 증빙 창은 노란 띠가 뜨면 직접 작성하세요.")
 GUIDE_UNREAD = ("일반 폴더는 [내용 읽기] 를 누르면 AI 가 서류를 읽어 오른쪽 칸을 채웁니다(ERP 에는 아직 넣지 않습니다). "
                 "읽은 값을 확인하면 ③ 에서 ERP 에 넣습니다.")
 NO_BACKEND = ("일반 폴더의 [내용 읽기] 는 Claude Code 가 필요합니다(장학금 · 혁신인재지원금은 AI 없이 됩니다). Claude Code 를 설치한 뒤 "
@@ -102,6 +107,7 @@ def _money(value) -> str:
 
 # 장학금 미리 보기 · 넣기 확인 · 결과 창의 표 (ui/report_dialog.py) — 사람마다 한 줄
 CARD_COLUMNS = [("상태", 96), ("사용일", 70), ("건명", 200), ("금액", 84), ("청구구분", 110), ("확인할 것", None)]
+TAXBILL_COLUMNS = [("상태", 110), ("폴더", 180), ("적요", 260), ("청구액", 90), ("승인번호 · 사업자번호", 190), ("첨부", 48)]
 SCH_COLUMNS = [("상태", 104), ("No", 44), ("이름", 92), ("학번", 104), ("청구액", 92), ("개별 적요", 300), ("첨부", 56), ("확인할 것", None)]
 SCH_STATUS = {"planned": ("넣을 것", "neutral"), "saved": ("임시저장", "success"), "review": ("저장·확인", "warning"),
               "present": ("이미 있음", "neutral"), "stopped": ("멈춤", "warning"),
@@ -232,6 +238,8 @@ class ClaimPage(QWidget):
         b.sheet_checked.connect(self._on_sheet_checked)
         b.card_item.connect(self._on_card_item)
         b.card_done.connect(self._on_card_done)
+        b.taxbill_item.connect(self._on_taxbill_item)
+        b.taxbill_run_done.connect(self._on_taxbill_run_done)
         b.projects_read.connect(self._refresh_projects)
         b.failed.connect(self._on_browser_failed)
         b.sites_changed.connect(lambda _sites: self._sync_put_state())
@@ -670,9 +678,9 @@ class ClaimPage(QWidget):
         return self._kinds[row] if 0 <= row < len(self._kinds) else kinds.GENERAL
 
     def _unread_rows(self) -> list[int]:
-        """AI 로 읽을 폴더 — 일반 종류만. 장학금은 넣을 때 명단을 바로 읽는다."""
+        """AI 로 읽을 폴더 — 일반 · 세금계산서 종류만. 장학금은 넣을 때 명단을 바로 읽는다."""
         return [i for i, st in enumerate(self._status)
-                if self._kinds[i] == kinds.GENERAL and st in ("waiting", "failed", "skipped", "stopped")]
+                if kinds.uses_ai(self._kinds[i]) and st in ("waiting", "failed", "skipped", "stopped")]
 
     def _sync_buttons(self) -> None:
         running = self._running
@@ -721,6 +729,13 @@ class ClaimPage(QWidget):
             self.fill_button.setText(f"미리 보기 ({count})" if dry else f"ERP 에 넣기 ({count})")
             self.fill_button.setToolTip("" if dry or self._browser_open else "먼저 [브라우저 열기] 로 ERP 를 열고 새 청구서 화면을 띄우세요.")
             self.sheet_button.setEnabled(job is not None and self._browser_open and not busy and not self._browser_busy)
+        elif self._kind(self._current) == kinds.TAXBILL and 0 <= self._current < len(self._dirs):
+            # 세금계산서 — 읽은 세금계산서 폴더를 모두 하나씩 이어 넣는다(조회에 안 뜨면 건너뜀). 미리 보기는 브라우저 없이
+            rows = self._taxbill_rows(self._current)
+            self.fill_button.setEnabled(bool(rows) and not busy and not self._browser_busy and (dry or self._browser_open))
+            self.fill_button.setText(f"미리 보기 (세금계산서 {len(rows)}건)" if dry else f"ERP 에 넣기 (세금계산서 {len(rows)}건)")
+            self.fill_button.setToolTip("읽은 세금계산서 폴더를 하나씩 일반청구 탭에 넣고 [저장] 합니다 — 조회 팝업에 안 뜨는 폴더는 건너뜁니다."
+                                        if dry or self._browser_open else "먼저 [브라우저 열기] 로 ERP 를 열고 로그인하세요. 새 청구서는 앱이 띄웁니다.")
         else:
             has_row = 0 <= self._current < len(self._dirs) and self._status[self._current] in ("read", "filled", "saved")
             self.fill_button.setEnabled(has_row and self._browser_open and not self._browser_busy and not busy)
@@ -728,7 +743,7 @@ class ClaimPage(QWidget):
             self.fill_button.setToolTip("" if self._browser_open else
                                         "일반 줄은 미리 보기도 ERP 작성 화면을 봅니다 — 먼저 [브라우저 열기] 로 새 청구서 화면을 띄우세요.")
         self.sheet_button.setVisible(is_sch)
-        filled = (not is_sch and 0 <= self._current < len(self._dirs)
+        filled = (not is_sch and self._kind(self._current) != kinds.TAXBILL and 0 <= self._current < len(self._dirs)
                   and self._status[self._current] in ("filled", "saved"))
         self.save_button.setVisible(filled)
         self.save_button.setEnabled(filled and self._browser_open and not self._browser_busy and not running)
@@ -739,7 +754,7 @@ class ClaimPage(QWidget):
         self.taxbill_button.setVisible(is_taxbill)
         self.taxbill_button.setEnabled(is_taxbill and self._browser_open and not self._browser_busy and not running)
         # AI 로 읽는 것은 일반 폴더뿐 — 읽을 일반 폴더가 남았거나 일반 줄을 고른 때만(명단 · 카드 줄을 볼 때는 표에 자리를)
-        self.ai_bar.setVisible(running or bool(unread) or self._kind(self._current) == kinds.GENERAL and 0 <= self._current < len(self._dirs))
+        self.ai_bar.setVisible(running or bool(unread) or kinds.uses_ai(self._kind(self._current)) and 0 <= self._current < len(self._dirs))
         self.progress_label.setVisible(busy and bool(self.progress_label.text()))
         self._sync_put_state()
         self._sync_flow()
@@ -1009,7 +1024,8 @@ class ClaimPage(QWidget):
         self.form_card.setEnabled(0 <= row < len(self._data))
         self._show_problems(row)
         if 0 <= row < len(self._dirs) and not self.is_running():
-            self._set_guide(GUIDE_READ if self._ready(row) else GUIDE_UNREAD)
+            self._set_guide(GUIDE_TAXBILL if self._ready(row) and self._kind(row) == kinds.TAXBILL else
+                            GUIDE_READ if self._ready(row) else GUIDE_UNREAD)
 
     def _show_problems(self, row: int) -> None:
         found = self._problems[row] if 0 <= row < len(self._problems) else []
@@ -1088,7 +1104,7 @@ class ClaimPage(QWidget):
         self._set_state("읽는 중", "info", "폴더 하나에 수십 초에서 몇 분이 걸립니다. 다른 탭으로 가도 작업은 이어집니다.", "check")
         self._sync_buttons()
         self.busy_changed.emit(True)
-        self.extractor.run([self._dirs[i] for i in rows], self._backend_key)
+        self.extractor.run([self._dirs[i] for i in rows], self._backend_key, [kinds.fixed_values(self._kinds[i]) for i in rows])
 
     def _stop(self) -> None:
         self._stopping = True
@@ -1174,6 +1190,9 @@ class ClaimPage(QWidget):
     # ── ERP 에 채우기 ────────────────────────────────────────────────────
     def _fill(self) -> None:
         row = self._current
+        if self._kind(row) == kinds.TAXBILL:
+            self._fill_taxbill(row)
+            return
         if self._kind(row) == kinds.CARD:
             if self.dry_run.isChecked():
                 self._preview_card(row)
@@ -1228,7 +1247,7 @@ class ClaimPage(QWidget):
             return
         if 0 <= row < len(self._dirs) and report.ok:
             if not getattr(self, "_fill_test", False):         # 시험으로 넣은 것은 기록하지 않는다
-                record.remember(self._dirs[row], self._data[row], kind=kinds.GENERAL)
+                record.remember(self._dirs[row], self._data[row], kind=self._kind(row))
             self._set_status(row, "filled")
             payee_ok = report.payee is not None and report.payee.ok
             payee_done = payee_ok and report.payee.picked
@@ -1508,9 +1527,15 @@ class ClaimPage(QWidget):
         kind = self.row_kind.currentData()
         if kind == self._kinds[row] or not kinds.find(kind).ready:
             return
+        before = self._kinds[row]
         self._kinds[row] = kind
         self._cards[row] = None
-        if kinds.uses_roster(kind):
+        if kinds.uses_ai(before) and kinds.uses_ai(kind) and self._status[row] not in ("waiting", "running", "failed", "skipped", "stopped"):
+            # 일반 ↔ 세금계산서 — AI 로 읽은 값은 그대로 두고 종류가 정한 값(증빙구분)만 맞춘다. 다시 읽지 않는다
+            self._data[row].update(kinds.fixed_values(kind))
+            self._problems[row] = schema.problems(self._data[row])
+            self._set_status(row, "read")
+        elif kinds.uses_roster(kind):
             self._load_scholarship(row)
         elif kind == kinds.CARD:
             self._jobs[row] = None
@@ -1539,6 +1564,102 @@ class ClaimPage(QWidget):
         self._load_scholarship(row, excel=excel or None)
         self._refresh_row(row)
         self._show_form(row)
+        self._sync_buttons()
+
+    # ── 세금계산서 이어 넣기 ────────────────────────────────────────────
+    def _taxbill_rows(self, first: int) -> list[int]:
+        """넣을 세금계산서 폴더 — 읽은 것 중 아직 임시저장하지 않은 줄. 고른 줄부터, 그다음 위에서 아래로."""
+        rows = [r for r in range(len(self._dirs)) if self._kind(r) == kinds.TAXBILL and self._ready(r) and self._status[r] != "saved"]
+        return ([first] if first in rows else []) + [r for r in rows if r != first]
+
+    def _taxbill_items(self, rows: list[int]) -> list[taxbill_run.TaxbillItem]:
+        return [taxbill_run.TaxbillItem(r, self._dirs[r], dict(self._data[r]),
+                                        self._projects[r] if r < len(self._projects) else self._last_project()) for r in rows]
+
+    @staticmethod
+    def _taxbill_table(report, items) -> list[ReportRow]:
+        return [ReportRow(status, tone, cells, detail=detail, tips={1: cells[1]}, right=(2, 4))
+                for status, tone, cells, detail in taxbill_run.table_rows(report, items)]
+
+    def _fill_taxbill(self, row: int) -> None:
+        rows = self._taxbill_rows(row)
+        if not rows or self._erp_running or self._browser_busy:
+            return
+        items = self._taxbill_items(rows)
+        dry = self.dry_run.isChecked()
+        test = self.test_mode.isChecked()
+        plan = taxbill_run.plan(items)
+        notes = [f"{item.name}: {p}" for item in items for p in item.problems()]
+        projects = sorted({navigate.label_of(item.project_no) for item in items})
+        summary = [f"세금계산서 폴더 {len(items)}개 · ERP 과제: " + " · ".join(projects)]
+        if dry:
+            self._set_state("미리 봄", "info", "폴더마다 넣을 값은 [진행 기록] 에도 있습니다. 실제로 넣으려면 '미리 보기만' 체크를 풀고 다시 누르세요.")
+            self._append_log("\n".join(plan.lines()))
+            show_report(self, title="미리 보기", tone="info",
+                        heading=f"ERP 에 넣지 않았습니다 — 세금계산서 폴더 {len(items)}개를 이렇게 넣습니다",
+                        summary=summary, columns=TAXBILL_COLUMNS, rows=self._taxbill_table(plan, items), notes=notes,
+                        footer="실제로 넣으려면 '미리 보기만' 체크를 풀고 [ERP 에 넣기] 를 누르세요.")
+            return
+        if not self._browser_open:
+            return
+        hard = [f"{item.name}: {p}" for item in items for p in item.problems() if not p.startswith("첨부할 파일")]
+        if hard:
+            QMessageBox.warning(self, "넣기 전에 고칠 것", "오른쪽 칸을 채운 뒤 다시 누르세요.\n\n· " + "\n· ".join(hard))
+            return
+        if test:
+            summary.append("시험 — 적요 앞에 [시험] 을 붙이고 ERP 의 같은 청구서 확인 · 기록을 건너뜁니다. 끝나면 ERP 에서 지우세요.")
+        if not show_report(
+                self, title="ERP 에 넣기", tone="warning",
+                heading=f"폴더마다 새 청구서에 넣고 [저장](임시저장) 합니다 — 세금계산서 {len(items)}건 · [신청] 은 누르지 않습니다",
+                summary=summary, columns=TAXBILL_COLUMNS, rows=self._taxbill_table(plan, items), notes=notes,
+                footer=("폴더마다: 결의서내역에 같은 적요의 청구서가 있는지 보고 → 새 청구서 → 비목 · 증빙 '세금계산서' → 조회 팝업(승인번호 → 사업자번호 · 수신메일) → "
+                        "뜨면 골라 [확인] → 금액 · 적요 → (노란 띠) 청구종류 · 증빙 창은 사람이 → 입금처 → 첨부 → [저장] → 다음 폴더. "
+                        "조회에 안 뜨면(본부 등록 전) 그 폴더는 건너뛰고 다음 폴더로 갑니다."),
+                accept_text=f"ERP 에 넣기 (세금계산서 {len(items)}건)"):
+            return
+        self._erp_row = row
+        self._erp_running = True
+        self.busy_changed.emit(True)
+        self._set_state("넣는 중", "info", "브라우저를 건드리지 말고 기다리세요. 앱이 물으면 위의 노란 띠를 따르세요.")
+        self.browser.fill_taxbill_claims(items, dry_run=False, test_mode=test)
+        self._sync_buttons()
+
+    def _on_taxbill_item(self, row: int, status: str, note: str) -> None:
+        if not (0 <= row < len(self._dirs)):
+            return
+        shown = {"erp": "erp", "saved": "saved", "missing": "missing", "failed": "problem", "stopped": "read", "waiting": "read"}.get(status, "read")
+        self._set_status(row, shown)
+        if note:
+            item = self.table.item(row, COL_STATUS)
+            if item is not None:
+                item.setToolTip(note)
+        self._refresh_row(row)
+
+    def _on_taxbill_run_done(self, report) -> None:
+        self._append_log("\n".join(report.lines()))
+        self.ask_banner.hide()
+        was_running = self._erp_running
+        self._erp_running = False
+        self.stop_button.setEnabled(True)
+        if was_running:
+            self.busy_changed.emit(False)
+        if report.blocked and not report.results:
+            self._set_state("넣지 못함", "warning", report.blocked)
+            QMessageBox.warning(self, "넣지 못했습니다", report.blocked)
+            self._sync_buttons()
+            return
+        items = self._taxbill_items([r.row for r in report.results if 0 <= r.row < len(self._dirs)])
+        review = report.review_items()
+        for line in review:
+            self._append_log("신청 전 확인: " + line)
+        head = report.lines()[0]
+        tone = "warning" if report.stopped or report.missing or report.count("failed") else "success"
+        self._set_state("멈춤" if report.stopped else "넣음", tone,
+                        head + ". ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요." + (" 건너뛴 폴더는 세금계산서가 등록된 뒤 다시 넣으세요." if report.missing else ""))
+        show_report(self, title="ERP 에 넣기 결과", tone=tone, heading=head, summary=([report.blocked] if report.blocked else []),
+                    columns=TAXBILL_COLUMNS, rows=self._taxbill_table(report, items), notes=review, notes_title="신청 전 확인할 것",
+                    footer="ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요 — 앱은 누르지 않습니다."
+                           + (" '세금계산서 없음' 폴더는 본부가 등록한 뒤 [ERP 에 넣기] 를 다시 누르면 그것만 넣습니다." if report.missing else ""))
         self._sync_buttons()
 
     def _is_pending_roster(self, r: int) -> bool:

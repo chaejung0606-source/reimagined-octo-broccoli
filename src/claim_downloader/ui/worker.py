@@ -50,6 +50,8 @@ class SessionWorker(QObject):
     sheet_checked = Signal(object)      # 신청 전 대조: claims.sheet_check.SheetCheck
     card_item = Signal(int, str, str)   # 카드: 결제 건 번호, 상태, 설명
     card_done = Signal(object)          # 카드: claims.card_erp.CardReport
+    taxbill_item = Signal(int, str, str)   # 세금계산서 이어 넣기: 화면 줄 번호, 상태, 설명
+    taxbill_run_done = Signal(object)      # 세금계산서 이어 넣기: claims.taxbill_run.TaxbillRunReport
     list_ready = Signal()               # 받기: 브라우저를 연 뒤 결의서내역 목록이 보인다 — 화면이 [목록 읽기] 를 저절로
     projects_read = Signal()            # 로그인 뒤 메인화면 과제현황에서 과제 목록을 읽어 _과제목록.json 에 남겼다 — 일반청구의 과제 고르기 칸이 다시 읽는다
     parking_opened = Signal(object)     # 주차등록: parking.OpenReport — 사이트를 열고 자동 로그인했는지
@@ -117,6 +119,11 @@ class SessionWorker(QObject):
     def fill_card(self, job, sheet_index: int, dry_run: bool = True, project_no: str = "", test_mode: bool = False) -> None:
         self._stop.clear()
         self._put("fill_card", (job, sheet_index, dry_run, project_no, test_mode), "claim")
+
+    def fill_taxbill_claims(self, items: list, dry_run: bool = True, test_mode: bool = False) -> None:
+        """청구 종류 '세금계산서' 폴더들을 하나씩 일반청구 탭에 넣고 [저장] — 조회에 안 뜨면 건너뛰고 다음 폴더(session.fill_taxbill_claims)."""
+        self._stop.clear()
+        self._put("fill_taxbill_claims", (list(items), dry_run, test_mode), "claim")
 
     def open_parking(self, path: str = "") -> None:
         """주차등록 사이트를 앱 브라우저에서 열고(열려 있으면 그 탭) 로그인 정보가 있으면 한 번 자동 로그인(parking.py).
@@ -411,6 +418,13 @@ class SessionWorker(QObject):
         self.busy.emit(True, f"{name} 계획을 만드는 중…" if dry_run else f"{name} 청구를 넣는 중… (멈추면 안내를 따라 주세요)")
         report = session.fill_scholarship(job, dry_run=dry_run, ask=self._ask_person, on_person=self.scholarship_person.emit)
         self.scholarship_done.emit(report)
+
+    def _do_fill_taxbill_claims(self, session: ErpSession, items: list, dry_run: bool, test_mode: bool) -> None:
+        self.busy.emit(True, "세금계산서 청구 계획을 만드는 중…" if dry_run
+                       else "세금계산서 청구를 폴더마다 넣는 중… (팝업 · 증빙 창이 필요하면 노란 띠로 묻습니다)")
+        report = session.fill_taxbill_claims(items, dry_run=dry_run, test_mode=test_mode, ask=self._ask_person,
+                                             on_item=self.taxbill_item.emit)
+        self.taxbill_run_done.emit(report)
 
     def _do_fill_card(self, session: ErpSession, job, sheet_index: int, dry_run: bool, project_no: str, test_mode: bool) -> None:
         self.busy.emit(True, "카드청구 계획을 만드는 중…" if dry_run else "카드청구를 넣는 중… (멈추면 안내를 따라 주세요)")

@@ -1209,8 +1209,11 @@ def test_kind_guess_recognizes_scholarship_folder_shape(tmp_path):
 
     general = tmp_path / "정수기 9월"
     general.mkdir()
-    (general / "세금계산서.pdf").write_bytes(b"%PDF")
+    (general / "고지서.pdf").write_bytes(b"%PDF")
     assert kinds.guess(str(general)) == kinds.GENERAL
+    (general / "전자세금계산서.pdf").write_bytes(b"%PDF")
+    assert kinds.guess(str(general)) == kinds.TAXBILL           # 파일 이름에 '세금계산서' — 증빙구분을 세금계산서로 두고 이어 넣는 종류(2026-10-22)
+    assert kinds.resolve(kinds.GENERAL, str(general)) == kinds.GENERAL   # 담당자가 일반을 고르면 그대로
 
     sch_dir = tmp_path / "7월 (가)형"
     sch_dir.mkdir()
@@ -1253,8 +1256,12 @@ def test_kind_resolve_honors_choice_and_refuses_unready(tmp_path):
         assert not kinds.find(key).ready
         with pytest.raises(ValueError):
             kinds.resolve(key, str(folder))
-    assert [k.name for k in kinds.KINDS] == ["일반", "장학금", "혁신인재지원금", "개인 지급(기타)", "출장비", "카드"]
+    assert [k.name for k in kinds.KINDS] == ["일반", "세금계산서", "장학금", "혁신인재지원금", "개인 지급(기타)", "출장비", "카드"]
     assert kinds.resolve(kinds.INNOVATION, str(folder)) == kinds.INNOVATION and kinds.uses_roster(kinds.INNOVATION)
+    # 세금계산서는 일반처럼 AI 로 읽는 종류 — 증빙구분은 종류가 정한다(담당자 2026-10-22)
+    assert kinds.resolve(kinds.TAXBILL, str(folder)) == kinds.TAXBILL and kinds.uses_ai(kinds.TAXBILL) and kinds.uses_ai(kinds.GENERAL)
+    assert not kinds.uses_roster(kinds.TAXBILL) and not kinds.uses_ai(kinds.SCHOLARSHIP)
+    assert kinds.fixed_values(kinds.TAXBILL) == {"evidence": "세금계산서"} and kinds.fixed_values(kinds.GENERAL) == {}
 
 
 def _roster_folder(base, *parts, excel="명단.xlsx"):
