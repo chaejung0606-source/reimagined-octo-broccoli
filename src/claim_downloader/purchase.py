@@ -612,7 +612,12 @@ async (href) => {
     if (ctype.startsWith('text/html') || head.startsWith('<!doctype') || head.startsWith('<html')) {
       const text = new TextDecoder().decode(buf.slice(0, 4000));
       const m = text.match(/<title[^>]*>([^<]{0,60})/i);
-      return {ok: false, why: 'HTML 이 왔습니다' + (m ? " (제목 '" + m[1].trim() + "')" : '') + ' · HTTP ' + r.status};
+      // 무엇이 왔는지 보려고 form action · 스크립트의 주소 꼴 · 글자 앞부분만 (값은 적지 않는다)
+      const act = (text.match(/action=["']([^"'?]{0,60})/i) || [])[1] || '';
+      const go = (text.match(/(location[.\w]*\s*=|\.submit\(|window\.open|alert\()/) || [])[1] || '';
+      const body = text.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+      return {ok: false, why: 'HTML 이 왔습니다' + (m ? " (제목 '" + m[1].trim() + "')" : '') + ' · HTTP ' + r.status
+        + (act ? ' · form ' + act : '') + (go ? ' · ' + go : '') + (body ? " · 글 '" + body + "'" : '')};
     }
     if (!r.ok) return {ok: false, why: 'HTTP ' + r.status};
     if (!buf.length) return {ok: false, why: '빈 파일'};
@@ -642,12 +647,58 @@ def fetch_in(frame, page, url: str):
     return body, ctype, why
 
 
+CLICK_TIMEOUT_MS = 30000
+
+
+def click_download(frame, page, href: str, dest: Path):
+    """주소로 받으면 HTML 이 오는 ERP(2026-10-22 실제) — 사람이 하듯 그 링크를 눌러 내려받는다.
+    링크에 붙은 ERP 처리기가 진짜 받기 요청을 만드는 것으로 본다. → (bytes 크기, 까닭)."""
+    if frame is None or not href:
+        return None, "링크를 누를 화면이 없음"
+    link = frame.locator(f'a[href="{href}"]').first
+    before = list(page.context.pages)
+    try:
+        if not link.count():
+            return None, "화면에 그 링크가 없음"
+        with page.expect_download(timeout=CLICK_TIMEOUT_MS) as got:
+            link.click(timeout=5000)
+        download = got.value
+        fail = download.failure()
+        if fail:
+            return None, f"내려받기 실패({fail})"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        temp = dest.with_name(dest.name + ".part")
+        download.save_as(str(temp))
+        head = temp.read_bytes()[:15].lstrip().lower()
+        if head.startswith((b"<!doctype", b"<html")) or temp.stat().st_size == 0:
+            temp.unlink(missing_ok=True)
+            return None, "눌러 받아도 HTML 이 왔습니다"
+        size = temp.stat().st_size
+        temp.replace(dest)
+        return size, ""
+    except Exception as error:  # noqa: BLE001
+        return None, "링크 누르기: " + (str(error).splitlines()[0][:100] if str(error) else type(error).__name__)
+    finally:
+        # 눌러서 새 창(파일 보기)이 떴으면 닫는다 — ERP 단추가 아니라 창 닫기
+        try:
+            for extra in page.context.pages:
+                if extra not in before and extra is not page:
+                    extra.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _save(page, base_url: str, href: str, dest: Path, log: Callable[[str], None], frame=None) -> str:
     """파일 하나 — 'saved' · 'exists' · 'failed: 까닭'. 덮어쓰지 않는다."""
     if dest.exists():
         return "exists"
     body, _ctype, why = fetch_in(frame, page, urljoin(base_url, href))
     if body is None:
+        size, click_why = click_download(frame, page, href, dest)
+        if size is not None:
+            log(f"      ✓ {dest.name} ({size:,} B · 링크를 눌러 받음)")
+            return "saved"
+        why = f"{why} · {click_why}"
         log(f"      ✖ {dest.name} — {why}")
         return "failed: " + why
     dest.parent.mkdir(parents=True, exist_ok=True)

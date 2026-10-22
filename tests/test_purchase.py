@@ -217,6 +217,8 @@ class _Erp(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        if not ctype.startswith("text/html"):
+            self.send_header("Content-Disposition", "attachment; filename=f.bin")
         self.end_headers()
         self.wfile.write(body)
 
@@ -248,8 +250,9 @@ class _Erp(BaseHTTPRequestHandler):
             return self._send(POPUP.replace("__ITEM__", q.get("item", "")).encode())
         if u.path == "/comm0008_01.act":
             # 실제 ERP 처럼 화면 밖(Referer 없음)에서 부르면 로그인 화면 HTML 을 준다
-            if not self.headers.get("Referer"):
-                return self._send(b"<html><title>login</title></html>")
+            # 2026-10-22 18:10 실제: 화면 안 fetch 로도 HTML — 링크를 눌러(navigate) 받을 때만 파일
+            if self.headers.get("Sec-Fetch-Mode") != "navigate" and "PROC_CD=preview" not in self.path:
+                return self._send(b"<html><body>login</body></html>")
             body, ctype = FILES.get(q.get("ATTFILE_SEQ_NO", ""), (b"<html>login</html>", "text/html"))
             return self._send(body, ctype)
         self._send(b"<html>login</html>")
