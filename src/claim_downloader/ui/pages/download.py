@@ -1,4 +1,4 @@
-"""청구서 받기 화면 — 할 차례인 단계만 위에서 아래로 떠오른다(ui/flow.py, 담당자 요청 2026-10-21).
+"""증빙 다운로드 화면(업무 id 는 download — 2026-10-22 담당자 지정으로 '청구서 받기' 에서 이름만 바꿈) — 할 차례인 단계만 위에서 아래로 떠오른다(ui/flow.py, 담당자 요청 2026-10-21).
 
     ① 무엇을 받을까요?(과제 · 받을 서류) → ② ERP 에 로그인(브라우저는 앱이 열고 로그인은 사람이)
     → ③ 받을 청구서 확인하고 받기(표 · [N건 받기] · [앞 1건만 시험])
@@ -184,7 +184,7 @@ class DownloadPage(QWidget):
         head.addWidget(Art("receive", 52), 0, Qt.AlignVCenter)
         texts = QVBoxLayout()
         texts.setSpacing(1)
-        title = QLabel("청구서 받기")
+        title = QLabel("증빙 다운로드")
         title.setObjectName("pageTitle")
         texts.addWidget(title)
         self.page_desc = muted_label("승인된 청구서를 ERP 에서 받아 과제 폴더 · 비목 폴더에 둡니다. ERP 에 입력 · 제출하지 않습니다.")
@@ -209,7 +209,7 @@ class DownloadPage(QWidget):
         self.rebudget_action = self.tools_menu.addAction("대응자금 파일 정리", self._rebudget)
         self.tools_menu.addSeparator()
         self.tools_menu.addAction("로그 파일 열기", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(settings.log_path()))))
-        self.tools_menu.addAction("자세한 안내", lambda: QMessageBox.information(self, "청구서 받기 — 자세한 안내", GUIDE_DETAIL))
+        self.tools_menu.addAction("자세한 안내", lambda: QMessageBox.information(self, "증빙 다운로드 — 자세한 안내", GUIDE_DETAIL))
         self.tools_button.setMenu(self.tools_menu)
         head.addWidget(self.tools_button, 0, Qt.AlignVCenter)
         return head
