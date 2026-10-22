@@ -563,3 +563,54 @@ def test_old_google_drive_setting_moves_to_mybox(tmp_path, monkeypatch):
     assert settings.load().purchase_root == ""                 # MYBOX 가 없으면 기본 위치로
     app._leave_google_drive()                                  # 구글 드라이브가 아니면 그대로
     assert settings.load().purchase_root == ""
+
+
+def test_clicked_download_does_not_stay_in_the_temp_folder(tmp_path):
+    """눌러 받은 파일을 Playwright 가 브라우저를 닫을 때까지 C: 임시 폴더에 들고 있지 않게 — 옮긴 뒤 바로 지운다(담당자 2026-10-22 "데스크톱 용량에는 영향이 가지 않게")."""
+    import contextlib
+
+    class Download:
+        def __init__(self, body):
+            self.body, self.deleted = body, False
+
+        def failure(self):
+            return None
+
+        def save_as(self, path):
+            Path(path).write_bytes(self.body)
+
+        def delete(self):
+            self.deleted = True
+
+    class Link:
+        first = property(lambda self: self)
+
+        def count(self):
+            return 1
+
+        def scroll_into_view_if_needed(self, timeout=0):
+            pass
+
+        def click(self, timeout=0, force=False):
+            pass
+
+    class Got:
+        value = None
+
+    class Page:
+        def __init__(self, download):
+            self.download, self.context = download, type("C", (), {"pages": []})()
+
+        @contextlib.contextmanager
+        def expect_download(self, timeout=0):
+            got = Got()
+            yield got
+            got.value = self.download
+
+    frame = type("F", (), {"locator": lambda self, _s: Link()})()
+    good = Download(b"%PDF-1.4 x")
+    size, why = purchase.click_download(frame, Page(good), "/comm0008_01.act?ATTFILE_SEQ_NO=1", tmp_path / "견적서.pdf")
+    assert size == len(b"%PDF-1.4 x") and why == "" and good.deleted
+    bad = Download(b"<!DOCTYPE html><html>login</html>")
+    size, why = purchase.click_download(frame, Page(bad), "/comm0008_01.act?ATTFILE_SEQ_NO=2", tmp_path / "b.pdf")
+    assert size is None and "HTML" in why and bad.deleted and not (tmp_path / "b.pdf.part").exists()

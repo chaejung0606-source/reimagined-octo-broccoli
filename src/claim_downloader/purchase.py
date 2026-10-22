@@ -892,6 +892,7 @@ def click_download(frame, page, href: str, dest: Path):
     link = frame.locator(f'a[href="{href}"]').first
     before = list(page.context.pages)
     temp = dest.with_name(dest.name + ".part")
+    download = None
     try:
         if not link.count():
             return None, "화면에 그 링크가 없음"
@@ -923,6 +924,13 @@ def click_download(frame, page, href: str, dest: Path):
             raise DiskFull(f"저장 위치에 공간이 없습니다({str(error).splitlines()[0][:100]})") from error
         return None, "링크 누르기: " + (str(error).splitlines()[0][:100] if str(error) else type(error).__name__)
     finally:
+        # Playwright 는 받은 파일을 브라우저를 닫을 때까지 C: 임시 폴더에 들고 있다 — 저장 위치(MYBOX)로 옮긴 뒤 바로 지운다
+        # (담당자 2026-10-22 "데스크톱 용량에는 영향이 가지 않게" — 한 번 받기에서 339개 · 1GB 가 이 길이었다)
+        if download is not None:
+            try:
+                download.delete()
+            except Exception:  # noqa: BLE001
+                pass
         # 눌러서 새 창(파일 보기)이 떴으면 닫는다 — ERP 단추가 아니라 창 닫기
         try:
             for extra in page.context.pages:
