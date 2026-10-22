@@ -25,8 +25,10 @@ from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -115,6 +117,66 @@ class AddDialog(QDialog):
                             source="manual")
 
 
+class LeftBox(QFrame):
+    """표 위의 잔여 상자 — 남은 공무확인증 수를 크게(담당자 2026-10-22 "잔여만 바로 확인할 수 있도록 … 잘보이는 크기로").
+    옆에는 사이트 보유 잔량과 맞는지 배지와 처음 수량 · 구입 · 배부 한 줄."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("leftBox")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(20, 12, 20, 12)
+        row.setSpacing(16)
+        number = QVBoxLayout()
+        number.setSpacing(0)
+        number.addWidget(QLabel("공무확인증 잔여", objectName="leftLabel"))
+        value_row = QHBoxLayout()
+        value_row.setSpacing(4)
+        self.value = QLabel("—", objectName="leftValue")
+        value_row.addWidget(self.value, 0, Qt.AlignBottom)
+        self.unit = QLabel("개", objectName="leftUnit")
+        value_row.addWidget(self.unit, 0, Qt.AlignBottom)
+        value_row.addStretch(1)
+        number.addLayout(value_row)
+        row.addLayout(number, 0)
+        notes = QVBoxLayout()
+        notes.setSpacing(6)
+        notes.addStretch(1)
+        self.state = Pill("사이트 잔량 아직 안 읽음", "neutral")
+        notes.addWidget(self.state, 0, Qt.AlignLeft)
+        self.site = QLabel("", objectName="leftNote")
+        self.site.setWordWrap(True)
+        notes.addWidget(self.site)
+        self.counts = QLabel("", objectName="leftNote")
+        self.counts.setWordWrap(True)
+        notes.addWidget(self.counts)
+        notes.addStretch(1)
+        row.addLayout(notes, 1)
+
+    def show_counts(self, entries: list[ledger.Entry], rows) -> None:
+        bought, given, left = ledger.totals(entries)
+        start = sum(e.bought for e in entries if e.source == ledger.CARRY)
+        cfg = settings.load()
+        site = cfg.parking_left if cfg.parking_left >= 0 else None
+        shown = left if entries else site
+        self.value.setText(f"{shown:,}" if shown is not None else "—")
+        self.unit.setVisible(shown is not None)
+        if not entries:
+            self.counts.setText("아직 적은 줄이 없습니다 — 사이트에서 사용내역 · 보유 잔량을 가져오면 채워집니다.")
+        else:
+            self.counts.setText((f"처음 수량 {start:,} · " if start else "") + f"구입 {bought - start:,} · 배부 {given:,}")
+        self.site.setText(f"사이트 보유 잔량 {site:,} ({cfg.parking_left_at} 읽음)" if site is not None
+                          else "사이트 보유 잔량은 아직 읽지 않았습니다.")
+        if entries and any(n < 0 for _e, n in rows):
+            self.state.set_status("잔여가 0 아래인 줄이 있음 — 사이트에서 가져오면 다시 셈", "danger")
+        elif site is None:
+            self.state.set_status("사이트 잔량 아직 안 읽음", "neutral")
+        elif not entries or left == site:
+            self.state.set_status("사이트 잔량과 같음", "success")
+        else:
+            self.state.set_status(f"사이트 잔량과 {abs(left - site):,} 다름 — 사이트에서 가져오면 맞춤", "warning")
+
+
 class LedgerPanel(QWidget):
     """관리대장 표 — 사이트에서 가져온 사용까지 이 양식 하나로 본다."""
 
@@ -133,6 +195,9 @@ class LedgerPanel(QWidget):
         self._auto = QTimer(self)
         self._auto.setInterval(AUTO_READ_MS)
         self._auto.timeout.connect(self._auto_read)
+
+        self.left_box = LeftBox()              # 표보다 먼저 — 남은 수가 맨 위에 크게
+        layout.addWidget(self.left_box)
 
         bar = QHBoxLayout()
         bar.setSpacing(8)
@@ -154,9 +219,6 @@ class LedgerPanel(QWidget):
         self.site_button.clicked.connect(self.read_site.emit)
         bar.addWidget(self.site_button)
         layout.addLayout(bar)
-        self.totals = muted_label("")
-        self.totals.setWordWrap(True)
-        layout.addWidget(self.totals)
         self.site_line = muted_label("")             # 사이트에서 가져온 결과 한 줄 — 표는 보이지 않는다
         self.site_line.setWordWrap(True)
         layout.addWidget(self.site_line)
@@ -228,17 +290,7 @@ class LedgerPanel(QWidget):
                 table.setItem(r, c, item)
         table.resizeColumnsToContents()
         self._filling = False
-        bought, given, left = ledger.totals(self._entries)
-        start = sum(e.bought for e in self._entries if e.source == ledger.CARRY)
-        text = (f"처음 수량 {start:,} · " if start else "") + f"구입 {bought - start:,} · 배부 {given:,} · 잔여 {left:,}"
-        cfg = settings.load()
-        if cfg.parking_left >= 0:
-            text += f"  ·  사이트 보유 잔량 {cfg.parking_left:,}({cfg.parking_left_at} 읽음)"
-        if not self._entries:
-            text = "아직 적은 줄이 없습니다 — [사이트에서 가져오기] 로 사이트의 사용내역 · 보유 잔량을 가져오세요."
-        elif any(left < 0 for _e, left in rows):
-            text += "  ·  잔여가 0 아래인 줄이 있습니다 — [사이트에서 가져오기] 로 보유 잔량을 읽으면 처음 수량이 다시 셈해집니다."
-        self.totals.setText(text)
+        self.left_box.show_counts(self._entries, rows)
         self._sync()
 
     def _edited(self, item: QTableWidgetItem) -> None:
