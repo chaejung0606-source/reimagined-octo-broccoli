@@ -265,6 +265,29 @@ def test_ta_student_with_two_courses_gets_files_per_course_or_both(tmp_path):
     assert plan.files == [job.common_files[0], files[0], files[1]] and plan.summary == job.row_summary(1)
 
 
+def test_ta_course_files_never_leak_into_other_course_rows(tmp_path):
+    """담당자 주의(2026-10-22): 한 학생이 A · B · C 과목 TA 면 A 과목 청구 줄에 B · C 과목 개별증빙이 붙어서는 안 된다.
+    교과목은 괄호 · 띄어쓰기 · 대소문자를 무시하고 맞추고, 한 이름이 다른 이름에 들어 있으면 더 긴 쪽만, 두 과목이 적힌 파일은 그 둘에만."""
+    people = [roster.Person("사아자", "202600010", course="자료구조(01분반)"), roster.Person("사아자", "202600010", course="자료구조실습"),
+              roster.Person("사아자", "202600010", course="Data Science"), roster.Person("차카타", "202600011", course="자료구조")]
+    files = [str(tmp_path / "사아자" / "자료구조 근무일지.pdf"),          # 괄호 안(01분반)이 없어도 자료구조 줄에만 — 실습 줄에는 안 붙는다
+             str(tmp_path / "사아자_자료구조실습_결과보고서.pdf"),          # '자료구조' 도 들어 있지만 더 긴 '자료구조실습' 줄에만
+             str(tmp_path / "사아자" / "data_science 활동사진.pdf"),         # 띄어쓰기 · 대소문자 무시
+             str(tmp_path / "사아자_자료구조_DataScience 청구서.pdf"),       # 두 과목 — 그 두 줄에만(실습 줄 아님)
+             str(tmp_path / "사아자_재학증명서.pdf"),                       # 교과목 없음 — 개인 서류라 세 줄 모두에
+             str(tmp_path / "차카타_자료구조.pdf")]
+    assigned, unmatched = scholarship.assign_person_files(files, str(tmp_path), people)
+    assert unmatched == []
+    assert assigned == {0: [files[0], files[3], files[4]], 1: [files[1], files[4]], 2: [files[2], files[3], files[4]], 3: [files[5]]}
+    job = scholarship.Job(folder=str(tmp_path), roster=roster.Roster(path="", people=people), selected=[True] * 4,
+                          person_files=assigned)
+    # 미리 보기 '확인할 것' — 모든 교과목 줄에 붙는 파일은 담당자가 보게 알린다. 교과목 하나뿐인 학생(차카타)에게는 없다
+    assert job.shared_course_files(0) == [files[4]] and job.shared_course_files(3) == []
+    note = scholarship.plan_person(job, 1).note
+    assert "교과목 줄 모두에 붙습니다" in note and "사아자_재학증명서.pdf" in note
+    assert "교과목 줄 모두" not in scholarship.plan_person(job, 3).note
+
+
 def test_same_name_needs_student_no_in_file_name(tmp_path):
     people = [roster.Person("가나다", "202600001"), roster.Person("가나다", "202600002")]
     files = [str(tmp_path / "가나다.pdf"), str(tmp_path / "가나다_202600002.pdf")]
