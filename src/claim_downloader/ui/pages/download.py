@@ -952,7 +952,8 @@ class DownloadPage(QWidget):
         text += ". 받은 파일은 " + ("과제 폴더 안 " if project_box.folder_projects() else "") + "비목 폴더 바로 아래에 있습니다."
         psum = getattr(summary, "purchase", None)
         if psum is not None:
-            text += (f" 구매요청(계약) 서류 {len(psum.cases)}건 · 새 파일 {psum.files}개는 저장 폴더의 '{purchase.FOLDER_NAME}' 안 과제 폴더에 있습니다."
+            text += (f" 구매요청(계약) 서류 {len(psum.cases)}건 · 새 파일 {psum.files}개({purchase.size_text(psum.size)})는 "
+                     f"{purchase.purchase_home(settings.load().out_root)} 안 과제 폴더에 있습니다."
                      + (f" ({psum.note})" if psum.note else ""))
         if failed:
             self._set_state("일부 실패", "danger", text)

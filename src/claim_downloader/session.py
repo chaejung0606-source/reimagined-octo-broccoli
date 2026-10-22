@@ -1548,7 +1548,7 @@ class ErpSession:
             if rows is None:
                 raise ListNotFound(erp.dump_context(ctx), "구매진행관리 목록(IBSheet)을 읽지 못했습니다 — 그 화면을 [화면 구조 저장] 으로 보내 주세요")
             mine = 0
-            done_before = purchase.load_done()
+            done_before = purchase.load_done(purchase.purchase_home(cfg.out_root))
             already = 0
             for row in rows:
                 no = str(row.get("req_no") or "")

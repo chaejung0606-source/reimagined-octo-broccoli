@@ -128,26 +128,31 @@ class SettingsPage(QWidget):
         excel_card.add(self.excel_field)
         column.addWidget(excel_card)
 
-        # 구매요청(계약) 서류 — 용량이 커서 구글 드라이브 데스크톱 폴더에 두게 했다(담당자 2026-10-22). 23절
+        # 구매요청(계약) 서류 — 용량이 커서 다른 곳에 둘 수 있게 했다(담당자 2026-10-22). 구글 드라이브 무료 15GB 가 다 차
+        # 구글 드라이브 저장은 없애고 네이버 MYBOX(2TB) 를 쓰기로 했다 — 같은 날. 23절
         buy_card = Card("구매요청(계약) 서류 저장 위치", "비워 두면 저장 폴더 아래 '구매요청(계약) 서류'")
         self.purchase_root = QLineEdit(getattr(cfg, "purchase_root", "") or "")
-        self.purchase_root.setPlaceholderText("예: G:\\내 드라이브\\구매요청(계약) 서류")
+        self.purchase_root.setPlaceholderText("예: N:\\구매요청(계약) 서류")
         self.purchase_root.editingFinished.connect(
             lambda: self._save(purchase_root=self.purchase_root.text().strip()))
         self.purchase_field = Field(
             "저장 폴더", self.purchase_root,
-            "구글 드라이브 데스크톱의 '내 드라이브' 안을 고르면 받은 서류가 드라이브에 올라가고, 스트리밍으로 두면 이 PC 용량을 거의 쓰지 않습니다. "
-            "그 안에 과제 폴더 이름 그대로 나눠 둡니다.")
+            "서류가 많으면 용량이 큽니다(2024년도 사업비 58건이 약 2GB). 공간이 넉넉한 곳을 고르세요 — "
+            "네이버 MYBOX 탐색기의 'MYBOX' 드라이브를 고르면 받은 서류가 MYBOX 에 올라갑니다. 그 안에 과제 폴더 이름 그대로 나눠 둡니다. "
+            "남은 공간이 1GB(윈도우가 깔린 C: 는 10GB)보다 적으면 받지 않습니다. 구글 드라이브에는 받지 않습니다.")
         pick_buy = QPushButton("폴더 선택")
         pick_buy.clicked.connect(self._browse_purchase)
-        drive = QPushButton("구글 드라이브 찾기")
-        drive.clicked.connect(self._find_drive)
+        mybox = QPushButton("네이버 MYBOX 찾기")
+        mybox.clicked.connect(self._find_mybox)
         clear_buy = QPushButton("비우기")
         clear_buy.setObjectName("ghost")
         clear_buy.clicked.connect(lambda: (self.purchase_root.clear(), self._save(purchase_root="")))
-        for b in (pick_buy, drive, clear_buy):
+        for b in (pick_buy, mybox, clear_buy):
             self.purchase_field.add_button(b)
         buy_card.add(self.purchase_field)
+        self.purchase_space = muted_label("")
+        self.purchase_space.setWordWrap(True)
+        buy_card.add(self.purchase_space)
         column.addWidget(buy_card)
 
         # 일반청구 — 세금계산서 조회 팝업에는 산학협력단 전체 계산서가 다 떠서, 내 계산서수신메일로 걸러야 내 건만 보인다
@@ -411,37 +416,70 @@ class SettingsPage(QWidget):
             self._save(excel_path=path)
 
     def _browse_purchase(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "구매요청(계약) 서류 저장 폴더", self.purchase_root.text())
-        if path:
-            self.purchase_root.setText(path)
-            self._save(purchase_root=path)
-
-    def _find_drive(self) -> None:
         from ... import purchase
-        found = purchase.google_drive_folders()
-        if not found:
-            ask = QMessageBox.question(
-                self, "구글 드라이브",
-                "이 PC 에서 구글 드라이브 데스크톱 폴더('내 드라이브')를 찾지 못했습니다.\n\n"
-                "설치 페이지를 열까요? 설치하고 구글 계정으로 로그인한 뒤 이 단추를 다시 누르세요.\n"
-                "(설치할 때 '스트리밍' 을 고르면 PC 용량을 거의 쓰지 않습니다)")
-            if ask == QMessageBox.Yes:
-                QDesktopServices.openUrl(QUrl("https://www.google.com/drive/download/"))
+        path = QFileDialog.getExistingDirectory(self, "구매요청(계약) 서류 저장 폴더", self.purchase_root.text())
+        if not path:
             return
-        target = found[0] / purchase.FOLDER_NAME
+        if purchase.on_google_drive(path):
+            QMessageBox.warning(self, "구매요청(계약) 서류 저장 위치",
+                                "구글 드라이브에는 받지 않습니다(무료 15GB 가 다 차서 없앴습니다).\n네이버 MYBOX 나 다른 드라이브의 폴더를 고르세요.")
+            return
+        self.purchase_root.setText(path)
+        self._save(purchase_root=path)
+
+    def _find_mybox(self) -> None:
+        from ... import purchase
+        found = purchase.mybox_folders()
+        if not found:
+            QMessageBox.information(
+                self, "네이버 MYBOX",
+                "이 PC 에서 MYBOX 드라이브를 찾지 못했습니다.\n\n"
+                "네이버 MYBOX 탐색기를 켜서 탐색기에 'MYBOX' 드라이브가 보이게 한 뒤 이 단추를 다시 누르거나, "
+                "[폴더 선택] 으로 MYBOX 안의 폴더를 고르세요.")
+            return
+        self._use_cloud("네이버 MYBOX", found[0])
+
+    def _use_cloud(self, name: str, base) -> None:
+        """찾은 클라우드 폴더 아래 '구매요청(계약) 서류' 를 저장 위치로 — 남은 공간을 보이고, 모자라면 고르지 않는다."""
+        from ... import purchase
+        target = base / purchase.FOLDER_NAME
+        free = purchase.free_space(base)
+        room = f"남은 공간 {purchase.size_text(free)}" if free is not None else "남은 공간 모름"
+        if free is not None and free < purchase.reserve_for(base):
+            QMessageBox.warning(
+                self, name, f"{name} 폴더를 찾았지만 {room} 이라 여기에는 받을 수 없습니다:\n{base}\n\n공간이 넉넉한 곳을 고르세요.")
+            return
         ok = QMessageBox.question(
-            self, "구글 드라이브",
-            f"구글 드라이브 폴더를 찾았습니다:\n{found[0]}\n\n구매요청(계약) 서류를 여기에 받을까요?\n{target}\n\n"
+            self, name,
+            f"{name} 폴더를 찾았습니다({room}):\n{base}\n\n구매요청(계약) 서류를 여기에 받을까요?\n{target}\n\n"
             "(이미 받은 서류는 옮기지 않습니다 — 필요하면 탐색기에서 옮기세요)")
         if ok != QMessageBox.Yes:
             return
         try:
             target.mkdir(parents=True, exist_ok=True)
         except OSError as error:
-            QMessageBox.warning(self, "구글 드라이브", f"폴더를 만들지 못했습니다: {error}")
+            QMessageBox.warning(self, name, f"폴더를 만들지 못했습니다: {error}")
             return
         self.purchase_root.setText(str(target))
         self._save(purchase_root=str(target))
+
+    def _show_purchase_space(self, cfg) -> None:
+        """구매 서류를 받을 곳과 남은 공간 — 구글 드라이브가 '0바이트 사용 가능' 이던 것(담당자 2026-10-22). 모자라면 받지 않는다고 미리 알린다."""
+        from ... import purchase
+        if not (cfg.out_root or getattr(cfg, "purchase_root", "")):
+            self.purchase_space.setText("")
+            self.purchase_field.set_error("")
+            return
+        home = purchase.purchase_home(cfg.out_root)
+        free = purchase.free_space(home)
+        if free is None:
+            self.purchase_space.setText(f"받을 곳: {home} — 남은 공간을 알 수 없습니다")
+            self.purchase_field.set_error("")
+            return
+        self.purchase_space.setText(f"받을 곳: {home} — 남은 공간 {purchase.size_text(free)}")
+        self.purchase_field.set_error(
+            f"남은 공간이 {purchase.size_text(free)} 뿐이라 여기에는 받지 않습니다 — 공간이 넉넉한 곳(네이버 MYBOX 등)을 고르세요"
+            if free < purchase.reserve_for(home) else "")
 
     def _browse_participants(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -452,6 +490,7 @@ class SettingsPage(QWidget):
 
     def _refresh(self) -> None:
         cfg = settings.load()
+        self._show_purchase_space(cfg)
         self.name_example.setText(EXAMPLE_DATE if cfg.name_date_first else EXAMPLE_CODE)
         self.excel_field.set_error(
             "이 파일이 없습니다. 경로를 확인하세요." if cfg.excel_path and not os.path.exists(cfg.excel_path) else "")

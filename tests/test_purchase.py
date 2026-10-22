@@ -338,11 +338,11 @@ def test_purchase_documents_are_received_from_a_mock_erp(erp_server, tmp_path):
 
 
 def test_purchase_root_setting_moves_case_folders(tmp_path, monkeypatch):
-    """설정에서 고른 폴더(구글 드라이브 등)가 있으면 그 아래에 과제 폴더 이름 그대로."""
+    """설정에서 고른 폴더(네이버 MYBOX 등)가 있으면 그 아래에 과제 폴더 이름 그대로."""
     from claim_downloader import settings
     root = tmp_path / "지출결의서"
     (root / "(202408470001)_2024년도 사업비_1").mkdir(parents=True)
-    drive = tmp_path / "G" / "내 드라이브" / "구매요청(계약) 서류"
+    drive = tmp_path / "N" / "구매요청(계약) 서류"
     assert purchase.project_base(root, "202408470001")[0] == root / purchase.FOLDER_NAME / "(202408470001)_2024년도 사업비_1"
     cfg = settings.load()
     cfg.purchase_root = str(drive)
@@ -437,3 +437,129 @@ def test_detail_links_are_read_after_they_settle():
     assert len(info["files"]) == 2 and frame.calls == 2 + purchase.DETAIL_STABLE
     empty = _LateFrame(files=0)
     assert purchase.settled_detail(empty, lambda sec: None)["files"] == [] and empty.calls == purchase.DETAIL_MIN_EMPTY
+
+
+def test_low_free_space_stops_before_any_download(tmp_path, monkeypatch):
+    """구글 드라이브 무료 15GB 가 다 차 '0바이트 사용 가능' 이던 것(담당자 2026-10-22) — 시작 전에 멈추고 화면은 열지 않는다."""
+    monkeypatch.setenv("CLAIM_DOWNLOADER_HOME", str(tmp_path))
+    monkeypatch.setattr(purchase, "free_space", lambda _p: 0)
+    monkeypatch.setattr(purchase, "open_list", lambda *a, **k: pytest.fail("공간이 없는데 목록을 열었다"))
+    lines, marks = [], []
+    targets = [{"req_no": "202606170005", "cont": "a", "project": "202408470003", "expDt": "2026-06-17"},
+               {"req_no": "202606170006", "cont": "b", "project": "202408470003", "expDt": "2026-06-17"}]
+    got = purchase.run(None, None, targets, str(tmp_path / "지출결의서"), lines.append, lambda _s: None,
+                       lambda i, status, detail: marks.append((i, status)))
+    assert got.stopped and "0 B 뿐이라" in got.note and "저장 위치" in got.note
+    assert [c.ok for c in got.cases] == [False, False] and marks == [(0, "failed"), (1, "failed")]
+    assert any("남은 공간 0 B" in line for line in lines)
+
+
+def test_disk_full_while_writing_removes_the_part_file_and_stops(tmp_path, monkeypatch):
+    import errno
+    dest = tmp_path / "건" / "견적서.pdf"
+
+    def full(self, _data):
+        Path.write_text(self, "반쯤")          # 반쯤 쓰다 찬 것처럼
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_bytes", full)
+    with pytest.raises(purchase.DiskFull):
+        purchase._write(dest, b"%PDF-1.4")
+    assert not dest.exists() and not dest.with_name(dest.name + ".part").exists()
+    windows_full = OSError(22, "디스크 공간이 부족합니다")
+    windows_full.winerror = 112
+    assert purchase._full(windows_full) and purchase._full(RuntimeError("ENOSPC: no space left on device, copyfile"))
+    assert not purchase._full(OSError(errno.EACCES, "Permission denied"))
+    assert purchase.size_text(0) == "0 B" and purchase.size_text(1_900_000_000) == "1.8 GB" and purchase.size_text(2 << 40) == "2.0 TB"
+
+
+def test_run_stops_at_the_first_full_disk_and_does_not_remember(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAIM_DOWNLOADER_HOME", str(tmp_path))
+    monkeypatch.setattr(purchase, "free_space", lambda _p: 50 << 30)
+    monkeypatch.setattr(purchase, "fix_photo_names", lambda _p: [])
+    monkeypatch.setattr(purchase, "open_list", lambda *a, **k: (object(), ""))
+    monkeypatch.setattr(purchase, "ensure_range", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(purchase, "inspect_cases", lambda *a, **k: pytest.fail("멈췄는데 검사처리로 갔다"))
+    monkeypatch.setattr(purchase, "remember_done", lambda *_a: pytest.fail("멈춘 받기를 기록했다"))
+    seen = []
+
+    def receive(context, page, frame, target, out_root, log, wait):
+        seen.append(target["req_no"])
+        if len(seen) == 2:
+            raise purchase.DiskFull("저장 위치에 공간이 없습니다(No space left on device)")
+        result = purchase.CaseResult(target["req_no"], target["cont"], target["project"], folder=str(tmp_path / "건"))
+        result.saved, result.size = ["a.pdf"], 1 << 20
+        return result, frame
+
+    monkeypatch.setattr(purchase, "receive_case", receive)
+    lines, marks = [], []
+    targets = [{"req_no": f"20260617000{n}", "cont": str(n), "project": "202408470003", "expDt": "2026-06-17"} for n in (1, 2, 3)]
+    got = purchase.run(None, None, targets, str(tmp_path / "지출결의서"), lines.append, lambda _s: None,
+                       lambda i, status, detail: marks.append((i, status)))
+    assert seen == ["202606170001", "202606170002"]          # 셋째 건은 열지 않는다
+    assert got.stopped and "공간이 없습니다" in got.note and got.size == 1 << 20
+    assert (1, "failed") in marks and any("새 파일 1개(1.0 MB)" in line for line in lines)
+
+
+def test_google_drive_is_recognised_and_mybox_is_found_by_drive_name():
+    """구글 드라이브 저장은 없앴다(담당자 2026-10-22) — 옛 설정을 알아보려고 경로 · 드라이브 이름만 본다. MYBOX 는 드라이브 이름으로 찾는다."""
+    labels = lambda: [("C:\\", "로컬 디스크"), ("G:\\", "Google Drive"), ("N:\\", "MYBOX"), ("D:\\", "새 볼륨")]   # noqa: E731 — 담당자 PC 2026-10-22
+    assert purchase.on_google_drive("G:\\내 드라이브\\구매요청(계약) 서류", labels)
+    assert purchase.on_google_drive(Path("C:/Users/x/Google Drive/구매요청(계약) 서류"), labels)
+    assert not purchase.on_google_drive("", labels)
+    assert not purchase.on_google_drive("N:\\구매요청(계약) 서류", labels)
+    assert [str(p) for p in purchase.mybox_folders(labels)] == ["N:\\"]
+    assert purchase.mybox_folders(lambda: [("D:\\", "새 볼륨")]) == []
+    assert not hasattr(purchase, "google_drive_folders")
+
+
+def test_system_drive_keeps_more_room():
+    assert purchase.reserve_for("C:\\Users\\x\\Desktop\\지출결의서\\구매요청(계약) 서류", system="C:") == purchase.SYSTEM_RESERVE
+    assert purchase.reserve_for("N:\\구매요청(계약) 서류", system="C:") == purchase.MIN_FREE
+    assert purchase.reserve_for("/home/x", system="") == purchase.MIN_FREE
+
+
+def test_done_records_belong_to_the_place_they_were_saved(tmp_path, monkeypatch):
+    """구글 드라이브에 받은 건을 '다 받음' 으로 두면 MYBOX 로 옮긴 뒤 다시 받지 않는다 — 받은 곳이 같은 기록만 센다."""
+    monkeypatch.setenv("CLAIM_DOWNLOADER_HOME", str(tmp_path))
+    ok = purchase.CaseResult("202502030002", "끝난 건", "202408470001")
+    purchase.remember_done([ok], "G:\\내 드라이브\\구매요청(계약) 서류")
+    assert list(purchase.load_done()) == ["202502030002"]
+    assert purchase.load_done("N:\\구매요청(계약) 서류") == {}
+    assert list(purchase.load_done("G:\\내 드라이브\\구매요청(계약) 서류")) == ["202502030002"]
+
+
+def test_run_stops_when_room_runs_low_between_cases(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAIM_DOWNLOADER_HOME", str(tmp_path))
+    room = iter([50 << 30, 50 << 30, 10 << 20])            # 시작 · 첫 건 앞 · 둘째 건 앞(10MB)
+    monkeypatch.setattr(purchase, "free_space", lambda _p: next(room, 10 << 20))
+    monkeypatch.setattr(purchase, "fix_photo_names", lambda _p: [])
+    monkeypatch.setattr(purchase, "open_list", lambda *a, **k: (object(), ""))
+    monkeypatch.setattr(purchase, "ensure_range", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(purchase, "inspect_cases", lambda *a, **k: pytest.fail("멈췄는데 검사처리로 갔다"))
+    monkeypatch.setattr(purchase, "receive_case", lambda c, p, frame, t, *a: (purchase.CaseResult(t["req_no"]), frame))
+    targets = [{"req_no": f"20260617000{n}", "cont": str(n), "project": "202408470003", "expDt": "2026-06-17"} for n in (1, 2)]
+    got = purchase.run(None, None, targets, str(tmp_path / "지출결의서"), lambda _l: None, lambda _s: None, lambda *_a: None)
+    assert [c.req_no for c in got.cases] == ["202606170001"] and got.stopped and "줄어 여기서 멈춥니다" in got.note
+
+
+def test_old_google_drive_setting_moves_to_mybox(tmp_path, monkeypatch):
+    pytest.importorskip("PySide6")
+    from claim_downloader import settings
+    from claim_downloader.ui import app
+    monkeypatch.setenv("CLAIM_DOWNLOADER_HOME", str(tmp_path))
+    cfg = settings.load()
+    cfg.purchase_root = "G:\\내 드라이브\\구매요청(계약) 서류"
+    settings.save(cfg)
+    monkeypatch.setattr(purchase, "mybox_folders", lambda: [Path("N:\\")])
+    app._leave_google_drive()
+    assert settings.load().purchase_root.startswith("N:") and settings.load().purchase_root.endswith(purchase.FOLDER_NAME)
+    assert "구글 드라이브라 바꿨습니다" in settings.log_path().read_text(encoding="utf-8")
+    cfg = settings.load()
+    cfg.purchase_root = "G:\\내 드라이브\\구매요청(계약) 서류"
+    settings.save(cfg)
+    monkeypatch.setattr(purchase, "mybox_folders", lambda: [])
+    app._leave_google_drive()
+    assert settings.load().purchase_root == ""                 # MYBOX 가 없으면 기본 위치로
+    app._leave_google_drive()                                  # 구글 드라이브가 아니면 그대로
+    assert settings.load().purchase_root == ""

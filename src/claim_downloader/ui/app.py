@@ -75,6 +75,25 @@ def _follow_project_folders() -> None:
         file_logger(lambda _t: None)(f"저장 폴더가 없어져 과제 폴더가 있는 위 폴더로 바꿨습니다: {old} → {new}")
 
 
+def _leave_google_drive() -> None:
+    """구매요청(계약) 서류 저장 위치가 구글 드라이브면 비운다 — 구글 드라이브 저장은 없앴다(담당자 2026-10-22 "구글드라이브 연동해서
+    업로드한건 삭제해주고 기능도 없애줘", 무료 15GB 가 다 참). MYBOX 드라이브가 있으면 그 안으로 — 같은 날 "네이버 마이박스를 이용할순 없을까"."""
+    from .. import purchase
+    from ..session import file_logger
+    old = getattr(settings.load(), "purchase_root", "") or ""
+    try:
+        if not purchase.on_google_drive(old):
+            return
+        boxes = purchase.mybox_folders()
+    except Exception:  # noqa: BLE001 — 드라이브 이름을 못 읽어도 앱은 뜬다
+        return
+    new = str(boxes[0] / purchase.FOLDER_NAME) if len(boxes) == 1 else ""
+    settings.update(purchase_root=new)
+    file_logger(lambda _t: None)(
+        f"구매요청(계약) 서류 저장 위치가 구글 드라이브라 바꿨습니다(구글 드라이브 저장은 없앴습니다): {old} → "
+        + (new or "기본 위치(저장 폴더 아래) — 설정에서 네이버 MYBOX 를 고르세요"))
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -86,6 +105,7 @@ class MainWindow(QMainWindow):
         self._pages: dict[str, QWidget] = {}
         self._session_worker = None       # 브라우저 스레드 — 청구서 받기와 일반청구가 함께 쓴다
         _follow_project_folders()
+        _leave_google_drive()
 
         central = QWidget()
         central.setObjectName("root")

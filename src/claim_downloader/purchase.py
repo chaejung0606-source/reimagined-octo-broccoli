@@ -26,10 +26,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import errno
 import mimetypes
 import os
 import json
 import re
+import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -52,6 +54,8 @@ DETAIL_MIN_EMPTY = 8
 DETAIL_MAX_TRIES = 20
 # 끝까지 받은 건 기록의 판 — 증빙문서를 일찍 읽어 '0개' 로 끝난 건이 '다 받음' 으로 남았을 수 있어(위) 판 2 부터 새로 쌓는다
 DONE_VERSION = 2
+MIN_FREE = 1 << 30                     # 1GB — 한 건에 수십 MB 파일이 여럿이라 이보다 적게 남은 곳에서는 받지 않는다
+SYSTEM_RESERVE = 10 << 30              # 윈도우가 깔린 드라이브(C:)는 10GB 를 남긴다 — 전체 과제(담당자 추정 200GB)를 기본 위치에 받다가 C: 가 차지 않게
 NAME_ROOM = 120                        # 파일 이름 · 건 폴더 이름의 글자 한도(경로 260 안에 들게)
 
 # ── 날짜 · 폴더 (Qt · 브라우저 없이) ─────────────────────────────────────────
@@ -141,28 +145,52 @@ def case_dir_name(req_no: str, title: str, req_dt: str = "") -> str:
     return f"({stamp}) " + _trim(title or "제목 없음", NAME_ROOM - len(tail) - 9) + tail
 
 
-def google_drive_folders() -> list[Path]:
-    """PC 의 구글 드라이브 데스크톱 '내 드라이브' 폴더 후보 — 있으면 구매 서류 저장 위치로 권한다(담당자 2026-10-22).
-    드라이브 데스크톱은 보통 G: 같은 새 드라이브 글자 아래 '내 드라이브'(영문판 'My Drive')를 만든다. 옛 판은 사용자 폴더의 'Google Drive'."""
-    names = ("내 드라이브", "My Drive")
-    found: list[Path] = []
-    if os.name == "nt":
-        for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
-            for name in names:
-                p = Path(f"{letter}:\\") / name
-                try:
-                    if p.is_dir():
-                        found.append(p)
-                except OSError:
-                    pass
-    home = Path.home()
-    for p in (home / "Google Drive" / "내 드라이브", home / "Google Drive" / "My Drive", home / "Google Drive",
-              home / "내 드라이브", home / "My Drive"):
-        try:
-            if p.is_dir() and p not in found:
-                found.append(p)
-        except OSError:
-            pass
+def _drive_labels() -> list[tuple[str, str]]:
+    """윈도우 고정 · 네트워크 드라이브의 (뿌리, 이름) — 탐색기의 'MYBOX (N:)' 이면 ('N:\\', 'MYBOX'). 빈 CD 같은 드라이브는 묻지 않는다."""
+    if os.name != "nt":
+        return []
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    found = []
+    mask = kernel32.GetLogicalDrives()
+    for n in range(26):
+        if not mask & (1 << n):
+            continue
+        root = f"{chr(65 + n)}:\\"
+        if kernel32.GetDriveTypeW(ctypes.c_wchar_p(root)) not in (3, 4):      # 3 고정 · 4 네트워크
+            continue
+        buf = ctypes.create_unicode_buffer(261)
+        if kernel32.GetVolumeInformationW(ctypes.c_wchar_p(root), buf, len(buf), None, None, None, None, 0):
+            found.append((root, buf.value))
+    return found
+
+
+def on_google_drive(path: str | Path, labels: Callable[[], list[tuple[str, str]]] = _drive_labels) -> bool:
+    """구글 드라이브 데스크톱 폴더인지 — 'G:\\내 드라이브\\…' · 'My Drive' · 사용자 폴더의 'Google Drive', 또는 이름이 'Google Drive' 인 드라이브.
+    구글 드라이브 저장은 없앴다(담당자 2026-10-22 "구글드라이브 연동해서 업로드한건 삭제해주고 기능도 없애줘" — 무료 15GB 가 다 차서)."""
+    text = str(path or "").strip()
+    if not text:
+        return False
+    if any(part.lower() in ("내 드라이브", "my drive", "google drive") for part in re.split(r"[\\/]+", text)):
+        return True
+    letter = _drive_letter(text)
+    return bool(letter) and any(_drive_letter(root) == letter and "googledrive" in (label or "").replace(" ", "").lower()
+                                for root, label in labels())
+
+
+def _drive_letter(path: str | Path) -> str:
+    """'N:\\…' → 'n' — 윈도우 경로를 리눅스(테스트)에서도 같게 읽으려고 글자로 본다."""
+    found = re.match(r"\s*([A-Za-z]):", str(path))
+    return found.group(1).lower() if found else ""
+
+
+def mybox_folders(labels: Callable[[], list[tuple[str, str]]] = _drive_labels) -> list[Path]:
+    """네이버 MYBOX 탐색기가 붙인 드라이브 — 이름에 MYBOX 가 든 드라이브 글자(담당자 PC 2026-10-22: 'MYBOX (N:)', 2.02TB 중 1.83TB 남음).
+    구글 드라이브 무료 15GB 가 다 차서 구매 서류를 MYBOX 에 두기로 했다(전체 과제면 200GB 가까이 될 것으로 담당자가 봄)."""
+    found = []
+    for root, label in labels():
+        if "mybox" in (label or "").replace(" ", "").lower():
+            found.append(Path(root))
     return found
 
 
@@ -207,11 +235,68 @@ def case_dir(out_root: str | Path, project_no: str, req_no: str, title: str, req
     return base / case_dir_name(req_no, title, req_dt), ""
 
 
+class DiskFull(Exception):
+    """저장 위치에 공간이 없다 — 남은 건도 같은 곳에 받으므로 거기서 받기를 멈춘다."""
+
+
+_FULL_WORDS = ("enospc", "no space left", "not enough space", "disk full", "디스크 공간이 부족", "디스크가 꽉")
+
+
+def _full(error: BaseException) -> bool:
+    """디스크가 찼다는 오류인지 — OSError(errno 28 · 윈도우 112 · 39) 또는 Playwright 가 옮긴 글."""
+    if isinstance(error, OSError) and (error.errno == errno.ENOSPC or getattr(error, "winerror", None) in (39, 112)):
+        return True
+    return any(w in str(error).lower() for w in _FULL_WORDS)
+
+
+def free_space(path: str | Path) -> int | None:
+    """그 경로(없으면 있는 가장 가까운 위 폴더)가 있는 드라이브에 남은 바이트. 모르면 None."""
+    for p in (Path(path), *Path(path).parents):
+        try:
+            if p.exists():
+                return shutil.disk_usage(p).free
+        except OSError:
+            return None
+    return None
+
+
+def reserve_for(path: str | Path, system: str | None = None) -> int:
+    """그 위치에 남겨 둘 공간 — 윈도우가 깔린 드라이브면 SYSTEM_RESERVE, 아니면 MIN_FREE."""
+    if system is None:
+        system = os.environ.get("SystemDrive", "C:") if os.name == "nt" else ""
+    drive = _drive_letter(system or "")
+    return SYSTEM_RESERVE if drive and _drive_letter(path) == drive else MIN_FREE
+
+
+def size_text(n: int) -> str:
+    for unit, step in (("TB", 1 << 40), ("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
+        if n >= step:
+            return f"{n / step:.1f} {unit}"
+    return f"{n} B"
+
+
+def _write(dest: Path, body: bytes) -> None:
+    """'.part' 로 쓰고 바꿔치기 — 덮어쓰지 않는다. 디스크가 차면 반쯤 쓴 파일을 지우고 DiskFull."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    temp = dest.with_name(dest.name + ".part")
+    try:
+        temp.write_bytes(body)
+        temp.replace(dest)
+    except OSError as error:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if _full(error):
+            raise DiskFull(f"저장 위치에 공간이 없습니다({error})") from error
+        raise
+
+
 def done_path() -> Path:
     return settings.data_dir() / "_구매받은기록.json"
 
 
-def load_done() -> dict:
+def load_done(home: str | Path | None = None) -> dict:
     """끝까지 받은 건(구매요구번호 → 받은 때 · 파일 수). 다음 목록 읽기에서 그 건은 빼서 58건을 매번 다시 열지 않는다(담당자 2026-10-22 "너무 시간 낭비").
     판(DONE_VERSION)이 다른 옛 기록은 없는 것으로 본다 — 한 번 더 열어 빠진 서류를 받는다(있는 파일은 건너뛴다)."""
     try:
@@ -220,15 +305,20 @@ def load_done() -> dict:
         return {}
     if not isinstance(data, dict):
         return {}
-    return {k: v for k, v in data.items() if isinstance(v, dict) and v.get("v") == DONE_VERSION}
+    done = {k: v for k, v in data.items() if isinstance(v, dict) and v.get("v") == DONE_VERSION}
+    if home is not None:
+        # 받은 곳이 다른(저장 위치를 바꾼 — 구글 드라이브 → MYBOX, 2026-10-22) 기록은 그 위치에 없으므로 다시 받는다
+        done = {k: v for k, v in done.items() if v.get("home") == str(home)}
+    return done
 
 
-def remember_done(results: list["CaseResult"]) -> None:
+def remember_done(results: list["CaseResult"], home: str | Path = "") -> None:
     """못 받은 파일이 하나도 없는 건만 적는다 — 실패가 남은 건은 다음에 다시 연다."""
     done = load_done()
     for r in results:
         if r.ok and r.req_no:
-            done[r.req_no] = {"at": time.strftime("%Y-%m-%d %H:%M"), "files": len(r.saved) + r.existed, "title": r.title, "v": DONE_VERSION}
+            done[r.req_no] = {"at": time.strftime("%Y-%m-%d %H:%M"), "files": len(r.saved) + r.existed, "title": r.title, "v": DONE_VERSION,
+                          "home": str(home)}
     tmp = done_path().with_suffix(".tmp")
     tmp.write_text(json.dumps(done, ensure_ascii=False, indent=1), encoding="utf-8")
     tmp.replace(done_path())
@@ -497,6 +587,7 @@ class CaseResult:
     existed: int = 0                                      # 이미 있어 받지 않은 파일 수
     failed: list[str] = field(default_factory=list)      # 못 받은 파일 — '이름: 까닭'
     photos: int = 0
+    size: int = 0                                         # 이번에 받은 바이트
     inspected: bool = False                               # 검사처리 화면에서 이 건을 봤는지
     note: str = ""                                        # 건 전체의 까닭(과제 폴더 없음 · 상세를 못 띄움 …)
     ok: bool = True
@@ -536,6 +627,10 @@ class PurchaseSummary:
     @property
     def files(self) -> int:
         return sum(len(c.saved) for c in self.cases)
+
+    @property
+    def size(self) -> int:
+        return sum(c.size for c in self.cases)
 
 
 def as_target(row: dict, folder: Path | None = None) -> dict:
@@ -796,6 +891,7 @@ def click_download(frame, page, href: str, dest: Path):
         return None, "링크를 누를 화면이 없음"
     link = frame.locator(f'a[href="{href}"]').first
     before = list(page.context.pages)
+    temp = dest.with_name(dest.name + ".part")
     try:
         if not link.count():
             return None, "화면에 그 링크가 없음"
@@ -811,7 +907,6 @@ def click_download(frame, page, href: str, dest: Path):
         if fail:
             return None, f"내려받기 실패({fail})"
         dest.parent.mkdir(parents=True, exist_ok=True)
-        temp = dest.with_name(dest.name + ".part")
         download.save_as(str(temp))
         if looks_like_html(temp.read_bytes()[:40]) or temp.stat().st_size == 0:
             temp.unlink(missing_ok=True)
@@ -820,6 +915,12 @@ def click_download(frame, page, href: str, dest: Path):
         temp.replace(dest)
         return size, ""
     except Exception as error:  # noqa: BLE001
+        if _full(error):
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise DiskFull(f"저장 위치에 공간이 없습니다({str(error).splitlines()[0][:100]})") from error
         return None, "링크 누르기: " + (str(error).splitlines()[0][:100] if str(error) else type(error).__name__)
     finally:
         # 눌러서 새 창(파일 보기)이 떴으면 닫는다 — ERP 단추가 아니라 창 닫기
@@ -831,25 +932,29 @@ def click_download(frame, page, href: str, dest: Path):
             pass
 
 
-def _save(page, base_url: str, href: str, dest: Path, log: Callable[[str], None], frame=None) -> str:
-    """파일 하나 — 'saved' · 'exists' · 'failed: 까닭'. 덮어쓰지 않는다."""
+def _save(page, base_url: str, href: str, dest: Path, log: Callable[[str], None], frame=None) -> tuple[str, int]:
+    """파일 하나 — ('saved' · 'exists' · 'failed: 까닭', 받은 바이트). 덮어쓰지 않는다. 디스크가 차면 DiskFull."""
     if dest.exists():
-        return "exists"
+        return "exists", 0
     body, _ctype, why = fetch_in(frame, page, urljoin(base_url, href))
     if body is None:
         size, click_why = click_download(frame, page, href, dest)
         if size is not None:
             log(f"      ✓ {dest.name} ({size:,} B · 링크를 눌러 받음)")
-            return "saved"
+            return "saved", size
         why = f"{why} · {click_why}"
         log(f"      ✖ {dest.name} — {why}")
-        return "failed: " + why
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    temp = dest.with_name(dest.name + ".part")
-    temp.write_bytes(body)
-    temp.replace(dest)
+        return "failed: " + why, 0
+    try:
+        _write(dest, body)
+    except DiskFull:
+        raise
+    except OSError as error:
+        why = f"저장하지 못함({error})"
+        log(f"      ✖ {dest.name} — {why}")
+        return "failed: " + why, 0
     log(f"      ✓ {dest.relative_to(dest.parents[1]) if len(dest.parents) > 1 else dest.name} ({len(body):,} B)")
-    return "saved"
+    return "saved", len(body)
 
 
 def _save_files(page, base_url: str, files: list[dict], folder: Path, result: CaseResult, log: Callable[[str], None],
@@ -857,9 +962,10 @@ def _save_files(page, base_url: str, files: list[dict], folder: Path, result: Ca
     for f in files:
         name = file_name(f.get("name", ""))
         dest = folder / name
-        got = _save(page, base_url, f.get("href", ""), dest, log, frame)
+        got, size = _save(page, base_url, f.get("href", ""), dest, log, frame)
         if got == "saved":
             result.saved.append(prefix + name)
+            result.size += size
         elif got == "exists":
             result.existed += 1
         else:
@@ -1050,10 +1156,20 @@ def item_photos(context, page, frame, item: dict, folder: Path, result: CaseResu
             if dest.exists():
                 result.existed += 1
                 continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(body)
+            try:
+                _write(dest, body)
+            except DiskFull:
+                try:
+                    popup.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
+            except OSError as error:
+                _photo_problem(result, f"물품사진 {name} {index}: 저장하지 못함({error})", optional, log)
+                continue
             result.saved.append(f"{INSPECT_DIR}/{dest.name}")
             result.photos += 1
+            result.size += len(body)
             log(f"      ✓ {INSPECT_DIR}/{dest.name} ({len(body):,} B)")
     elif popup is not None:
         _photo_problem(result, f"물품 '{item.get('name', '')}' 사진: 팝업에 사진 칸이 없음", optional, log)
@@ -1132,7 +1248,23 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
     summary = PurchaseSummary()
     if not targets:
         return summary
-    fixed = fix_photo_names(purchase_home(out_root))
+    home = purchase_home(out_root)
+    need = reserve_for(home)
+    free = free_space(home)
+    if free is not None:
+        log(f"구매요청(계약) 서류 저장 위치 {home} — 남은 공간 {size_text(free)}")
+        if free < need:
+            # 구글 드라이브 무료 15GB 가 다 차 '0바이트 사용 가능' 이던 것(담당자 2026-10-22) — 쓰다 말고 수백 개 실패로 끝나지 않게 시작 전에 멈춘다
+            why = (f"저장 위치에 남은 공간이 {size_text(free)} 뿐이라 받지 않았습니다(남겨 둘 공간 {size_text(need)}) — "
+                   "설정 → '구매요청(계약) 서류 저장 위치' 를 공간이 넉넉한 드라이브(네이버 MYBOX 등)로 바꾸세요")
+            log("⚠ " + why)
+            summary.note = why
+            summary.stopped = True
+            for i, t in enumerate(targets):
+                summary.cases.append(CaseResult(str(t.get("req_no") or ""), t.get("cont", ""), t.get("project", ""), note=why, ok=False))
+                notify(i, "failed", why)
+            return summary
+    fixed = fix_photo_names(home)
     if fixed:
         log(f"물품 사진 {len(fixed)}장의 확장자를 그림 파일대로 바꿨습니다(.html 로 저장돼 있던 것)")
     days = [t.get("expDt") or req_date(t.get("req_no", "")) for t in targets]
@@ -1153,6 +1285,14 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
         if should_stop():
             summary.stopped = True
             log("멈춤 요청 — 여기서 그만 받습니다.")
+            break
+        left = free_space(home)
+        if left is not None and left < need:
+            why = (f"저장 위치에 남은 공간이 {size_text(left)} 로 줄어 여기서 멈춥니다(남겨 둘 공간 {size_text(need)}) — "
+                   "설정 → '구매요청(계약) 서류 저장 위치' 를 공간이 넉넉한 드라이브(네이버 MYBOX 등)로 바꾸세요")
+            log("⚠ " + why)
+            summary.note = why
+            summary.stopped = True
             break
         notify(i, "running", "")
         log("[%d/%d] 구매요구 %s · %s" % (n, len(targets), target.get("req_no"), (target.get("cont") or "")[:30]))
@@ -1175,14 +1315,28 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
                 summary.cases.append(result)
                 notify(i, "failed", why)
                 continue
-        result, frame = receive_case(context, page, frame, target, out_root, log, wait)
+        try:
+            result, frame = receive_case(context, page, frame, target, out_root, log, wait)
+        except DiskFull as error:
+            why = f"{error} — 설정 → '구매요청(계약) 서류 저장 위치' 를 공간이 넉넉한 드라이브(네이버 MYBOX 등)로 바꾸세요"
+            log("⚠ " + why)
+            summary.note = why
+            summary.stopped = True
+            summary.cases.append(CaseResult(str(target.get("req_no") or ""), target.get("cont", ""), target.get("project", ""), note=why, ok=False))
+            notify(i, "failed", why)
+            break
         summary.cases.append(result)
         cases[result.req_no] = result
         if result.folder:
             folders[result.req_no] = Path(result.folder)
         notify(i, "running" if result.ok else "failed", result.summary() + ("" if not result.ok else " · 검사처리 확인 중"))
     if folders and not summary.stopped and start:
-        inspect_cases(context, page, cases, folders, start, end, log, wait, should_stop, summary)
+        try:
+            inspect_cases(context, page, cases, folders, start, end, log, wait, should_stop, summary)
+        except DiskFull as error:
+            summary.note = f"{error} — 설정 → '구매요청(계약) 서류 저장 위치' 를 공간이 넉넉한 드라이브(네이버 MYBOX 등)로 바꾸세요"
+            summary.stopped = True
+            log("⚠ " + summary.note)
     for i in order:
         req_no = str(targets[i].get("req_no") or "")
         result = cases.get(req_no)
@@ -1190,7 +1344,7 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
             notify(i, "done" if result.ok else "failed", result.summary())
     if not summary.stopped:
         try:
-            remember_done(summary.cases)
+            remember_done(summary.cases, home)
         except Exception as error:  # noqa: BLE001
             log(f"⚠ 받은 기록을 남기지 못함: {error}")
     for result in summary.failed:
@@ -1198,5 +1352,9 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
         reasons = result.failed[:3] + ([result.note] if result.note else [])
         more = f" 외 {len(result.failed) - 3}개" if len(result.failed) > 3 else ""
         log(f"   ✖ 구매요구 {result.req_no} — {' / '.join(reasons) or '까닭 모름'}{more}")
-    log("── 구매요청(계약) 서류 끝: 건 %d · 새 파일 %d개 · 못 받은 건 %d" % (len(summary.cases), summary.files, len(summary.failed)))
+    log("── 구매요청(계약) 서류 끝: 건 %d · 새 파일 %d개(%s) · 못 받은 건 %d"
+        % (len(summary.cases), summary.files, size_text(summary.size), len(summary.failed)))
+    after = free_space(home)
+    if after is not None:
+        log(f"   저장 위치 남은 공간 {size_text(after)}")
     return summary
