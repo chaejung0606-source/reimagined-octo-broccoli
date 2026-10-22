@@ -769,8 +769,9 @@ def ensure_range(frame, start: str, end: str, log: Callable[[str], None], wait: 
     ok, why = search(frame, start, end, log, wait)
     if not ok:
         return False, why
-    if req_no and not _has_row(frame, req_no):
-        return False, "조회한 목록에 그 구매요구번호 줄이 없음"
+    # [검색] 뒤 목록이 늦게 다시 그려질 수 있다(2026-10-22 18:31 실제: 하루 범위 조회 직후 줄을 못 봄)
+    if req_no and not _wait_for(lambda: _has_row(frame, req_no), wait, 16):
+        return False, f"{start} ~ {end} 로 조회한 목록에 구매요구 {req_no} 줄이 없음"
     return True, ""
 
 
@@ -989,6 +990,7 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
         if window is not None:
             ok, why = ensure_range(frame, window[0], window[1], log, wait, str(target.get("req_no") or ""))
             if not ok:
+                log("      ✖ " + why)
                 result = CaseResult(str(target.get("req_no") or ""), target.get("cont", ""), target.get("project", ""), note=why, ok=False)
                 summary.cases.append(result)
                 notify(i, "failed", why)
