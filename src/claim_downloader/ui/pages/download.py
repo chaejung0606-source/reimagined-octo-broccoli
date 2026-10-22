@@ -1,10 +1,11 @@
 """증빙 다운로드 화면(업무 id 는 download — 2026-10-22 담당자 지정으로 '청구서 받기' 에서 이름만 바꿈) — 할 차례인 단계만 위에서 아래로 떠오른다(ui/flow.py, 담당자 요청 2026-10-21).
 
-    ① 무엇을 받을까요?(과제 · 받을 서류) → ② ERP 에 로그인(브라우저는 앱이 열고 로그인은 사람이)
-    → ③ 받을 청구서 확인하고 받기(표 · [N건 받기] · [앞 1건만 시험])
+    ① 무엇을 받을까요?(받을 서류) → ② 어느 과제(과제 칸) → ③ ERP 에 로그인(브라우저는 앱이 열고 로그인은 사람이)
+    → ④ 받을 청구서 확인하고 받기(표 · [N건 받기] · [앞 1건만 시험])
+    서류가 과제보다 먼저다(담당자 2026-10-22) — 구매요청(계약) 서류는 고른 과제의 기간으로 일자 범위를 정한다.
 
 담당자: "업무카드를 열면 모든 기능들이 다 펼쳐져 있어 어디부터 클릭해야 하는지 헷갈림 — 순서대로 하나 둘 떠오르게". 그래서 처음에는 ① 만 보이고,
-[다음] 을 누르면 ② 가, 로그인하고 목록을 읽으면 ③ 이 떠오른다. 마친 단계는 한 줄로 접혀 고른 값을 보이고 [바꾸기] 로 다시 편다.
+[다음] 을 누르면 ② · ③ 이 차례로, 로그인하고 목록을 읽으면 ④ 가 떠오른다. 마친 단계는 한 줄로 접혀 고른 값을 보이고 [바꾸기] 로 다시 편다.
 로그인 뒤 고른 과제의 결의서내역까지 앱이 가서 목록을 읽고, 받을 건이 있으면 '받을까요?' 를 한 번 묻는다(9절 — 그 확인은 그대로).
 받을 서류는 청구서 · 구매요청(계약) 서류 중 고른다(같은 날 요청, 여럿 가능) — 구매요청(계약)은 그 화면을 실측한 뒤에 만든다(준비 중).
 진행 기록 · 도구(받지 않는 결의서 · 대응자금 파일 정리 · 로그 파일)는 머리 오른쪽 [진행 기록] · [도구] 에 둔다 — 늘 펼쳐 두지 않는다.
@@ -70,11 +71,12 @@ GUIDE_BROWSER = ("열린 브라우저에서 로그인하세요. 그 뒤 고른 �
                  "안 받은 청구서를 찾습니다(못 가면 직접 띄우세요).")
 GUIDE_LISTED = "받을 건을 확인하고 [받기] 를 누르세요. 처음이라면 '앞 1건만 시험' 으로 흐름부터 확인하세요."
 GUIDE_DETAIL = (
-    "• ① 무엇을 받을까요 — 과제(폴더 만든 과제 모두 · 여러 과제 · 하나)와 받을 서류를 고릅니다.\n"
-    "• ② ERP 에 로그인 — 앱이 새 브라우저 창을 엽니다. 평소 쓰는 Edge/크롬이 아니라 이 창에서 로그인해야 합니다. "
+    "• ① 무엇을 받을까요 — 받을 서류(청구서 · 구매요청(계약) 서류)를 고릅니다.\n"
+    "• ② 어느 과제 — 과제(폴더 만든 과제 모두 · 여러 과제 · 하나)를 고릅니다. 구매요청(계약) 서류는 이 과제의 기간으로 일자 범위를 둡니다.\n"
+    "• ③ ERP 에 로그인 — 앱이 새 브라우저 창을 엽니다. 평소 쓰는 Edge/크롬이 아니라 이 창에서 로그인해야 합니다. "
     "아이디·비밀번호는 어디에도 저장하지 않습니다. 로그인하면 고른 과제의 결의서내역 목록을 끝까지 읽어 "
     "승인 + 문서번호 + 지출예정일 조건의 건만 고르고, 문서번호가 보관 폴더에 이미 있는 건은 뺍니다.\n"
-    "• ③ 받기 — 건마다 상세조회 → 청구서출력 → PDF 저장. 비목을 판정해 '0N_(지출예정일) 적요_이체자_(금액).pdf' "
+    "• ④ 받기 — 건마다 상세조회 → 청구서출력 → PDF 저장. 비목을 판정해 '0N_(지출예정일) 적요_이체자_(금액).pdf' "
     "이름으로 비목 폴더 바로 아래에 둡니다. 플랫폼에 올린 파일은 직접 '업로드' 폴더로 옮기세요.\n"
     "• 상세화면이 멈추면 ERP 를 새로 열고(로그인이 그대로면 묻지 않고) 같은 건부터 이어받습니다(건당 최대 2번). "
     "청구서출력이 없는 결의서는 건너뛰고 '받지 않는 결의서' 목록에 넣습니다."
@@ -127,12 +129,13 @@ class DownloadPage(QWidget):
         self._scanned_root = settings.load().out_root
         self._selection = None
         self._listed = False
-        self._reading = False                 # 목록을 읽는 중 — ③ 이 떠올라 '읽는 중' 을 보인다
-        self._picked = False                  # ① 을 마쳤는지([다음]) — 그 전에는 ② · ③ 이 안 보인다
+        self._reading = False                 # 목록을 읽는 중 — ④ 가 떠올라 '읽는 중' 을 보인다
+        self._docs_picked = False             # ① 받을 서류를 골랐는지([다음]) — 그 전에는 ② 부터 안 보인다
+        self._picked = False                  # ② 과제를 골랐는지([다음]) — 그 전에는 ③ · ④ 가 안 보인다
         self._run_ok = 0
         self._run_failed = 0
         self._attempted = False               # 한 번이라도 받기를 시작했는지 (이어서 작업하기 판단)
-        self._auto_run = False                # ② 를 눌렀다 — 목록을 읽으면 이어서 받는다(받기 전 확인은 그대로)
+        self._auto_run = False                # ③ 을 눌렀다 — 목록을 읽으면 이어서 받는다(받기 전 확인은 그대로)
         self._rebudget_asked = False
 
         layout = QVBoxLayout(self)
@@ -142,14 +145,16 @@ class DownloadPage(QWidget):
         layout.addWidget(self._build_banner())
 
         # 단계 — 할 차례인 것만 보인다(flow.py)
+        self.step_docs = self._build_docs()
         self.step_what = self._build_what()
         self.step_login = self._build_login()
         self.step_list = self._build_list()
-        self.steps = {"what": self.step_what, "login": self.step_login, "list": self.step_list}
+        self.steps = {"docs": self.step_docs, "project": self.step_what, "login": self.step_login, "list": self.step_list}
+        layout.addWidget(self.step_docs)
         layout.addWidget(self.step_what)
         layout.addWidget(self.step_login)
         layout.addWidget(self.step_list, 1)
-        self.filler = QWidget()                # ③ 이 아직 없을 때 남는 높이를 채운다 — 단계가 화면 위쪽에 모여 있게
+        self.filler = QWidget()                # ④ 가 아직 없을 때 남는 높이를 채운다 — 단계가 화면 위쪽에 모여 있게
         self.filler.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         layout.addWidget(self.filler, 1)
         layout.addWidget(self._build_log(), 1)    # 펼치면 남는 높이를 단계와 나눠 받는다(높이를 숫자로 박지 않는다)
@@ -214,9 +219,44 @@ class DownloadPage(QWidget):
         head.addWidget(self.tools_button, 0, Qt.AlignVCenter)
         return head
 
+    def _build_docs(self) -> FlowStep:
+        """① 받을 서류 — 청구서 · 구매요청(계약) 서류(준비 중). [다음] 으로 마친다.
+
+        서류를 과제보다 먼저 고른다(담당자 2026-10-22 "받을 서류를 먼저 고르고 그다음 과제를 선택하도록") — 구매요청(계약) 서류는
+        ERP 에서 과제를 고르지 않고 구매·자산 메뉴로 들어가되, 일자 범위를 ② 에서 고른 과제의 기간으로 둔다.
+        """
+        step = FlowStep("1", "무엇을 받을까요?", "받을 서류를 고르고 [다음] 을 누르세요. 여럿을 함께 고를 수 있습니다.")
+        step.edit.connect(self._edit_docs)
+        docs = QHBoxLayout()
+        docs.setSpacing(16)
+        docs_label = QLabel("받을 서류")
+        docs_label.setObjectName("fieldLabel")
+        docs.addWidget(docs_label, 0, Qt.AlignVCenter)
+        self.doc_claim = QCheckBox("청구서(지출요구 및 결의서)")
+        self.doc_claim.setChecked(True)
+        self.doc_claim.toggled.connect(lambda _on: self._sync_buttons())
+        docs.addWidget(self.doc_claim, 0, Qt.AlignVCenter)
+        self.doc_contract = QCheckBox("구매요청(계약) 서류")
+        self.doc_contract.setEnabled(False)
+        self.doc_contract.setToolTip("구매·자산 메뉴의 목록 · 상세 · 검사처리 화면을 '화면 구조 저장' 업무로 저장해 보내 주시면 만듭니다")
+        docs.addWidget(self.doc_contract, 0, Qt.AlignVCenter)
+        docs.addWidget(Pill("준비 중", "neutral"), 0, Qt.AlignVCenter)
+        docs.addStretch(1)
+        step.add_layout(docs)
+        step.add(muted_label("구매요청(계약) 서류는 구매·자산 메뉴에서 구매요청 · 검사처리 때 올린 첨부와 물품 사진을 받아 과제별로 둡니다 — "
+                             "그 화면들을 실측한 뒤에 만듭니다(ERP 에서 띄우고 '화면 구조 저장' 업무로 저장해 보내 주세요)."))
+        buttons = QHBoxLayout()
+        self.docs_button = QPushButton("다음")
+        self.docs_button.setObjectName("primary")
+        self.docs_button.clicked.connect(self._confirm_docs)
+        buttons.addWidget(self.docs_button)
+        buttons.addStretch(1)
+        step.add_layout(buttons)
+        return step
+
     def _build_what(self) -> FlowStep:
-        """① 무엇을 받을까요 — 과제 · 받을 서류. [다음] 으로 마친다."""
-        step = FlowStep("1", "무엇을 받을까요?", "과제와 받을 서류를 고르고 [다음] 을 누르세요. 과제는 여러 개를 골라 차례로 받을 수 있습니다.")
+        """② 어느 과제 — 과제 칸. [다음] 으로 마친다."""
+        step = FlowStep("2", "어느 과제의 서류를 받을까요?", "과제를 고르고 [다음] 을 누르세요. 과제는 여러 개를 골라 차례로 받을 수 있습니다.")
         step.edit.connect(self._edit_what)
         row = QHBoxLayout()
         row.setSpacing(10)
@@ -237,24 +277,6 @@ class DownloadPage(QWidget):
         row.addWidget(self.project_box, 0, Qt.AlignVCenter)
         row.addStretch(1)
         step.add_layout(row)
-        docs = QHBoxLayout()
-        docs.setSpacing(16)
-        docs_label = QLabel("받을 서류")
-        docs_label.setObjectName("fieldLabel")
-        docs.addWidget(docs_label, 0, Qt.AlignVCenter)
-        self.doc_claim = QCheckBox("청구서(지출요구 및 결의서)")
-        self.doc_claim.setChecked(True)
-        self.doc_claim.toggled.connect(lambda _on: self._sync_buttons())
-        docs.addWidget(self.doc_claim, 0, Qt.AlignVCenter)
-        self.doc_contract = QCheckBox("구매요청(계약) 서류")
-        self.doc_contract.setEnabled(False)
-        self.doc_contract.setToolTip("구매요청(계약) 화면을 '화면 구조 저장' 업무로 저장해 보내 주시면 만듭니다")
-        docs.addWidget(self.doc_contract, 0, Qt.AlignVCenter)
-        docs.addWidget(Pill("준비 중", "neutral"), 0, Qt.AlignVCenter)
-        docs.addStretch(1)
-        step.add_layout(docs)
-        step.add(muted_label("구매요청(계약) 서류 받기는 그 화면을 실측한 뒤에 만듭니다 — ERP 에서 구매요청(계약) 화면을 띄우고 "
-                             "'화면 구조 저장' 업무로 저장해 보내 주세요."))
         buttons = QHBoxLayout()
         self.next_button = QPushButton("다음")
         self.next_button.setObjectName("primary")
@@ -265,8 +287,8 @@ class DownloadPage(QWidget):
         return step
 
     def _build_login(self) -> FlowStep:
-        """② ERP 에 로그인 — [브라우저 열기] (열려 있으면 [안 받은 청구서 찾기])."""
-        step = FlowStep("2", "ERP 에 로그인", editable=False)
+        """③ ERP 에 로그인 — [브라우저 열기] (열려 있으면 [안 받은 청구서 찾기])."""
+        step = FlowStep("3", "ERP 에 로그인", editable=False)
         self.login_state = Pill("브라우저 닫힘", "neutral")
         step.add_side(self.login_state)
         buttons = QHBoxLayout()
@@ -280,8 +302,8 @@ class DownloadPage(QWidget):
         return step
 
     def _build_list(self) -> FlowStep:
-        """③ 받을 청구서 확인하고 받기 — 건수 한 줄 · 표 · [N건 받기] [앞 1건만 시험] [멈추기]."""
-        step = FlowStep("3", "받을 청구서를 확인하고 받으세요", editable=False)
+        """④ 받을 청구서 확인하고 받기 — 건수 한 줄 · 표 · [N건 받기] [앞 1건만 시험] [멈추기]."""
+        step = FlowStep("4", "받을 청구서를 확인하고 받으세요", editable=False)
         self.list_button = QPushButton("목록 다시 읽기")
         self.list_button.setObjectName("ghost")
         self.list_button.clicked.connect(self._read_list)
@@ -399,7 +421,7 @@ class DownloadPage(QWidget):
         self.counts_changed.emit()
 
     def _sync_counts(self) -> None:
-        """③ 의 건수 한 줄과 진행 한 줄 — 같은 목록 기준으로 센다."""
+        """④ 의 건수 한 줄과 진행 한 줄 — 같은 목록 기준으로 센다."""
         skipped = self._selection.skipped if self._selection else 0
         excluded = self._selection.excluded if self._selection else 0
         remaining = len(self._remaining())
@@ -451,7 +473,7 @@ class DownloadPage(QWidget):
 
     def _stage_guide(self) -> str:
         """지금 단계의 기본 안내 — 도구(대응자금 파일 정리 등)를 쓴 뒤 단계 안내로 돌아갈 때."""
-        stage = download_stage(self._picked, self._reading, self._listed)
+        stage = download_stage(self._docs_picked, self._picked, self._reading, self._listed)
         if stage == "login":
             return GUIDE_BROWSER if self._browser_open else GUIDE_LOGIN
         if stage == "list" and self._listed and self._remaining():
@@ -463,11 +485,11 @@ class DownloadPage(QWidget):
         return " · ".join(docs) or "고른 서류 없음"
 
     def _sync_flow(self) -> None:
-        """할 차례인 단계만 보이게 — ① 마치기 전에는 ① 만, 목록을 읽으면 ③ 까지(ui/flowlogic.download_stage)."""
-        stage = download_stage(self._picked, self._reading, self._listed)
+        """할 차례인 단계만 보이게 — ① 마치기 전에는 ① 만, 목록을 읽으면 ④ 까지(ui/flowlogic.download_stage)."""
+        stage = download_stage(self._docs_picked, self._picked, self._reading, self._listed)
         states = flow_states(DOWNLOAD_ORDER, stage)
         sites = getattr(self.worker, "sites", {}) or {}
-        summaries = {"what": f"{self._project_text()} · {self._docs_text()}",
+        summaries = {"docs": self._docs_text(), "project": self._project_text(),
                      "login": "ERP 로그인됨" if sites.get("erp_login") else "브라우저 열림"}
         for key, step in self.steps.items():
             step.set_state(states[key], summaries.get(key))
@@ -477,9 +499,11 @@ class DownloadPage(QWidget):
     def _sync_buttons(self) -> None:
         busy = self._busy
         self.project_box.setEnabled(not busy)
+        self.docs_button.setEnabled(not busy and self.doc_claim.isChecked())
         self.next_button.setEnabled(not busy and self.doc_claim.isChecked())
+        self.step_docs.edit_button.setEnabled(not busy)
         self.step_what.edit_button.setEnabled(not busy)
-        # ② — 브라우저가 열려 있으면 '고른 과제의 목록을 읽고 받기'(담당자 요청 2026-10-21)
+        # ③ — 브라우저가 열려 있으면 '고른 과제의 목록을 읽고 받기'(담당자 요청 2026-10-21)
         sites = getattr(self.worker, "sites", {}) or {}
         self.open_button.setEnabled(not busy)
         self.open_button.setText("안 받은 청구서 찾기" if self._browser_open else "브라우저 열기")
@@ -491,7 +515,7 @@ class DownloadPage(QWidget):
             self.login_state.set_status("로그인됨", "success")
         else:
             self.login_state.set_status("로그인 기다리는 중", "warning")
-        # ③
+        # ④
         self.list_button.setEnabled(not busy and self._browser_open)
         remaining = len(self._remaining())
         can_run = not busy and self._browser_open and remaining > 0 and self._listed
@@ -507,7 +531,20 @@ class DownloadPage(QWidget):
         self._sync_counts()
         self._sync_flow()
 
-    # ── 단계 ① ──────────────────────────────────────────────────────────
+    # ── 단계 ① · ② ──────────────────────────────────────────────────────
+    def _confirm_docs(self) -> None:
+        if not self.doc_claim.isChecked():
+            return
+        self._docs_picked = True
+        self._set_state("과제 차례", "info", "")
+        self._sync_buttons()
+
+    def _edit_docs(self) -> None:
+        if self._busy:
+            return
+        self._docs_picked = False
+        self._edit_what()
+
     def _confirm_what(self) -> None:
         if not self.doc_claim.isChecked():
             return
@@ -522,7 +559,7 @@ class DownloadPage(QWidget):
             return
         self._picked = True
         if self._browser_open and (getattr(self.worker, "sites", {}) or {}).get("erp_login"):
-            # 다른 업무에서 이미 로그인해 둔 ERP — ② 를 건너뛰고 바로 목록을 읽는다
+            # 다른 업무에서 이미 로그인해 둔 ERP — ③ 을 건너뛰고 바로 목록을 읽는다
             self._auto_run = True
             self._read_list()
             return
@@ -561,7 +598,7 @@ class DownloadPage(QWidget):
                 "받은 청구서를 넣을 폴더를 먼저 지정해 주세요.\n과제 폴더('(과제번호)_…')나 비목 폴더(01. 인건비 …)가 바로 아래 있는 폴더입니다.")
             self.need_settings.emit()
             return
-        self._picked = True
+        self._docs_picked = self._picked = True
         self._auto_run = True
         if self._browser_open:
             self._read_list()
@@ -742,7 +779,7 @@ class DownloadPage(QWidget):
         self._sync_buttons()
 
     def _on_list_ready(self) -> None:
-        """브라우저를 연 뒤 결의서내역 목록이 보인다 — ① 을 마쳤고 아직 안 읽었고 다른 일이 없으면 목록을 대신 읽는다(읽기만)."""
+        """브라우저를 연 뒤 결의서내역 목록이 보인다 — ② 까지 마쳤고 아직 안 읽었고 다른 일이 없으면 목록을 대신 읽는다(읽기만)."""
         if self._busy or not self._browser_open or not self._picked:
             return
         if not self._auto_run and (self._listed or not settings.load().auto_read_list):
@@ -751,7 +788,7 @@ class DownloadPage(QWidget):
         self._read_list()
 
     def _on_browser_state(self, alive: bool) -> None:
-        """사용자가 브라우저 창을 닫아 버렸으면 ① 부터 다시 하게 한다."""
+        """사용자가 브라우저 창을 닫아 버렸으면 ③ 부터 다시 하게 한다."""
         if self._browser_open and not alive:
             self._browser_open = False
             self._auto_run = False
@@ -764,7 +801,7 @@ class DownloadPage(QWidget):
         self._selection = selection
         self._listed = True
         self._reading = False
-        self._picked = True
+        self._docs_picked = self._picked = True
         self._attempted = False
         self._run_ok = self._run_failed = 0
         self._targets = list(selection.targets)
@@ -799,7 +836,7 @@ class DownloadPage(QWidget):
             QMessageBox.information(
                 self, "받지 않은 과제",
                 "아래 과제는 받지 않았습니다.\n\n" + "\n".join(f"· {no or '(모름)'}: {why}" for no, why in selection.blocked)
-                + "\n\n목록을 못 띄운 과제는 브라우저에서 그 과제의 과제정보 → 청구서를 띄운 뒤, ① 의 과제 칸에서 그 과제를 골라 다시 하세요.")
+                + "\n\n목록을 못 띄운 과제는 브라우저에서 그 과제의 과제정보 → 청구서를 띄운 뒤, ② 의 과제 칸에서 그 과제를 골라 다시 하세요.")
         self._sync_empty()
         self._sync_buttons()
         self.counts_changed.emit()
@@ -897,7 +934,7 @@ class DownloadPage(QWidget):
             QMessageBox.information(
                 self, "대응자금 파일 정리",
                 "대응자금 과제마다 ERP 의 과제정보 → 예산 탭에서 비목 차례를 읽어야 합니다.\n\n"
-                "② [브라우저 열기] 로 ERP 에 로그인한 뒤 [도구] → [대응자금 파일 정리] 를 다시 누르세요. (받기를 묻는 창이 뜨면 [아니요] 로 닫아도 됩니다)")
+                "③ [브라우저 열기] 로 ERP 에 로그인한 뒤 [도구] → [대응자금 파일 정리] 를 다시 누르세요. (받기를 묻는 창이 뜨면 [아니요] 로 닫아도 됩니다)")
             return
         self._rebudget_asked = True
         self._set_state("대응자금 파일 보는 중", "info",

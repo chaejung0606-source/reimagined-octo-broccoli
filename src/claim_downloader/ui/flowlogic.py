@@ -22,14 +22,17 @@ def flow_states(order: list[str], current: str, keep_open: tuple[str, ...] = ())
     return out
 
 
-DOWNLOAD_ORDER = ["what", "login", "list"]
+DOWNLOAD_ORDER = ["docs", "project", "login", "list"]
 
 
-def download_stage(picked: bool, reading: bool, listed: bool) -> str:
-    """청구서 받기 — ① 무엇을 받을지(과제 · 서류) → ② ERP 로그인 → ③ 받을 청구서 확인하고 받기.
-    목록을 읽는 중이거나 읽었으면 ③. 목록을 못 읽으면(로그인 전 · 목록 못 찾음) ② 로 돌아온다."""
+def download_stage(docs_picked: bool, picked: bool, reading: bool, listed: bool) -> str:
+    """증빙 다운로드 — ① 받을 서류 → ② 과제 → ③ ERP 로그인 → ④ 받을 청구서 확인하고 받기.
+    서류를 먼저, 과제를 그다음에 고른다(담당자 2026-10-22 — 구매요청(계약) 서류는 고른 과제의 기간으로 일자 범위를 정하므로).
+    목록을 읽는 중이거나 읽었으면 ④. 목록을 못 읽으면(로그인 전 · 목록 못 찾음) ③ 으로 돌아온다."""
+    if not docs_picked:
+        return "docs"
     if not picked:
-        return "what"
+        return "project"
     if listed or reading:
         return "list"
     return "login"

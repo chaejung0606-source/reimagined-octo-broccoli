@@ -15,12 +15,14 @@ def test_steps_before_are_folded_and_after_are_hidden():
     assert flow_states(["a", "b", "c"], "c", keep_open=("a",)) == {"a": OPEN, "b": DONE, "c": CURRENT}
 
 
-def test_download_goes_what_login_list():
-    assert DOWNLOAD_ORDER == ["what", "login", "list"]
-    assert download_stage(picked=False, reading=True, listed=True) == "what"      # 고르기 전에는 늘 ①
-    assert download_stage(picked=True, reading=False, listed=False) == "login"
-    assert download_stage(picked=True, reading=True, listed=False) == "list"
-    assert download_stage(picked=True, reading=False, listed=True) == "list"
+def test_download_goes_docs_project_login_list():
+    # 받을 서류를 먼저, 과제를 그다음에(담당자 2026-10-22 "받을 서류를 먼저 고르고 그다음 과제를 선택하도록")
+    assert DOWNLOAD_ORDER == ["docs", "project", "login", "list"]
+    assert download_stage(docs_picked=False, picked=True, reading=True, listed=True) == "docs"   # 서류를 고르기 전에는 늘 ①
+    assert download_stage(docs_picked=True, picked=False, reading=True, listed=True) == "project"
+    assert download_stage(docs_picked=True, picked=True, reading=False, listed=False) == "login"
+    assert download_stage(docs_picked=True, picked=True, reading=True, listed=False) == "list"
+    assert download_stage(docs_picked=True, picked=True, reading=False, listed=True) == "list"
 
 
 def test_structure_goes_site_open_save_send():
