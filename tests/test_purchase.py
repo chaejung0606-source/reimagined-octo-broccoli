@@ -325,3 +325,18 @@ def test_purchase_documents_are_received_from_a_mock_erp(erp_server, tmp_path):
     assert not any(h in ("/saved", "/requested", "/deleted", "/completed") for h in _Erp.hits)
     assert [st for _i, st, _d in notes if st == "done"] and all(st != "failed" for _i, st, _d in notes)
     assert all(not p.name.endswith(".part") for p in root.rglob("*"))
+
+
+def test_purchase_root_setting_moves_case_folders(tmp_path, monkeypatch):
+    """설정에서 고른 폴더(구글 드라이브 등)가 있으면 그 아래에 과제 폴더 이름 그대로."""
+    from claim_downloader import settings
+    root = tmp_path / "지출결의서"
+    (root / "(202408470001)_2024년도 사업비_1").mkdir(parents=True)
+    drive = tmp_path / "G" / "내 드라이브" / "구매요청(계약) 서류"
+    assert purchase.project_base(root, "202408470001")[0] == root / purchase.FOLDER_NAME / "(202408470001)_2024년도 사업비_1"
+    cfg = settings.load()
+    cfg.purchase_root = str(drive)
+    settings.save(cfg)
+    base, why = purchase.project_base(root, "202408470001")
+    assert base == drive / "(202408470001)_2024년도 사업비_1", why
+    assert purchase.project_base(root, "202408470002")[0] is None   # 과제 폴더가 없으면 여전히 받지 않음

@@ -128,6 +128,28 @@ class SettingsPage(QWidget):
         excel_card.add(self.excel_field)
         column.addWidget(excel_card)
 
+        # 구매요청(계약) 서류 — 용량이 커서 구글 드라이브 데스크톱 폴더에 두게 했다(담당자 2026-10-22). 23절
+        buy_card = Card("구매요청(계약) 서류 저장 위치", "비워 두면 저장 폴더 아래 '구매요청(계약) 서류'")
+        self.purchase_root = QLineEdit(getattr(cfg, "purchase_root", "") or "")
+        self.purchase_root.setPlaceholderText("예: G:\\내 드라이브\\구매요청(계약) 서류")
+        self.purchase_root.editingFinished.connect(
+            lambda: self._save(purchase_root=self.purchase_root.text().strip()))
+        self.purchase_field = Field(
+            "저장 폴더", self.purchase_root,
+            "구글 드라이브 데스크톱의 '내 드라이브' 안을 고르면 받은 서류가 드라이브에 올라가고, 스트리밍으로 두면 이 PC 용량을 거의 쓰지 않습니다. "
+            "그 안에 과제 폴더 이름 그대로 나눠 둡니다.")
+        pick_buy = QPushButton("폴더 선택")
+        pick_buy.clicked.connect(self._browse_purchase)
+        drive = QPushButton("구글 드라이브 찾기")
+        drive.clicked.connect(self._find_drive)
+        clear_buy = QPushButton("비우기")
+        clear_buy.setObjectName("ghost")
+        clear_buy.clicked.connect(lambda: (self.purchase_root.clear(), self._save(purchase_root="")))
+        for b in (pick_buy, drive, clear_buy):
+            self.purchase_field.add_button(b)
+        buy_card.add(self.purchase_field)
+        column.addWidget(buy_card)
+
         # 일반청구 — 세금계산서 조회 팝업에는 산학협력단 전체 계산서가 다 떠서, 내 계산서수신메일로 걸러야 내 건만 보인다
         # (담당자 설명 2026-10-13). 사람마다 다른 값이라 코드에 두지 않고 여기서 받는다.
         claim_card = Card("일반청구", "세금계산서 · 카드 회의비 건을 ERP 에 채울 때 씁니다")
@@ -387,6 +409,39 @@ class SettingsPage(QWidget):
         if path:
             self.excel.setText(path)
             self._save(excel_path=path)
+
+    def _browse_purchase(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "구매요청(계약) 서류 저장 폴더", self.purchase_root.text())
+        if path:
+            self.purchase_root.setText(path)
+            self._save(purchase_root=path)
+
+    def _find_drive(self) -> None:
+        from ... import purchase
+        found = purchase.google_drive_folders()
+        if not found:
+            ask = QMessageBox.question(
+                self, "구글 드라이브",
+                "이 PC 에서 구글 드라이브 데스크톱 폴더('내 드라이브')를 찾지 못했습니다.\n\n"
+                "설치 페이지를 열까요? 설치하고 구글 계정으로 로그인한 뒤 이 단추를 다시 누르세요.\n"
+                "(설치할 때 '스트리밍' 을 고르면 PC 용량을 거의 쓰지 않습니다)")
+            if ask == QMessageBox.Yes:
+                QDesktopServices.openUrl(QUrl("https://www.google.com/drive/download/"))
+            return
+        target = found[0] / purchase.FOLDER_NAME
+        ok = QMessageBox.question(
+            self, "구글 드라이브",
+            f"구글 드라이브 폴더를 찾았습니다:\n{found[0]}\n\n구매요청(계약) 서류를 여기에 받을까요?\n{target}\n\n"
+            "(이미 받은 서류는 옮기지 않습니다 — 필요하면 탐색기에서 옮기세요)")
+        if ok != QMessageBox.Yes:
+            return
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            QMessageBox.warning(self, "구글 드라이브", f"폴더를 만들지 못했습니다: {error}")
+            return
+        self.purchase_root.setText(str(target))
+        self._save(purchase_root=str(target))
 
     def _browse_participants(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

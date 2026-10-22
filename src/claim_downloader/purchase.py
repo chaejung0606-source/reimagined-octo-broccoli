@@ -27,13 +27,14 @@ from __future__ import annotations
 
 import datetime as dt
 import mimetypes
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urljoin
 
-from . import naming, navigate, project_folders
+from . import naming, navigate, project_folders, settings
 
 KIND = "purchase"                      # 받기 표의 줄 종류 — 청구서 줄과 섞여 들어간다(session.download 가 가른다)
 FOLDER_NAME = "구매요청(계약) 서류"     # 저장 폴더 바로 아래, 과제 폴더 옆(담당자가 만들어 둔 이름)
@@ -117,6 +118,40 @@ def case_dir_name(req_no: str, title: str, req_dt: str = "") -> str:
     return f"({stamp}) " + _trim(title or "제목 없음", NAME_ROOM - len(tail) - 9) + tail
 
 
+def google_drive_folders() -> list[Path]:
+    """PC 의 구글 드라이브 데스크톱 '내 드라이브' 폴더 후보 — 있으면 구매 서류 저장 위치로 권한다(담당자 2026-10-22).
+    드라이브 데스크톱은 보통 G: 같은 새 드라이브 글자 아래 '내 드라이브'(영문판 'My Drive')를 만든다. 옛 판은 사용자 폴더의 'Google Drive'."""
+    names = ("내 드라이브", "My Drive")
+    found: list[Path] = []
+    if os.name == "nt":
+        for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
+            for name in names:
+                p = Path(f"{letter}:\\") / name
+                try:
+                    if p.is_dir():
+                        found.append(p)
+                except OSError:
+                    pass
+    home = Path.home()
+    for p in (home / "Google Drive" / "내 드라이브", home / "Google Drive" / "My Drive", home / "Google Drive",
+              home / "내 드라이브", home / "My Drive"):
+        try:
+            if p.is_dir() and p not in found:
+                found.append(p)
+        except OSError:
+            pass
+    return found
+
+
+def purchase_home(out_root: str | Path) -> Path:
+    """구매 서류의 맨 위 폴더 — 설정 purchase_root 가 있으면 그것, 없으면 저장 폴더 아래 '구매요청(계약) 서류'."""
+    chosen = (getattr(settings.load(), "purchase_root", "") or "").strip()
+    if chosen:
+        return Path(chosen)
+    root = Path(out_root)
+    return (root.parent if project_folders.project_of(root) else root) / FOLDER_NAME
+
+
 def project_base(out_root: str | Path, project_no: str) -> tuple[Path | None, str]:
     """그 과제의 구매 서류를 둘 과제 폴더 — `<저장 폴더>/구매요청(계약) 서류/<과제 폴더 이름 그대로>`. 과제 폴더가 없으면 (None, 까닭).
     저장 폴더 자체가 과제 폴더면 그 위에 둔다. 과제 폴더를 새로 만들지는 않는다(22절과 같은 규칙 — 담당자가 만든 과제만)."""
@@ -128,10 +163,10 @@ def project_base(out_root: str | Path, project_no: str) -> tuple[Path | None, st
     if own:
         if project != own:
             return None, f"저장 폴더가 다른 과제({own})의 폴더라 과제 {project} 의 서류는 받지 않았습니다"
-        return root.parent / FOLDER_NAME / root.name, ""
+        return purchase_home(root) / root.name, ""
     mine = project_folders.by_project(root).get(project, [])
     if len(mine) == 1:
-        return root / FOLDER_NAME / mine[0].path.name, ""
+        return purchase_home(root) / mine[0].path.name, ""
     if mine:
         return None, f"과제 {project} 의 폴더가 {len(mine)}개라 받지 않았습니다 — 하나만 남기세요"
     return None, f"저장 폴더에 과제 {project} 의 폴더가 없어 받지 않았습니다 — 받으려면 '({project})_…' 폴더를 만드세요"
