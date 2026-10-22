@@ -22,7 +22,7 @@ from ... import settings
 from ..art import Art
 from ..flow import CURRENT, HIDDEN, ChoiceCard, FlowStep
 from ..flowlogic import STRUCTURE_ORDER, flow_states, structure_stage
-from ..report_dialog import show_structure_saved
+from ..report_dialog import save_structure_to_desktop, show_structure_saved
 from ..widgets import Pill, muted_label
 from ..worker import SessionWorker
 
@@ -155,6 +155,12 @@ class StructurePage(QWidget):
             button.setObjectName("primary" if i == 0 else "ghost")
             button.clicked.connect(lambda _c=False, path=path: self._open_file(path()))
             row.addWidget(button)
+        # 사용자 폴더를 찾아 들어가지 않아도 보낼 수 있게(담당자 2026-10-22 "폴더열기 버튼 옆에도 바탕화면 저장하기 버튼")
+        desktop = QPushButton("바탕화면에 저장")
+        desktop.setObjectName("ghost")
+        desktop.setToolTip("모음 파일을 바탕화면에 복사합니다(저장한 때를 이름에 붙여, 덮어쓰지 않음)")
+        desktop.clicked.connect(lambda: save_structure_to_desktop(self))
+        row.addWidget(desktop)
         row.addStretch(1)
         step.add_layout(row)
         return step

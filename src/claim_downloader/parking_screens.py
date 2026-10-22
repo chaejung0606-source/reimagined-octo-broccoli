@@ -20,7 +20,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from . import parking
+from . import parking, parking_ledger
 
 APPLY_PATH = "/discount-apply"
 HISTORY_PATH = "/discount-history"
@@ -198,6 +198,7 @@ class ApplyReport:
     capture: bool = False         # 멈춘 화면의 모양을 남길지(실측 전이라 — session.py 가 _화면구조_모음.txt 에)
     saved: str = ""               # 남긴 화면 구조 파일 이름(session.save_parking_screen)
     ticket: str = ""              # 고른 할인권 글자
+    left_before: int | None = None   # 보유 할인권 글자에 보인 남은 수(누르기 전) — 적용되면 1 줄어든 수가 사이트 잔량
     note: str = ""
     steps: list[str] = field(default_factory=list)
     messages: list[str] = field(default_factory=list)   # 사이트 알림(차량번호는 가림)
@@ -346,6 +347,7 @@ def apply_discount(page, car: str, log: Callable[[str], None], wait: Callable[[f
         if ticket is None:
             return stop(f"보유 할인권에서 '{word}' 를 찾지 못했습니다")
         report.ticket = product_label(ticket[1].get("text", "")) or word
+        report.left_before = parking_ledger.left_of(ticket[1].get("text", ""))
         why = _click(frame, f"ticket-{ticket[0]}")
         if why:
             return stop(f"보유 할인권 '{report.ticket}' 를 누르지 못했습니다: " + why)
@@ -440,6 +442,7 @@ class HistoryReport:
     rows: list[list[str]] = field(default_factory=list)
     empty_note: str = ""          # 사이트가 띄운 '내역 없음' 글
     pager: str = ""               # 쪽 넘기기 글자 — 있으면 첫 쪽만 읽은 것
+    products: list[str] = field(default_factory=list)   # 같이 읽은 할인권 상품 보기(보유 잔량, parking_link.read_products)
     total: str = ""               # 화면의 '총 N건'
     read_at: str = ""
     steps: list[str] = field(default_factory=list)

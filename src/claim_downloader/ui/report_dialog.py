@@ -9,8 +9,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QStandardPaths, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -27,6 +28,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import diagnose, settings
+from ..minutes import logbook
 from .widgets import Pill, PillDelegate, WrapLabel
 
 MAX_WIDTH, MAX_HEIGHT = 1120, 720
@@ -194,13 +197,35 @@ def show_structure_saved(parent: QWidget | None, path: str) -> None:
     if not path:
         QMessageBox.warning(parent, "화면 구조 저장", "화면 구조를 저장하지 못했습니다. 고른 사이트의 창이 열려 있는지 보고, 그대로면 [문제 보내기] 로 기록을 보내 주세요.")
         return
-    answer = QMessageBox.question(
-        parent, "화면 구조 저장",
-        f"지금 열린 화면의 구조를 저장했습니다.\n{path}\n\n"
-        "이 파일을 담당자(Claude)에게 보내면 그 화면의 자동화를 설계할 수 있습니다. "
-        "계좌번호 같은 값이 섞일 수 있으니 빈 작성 화면에서 저장한 것인지 확인하세요.\n"
-        "화면 여러 개를 차례로 저장했으면 같은 폴더의 _화면구조_모음.txt 에 모두 모여 있습니다 — 그 파일 하나만 보내셔도 됩니다.\n\n"
-        "지금 열어 볼까요?",
-        QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-    if answer == QMessageBox.Yes:
+    box = QMessageBox(QMessageBox.Question, "화면 구조 저장",
+                      f"지금 열린 화면의 구조를 저장했습니다.\n{path}\n\n"
+                      "이 파일을 담당자(Claude)에게 보내면 그 화면의 자동화를 설계할 수 있습니다. "
+                      "계좌번호 같은 값이 섞일 수 있으니 빈 작성 화면에서 저장한 것인지 확인하세요.\n"
+                      "화면 여러 개를 차례로 저장했으면 같은 폴더의 _화면구조_모음.txt 에 모두 모여 있습니다 — 그 파일 하나만 보내셔도 됩니다.\n\n"
+                      "[바탕화면에 저장] 을 누르면 모음 파일을 바탕화면에 복사합니다 — 그 파일을 보내 주세요.", parent=parent)
+    desktop = box.addButton("바탕화면에 저장", QMessageBox.AcceptRole)
+    opened = box.addButton("열어 보기", QMessageBox.ActionRole)
+    box.addButton("닫기", QMessageBox.RejectRole)
+    box.setDefaultButton(desktop)
+    box.exec()
+    if box.clickedButton() is desktop:
+        save_structure_to_desktop(parent)
+    elif box.clickedButton() is opened:
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
+
+def desktop_dir() -> Path:
+    """윈도우의 바탕화면(OneDrive 로 옮겨진 것도 — Qt 가 알려 준다). 모르면 홈의 Desktop."""
+    found = QStandardPaths.writableLocation(QStandardPaths.DesktopLocation)
+    return Path(found) if found else Path.home() / "Desktop"
+
+
+def save_structure_to_desktop(parent: QWidget | None) -> None:
+    """저장한 화면 구조(모음 파일)를 바탕화면에 복사하고 알린다 — 안내창과 '화면 구조 저장' ④ 의 단추가 같이 쓴다(담당자 2026-10-22)."""
+    try:
+        target = diagnose.copy_to_desktop(desktop_dir(), settings.structure_book_path(), settings.structure_path())
+    except OSError as error:
+        QMessageBox.warning(parent, "바탕화면에 저장", f"바탕화면에 저장하지 못했습니다: {error}")
+        return
+    logbook.log(f"화면 구조를 바탕화면에 저장했습니다 — {target.name}")
+    QMessageBox.information(parent, "바탕화면에 저장", f"바탕화면에 저장했습니다.\n{target}\n\n이 파일을 보내 주세요.")

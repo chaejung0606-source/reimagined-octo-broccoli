@@ -189,6 +189,13 @@ QLabel#kpiLabel   {{ font-size: {f['small']}px; font-weight: 500; color: {c['tex
 QLabel#kpiValue   {{ font-size: {f['kpi']}px; font-weight: 600; color: {c['text']}; }}
 QLabel#kpiCaption {{ font-size: {f['caption']}px; color: {c['text_faint']}; }}
 
+/* 관리대장 잔여 상자 — 표 위에서 남은 공무확인증 수만 크게 */
+QFrame#leftBox {{ background: {c['selection']}; border: 1px solid {c['lavender']}; border-radius: {r_card}px; }}
+QLabel#leftLabel {{ font-size: {f['section']}px; font-weight: 600; color: {c['text_muted']}; }}
+QLabel#leftValue {{ font-size: {f['count']}px; font-weight: 700; color: {c['primary_hover']}; }}
+QLabel#leftUnit  {{ font-size: {f['section']}px; font-weight: 600; color: {c['primary_hover']}; }}
+QLabel#leftNote  {{ font-size: {f['small']}px; color: {c['text_muted']}; }}
+
 /* 상태 배지 — 색과 글자를 함께 */
 {''.join(f"QLabel#pill_{n} {{ background: {bg}; color: {fg}; border-radius: 10px; padding: 2px 9px; font-size: {f['caption']}px; font-weight: 500; }}" for n, (fg, bg) in STATUS.items())}
 

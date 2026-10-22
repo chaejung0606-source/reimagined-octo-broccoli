@@ -1,12 +1,13 @@
-"""주차등록 화면의 '관리대장'(1단계 카드 이름 — 담당자 2026-10-22) — 공무확인증 관리대장(앱에 적은 것) + 사이트 할인 내역(읽기만). 담당자 요청 2026-10-21.
+"""주차등록 화면의 '관리대장'(1단계 카드 이름 — 담당자 2026-10-22) — 공무확인증 관리대장 하나만 보인다. 담당자 요청 2026-10-21.
 
 담당자: "할인내역을 볼때 공무확인증 관리대장으로 확인하고 엑셀파일로 다운받을 수 있도록" · "이전 공무확인증 관리대장에는 일자, 수량(구입,배부,잔여),
 내용, 사용자 항목이 있었습니다". 대장은 parking_ledger.py(사용자 폴더의 _공무확인증관리대장.json)에 있다.
 
 - 표의 내용 · 사용자 · 차량번호 · 비고 · 구입 · 배부 · 일자는 그 자리에서 고친다(두 번 누르기). 잔여는 앱이 셈한다.
 - [줄 추가] 로 구입(이월) · 배부를 적는다. 할인 적용 · 할인 링크에서 적은 줄은 그 화면이 넣는다(pages/parking.py).
-- [사이트 할인 내역 불러오기] 는 사이트 '운영 → 할인 내역' 의 첫 쪽을 읽어(읽기만) 대장과 차량번호 · 일자로 맞춰 보고, 대장에 없는 공무확인증 줄은
-  바로 관리대장 양식으로 넣는다(2026-10-22) — 사용자 · 내용은 표에서 채운다.
+- 사이트 할인 내역은 화면에 보이지 않는다(담당자 2026-10-22 "어플에서는 사이트 할인 내역을 보지 않고 관리대장 양식으로만 사용내역을 파악") —
+  1단계에서 관리대장을 고를 때마다(1분 안에 다시 열면 그대로) · 열어 둔 동안 10분마다 · [사이트에서 가져오기] 로 창 없이 읽어(읽기만) 대장과 차량번호 · 일자로 맞춰 보고, 대장에 없는 공무확인증 사용은
+  링크 · QR 로 쓴 것까지 바로 관리대장 양식으로 넣는다 — 사용자 · 내용은 공란. 같이 읽은 보유 잔량으로 처음 수량 · 줄마다 잔여를 다시 센다(fit_to_site).
 - 구글 시트를 연결했으면(설정 → 관리대장 구글 시트, parking_sheet.py) 화면을 열 때 · 대장을 고친 뒤 시트의 '관리대장' 탭과 맞추고(뒤 스레드 — ui/sheet_sync.py),
   불러온 사이트 할인 내역은 '할인내역' 탭에 쌓는다.
 """
@@ -14,8 +15,9 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import time
 
-from PySide6.QtCore import QDate, Qt, QUrl, Signal
+from PySide6.QtCore import QDate, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -23,14 +25,15 @@ from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
     QRadioButton,
     QSpinBox,
-    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -38,9 +41,12 @@ from PySide6.QtWidgets import (
 )
 
 from ... import parking_ledger as ledger
-from ... import parking_sheet, settings
+from ... import parking, parking_sheet, settings
 from ..sheet_sync import instance as sheet_sync
-from ..widgets import Card, EmptyState, Field, Pill, muted_label
+from ..widgets import Field, Pill, muted_label
+
+REREAD_GAP_S = 60                   # 관리대장을 닫았다 곧 다시 열면(탭을 오가면) 다시 가져오지 않는다
+AUTO_READ_MS = 10 * 60 * 1000       # 관리대장을 열어 둔 동안 사이트에서 다시 가져오는 간격 — 링크 · QR 로 쓴 것도 바로바로(담당자 2026-10-22)
 
 # (머리글, Entry 칸) — 잔여 · 적은 곳은 앱이 채운다(고칠 수 없음)
 COLUMNS = [("일자", "date"), ("구입", "bought"), ("배부", "given"), ("잔여", ""), ("내용", "content"), ("사용자", "user"),
@@ -111,11 +117,71 @@ class AddDialog(QDialog):
                             source="manual")
 
 
-class LedgerPanel(QWidget):
-    """관리대장 표 + 사이트 할인 내역(불러오면 아래에)."""
+class LeftBox(QFrame):
+    """표 위의 잔여 상자 — 남은 공무확인증 수를 크게(담당자 2026-10-22 "잔여만 바로 확인할 수 있도록 … 잘보이는 크기로").
+    옆에는 사이트 보유 잔량과 맞는지 배지와 처음 수량 · 구입 · 배부 한 줄."""
 
-    read_site = Signal()           # [사이트 할인 내역 불러오기] — 화면이 브라우저 스레드에 맡긴다
-    changed = Signal()             # 대장이 바뀜 — 할인 적용 · 링크 칸의 사용자 · 내용 보기를 다시 채운다
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("leftBox")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(20, 12, 20, 12)
+        row.setSpacing(16)
+        number = QVBoxLayout()
+        number.setSpacing(0)
+        number.addWidget(QLabel("공무확인증 잔여", objectName="leftLabel"))
+        value_row = QHBoxLayout()
+        value_row.setSpacing(4)
+        self.value = QLabel("—", objectName="leftValue")
+        value_row.addWidget(self.value, 0, Qt.AlignBottom)
+        self.unit = QLabel("개", objectName="leftUnit")
+        value_row.addWidget(self.unit, 0, Qt.AlignBottom)
+        value_row.addStretch(1)
+        number.addLayout(value_row)
+        row.addLayout(number, 0)
+        notes = QVBoxLayout()
+        notes.setSpacing(6)
+        notes.addStretch(1)
+        self.state = Pill("사이트 잔량 아직 안 읽음", "neutral")
+        notes.addWidget(self.state, 0, Qt.AlignLeft)
+        self.site = QLabel("", objectName="leftNote")
+        self.site.setWordWrap(True)
+        notes.addWidget(self.site)
+        self.counts = QLabel("", objectName="leftNote")
+        self.counts.setWordWrap(True)
+        notes.addWidget(self.counts)
+        notes.addStretch(1)
+        row.addLayout(notes, 1)
+
+    def show_counts(self, entries: list[ledger.Entry], rows) -> None:
+        bought, given, left = ledger.totals(entries)
+        start = sum(e.bought for e in entries if e.source == ledger.CARRY)
+        cfg = settings.load()
+        site = cfg.parking_left if cfg.parking_left >= 0 else None
+        shown = left if entries else site
+        self.value.setText(f"{shown:,}" if shown is not None else "—")
+        self.unit.setVisible(shown is not None)
+        if not entries:
+            self.counts.setText("아직 적은 줄이 없습니다 — 사이트에서 사용내역 · 보유 잔량을 가져오면 채워집니다.")
+        else:
+            self.counts.setText((f"처음 수량 {start:,} · " if start else "") + f"구입 {bought - start:,} · 배부 {given:,}")
+        self.site.setText(f"사이트 보유 잔량 {site:,} ({cfg.parking_left_at} 읽음)" if site is not None
+                          else "사이트 보유 잔량은 아직 읽지 않았습니다.")
+        if entries and any(n < 0 for _e, n in rows):
+            self.state.set_status("잔여가 0 아래인 줄이 있음 — 사이트에서 가져오면 다시 셈", "danger")
+        elif site is None:
+            self.state.set_status("사이트 잔량 아직 안 읽음", "neutral")
+        elif not entries or left == site:
+            self.state.set_status("사이트 잔량과 같음", "success")
+        else:
+            self.state.set_status(f"사이트 잔량과 {abs(left - site):,} 다름 — 사이트에서 가져오면 맞춤", "warning")
+
+
+class LedgerPanel(QWidget):
+    """관리대장 표 — 사이트에서 가져온 사용까지 이 양식 하나로 본다."""
+
+    read_site = Signal()           # 사이트에서 사용내역 · 보유 잔량 가져오기 — 화면이 브라우저 스레드에 맡긴다
+    changed = Signal()             # 대장이 바뀜
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -124,9 +190,14 @@ class LedgerPanel(QWidget):
         layout.setSpacing(10)
         self._entries: list[ledger.Entry] = []
         self._filling = False
-        self._site_headers: list[str] = []
-        self._site_rows: list[list[str]] = []
-        self._match: ledger.SiteMatch | None = None
+        self._busy = False
+        self._read_at = 0.0                # 마지막으로 사이트에서 가져온 때(time.monotonic) — 열 때마다 가져오되 1분 안에는 다시 안 함
+        self._auto = QTimer(self)
+        self._auto.setInterval(AUTO_READ_MS)
+        self._auto.timeout.connect(self._auto_read)
+
+        self.left_box = LeftBox()              # 표보다 먼저 — 남은 수가 맨 위에 크게
+        layout.addWidget(self.left_box)
 
         bar = QHBoxLayout()
         bar.setSpacing(8)
@@ -143,14 +214,14 @@ class LedgerPanel(QWidget):
         self.export_button.clicked.connect(self._export)
         bar.addWidget(self.export_button)
         bar.addStretch(1)
-        self.site_button = QPushButton("사이트 할인 내역 불러오기")
-        self.site_button.setToolTip("사이트 '운영 → 할인 내역' 의 첫 쪽을 읽어(읽기만) 대장과 맞춰 봅니다")
+        self.site_button = QPushButton("사이트에서 가져오기")
+        self.site_button.setToolTip("주차 사이트의 할인 내역(첫 쪽)과 보유 잔량을 창 없이 읽어, 대장에 없는 사용을 넣고 잔여를 다시 셉니다(사이트는 읽기만)")
         self.site_button.clicked.connect(self.read_site.emit)
         bar.addWidget(self.site_button)
         layout.addLayout(bar)
-        self.totals = muted_label("")
-        self.totals.setWordWrap(True)
-        layout.addWidget(self.totals)
+        self.site_line = muted_label("")             # 사이트에서 가져온 결과 한 줄 — 표는 보이지 않는다
+        self.site_line.setWordWrap(True)
+        layout.addWidget(self.site_line)
         # 구글 시트 — 연결했으면 맞춘 때 · [지금 맞추기] · [시트 열기]
         sheet_row = QHBoxLayout()
         sheet_row.setSpacing(8)
@@ -193,55 +264,6 @@ class LedgerPanel(QWidget):
         self.table.setMinimumHeight(self.table.verticalHeader().defaultSectionSize() * 5 + head.sizeHint().height())
         layout.addWidget(self.table, 1)
 
-        # 사이트 할인 내역 — 불러오면 보인다
-        self.site_card = Card("사이트 할인 내역", "사이트 '운영 → 할인 내역' 이 처음 보여 주는 쪽입니다(읽기만). 앱에는 남기지 않습니다.",
-                              margins=(16, 14, 16, 12))
-        site_bar = QHBoxLayout()
-        site_bar.setSpacing(8)
-        self.site_filter = QLineEdit()
-        self.site_filter.setPlaceholderText("찾기 — 차량번호 · 상품 등")
-        self.site_filter.setClearButtonEnabled(True)
-        self.site_filter.textChanged.connect(self._filter_site)
-        site_bar.addWidget(self.site_filter, 1)
-        self.site_state = Pill("안 읽음", "neutral")
-        site_bar.addWidget(self.site_state, 0, Qt.AlignVCenter)
-        self.site_card.add_layout(site_bar)
-        self.site_info = muted_label("")
-        self.site_info.setWordWrap(True)
-        self.site_card.add(self.site_info)
-        match_row = QHBoxLayout()
-        self.match_label = muted_label("")
-        self.match_label.setWordWrap(True)
-        match_row.addWidget(self.match_label, 1)
-        self.import_button = QPushButton("링크 · QR 로 쓴 줄도 넣기")
-        self.import_button.setObjectName("ghost")
-        self.import_button.setToolTip("링크 · QR 로 쓴 공무확인증은 링크를 만들 때 배부로 적었을 수 있어 저절로 넣지 않습니다 — 적지 않았으면 누르세요")
-        self.import_button.clicked.connect(self._import_site)
-        match_row.addWidget(self.import_button, 0, Qt.AlignVCenter)
-        self.site_card.add_layout(match_row)
-        self.site_stack = QStackedWidget()
-        self.site_empty = EmptyState("overview", "할인 내역이 없습니다", "")
-        self.site_stack.addWidget(self.site_empty)
-        self.site_table = QTableWidget(0, 0)
-        table = self.site_table
-        table.verticalHeader().hide()
-        table.verticalHeader().setDefaultSectionSize(32)
-        table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SingleSelection)
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        table.setShowGrid(False)
-        table.setWordWrap(False)
-        table.setTextElideMode(Qt.ElideRight)
-        site_head = table.horizontalHeader()
-        site_head.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        site_head.setStretchLastSection(True)
-        site_head.setHighlightSections(False)
-        site_head.setSectionResizeMode(QHeaderView.Interactive)
-        table.setMinimumHeight(table.verticalHeader().defaultSectionSize() * 4 + site_head.sizeHint().height())
-        self.site_stack.addWidget(table)
-        self.site_card.add(self.site_stack, 1)
-        self.site_card.hide()
-        layout.addWidget(self.site_card, 1)
         self.reload()
 
     # ── 대장 ────────────────────────────────────────────────────────────
@@ -268,17 +290,7 @@ class LedgerPanel(QWidget):
                 table.setItem(r, c, item)
         table.resizeColumnsToContents()
         self._filling = False
-        bought, given, left = ledger.totals(self._entries)
-        text = f"구입 {bought:,} · 배부 {given:,} · 잔여 {left:,}"
-        site = ledger.site_left(settings.load().parking_products, settings.load().parking_product)
-        if site is not None:
-            text += f"  ·  사이트 잔량 {site:,}(마지막으로 [등록] 할 때 읽은 값)"
-        if not self._entries:
-            text = "아직 적은 줄이 없습니다 — 처음이면 [줄 추가] 로 지금 남은 공무확인증 수를 '구입(이월)' 으로 적으세요."
-        elif any(left < 0 for _e, left in rows):
-            text += "  ·  잔여가 0 아래인 줄이 있습니다 — 구입(이월) 줄을 그보다 앞 일자로 적으세요."
-        self.totals.setText(text)
-        self._rematch()
+        self.left_box.show_counts(self._entries, rows)
         self._sync()
 
     def _edited(self, item: QTableWidgetItem) -> None:
@@ -355,6 +367,10 @@ class LedgerPanel(QWidget):
         super().showEvent(event)
         self.reload()
         self._sheet_row()
+        self._auto.start()
+        # 1단계에서 관리대장을 고를 때마다 사이트에서 가져온다(담당자 2026-10-22 — 전에는 [사이트 할인 내역 불러오기] 를 눌러야 했다)
+        if time.monotonic() - self._read_at > REREAD_GAP_S:
+            QTimer.singleShot(400, self._auto_read)
         if sheet_sync().connected():
             self._sheet_busy()
             sheet_sync().run_now()             # 열 때마다 시트에서 고친 것을 가져온다
@@ -391,138 +407,83 @@ class LedgerPanel(QWidget):
 
     def _on_history_saved(self, result) -> None:
         if result.ok and result.added:
-            self.site_info.setText(self.site_info.text() + f"\n구글 시트 '할인내역' 탭에 새 줄 {result.added}개를 쌓았습니다.")
+            self.site_line.setText(self.site_line.text() + f" · 구글 시트 '할인내역' 탭에 {result.added}줄 쌓음")
         elif not result.ok and result.note not in ("연결 안 됨", "줄 없음"):
-            self.site_info.setText(self.site_info.text() + "\n" + result.note)
+            self.site_line.setText(self.site_line.text() + " · " + result.note)
 
     def _open_sheet(self) -> None:
         url = parking_sheet.load_config().sheet_url
         if url:
             QDesktopServices.openUrl(QUrl(url))
 
-    # ── 사이트 할인 내역 ─────────────────────────────────────────────────
+    # ── 사이트에서 가져오기 ───────────────────────────────────────────────
+    def _auto_read(self) -> None:
+        """화면을 열어 둔 동안 — 다른 일을 하는 중이 아니고 주차 로그인 정보가 있을 때만."""
+        if not self.isVisible() or self._busy:
+            return
+        if not parking.saved_user():
+            self.site_line.setText("설정 → '주차등록 로그인 정보' 를 넣으면 관리대장을 열 때마다 사이트 사용내역 · 보유 잔량을 저절로 가져옵니다.")
+            return
+        self.read_site.emit()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._auto.stop()
+
     def site_loading(self) -> None:
-        self.site_card.show()
-        self.site_state.set_status("읽는 중", "info")
-        self.site_info.setText("주차 사이트의 할인 내역 화면을 여는 중입니다…")
+        self.site_line.setText("사이트에서 사용내역 · 보유 잔량을 가져오는 중입니다(창 없이)…")
 
     def site_failed(self, message: str) -> None:
-        self.site_card.show()
-        self.site_state.set_status("못 읽음", "danger")
-        self.site_info.setText(message)
+        self.site_line.setText("사이트에서 가져오지 못했습니다 — " + message)
 
     def show_site(self, report) -> None:
-        self.site_card.show()
+        """사이트 할인 내역(첫 쪽)과 보유 잔량 — 표로 보이지 않고 대장에만 넣는다(담당자 2026-10-22)."""
         if not report.ok:
-            self.site_failed("\n".join(report.lines()))
+            self.site_failed(" ".join(report.lines()).lstrip("✗ "))
             return
-        rows = report.rows
-        width = max([len(report.headers)] + [len(r) for r in rows] + [1])
-        headers = [ledger.clean_header(h) for h in report.headers] + [f"칸 {i + 1}" for i in range(len(report.headers), width)]
-        self._site_headers, self._site_rows = headers, rows
-        table = self.site_table
-        table.clearContents()
-        table.setColumnCount(width)
-        table.setRowCount(len(rows))
-        table.setHorizontalHeaderLabels(headers)
-        for r, cells in enumerate(rows):
-            for c in range(width):
-                text = cells[c] if c < len(cells) else ""
-                item = QTableWidgetItem(text)
-                item.setToolTip(text)
-                table.setItem(r, c, item)
-        table.resizeColumnsToContents()
-        self.site_stack.setCurrentIndex(1 if rows else 0)
-        if not rows:
-            self.site_empty.set_content("overview", "할인 내역이 없습니다",
-                                        report.empty_note or "사이트가 처음 보여 주는 쪽에 줄이 없습니다 — 다른 기간은 브라우저에서 봅니다.")
-        info = [f"{report.read_at} 에 읽음" + (f" · 사이트 {report.total}" if report.total else "")]
-        if report.pager:
-            info.append("사이트가 처음 보여 주는 쪽만 읽었습니다 — 다른 쪽 · 다른 기간은 브라우저 화면에서 봅니다.")
-        self.site_info.setText(" · ".join(info))
-        self._rematch()
-        sheet_sync().save_history(self._site_headers, self._site_rows)     # 구글 시트 '할인내역' 탭에 쌓기(연결했으면)
-        added = self._fill_from_site()
-        if added:
-            self.site_info.setText(self.site_info.text() + f"\n대장에 없던 공무확인증 사용 {added}줄을 관리대장에 넣었습니다(배부 1 · 일자 · 차량번호 · 비고). "
-                                   "사용자 · 내용은 사이트에 없어 비워 두었습니다 — 표에서 두 번 눌러 채우세요.")
-        self._filter_site(self.site_filter.text())
-
-    def _fill_from_site(self) -> int:
-        """사이트 할인 내역 중 대장에 없는 공무확인증 줄을 관리대장 양식으로 넣는다(담당자 2026-10-22 "관리대장 양식에 맞춰서 정보 기입해주세요.
-        없는 정보는 공란으로"). 같은 날 · 같은 차는 한 번만 — 다시 불러와도 겹치지 않는다. 링크 · QR 로 쓴 줄은 단추로(match.linked)."""
-        match = self._match
-        if match is None or not match.ok or not match.missing:
-            return 0
-        entries = ledger.from_site(self._site_headers, self._site_rows, match.missing, match)
-        with ledger._LOCK:
-            stored = ledger.load() + entries
-            ledger.save(stored)
-        self._show(stored)
-        self._local_change()
-        return len(entries)
-
-    def _rematch(self) -> None:
-        """사이트 줄마다 대장에 있는지 — 차량번호 · 일자. 없는 줄은 [대장에 넣기]."""
-        if not self._site_rows:
-            self._match = None
-            self.match_label.setText("")
-            self.import_button.hide()
-            return
-        match = self._match = ledger.match_site(self._entries, self._site_headers, self._site_rows)
+        self._read_at = time.monotonic()
+        headers = [ledger.clean_header(h) for h in report.headers]
+        sheet_sync().save_history(headers, report.rows)        # 구글 시트 '할인내역' 탭에 쌓기(연결했으면)
+        parts = [f"{report.read_at} 에 사이트에서 가져옴"]
+        match = ledger.match_site(self._entries, headers, report.rows)
         if not match.ok:
-            self.match_label.setText(match.note + " — 표를 보고 [줄 추가] 로 직접 적으세요.")
-            self.import_button.hide()
-            return
-        parts = [f"공무확인증 {len(match.matched) + len(match.missing) + len(match.linked)}줄 중 대장에 있는 줄 {len(match.matched)}"]
-        if match.missing:
-            parts.append(f"대장에 없는 줄 {len(match.missing)}")
-        if match.linked:
-            parts.append(f"링크 · QR 로 쓴 줄 {len(match.linked)}(대장에 없음 — 링크를 만들 때 배부로 적었으면 넣지 않아도 됩니다)")
-        if match.others:
-            parts.append(f"공무확인증이 아닌 할인 {len(match.others)}줄은 대장과 상관없음")
-        self.match_label.setText(" · ".join(parts))
-        self.import_button.setVisible(bool(match.linked))
-        self.import_button.setText(f"링크 · QR 로 쓴 줄도 넣기 ({len(match.linked)}줄)")
-        missing = set(match.missing) | set(match.linked)
-        for r in range(self.site_table.rowCount()):
-            for c in range(self.site_table.columnCount()):
-                item = self.site_table.item(r, c)
-                if item is not None:
-                    font = item.font()
-                    font.setBold(r in missing)            # 대장에 없는 줄은 굵게 — 색만으로 알리지 않는다
-                    item.setFont(font)
-
-    def _import_site(self) -> None:
-        """링크 · QR 로 쓴 줄 — 링크를 만들 때 배부로 적지 않았을 때만 사람이 넣는다(겹쳐 세지 않게)."""
-        match = self._match
-        if match is None or not match.ok or not match.linked:
-            return
-        entries = ledger.from_site(self._site_headers, self._site_rows, match.linked, match)
-        if QMessageBox.question(self, "링크 · QR 로 쓴 줄 넣기", f"링크 · QR 로 쓴 공무확인증 {len(entries)}줄을 배부 1 줄씩 관리대장에 넣을까요?\n"
-                                "링크를 만들 때 배부 수량으로 이미 적었다면 두 번 세게 됩니다.",
-                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
-            return
-        with ledger._LOCK:
-            stored = ledger.load() + entries
-            ledger.save(stored)
-        self._show(stored)
+            parts.append(match.note)
+        elif match.missing:
+            with ledger._LOCK:
+                stored = ledger.load() + ledger.from_site(headers, report.rows, match.missing, match)
+                ledger.save(stored)
+            parts.append(f"새 사용 {len(match.missing)}건을 관리대장에 넣음(사용자 · 내용은 공란)")
+        else:
+            parts.append("새 사용 없음")
+        if report.pager:
+            parts.append("사이트 첫 쪽만 읽음")
+        count = ledger.site_count(report.products)
+        if count is not None:
+            fit = self.fit_site(count, save=False)
+            parts.append(f"보유 잔량 {count:,} → 처음 수량 {fit.start:,}")
+            if fit.short:
+                parts.append(f"대장의 구입이 보유 잔량보다 {fit.short:,} 많습니다 — 대장에 없는 사용이 있거나 구입 줄이 틀렸습니다")
+        elif report.products:
+            parts.append("할인권 보기에 공무확인증 잔량이 없어 잔여는 그대로")
+        self.reload()
         self._local_change()
+        self.site_line.setText(" · ".join(parts))
 
-    def _filter_site(self, text: str) -> None:
-        word = _squash(text)
-        shown = 0
-        for r, cells in enumerate(self._site_rows):
-            hide = bool(word) and not any(word in _squash(c) for c in cells)
-            self.site_table.setRowHidden(r, hide)
-            shown += not hide
-        total = len(self._site_rows)
-        if total:
-            self.site_state.set_status(f"{shown}/{total}줄" if word else f"{total}줄", "success")
-        elif self._site_headers or self.site_card.isVisible():
-            self.site_state.set_status("0줄", "neutral")
+    def fit_site(self, count: int, save: bool = True) -> ledger.Fit:
+        """사이트 보유 잔량을 막 읽었을 때 — 처음 수량 줄을 다시 셈하고 줄마다 잔여를 다시 그린다(parking_ledger.fit_to_site)."""
+        when = dt.datetime.now().strftime("%m-%d %H:%M")
+        settings.update(parking_left=count, parking_left_at=when)
+        with ledger._LOCK:
+            fit = ledger.fit_to_site(ledger.load(), count, when)
+            if fit.changed:
+                ledger.save(fit.entries)
+        if save:
+            self.reload()
+            self._local_change()
+        return fit
 
     def set_busy(self, busy: bool) -> None:
+        self._busy = busy
         self.site_button.setEnabled(not busy)
 
     def _sync(self) -> None:
