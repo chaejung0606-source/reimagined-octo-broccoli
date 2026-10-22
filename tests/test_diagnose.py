@@ -189,7 +189,7 @@ def test_ibsheet_api_and_images_are_read_in_a_real_browser():
     assert [c["save"] for c in v8["cols"]] == ["sChk", "PURCH_REQ_NO", "PURCH_CONT"] and v8["cols"][1]["head"] == "구매요청번호"
     assert v8["cols"][1]["type"] == "Text"
     assert v8["sample"] == [["0", "20…", "노트북 구입"], ["0", "20…", "용역"]]           # 긴 번호는 가림
-    assert "GetDataRows" in v8["funcs"] and "SetValue" not in v8["funcs"]
+    assert "GetDataRows" in v8["funcs"] and "SetValue" in v8["funcs"]      # 이름은 다 적되 부르지는 않는다(SetValue 는 부르면 던진다)
     assert v7["total"] == 2 and [c["save"] for c in v7["cols"]] == ["sChk", "PURCH_REQ_NO", "PURCH_CONT"]
     assert v7["sample"] == [["", "20…", "노트북 구입"], ["", "20…", "용역"]]
     images = probe["images"]
