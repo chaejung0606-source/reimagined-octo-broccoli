@@ -600,11 +600,53 @@ def fetch(page, url: str):
     return body, ctype, ""
 
 
-def _save(page, base_url: str, href: str, dest: Path, log: Callable[[str], None]) -> str:
+# 실제 ERP(2026-10-22 17:41)에서 page.request.get 이 파일마다 HTML 을 받았다 — 쿠키만으로는 안 되고
+# 화면 안에서 부른 요청(같은 출처 · Referer)이어야 주는 것으로 본다. 그래서 그 프레임 안에서 fetch 해 받는다.
+FRAME_FETCH_JS = r"""
+async (href) => {
+  try {
+    const r = await fetch(href, {credentials: 'include'});
+    const ctype = (r.headers.get('content-type') || '').toLowerCase();
+    const buf = new Uint8Array(await r.arrayBuffer());
+    const head = String.fromCharCode.apply(null, buf.slice(0, 15)).trim().toLowerCase();
+    if (ctype.startsWith('text/html') || head.startsWith('<!doctype') || head.startsWith('<html')) {
+      const text = new TextDecoder().decode(buf.slice(0, 4000));
+      const m = text.match(/<title[^>]*>([^<]{0,60})/i);
+      return {ok: false, why: 'HTML 이 왔습니다' + (m ? " (제목 '" + m[1].trim() + "')" : '') + ' · HTTP ' + r.status};
+    }
+    if (!r.ok) return {ok: false, why: 'HTTP ' + r.status};
+    if (!buf.length) return {ok: false, why: '빈 파일'};
+    let bin = '';
+    for (let i = 0; i < buf.length; i += 32768) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 32768));
+    return {ok: true, ctype, data: btoa(bin)};
+  } catch (e) { return {ok: false, why: String(e).slice(0, 120)}; }
+}
+"""
+
+
+def fetch_in(frame, page, url: str):
+    """그 화면 안에서 받기 → 안 되면 page.request 로. (bytes, content_type, 까닭)."""
+    why_frame = ""
+    if frame is not None:
+        try:
+            got = frame.evaluate(FRAME_FETCH_JS, url) or {}
+        except Exception as error:  # noqa: BLE001
+            got = {"why": str(error).splitlines()[0][:120] if str(error) else type(error).__name__}
+        if got.get("ok"):
+            import base64
+            return base64.b64decode(got.get("data") or ""), str(got.get("ctype") or ""), ""
+        why_frame = str(got.get("why") or "")
+    body, ctype, why = fetch(page, url)
+    if body is None and why_frame:
+        why = f"화면 안에서: {why_frame} · 직접: {why}"
+    return body, ctype, why
+
+
+def _save(page, base_url: str, href: str, dest: Path, log: Callable[[str], None], frame=None) -> str:
     """파일 하나 — 'saved' · 'exists' · 'failed: 까닭'. 덮어쓰지 않는다."""
     if dest.exists():
         return "exists"
-    body, _ctype, why = fetch(page, urljoin(base_url, href))
+    body, _ctype, why = fetch_in(frame, page, urljoin(base_url, href))
     if body is None:
         log(f"      ✖ {dest.name} — {why}")
         return "failed: " + why
@@ -617,11 +659,11 @@ def _save(page, base_url: str, href: str, dest: Path, log: Callable[[str], None]
 
 
 def _save_files(page, base_url: str, files: list[dict], folder: Path, result: CaseResult, log: Callable[[str], None],
-                prefix: str = "") -> None:
+                prefix: str = "", frame=None) -> None:
     for f in files:
         name = file_name(f.get("name", ""))
         dest = folder / name
-        got = _save(page, base_url, f.get("href", ""), dest, log)
+        got = _save(page, base_url, f.get("href", ""), dest, log, frame)
         if got == "saved":
             result.saved.append(prefix + name)
         elif got == "exists":
@@ -659,7 +701,7 @@ def receive_case(context, page, frame, target: dict, out_root: str, log: Callabl
         result.folder = str(folder)
         files = info.get("files") or []
         log(f"      구매요구서작성 — 증빙문서 {len(files)}개 → {folder.name}")
-        _save_files(page, _frame_url(detail), files, folder, result, log)
+        _save_files(page, _frame_url(detail), files, folder, result, log, frame=detail)
     return result, back_to_list(context, detail, log, wait)
 
 
@@ -771,7 +813,7 @@ def item_photos(context, page, frame, item: dict, folder: Path, result: CaseResu
     if info:
         name = info.get("item") or item.get("name") or "물품"
         for index, src in _photo_urls(info):
-            body, ctype, why = fetch(page, urljoin(str(popup.url or ""), src))
+            body, ctype, why = fetch_in(popup.main_frame, page, urljoin(str(popup.url or ""), src))
             if body is None:
                 result.failed.append(f"물품사진 {name} {index}: {why}")
                 result.ok = False
@@ -850,7 +892,7 @@ def inspect_cases(context, page, cases: dict[str, CaseResult], folders: dict[str
             files = _eval(frame, INSPECT_FILES_JS) or []
             items = _eval(frame, ITEMS_JS) or []
             log(f"      검사처리 '{row.get('cont_nm', '')[:30]}' — 첨부 {len(files)}개 · 물품 {len(items)}개")
-            _save_files(page, _frame_url(frame), files, folder / INSPECT_DIR, result, log, prefix=INSPECT_DIR + "/")
+            _save_files(page, _frame_url(frame), files, folder / INSPECT_DIR, result, log, prefix=INSPECT_DIR + "/", frame=frame)
             for item in items:
                 item_photos(context, page, frame, item, folder, result, log, wait)
 

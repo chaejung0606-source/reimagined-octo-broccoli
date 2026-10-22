@@ -247,6 +247,9 @@ class _Erp(BaseHTTPRequestHandler):
         if u.path == "/rexpe_0054_t01_02.act":
             return self._send(POPUP.replace("__ITEM__", q.get("item", "")).encode())
         if u.path == "/comm0008_01.act":
+            # 실제 ERP 처럼 화면 밖(Referer 없음)에서 부르면 로그인 화면 HTML 을 준다
+            if not self.headers.get("Referer"):
+                return self._send(b"<html><title>login</title></html>")
             body, ctype = FILES.get(q.get("ATTFILE_SEQ_NO", ""), (b"<html>login</html>", "text/html"))
             return self._send(body, ctype)
         self._send(b"<html>login</html>")
