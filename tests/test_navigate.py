@@ -46,6 +46,7 @@ class Screen:
         self.mouse: list[str] = []
         self.lists: dict[str, list[dict]] = {}      # 과제마다 결의서내역 행(있으면 list_rows 대신)
         self.sub = "claims"           # 과제정보의 하위 탭: claims(청구서 — 결의서 목록이 보임) · budget(예산)
+        self.dom_is_page = False      # True — 실제 ERP 처럼 지금 거르기 · 지금 쪽의 줄만 화면에 있다(다른 쪽의 과제는 기간을 읽을 수 없다)
         self.budgets: dict[str, list[list[str]]] = {}   # 과제마다 예산 탭 예산내역의 [비목코드, 비목명] 차례
 
     def on_page(self, no: str) -> bool:
@@ -71,7 +72,8 @@ class Frame:
             return {"ok": True}
         if js is navigate.PROJECTS_JS:
             # 과제현황은 메인화면 탭이 앞일 때만 보인다. visible_projects=False 는 "고른 과제가 다음 쪽에 있음"
-            return ([dict(r, visible=s.active == "main" and s.on_page(r["no"])) for r in ROWS]
+            rows = [r for r in ROWS if not s.dom_is_page or s.on_page(r["no"])]
+            return ([dict(r, visible=s.active == "main" and s.on_page(r["no"])) for r in rows]
                     if self.kind == "dash" and s.dashboard else [])
         if js is navigate.CLICK_PROJECT_JS:
             # 과제현황은 메인화면 탭이 앞에 있을 때만 보인다
@@ -847,3 +849,48 @@ def test_read_list_leaves_out_every_document_of_a_kind_on_the_skip_list(isolated
     sel = s.read_lists(["202408470003", "202408470002"])
     assert [(t["project"], t["seq"]) for t in sel.targets] == [("202408470003", "2"), ("202408470002", "1")]
     assert sel.excluded == 2 and any("결의서구분으로 뺀 것: '예산잔액조정신청' 1건" in line for line in logs)
+
+
+def test_all_projects_are_collected_from_every_page_of_the_full_filter(isolated_home):
+    """끝난 과제의 과제기간은 '진행과제' 에 없다 — 거르기를 '전체과제' 로 바꾸고 모든 쪽을 넘겨 모은다(담당자 2026-10-22
+    "진행과제말고 전체과제로 설정하면 이전 과제도 다 보이는데"). 모은 것은 _과제목록.json 에 합쳐 남고, 다음에 '진행과제' 만 다시 읽어도 지워지지 않는다."""
+    screen = _filtered_screen(dom_is_page=True)
+    assert [p.no for p in navigate.read_projects(Context(screen))] == ["202408470003", "202409710003", "202408470002"]   # '진행과제' 한 쪽
+    logs = []
+    found, why = navigate.collect_all_projects(Context(screen), logs.append, no_wait)
+    assert why == "" and screen.clicks == ["거르기", "전체과제", "page:2"] and not screen.mouse
+    assert {p.no: (p.start, p.end) for p in found}[ENDED] == ("2026-03-01", "2026-06-30") and len(found) == 4
+    assert any("'전체과제' 2쪽에서 과제 4개를 읽었습니다 (과제기간 있는 과제 4개)" in line for line in logs)
+    navigate.save_projects(found)
+    navigate.save_projects(navigate.read_projects(Context(_filtered_screen(dom_is_page=True))))   # 다음 로그인 — '진행과제' 3개만 읽힘
+    assert {p.no for p in navigate.load_projects()[0]} == {r["no"] for r in ROWS}                 # 끝난 과제의 기간이 남아 있다
+    # 다른 탭이 앞이면 '메인화면' 탭을 먼저 누른다 · 거르기가 이미 '전체과제' 면 바꾸지 않는다
+    screen = _filtered_screen(dom_is_page=True, filter="전체과제")
+    screen.pages, screen.active, screen.toolbar_prj = screen.all_pages, "project", "202408470003"
+    found, why = navigate.collect_all_projects(Context(screen), logs.append, no_wait)
+    assert why == "" and screen.clicks == ["메인화면", "page:2"] and len(found) == 4
+    # 로그인 전이면 누르지 않고 까닭만
+    found, why = navigate.collect_all_projects(Context(Screen(dashboard=False)), logs.append, no_wait)
+    assert found == [] and "보이지 않습니다" in why
+
+
+def test_read_purchases_collects_project_periods_before_giving_up(isolated_home, monkeypatch, tmp_path):
+    """2026-10-22 실제: 구매요청(계약) 서류에서 끝난 과제 7개가 '과제기간을 몰라' 로 빠졌다 — 이제 '전체과제' 모든 쪽을 읽어 기간을 안다."""
+    from claim_downloader import purchase
+    from claim_downloader.session import ErpSession
+    monkeypatch.setattr(ErpSession, "browser_open", property(lambda self: True))
+    screen = _filtered_screen(dom_is_page=True)
+    root = _folders(tmp_path, f"({ENDED})_2025년 이월금_1", "(202408470003)_2026년도 사업비_1")
+    s, logs, _saved = _folder_session(screen, root)
+    searched = []
+    monkeypatch.setattr(purchase, "open_list", lambda ctx, log, wait: (object(), ""))
+    monkeypatch.setattr(purchase, "search", lambda frame, start, end, log, wait, what="구매요청일자": (searched.append((start, end)), (True, ""))[1])
+    monkeypatch.setattr(purchase, "read_rows", lambda frame: [])
+    sel = s.read_purchases([ENDED, "202408470003"])
+    assert sel.blocked == [] and screen.clicks[:3] == ["거르기", "전체과제", "page:2"]
+    assert searched and searched[0][0] == "2026-03-01"                                    # 두 과제기간을 합친 범위로 조회
+    assert any("과제기간을 몰라 메인화면 과제현황을 '전체과제' 로 바꿔" in line and ENDED in line for line in logs)
+    assert ENDED in {p.no for p in navigate.load_projects()[0]}
+    # 전체과제 어디에도 없는 과제만 받지 않는다 — 까닭에 그렇게 적는다
+    sel = s.read_purchases(["209999999999"])
+    assert len(sel.blocked) == 1 and "'전체과제' 의 모든 쪽에 과제 209999999999 이 없거나" in sel.blocked[0][1]

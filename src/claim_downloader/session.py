@@ -1521,11 +1521,27 @@ class ErpSession:
         sel = Selection()
         wanted = [n for n in (re.sub(r"\D", "", str(p or "")) for p in projects) if n]
         known = {p.no: p for p in navigate.load_projects()[0]}
-        known.update({p.no: p for p in navigate.read_projects(ctx)})
-        picked = [known[n] for n in wanted if n in known and known[n].start and known[n].end]
+        known.update({p.no: p for p in navigate.read_projects(ctx) if p.start and p.end})
+        dated = lambda n: n in known and known[n].start and known[n].end       # noqa: E731
+        missing = [n for n in wanted if not dated(n)]
+        trouble = ""
+        if missing:
+            # 끝난 과제의 과제기간은 '전체과제' 에만 보인다 — 앱이 거르기를 바꾸고 쪽을 넘겨 읽는다(담당자 2026-10-22 "메인화면에 과제기간이 있잖아")
+            self.log(f"과제 {len(missing)}개의 과제기간을 몰라 메인화면 과제현황을 '{navigate.ALL_PROJECTS}' 로 바꿔 모든 쪽을 읽습니다: {' · '.join(missing)}")
+            found, trouble = navigate.collect_all_projects(ctx, self.log, self._wait)
+            if found:
+                try:
+                    navigate.save_projects(found)
+                except OSError as error:
+                    self.log(f"과제 목록을 남기지 못했습니다: {error}")
+                known.update({p.no: p for p in found if p.start and p.end})
+            if trouble:
+                self.log("⚠ " + trouble)
+        picked = [known[n] for n in wanted if dated(n)]
         for n in wanted:
-            if n not in {p.no for p in picked}:
-                sel.blocked.append((n, "과제기간을 몰라 구매요청(계약) 서류를 읽지 않았습니다 — 로그인 뒤 메인화면 과제현황(전체과제)이 보일 때 다시 하세요"))
+            if not dated(n):
+                sel.blocked.append((n, trouble or f"메인화면 과제현황 '{navigate.ALL_PROJECTS}' 의 모든 쪽에 과제 {n} 이 없거나 과제기간 칸이 비어 "
+                                    "구매요청(계약) 서류를 읽지 않았습니다"))
         rng = purchase.span(picked)
         if not rng:
             self.log("⚠ 고른 과제의 과제기간을 몰라 구매요청(계약) 서류를 읽지 못했습니다")

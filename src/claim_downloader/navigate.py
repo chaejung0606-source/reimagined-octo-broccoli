@@ -343,8 +343,17 @@ def running(projects: list[Project], today: dt.date | None = None) -> list[Proje
 
 
 def save_projects(projects: list[Project]) -> None:
-    """마지막으로 읽은 과제 목록 — 설정 화면이 과제 고르기 칸에 쓴다(ERP 에 들어가지 않고도). 과제번호 · 과제명 · 기간만 둔다(사람 이름 없음)."""
-    data = {"read_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"), "projects": [asdict(p) for p in projects]}
+    """마지막으로 읽은 과제 목록 — 설정 화면이 과제 고르기 칸에 쓴다(ERP 에 들어가지 않고도). 과제번호 · 과제명 · 기간만 둔다(사람 이름 없음).
+    전에 읽어 둔 과제는 남긴다 — 로그인 뒤 보이는 '진행과제' 한 쪽만 다시 읽어도 '전체과제' 에서 모아 둔 끝난 과제의 과제기간이 사라지지 않게
+    (2026-10-22, 구매요청(계약) 서류가 과제기간으로 조회 범위를 정한다). 같은 과제는 새로 읽은 것으로(기간이 비었으면 옛 기간을 둔다)."""
+    merged: dict[str, Project] = {}
+    old = {p.no: p for p in load_projects()[0]}
+    for p in projects:
+        before = old.get(p.no)
+        merged[p.no] = p if (p.start and p.end) or before is None else Project(p.no, p.name or before.name, before.start, before.end)
+    for no, p in old.items():
+        merged.setdefault(no, p)
+    data = {"read_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"), "projects": [asdict(p) for p in merged.values()]}
     path = settings.projects_path()
     temp = path.with_name(path.name + ".tmp")
     temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -662,6 +671,67 @@ def _page_to(context, project_no: str, wait: Callable[[float], None], say: Calla
         return False, (f"과제현황 '{_pager(context).get('filter') or ALL_PROJECTS}' 의 쪽 {pages}개를 다 봤지만 없습니다 — "
                        "ERP 과제현황에 없는 과제면 직접 과제정보 → 청구서를 여세요")
     return False, ""
+
+
+def _show_dashboard(context, wait: Callable[[float], None]) -> str:
+    """과제현황이 보이게 — 다른 위쪽 탭이 앞이면 '메인화면' 탭을 누른다. 보이면 '', 아니면 까닭."""
+    if _dashboard(context) is not None:
+        return ""
+    tab = next((r for r in (_evaluate(f, CLICK_MAIN_TAB_JS) for _p, f in _frames(context)) if r and r.get("ok")), None)
+    if tab is not None and _wait(lambda: _dashboard(context) is not None, wait, tries=20):
+        return ""
+    if logged_out(context):
+        return "ERP 에 로그인돼 있지 않습니다 — 브라우저에서 로그인한 뒤 다시 하세요"
+    return "메인화면 과제현황이 보이지 않습니다 — 브라우저에서 '메인화면' 탭을 띄운 뒤 다시 하세요"
+
+
+def collect_all_projects(context, log: Callable[[str], None], wait: Callable[[float], None]) -> tuple[list[Project], str]:
+    """과제현황을 '전체과제' 로 바꾸고 모든 쪽을 넘기며 과제번호 · 과제명 · 과제기간을 모은다 — (과제들, 못 한 까닭).
+    끝난 과제는 기본 거르기 '진행과제' 에 없어 과제기간을 몰랐다(2026-10-22 실제 — 구매요청(계약) 서류 7과제가 '과제기간을 몰라' 로 빠짐,
+    담당자 "메인화면에 과제기간이 있잖아 · 전체과제로 설정하면 이전 과제도 다 보이는데"). 누르는 것은 청구서 찾기와 같다(메인화면 탭 · 거르기 · 쪽)."""
+    trouble = _show_dashboard(context, wait)
+    if trouble:
+        return [], trouble
+    _switched, trouble = _show_all(context, wait, log)
+    if trouble:
+        return [], f"과제현황 거르기를 '{ALL_PROJECTS}' 로 바꾸지 못했습니다({trouble}) — 브라우저에서 과제현황을 '{ALL_PROJECTS}' 로 바꾼 뒤 다시 하세요"
+    found: dict[str, Project] = {}
+
+    def grab():
+        for p in read_projects(context):
+            if p.no not in found or (p.start and p.end and not (found[p.no].start and found[p.no].end)):
+                found[p.no] = p
+
+    grab()
+    info = _pager(context)
+    how: dict = {}
+    pages = 1
+    if info.get("nums") or info.get("now"):
+        visited = {str(info.get("now") or "")}
+        for _ in range(MAX_PAGES):
+            todo = sorted((n for n in (_pager(context).get("nums") or []) if str(n) not in visited), key=int)
+            if not todo:
+                break
+            number = str(todo[0])
+            visited.add(number)
+            after, why = _turn(context, number, _now(context), wait, log, how)
+            if not after:
+                log(f"과제현황 쪽 {number} 을 넘기지 못했습니다({why})")
+                continue
+            pages += 1
+            grab()
+    else:
+        seen = {_now(context)}
+        for _ in range(MAX_PAGES):
+            after, _why = _turn(context, "nextBtn", _now(context), wait, log, how)
+            if not after or after in seen:
+                break
+            seen.add(after)
+            pages += 1
+            grab()
+    dated = sum(1 for p in found.values() if p.start and p.end)
+    log(f"과제현황 '{_pager(context).get('filter') or ALL_PROJECTS}' {pages}쪽에서 과제 {len(found)}개를 읽었습니다 (과제기간 있는 과제 {dated}개)")
+    return list(found.values()), ""
 
 
 def _click_project(context, project_no: str, wait: Callable[[float], None] | None = None,
