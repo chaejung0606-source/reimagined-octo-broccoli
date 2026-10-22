@@ -192,10 +192,10 @@ _GRID_JS = r"""() => {
       if (!s || typeof s !== 'object') return;
       const call = (name, ...args) => { try { return typeof s[name] === 'function' ? s[name](...args) : undefined; } catch (err) { return undefined; } };
       const num = v => (typeof v === 'number' && isFinite(v)) ? v : (typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : undefined);
-      const str = v => (typeof v === 'string' || typeof v === 'number') ? String(v) : '';
+      const str = v => (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') ? String(v) : '';
       const funcs = [];
       try {
-        for (const k in s) { if (typeof s[k] === 'function' && /^(Get|Last|Col|Row|Header|Save|Total|Data|Fix|Cols)/.test(k)) funcs.push(k); if (funcs.length >= 80) break; }
+        for (const k in s) { if (typeof s[k] === 'function' && !/^(on|_)/.test(k)) funcs.push(k); if (funcs.length >= 160) break; }
       } catch (err) { /* 열거가 막힌 객체 */ }
       const version = str(s.version) || str(s.Version) || str(window.IBSheet && window.IBSheet.version) || '';
       // 8 판: 자료 줄 객체 · Cols
@@ -203,6 +203,11 @@ _GRID_JS = r"""() => {
       if (!Array.isArray(dataRows)) { const rows = call('GetRows'); dataRows = Array.isArray(rows) ? rows.filter(r => r && (r.Kind === 'Data' || r.Kind === undefined)) : undefined; }
       const colsObj = (s.Cols && typeof s.Cols === 'object') ? s.Cols : null;
       let cols = [];
+      if (!colsObj && Array.isArray(dataRows) && dataRows[0] && typeof dataRows[0] === 'object') {
+        // Cols 가 없는 판 — 줄 객체의 키(값이 글자 · 숫자인 것)를 열 이름으로 본다
+        cols = Object.keys(dataRows[0]).filter(k => ['string', 'number', 'boolean'].includes(typeof dataRows[0][k])).slice(0, 60)
+          .map(name => ({save: name.slice(0, 24), head: str(call('GetCaption', name)).replace(/\s+/g, ' ').slice(0, 16), type: ''}));
+      }
       if (colsObj) cols = Object.keys(colsObj).slice(0, 60).map(name => {
         const c = colsObj[name] || {};
         const head = str(call('GetCaption', name)) || str(c.Header) || str(c.Caption) || '';
@@ -212,7 +217,8 @@ _GRID_JS = r"""() => {
       let headerRows = Array.isArray(call('GetHeaderRows')) ? call('GetHeaderRows').length : undefined;
       const sample = [];
       if (cols.length && Array.isArray(dataRows)) dataRows.slice(0, 3).forEach(row => {
-        sample.push(cols.map(c => mask(str(call('GetText', row, c.save)) || str(call('GetString', row, c.save)) || str(call('GetValue', row, c.save)))));
+        sample.push(cols.map(c => mask(str(call('GetText', row, c.save)) || str(call('GetString', row, c.save)) || str(call('GetValue', row, c.save))
+                                        || (row && typeof row === 'object' ? str(row[c.save]) : ''))));
       });
       // 5~7 판: 줄 번호 · ColSaveName
       if (!cols.length) {
@@ -229,8 +235,10 @@ _GRID_JS = r"""() => {
           sample.push(cols.map((c, idx) => mask(String(call('GetCellText', r, idx) ?? call('GetCellValue', r, idx) ?? ''))));
         }
       }
+      const pages = num(call('GetPageNum')) ?? num(call('GetTotalPage')) ?? num(call('GetPageCount'));
+      const totalAll = num(call('GetTotalRowCount')) ?? num(call('GetTotalCount'));
       out.push({kind: 'ibsheet-api', index: i, id: str(s.id || s.Id || s.Name).slice(0, 30), version: version.slice(0, 20),
-                total, headerRows, funcs, cols, sample});
+                total, totalAll, pages, headerRows, funcs, cols, sample});
     });
   } catch (err) { /* IBSheet 없음 */ }
   return out.slice(0, 16);
@@ -355,9 +363,11 @@ def _grid_lines(grids: list[dict]) -> list[str]:
             head += f" · 줄 {g['total']}" if g.get("total") is not None else " · 줄 수 모름"
             head += f" · 열 {len(g['cols'])}" if g.get("cols") else " · 열 수 모름"
             head += f" · 머리글 줄 {g['headerRows']}" if g.get("headerRows") is not None else ""
+            head += f" · 전체 줄 {g['totalAll']}" if g.get("totalAll") is not None else ""
+            head += f" · 쪽 {g['pages']}" if g.get("pages") is not None else ""
             out.append(head)
             if g.get("funcs"):
-                out.append("  함수: " + " ".join(g["funcs"][:80]))
+                out.append("  함수: " + " ".join(g["funcs"][:160]))
             if g.get("cols"):
                 out.append("  열: " + " | ".join((c.get("save") or "?") + (f"({c['head']})" if c.get("head") else "")
                                                  + (f"<{c['type']}>" if c.get("type") else "") for c in g["cols"]))

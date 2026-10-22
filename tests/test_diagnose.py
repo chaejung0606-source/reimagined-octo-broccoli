@@ -161,10 +161,12 @@ def test_ibsheet_api_and_images_are_read_in_a_real_browser():
         Cols: {sChk: {Header: '선택', Type: 'Bool'}, PURCH_REQ_NO: {Header: '구매요청번호', Type: 'Text'}, PURCH_CONT: {Header: '대표건명', Type: 'Text'}},
         GetDataRows: () => data, GetRows: () => [{Kind: 'Header'}].concat(data), GetHeaderRows: () => [{Kind: 'Header'}],
         GetValue: (row, col) => row[col], GetCaption: col => v8.Cols[col].Header};
+      // Cols 가 없는 8 판 — 줄 객체의 키로 열을 삼는다
+      const v8b = {GetDataRows: () => [{Kind: 'Data', id: 'r1', PURCH_REQ_NO: '202604130007', CONT: '의자', Visible: true}], GetPageNum: () => 3};
       const rows = [['', '선택', '구매요청번호', '대표건명'], ['', '', '202604130007', '노트북 구입'], ['', '', '202609290005', '용역']];
       const v7 = {version: '7.0', GetTotalRows: () => 2, LastCol: () => 2, HeaderRows: () => 1, LastRow: () => 2,
         ColSaveName: c => ['sChk', 'PURCH_REQ_NO', 'PURCH_CONT'][c], GetHeaderText: c => rows[0][c + 1], GetCellText: (r, c) => rows[r][c + 1]};
-      window.IBSheet = [v8, v7];
+      window.IBSheet = [v8, v7, v8b];
     </script>"""
     try:
         with sync_api.sync_playwright() as p:
@@ -178,8 +180,11 @@ def test_ibsheet_api_and_images_are_read_in_a_real_browser():
     except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
         pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
     api = [g for g in grids if g["kind"] == "ibsheet-api"]
-    assert len(api) == 2
-    v8, v7 = api
+    assert len(api) == 3
+    v8, v7, v8b = api
+    assert [c["save"] for c in v8b["cols"]] == ["Kind", "id", "PURCH_REQ_NO", "CONT", "Visible"] and v8b["pages"] == 3
+    assert v8b["sample"] == [["Data", "r1", "20…", "의자", "true"]]
+    assert "GetDataRows" in v8b["funcs"]
     assert v8["id"] == "sheet1" and v8["version"] == "" and v8["total"] == 2 and v8["headerRows"] == 1    # version 이 함수면 적지 않는다
     assert [c["save"] for c in v8["cols"]] == ["sChk", "PURCH_REQ_NO", "PURCH_CONT"] and v8["cols"][1]["head"] == "구매요청번호"
     assert v8["cols"][1]["type"] == "Text"
