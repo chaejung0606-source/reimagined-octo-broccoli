@@ -381,7 +381,9 @@ class ParkingPage(QWidget):
         pending, self._pending_link = self._pending_link, None
         count = parking_ledger.site_count(report.products) if report.products else None
         if count is not None:
-            self.ledger.fit_site(count)            # [새 링크] 창에서 읽은 보유 잔량 — 처음 수량 · 잔여를 다시 셈
+            # [새 링크] 창에서 읽은 보유 잔량 — 처음 수량 · 잔여를 다시 셈하고, 적용금액 0 인 사용의 차감을 가릴 기록에도 쌓는다
+            parking_ledger.record_reading(count, dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "할인 링크")
+            self.ledger.fit_site(count)
         if report.ok:
             settings.update(parking_product=str(self.product_box.currentData() or ""))
             self.name_edit.clear()

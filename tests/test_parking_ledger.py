@@ -157,18 +157,65 @@ def test_free_rule_switches_given_both_ways():
     assert ledger.restore_free(entries) == 1 and [e.given for e in entries] == [1, 1] and "차감 안 됨" not in entries[0].note
 
 
-def test_check_drain_tells_whether_free_uses_are_drawn():
-    """두 번 읽은 잔량 사이에 줄어든 수 = 모든 사용이면 'all', = 적용금액 있는 사용만이면 'paid'. 그 사이 적용금액 0 사용이 없으면 판정하지 않는다."""
-    rows = [_site("2026-10-22 10:20:00", "11가1111", "3,700"), _site("2026-10-22 10:15:00", "22나2222", "0"),
-            _site("2026-10-22 09:59:00", "33다3333", "0")]                       # 앞서 읽은 때(10:00) 전 — 세지 않는다
+def test_applied_amount_is_refreshed_when_the_car_leaves():
+    """적용금액은 차가 나갈 때 정해지는 것으로 보인다 — 주차 중에 0 이라 '차감 안 됨'(배부 0)으로 둔 줄도 금액이 생기면 배부 1 로 돌아온다."""
+    parked = ledger.Entry(date="2026-10-22", given=0, car="12가3456", source="site",
+                          note="공무확인증4시간 · 09:00 할인 · 적용금액 0 · 차감 안 됨")
+    rows = [_site("2026-10-22 09:00:00", "12가3456", "3,700")]
+    match = ledger.match_site([parked], SITE_HEAD, rows)
+    assert match.pairs == [(0, parked)]
+    assert ledger.note_applied(rows, match) == 1
+    assert parked.given == 1 and parked.note == "공무확인증4시간 · 09:00 할인 · 적용금액 3,700" and not ledger.is_free(parked.note)
+    assert ledger.note_applied(rows, match) == 0
+
+
+def test_readings_are_kept_once_per_time(isolated_home):
+    assert ledger.record_reading(85, "2026-10-22 08:00:00", "할인 내역")
+    assert not ledger.record_reading(85, "2026-10-22 08:00:00")             # 같은 때는 한 번만
+    assert ledger.record_reading(90, "2026-10-21 08:00", "할인 링크")
+    assert not ledger.record_reading(None, "2026-10-22 09:00:00") and not ledger.record_reading(3, "")
+    assert ledger.load_readings() == [("2026-10-21 08:00:00", 90), ("2026-10-22 08:00:00", 85)]
+
+
+# 이틀 동안의 공무확인증 사용 — 날마다 적용금액 0 인 것이 섞여 있다
+_USES = [_site("2026-10-20 10:00:00", "11가1111", "3,700"), _site("2026-10-20 11:00:00", "22나2222", "0"),
+         _site("2026-10-21 09:30:00", "33다3333", "0"), _site("2026-10-21 10:00:00", "44라4444", "1,000"),
+         _site("2026-10-21 10:30:00", "55마5555", "0"), _site("2026-10-21 12:00:00", "66바6666", "2,500", method="쿠폰")]
+
+
+def _study(counts, since="2026-10-01", extra=()):
+    rows = list(_USES)
     match = ledger.match_site([], SITE_HEAD, rows)
-    drain = ledger.check_drain(85, "2026-10-22 10:00:00", 83, rows, match)
-    assert (drain.used, drain.paid, drain.free, drain.verdict) == (2, 1, 1, "all") and "차감됩니다" in drain.text()
-    assert ledger.check_drain(85, "2026-10-22 10:00:00", 84, rows, match).verdict == "paid"
-    assert ledger.check_drain(85, "2026-10-22 10:00:00", 80, rows, match).verdict == ""     # 그 사이 구입 · 시각 차이 — 모름
-    only_paid = ledger.check_drain(85, "2026-10-22 10:16:00", 84, rows, match)
-    assert only_paid.verdict == "" and "맞습니다" in only_paid.text()
-    assert ledger.check_drain(-1, "", 84, rows, match) is None
+    readings = [("2026-10-20 08:00:00", counts[0]),
+                ("2026-10-20 15:00:00", 0),                 # 앞 12시간 안에 사용이 있다 — 견주지 않는다(주차 중인 차)
+                ("2026-10-21 08:00:00", counts[1]),
+                ("2026-10-22 08:30:00", counts[2]), *extra]
+    return ledger.drain_study(sorted(readings), rows, match, since)
+
+
+def test_drain_study_decides_only_after_quiet_readings_agree():
+    """담당자 2026-10-22 "점차 쌓이는 내역 데이터를 바탕으로 분석" — 앞 12시간 사용이 없던 때의 잔량끼리만 견주고, 한쪽으로 두 번 맞아야 정한다."""
+    drawn = _study([90, 88, 84])                             # 첫날 2건(0 하나) → 2 줄고, 둘째 날 4건(0 둘) → 4 줄었다
+    assert (drawn.readings, drawn.quiet, [w.fits for w in drawn.windows]) == (4, 3, ["all", "all"])
+    assert drawn.verdict == "all" and "차감됩니다" in drawn.text() and "2번 확인" in drawn.text()
+    paid = _study([90, 89, 87])                              # 적용금액 있는 것만 — 1, 2 줄었다
+    assert paid.verdict == "paid" and "차감되지 않습니다" in paid.text()
+    mixed = _study([90, 88, 86])
+    assert [w.fits for w in mixed.windows] == ["all", "paid"] and mixed.verdict == "" and "엇갈립니다" in mixed.text()
+    once = _study([90, 88, 98])                              # 둘째 구간은 그 사이 구입 — 맞지 않음
+    assert once.verdict == "" and "1번 맞았습니다" in once.text() and "맞지 않은 구간 1번" in once.text() and "((" not in once.text()
+
+
+def test_drain_study_skips_readings_before_the_history_it_has():
+    late = _study([90, 88, 84], since="2026-10-21")          # 10-20 사용은 읽지 않았다 — 그 기록은 쓰지 않는다
+    assert late.readings == 2 and [w.fits for w in late.windows] == ["all"] and late.verdict == ""
+    assert _study([90, 90, 90]).verdict == ""                  # 줄지 않았다 — 어느 쪽도 맞지 않음
+    plain = ledger.drain_study([("2026-10-20 08:00:00", 90), ("2026-10-21 08:00:00", 89)],
+                               [_site("2026-10-20 10:00:00", "11가1111", "3,700")],
+                               ledger.match_site([], SITE_HEAD, [_site("2026-10-20 10:00:00", "11가1111", "3,700")]), "2026-10-01")
+    assert [w.fits for w in plain.windows] == ["same"] and plain.verdict == "" and "아직 모릅니다" in plain.text()
+    assert "사용 수와 맞은 구간 1번" in plain.text()
+    assert ledger.drain_study([("2026-10-20 08:00:00", 90)], [], ledger.match_site([], ["가", "나"], []), "2026-10-01").windows == []
 
 
 def test_history_since_and_stamps():

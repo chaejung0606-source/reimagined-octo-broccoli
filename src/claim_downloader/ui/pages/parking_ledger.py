@@ -151,7 +151,7 @@ class LeftBox(QFrame):
         self.counts = QLabel("", objectName="leftNote")
         self.counts.setWordWrap(True)
         notes.addWidget(self.counts)
-        # 적용금액 0 인 사용(무료 시간 안)이 공무확인증을 쓰는지 — 앱이 잔량 변화로 확인한 결과(담당자 2026-10-22 "확인해주세요")
+        # 적용금액 0 인 사용(무료 시간 안)이 공무확인증을 쓰는지 — 쌓인 잔량 기록으로 앱이 가리는 중인 상태(parking_ledger.drain_study)
         self.rule = QLabel("", objectName="leftNote")
         self.rule.setWordWrap(True)
         notes.addWidget(self.rule)
@@ -172,10 +172,9 @@ class LeftBox(QFrame):
             self.counts.setText((f"처음 수량 {start:,} · " if start else "") + f"구입 {bought - start:,} · 배부 {given:,}")
         self.site.setText(f"사이트 보유 잔량 {site:,} ({cfg.parking_left_at} 읽음)" if site is not None
                           else "사이트 보유 잔량은 아직 읽지 않았습니다.")
-        rule, at = cfg.parking_free_rule, cfg.parking_free_rule_at
-        self.rule.setText({"all": f"적용금액 0 인 사용도 공무확인증이 차감됩니다({at} 잔량 변화로 확인)",
-                           "paid": f"적용금액 0 인 사용은 차감되지 않습니다({at} 잔량 변화로 확인) — 대장에서 배부 0"}.get(
-            rule, "적용금액 0 인 사용이 차감되는지는 아직 모릅니다 — 두 번 읽는 사이에 그런 사용이 있으면 잔량 변화로 앱이 확인합니다"))
+        note = cfg.parking_free_note or ("적용금액 0 인 사용이 차감되는지는 아직 모릅니다 — 사이트에서 가져올 때마다 보유 잔량을 쌓아 두고 "
+                                         "날이 지나며 앱이 가립니다")
+        self.rule.setText(note + (f" ({cfg.parking_free_rule_at} 정함)" if cfg.parking_free_rule and cfg.parking_free_rule_at else ""))
         if entries and any(n < 0 for _e, n in rows):
             self.state.set_status("잔여가 0 아래인 줄이 있음 — 사이트에서 가져오면 다시 셈", "danger")
         elif site is None:
@@ -457,28 +456,20 @@ class LedgerPanel(QWidget):
                  + (f" · {report.since}부터" if report.since else "") + ")"]
         cfg = settings.load()
         count = ledger.site_count(report.products)
+        if count is not None:
+            ledger.record_reading(count, report.read_stamp, "할인 내역")
         with ledger._LOCK:
             entries = ledger.load()
             match = ledger.match_site(entries, headers, report.rows)
             changed = ledger.note_applied(report.rows, match) if match.ok else 0
-            drain = (ledger.check_drain(cfg.parking_seen_left, cfg.parking_seen_at, count, report.rows, match)
-                     if count is not None else None)
             rule = cfg.parking_free_rule
-            if drain is not None:
-                logbook.log("주차 잔량 확인: " + drain.text())
-                if drain.verdict and drain.verdict != rule:
-                    if rule:
-                        logbook.log(f"⚠ 적용금액 0 인 사용의 차감 판정이 앞과 다릅니다({rule} → {drain.verdict})")
-                    rule = drain.verdict
-                    settings.update(parking_free_rule=rule, parking_free_rule_at=dt.datetime.now().strftime("%m-%d %H:%M"))
-                    parts.append(drain.text())
+            if match.ok and not report.pager:          # 모든 쪽을 읽었을 때만 — 빠진 사용이 있으면 구간이 틀린다
+                rule = self._study(ledger.drain_study(ledger.load_readings(), report.rows, match, report.since), rule, parts)
             new = ledger.from_site(headers, report.rows, match.missing, match, free_drawn=rule != "paid") if match.ok else []
             entries += new
             changed += ledger.apply_free_rule(entries) if rule == "paid" else ledger.restore_free(entries)
             if new or changed:
                 ledger.save(entries)
-        if count is not None:
-            settings.update(parking_seen_left=count, parking_seen_at=report.read_stamp)
         if not match.ok:
             parts.append(match.note)
         elif new:
@@ -501,6 +492,22 @@ class LedgerPanel(QWidget):
         self.reload()
         self._local_change()
         self.site_line.setText(" · ".join(parts))
+
+    @staticmethod
+    def _study(study: ledger.DrainStudy, rule: str, parts: list[str]) -> str:
+        """적용금액 0 인 사용이 차감되는지 — 쌓인 잔량 기록으로 정한 것(정하지 못했으면 '')을 설정에 두고 돌려준다. 바뀔 때만 기록에 남긴다."""
+        note = study.text()
+        cfg = settings.load()
+        if note != cfg.parking_free_note:
+            logbook.log("주차 잔량 분석: " + note)
+        if study.verdict != rule:
+            if rule:
+                logbook.log(f"⚠ 적용금액 0 인 사용의 차감 판정을 거둡니다({rule} → {study.verdict or '모름'}) — 관리대장의 배부를 되돌립니다")
+            parts.append(note)
+        settings.update(parking_free_rule=study.verdict, parking_free_note=note,
+                        parking_free_rule_at=(cfg.parking_free_rule_at if study.verdict == rule else dt.datetime.now().strftime("%m-%d %H:%M"))
+                        if study.verdict else "")
+        return study.verdict
 
     def fit_site(self, count: int, save: bool = True) -> ledger.Fit:
         """사이트 보유 잔량을 막 읽었을 때 — 처음 수량 줄을 다시 셈하고 줄마다 잔여를 다시 그린다(parking_ledger.fit_to_site)."""

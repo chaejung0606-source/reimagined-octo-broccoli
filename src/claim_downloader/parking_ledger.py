@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import bisect
 import datetime as dt
 import json
 import re
@@ -388,7 +389,7 @@ def from_site(headers: list[str], rows: list[list[str]], indexes: list[int], mat
               free_drawn: bool = True) -> list[Entry]:
     """사이트 줄 → 관리대장 양식의 배부 1 줄(담당자 2026-10-22 "관리대장 양식에 맞춰서 정보 기입 … 없는 정보는 공란"):
     일자 = 할인일시의 날짜 · 배부 1 · 차량번호 · 비고 = 할인명 · 할인 시각 · (링크 · QR 이면) 적용방식 · 적용금액. 사용자 · 내용은 사이트에 없어 비워 둔다.
-    적용금액이 0 인 사용이 공무확인증을 쓰지 않는다고 확인됐으면(free_drawn=False, check_drain) 그 줄은 배부 0."""
+    적용금액이 0 인 사용이 공무확인증을 쓰지 않는다고 확인됐으면(free_drawn=False, drain_study) 그 줄은 배부 0."""
     out = []
     for i in indexes:
         row = rows[i]
@@ -405,14 +406,30 @@ def from_site(headers: list[str], rows: list[list[str]], indexes: list[int], mat
     return out
 
 
+_APPLIED = re.compile(r"적용금액 [\d,]+")
+
+
+def _unmark(note: str) -> str:
+    return note.replace(" · " + FREE_NOT_DRAWN, "").replace(FREE_NOT_DRAWN, "").strip(" ·")
+
+
 def note_applied(rows: list[list[str]], match: SiteMatch) -> int:
-    """이미 대장에 있는 짝(할인 적용 · 전에 가져온 줄)의 비고에 적용금액이 없으면 붙인다. 고친 줄 수."""
+    """이미 대장에 있는 짝(할인 적용 · 전에 가져온 줄)의 비고에 적용금액을 붙이고, 사이트 값이 바뀌었으면 고친다 — 적용금액은 차가 나갈 때
+    정해지는 것으로 보여(2026-10-22 실측: 입차 2분 뒤 할인한 줄이 1,000) 주차 중에는 0 이었다가 바뀔 수 있다. 0 이라 '차감 안 됨'(배부 0)으로
+    둔 줄에 금액이 생기면 배부 1 로 되돌린다. 고친 줄 수."""
     changed = 0
     for i, e in match.pairs:
         applied = applied_of(rows[i], match)
-        if applied is None or "적용금액" in e.note:
+        if applied is None:
             continue
-        e.note = (e.note + " · " if e.note else "") + f"적용금액 {applied:,}"
+        text = f"적용금액 {applied:,}"
+        old = _APPLIED.search(e.note)
+        if old and old.group(0) == text:
+            continue
+        e.note = _APPLIED.sub(text, e.note, count=1) if old else (e.note + " · " if e.note else "") + text
+        if applied and FREE_NOT_DRAWN in e.note:
+            e.note = _unmark(e.note)
+            e.given = 1
         e.updated = now_stamp()
         changed += 1
     return changed
@@ -437,7 +454,7 @@ def restore_free(entries: list[Entry]) -> int:
     for e in entries:
         if e.given == 0 and is_free(e.note) and FREE_NOT_DRAWN in e.note:
             e.given = 1
-            e.note = e.note.replace(" · " + FREE_NOT_DRAWN, "").replace(FREE_NOT_DRAWN, "")
+            e.note = _unmark(e.note)
             e.updated = now_stamp()
             changed += 1
     return changed
@@ -461,54 +478,145 @@ def stamp_of(text: str) -> str:
     return f"{day} {int(m.group(1)):02d}:{m.group(2)}:{m.group(3) or '00'}" if m else f"{day} 00:00:00"
 
 
+# ── 보유 잔량 기록 · 적용금액 0 인 사용의 차감 ───────────────────────────────
+# 담당자 2026-10-22 "적용금액이 있는 건만 공무확인증이 차감되는건지도 확인" · "점차 쌓이는 내역 데이터를 바탕으로 분석". 적용금액은 차가 나갈 때
+# 정해지는 것으로 보여 두 번 읽은 잔량을 바로 견주면 주차 중인 차가 섞인다. 그래서 사이트에서 본 잔량을 모두 쌓아 두고(record_reading),
+# 앞 QUIET_HOURS 동안 공무확인증 사용이 없던 때에 읽은 잔량끼리만 견준다(drain_study) — 그 사이 사용은 모두 차가 나가 적용금액이 정해졌고,
+# 사이트 시각과 이 PC 시각이 조금 달라도 구간 끝에 걸리는 사용이 없다. 날마다 아침 첫 읽기가 대개 그런 때다.
+QUIET_HOURS = 12
+SURE = 2                  # 한쪽으로만 이만큼 맞고 다른 쪽은 한 번도 안 맞으면 정한다
+READINGS_MAX = 3000
+
+
+def readings_path() -> Path:
+    return settings.parking_readings_path()
+
+
+def load_readings() -> list[tuple[str, int]]:
+    """(때 'YYYY-MM-DD HH:MM:SS', 잔량) — 때 차례."""
+    try:
+        data = json.loads(readings_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out = []
+    for item in data.get("readings") or [] if isinstance(data, dict) else []:
+        if isinstance(item, dict) and isinstance(item.get("count"), int) and stamp_of(str(item.get("at", ""))):
+            out.append((stamp_of(item["at"]), item["count"]))
+    return sorted(set(out))
+
+
+def record_reading(count: int | None, at: str, source: str = "") -> bool:
+    """사이트에서 실제로 본 보유 잔량(공무확인증 상품의 합, site_count)과 그 때를 쌓는다. 할인 적용 때 누른 할인권 글자의 수는 그 상품 하나뿐일 수 있어
+    넣지 않는다. 같은 때는 한 번만. 쌓았으면 True."""
+    at = stamp_of(at)
+    if count is None or count < 0 or not at:
+        return False
+    with _LOCK:
+        target = readings_path()
+        try:
+            data = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        items = [x for x in (data.get("readings") or [] if isinstance(data, dict) else []) if isinstance(x, dict)]
+        if any(stamp_of(str(x.get("at", ""))) == at for x in items):
+            return False
+        items.append({"at": at, "count": count, "from": source})
+        items.sort(key=lambda x: stamp_of(str(x.get("at", ""))))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temp = target.with_name(target.name + ".tmp")
+        temp.write_text(json.dumps({"readings": items[-READINGS_MAX:]}, ensure_ascii=False, indent=1), encoding="utf-8")
+        temp.replace(target)
+    return True
+
+
 @dataclass
-class Drain:
-    """두 번 읽은 사이트 보유 잔량 사이에 줄어든 수와 그 사이 공무확인증 사용(적용금액 있음 · 0)."""
+class Window:
+    """앞뒤 모두 '조용한 때'(앞 QUIET_HOURS 사용 없음)에 읽은 두 잔량 사이."""
+    start: str
+    end: str
     before: int
     after: int
-    since: str
     used: int = 0
-    paid: int = 0
-    free: int = 0
-    verdict: str = ""        # "all"(적용금액 0 도 차감) · "paid"(적용금액 있는 것만) · ""(아직 모름)
+    free: int = 0            # 그중 적용금액 0
+
+    @property
+    def fits(self) -> str:
+        """'all'(적용금액 0 도 차감되면 맞음) · 'paid'(적용금액 있는 것만 차감되면 맞음) · 'same'(적용금액 0 사용이 없고 사용 수와 맞음) · ''(안 맞음 — 그 사이 구입 등)."""
+        drop = self.before - self.after
+        if drop == self.used:
+            return "all" if self.free else "same"
+        if self.free and drop == self.used - self.free:
+            return "paid"
+        return ""
+
+
+@dataclass
+class DrainStudy:
+    readings: int = 0
+    quiet: int = 0
+    windows: list[Window] = field(default_factory=list)
+
+    def count(self, fits: str) -> int:
+        return sum(1 for w in self.windows if w.fits == fits)
+
+    @property
+    def verdict(self) -> str:
+        drawn, paid = self.count("all"), self.count("paid")
+        if drawn >= SURE and not paid:
+            return "all"
+        if paid >= SURE and not drawn:
+            return "paid"
+        return ""
 
     def text(self) -> str:
-        drop = self.before - self.after
-        head = f"보유 잔량 {self.before:,} → {self.after:,}({self.since[5:16]} 뒤 {self.after - self.before:+,}) · 그 사이 사용 {self.used}건"
-        if self.free:
-            head += f"(적용금액 0 인 것 {self.free}건)"
+        drawn, paid, same, odd = self.count("all"), self.count("paid"), self.count("same"), self.count("")
+        tail = " · ".join(x for x in (f"사용 수와 맞은 구간 {same}번" if same else "",
+                                      f"그 사이 구입 등으로 맞지 않은 구간 {odd}번" if odd else "") if x)
+        tail = f"({tail})" if tail else ""
         if self.verdict == "all":
-            return head + " — 적용금액 0 인 사용도 공무확인증이 차감됩니다"
+            return f"적용금액 0 인 사용도 공무확인증이 차감됩니다 — 잔량 변화로 {drawn}번 확인{tail}"
         if self.verdict == "paid":
-            return head + " — 적용금액이 있는 사용만 차감됩니다(적용금액 0 인 것은 차감 안 됨)"
-        if drop == self.used:
-            return head + " — 잔량 변화와 사용 수가 맞습니다"
-        return head + " — 잔량 변화와 사용 수가 맞지 않습니다(그 사이 구입했거나 사이트 시각과 이 PC 시각이 다를 수 있음)"
+            return f"적용금액 0 인 사용은 차감되지 않습니다 — 잔량 변화로 {paid}번 확인{tail} · 대장에서 배부 0"
+        if drawn and paid:
+            return (f"잔량 변화가 엇갈립니다(모두 차감되는 쪽 {drawn}번 · 적용금액 있는 것만 차감되는 쪽 {paid}번){tail} — "
+                    "더 쌓이면 다시 봅니다")
+        if drawn or paid:
+            side = "적용금액 0 인 사용도 차감되는" if drawn else "적용금액 0 인 사용은 차감되지 않는"
+            return f"{side} 쪽으로 {drawn or paid}번 맞았습니다{tail} — {SURE}번 맞으면 정합니다"
+        return (f"아직 모릅니다 — 보유 잔량 기록 {self.readings}번 중 앞 {QUIET_HOURS}시간 사용이 없던 때 {self.quiet}번{tail}. "
+                "그런 때 사이에 적용금액 0 인 사용이 있으면 가릴 수 있습니다(아침에 관리대장을 한 번 열면 빨리 쌓입니다)")
 
 
-def check_drain(before: int, before_at: str, after: int, rows: list[list[str]], match: SiteMatch) -> Drain | None:
-    """앞서 사이트에서 읽은 잔량(before, before_at 'YYYY-MM-DD HH:MM:SS')과 지금 잔량(after) 사이에 줄어든 수를, 그 사이 할인 내역의
-    공무확인증 사용과 맞춰 본다(담당자 2026-10-22 "적용금액이 있는 건만 공무확인증이 차감되는건지도 확인"). 그 사이 적용금액 0 인 사용이 있을 때만
-    판정한다 — 줄어든 수 = 모든 사용이면 'all', = 적용금액 0 을 뺀 사용이면 'paid'. 앞 잔량이 없으면 None."""
-    if before < 0 or not before_at or not match.ok:
-        return None
-    d = Drain(before=before, after=after, since=before_at)
-    for i in sorted(match.matched + match.missing):
+def drain_study(readings: list[tuple[str, int]], rows: list[list[str]], match: SiteMatch, since: str) -> DrainStudy:
+    """쌓인 잔량 기록과 할인 내역(since 부터 모든 쪽)의 공무확인증 사용으로 — 조용한 때끼리의 구간마다 줄어든 수가 모든 사용과 맞는지,
+    적용금액 있는 사용과 맞는지. since 앞의 기록은 그 사이 사용을 모르니 쓰지 않는다."""
+    study = DrainStudy()
+    if not match.ok or not day_of(since):
+        return study
+    begin = day_of(since) + " 00:00:00"
+    uses = []
+    for i in match.matched + match.missing:
         when = stamp_of(rows[i][match.date_col] if match.date_col < len(rows[i]) else "")
-        if not when or when <= before_at:
+        if when:
+            uses.append((when, applied_of(rows[i], match)))
+    uses.sort(key=lambda u: u[0])
+    stamps = [u[0] for u in uses]
+    quiet = []
+    for at, count in readings:
+        if at < begin:
             continue
-        d.used += 1
-        applied = applied_of(rows[i], match)
-        if applied == 0:
-            d.free += 1
-        elif applied:
-            d.paid += 1
-    drop = before - after
-    if d.free and drop == d.used:
-        d.verdict = "all"
-    elif d.free and drop == d.used - d.free:
-        d.verdict = "paid"
-    return d
+        study.readings += 1
+        calm = (dt.datetime.strptime(at, "%Y-%m-%d %H:%M:%S") - dt.timedelta(hours=QUIET_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+        if bisect.bisect_right(stamps, at) == bisect.bisect_right(stamps, calm):
+            quiet.append((at, count))
+    study.quiet = len(quiet)
+    for (a, before), (b, after) in zip(quiet, quiet[1:]):
+        inside = uses[bisect.bisect_right(stamps, a):bisect.bisect_right(stamps, b)]
+        if not inside and before == after:
+            continue
+        study.windows.append(Window(start=a, end=b, before=before, after=after, used=len(inside),
+                                    free=sum(1 for _w, applied in inside if applied == 0)))
+    return study
 
 
 # ── 엑셀 ─────────────────────────────────────────────────────────────────

@@ -754,7 +754,7 @@ class ErpSession:
             report = parking_screens.read_history(page, self.log, wait=wait, base_url=base, since=since)
             if report.ok:
                 report.products = parking_link.read_products(page, self.log, wait=wait, base_url=base).products
-                # 잔량은 표 다음에 읽는다 — 다음에 읽을 때 '그 사이 사용' 은 이 때 뒤의 줄로 센다(parking_ledger.check_drain)
+                # 잔량은 표 다음에 읽는다 — 이 때 앞의 사용은 모두 표에 있다(쌓인 잔량 기록과 견줄 때, parking_ledger.drain_study)
                 report.read_stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             return report
 
