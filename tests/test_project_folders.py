@@ -140,6 +140,14 @@ def _qt_app():
     return QApplication.instance() or QApplication([])
 
 
+def _close(widget) -> None:
+    """화면을 Qt 가 끝나기 전에 지운다 — 남겨 두면 파이썬이 끝날 때 QApplication 보다 늦게 지워져 시험 프로세스가 죽는다."""
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
 def test_checklist_single_multiple_and_search(tmp_path):
     """체크 하나 = 그 과제만, 여럿 = 차례로. 찾기는 줄만 숨기고 체크는 그대로 — 찾은 과제만 · 더하기 · 빼기."""
     _qt_app()
@@ -170,6 +178,7 @@ def test_checklist_single_multiple_and_search(tmp_path):
     assert box.chosen() == [f.no for f in found]
     box.fill(found, ["202502320001"])                        # 다시 채워도 찾기 글은 그대로 두고 거른다
     assert box.chosen() == ["202502320001"] and box.label_of("202502320001") == "202502320001 2024년 이월금"
+    _close(box)
 
 
 def test_download_page_reads_checked_projects(tmp_path, monkeypatch):
@@ -204,3 +213,4 @@ def test_download_page_reads_checked_projects(tmp_path, monkeypatch):
     (root / "(202603130001)_2025년 이월금_100,000,000").mkdir()             # 앱을 켠 채 폴더를 더 만들면 — 모두 체크였으니 그것도
     page._refresh_projects()
     assert page._projects()[-1] == "202603130001" and len(page._projects()) == 5
+    _close(page)

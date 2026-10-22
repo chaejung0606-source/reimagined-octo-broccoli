@@ -97,6 +97,8 @@ class MainWindow(QMainWindow):
         self.topbar.search_submitted.connect(self._search)
         column.addWidget(self.topbar)
         QShortcut(QKeySequence.Find, self, activated=lambda: (self.topbar.search.setFocus(), self.topbar.search.selectAll()))
+        # F5 — 업데이트를 확인해 있으면 적용하고 새로고침(담당자 2026-10-22 "f5를 누르면 새로고침되게")
+        QShortcut(QKeySequence(Qt.Key_F5), self, activated=self.refresh_app)
 
         self.tabs = WorkTabs()
         self.tabs.activated.connect(self.show_task)
@@ -334,6 +336,11 @@ class MainWindow(QMainWindow):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         return answer == QMessageBox.Yes
 
+    def refresh_app(self) -> None:
+        """F5 · 사용자 메뉴 '앱 새로고침' — 업데이트 확인 → (있으면 묻고) 적용 → 새로고침(UpdatesPage.update_and_restart).
+        홈 띠 · 업데이트 화면의 [새로고침] 은 적용한 뒤에만 보이므로 바로 restart 다."""
+        self.page("updates").update_and_restart()
+
     def restart(self) -> None:
         """[새로고침] — 새 앱을 띄우고 이 창을 닫는다. 업데이트를 받은 뒤 껐다 켤 필요가 없다(담당자 요청)."""
         _workers, running = self._running_work()
@@ -357,7 +364,7 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction("문제 보내기 (기록 복사)", self._share_log)
         menu.addAction("처음 안내 다시 보기", self._show_welcome)
-        menu.addAction("앱 새로고침", self.restart)
+        menu.addAction("앱 새로고침 (F5)", self.refresh_app)
 
     def _show_welcome(self) -> None:
         settings.update(welcome_dismissed=False)
