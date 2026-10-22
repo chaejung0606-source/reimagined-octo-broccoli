@@ -271,6 +271,7 @@ class DownloadPage(QWidget):
         if start == project_folders.SOME and not project_box.chosen_projects():
             start = project_folders.ALL
         project_box.fill_download_box(self.project_box, start)
+        self._folders_seen = project_folders.signature(settings.load().out_root)
         self.project_box.currentIndexChanged.connect(self._project_changed)
         self.project_box.activated.connect(self._project_activated)
         project_label.setBuddy(self.project_box)
@@ -700,8 +701,16 @@ class DownloadPage(QWidget):
         self._sync_buttons()
 
     def _refresh_projects(self) -> None:
-        """로그인 뒤 과제현황을 새로 읽었으면(또는 저장 폴더가 바뀌면) 보기를 다시 채운다 — 고른 과제는 그대로."""
+        """로그인 뒤 과제현황을 새로 읽었으면(또는 저장 폴더 · 과제 폴더가 바뀌면) 보기를 다시 채운다 — 고른 과제는 그대로."""
+        self._folders_seen = project_folders.signature(settings.load().out_root)
         project_box.fill_download_box(self.project_box, self._project())
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """화면을 열 때 저장 폴더 아래 과제 폴더가 늘거나 줄었으면 과제 칸을 다시 채운다 — 담당자가 앱을 켠 채 과제 폴더를 더 만든 날
+        (2026-10-22 연구지원비 다섯, "과제옵션에 추가해주세요") 앱을 다시 켜지 않아도 '폴더 만든 과제 모두 (N개)' 와 과제 하나씩이 바로 맞게."""
+        super().showEvent(event)
+        if project_folders.signature(settings.load().out_root) != self._folders_seen:
+            self._refresh_projects()
 
     def _download(self, limit: int) -> None:
         rows = self._remaining()

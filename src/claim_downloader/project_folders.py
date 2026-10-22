@@ -57,6 +57,12 @@ def folders(out_root: str | Path) -> list[ProjectFolder]:
     return out
 
 
+def signature(out_root: str | Path) -> tuple[str, ...]:
+    """지금 있는 과제 폴더의 과제번호 묶음(이름 순) — 받기 화면이 열릴 때 이것이 바뀌었으면 과제 칸을 다시 채운다
+    (담당자가 앱을 켠 채 과제 폴더를 더 만든 2026-10-22 — 다시 켜지 않아도 칸에 보이게)."""
+    return tuple(f.no for f in folders(out_root))
+
+
 def by_project(out_root: str | Path) -> dict[str, list[ProjectFolder]]:
     found: dict[str, list[ProjectFolder]] = {}
     for folder in folders(out_root):

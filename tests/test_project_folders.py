@@ -27,6 +27,16 @@ def test_folders_are_read_from_names(tmp_path):
     assert pf.project_of("( 202603130001 ) 2025년 이월금") == "202603130001" and pf.project_of("청구서자동화") == ""
 
 
+def test_signature_changes_when_a_project_folder_is_added(tmp_path):
+    """앱을 켠 채 과제 폴더를 더 만들면(2026-10-22 연구지원비 다섯) 받기 화면이 열릴 때 과제 칸을 다시 채우는 근거."""
+    root = make(tmp_path)
+    before = pf.signature(root)
+    assert before == ("202408470001", "202408470002", "202408470003", "202502320001")
+    (root / "(202508100001)_2025년 연구지원비(책임자)_20,000,000").mkdir()          # 비목 폴더 없이 빈 폴더
+    after = pf.signature(root)
+    assert after != before and "202508100001" in after and pf.signature("") == ()
+
+
 def test_save_root_goes_into_the_project_folder_only(tmp_path):
     root = make(tmp_path)
     where, why = pf.save_root(root, "202408470003")
