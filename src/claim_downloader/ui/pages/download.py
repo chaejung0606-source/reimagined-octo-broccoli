@@ -419,8 +419,9 @@ class DownloadPage(QWidget):
             self.folder_button.setToolTip("")
         names = {p.no: p.name for p in navigate.load_projects()[0]}
         self.rebudget_action.setVisible(bool(rebudget.fund_folders(cfg.out_root, names)) if cfg.out_root else False)
-        unwanted = len(skiplist.load())
-        self.unwanted_action.setText(f"받지 않는 결의서 ({unwanted}건)")
+        items = skiplist.load()
+        unwanted, kinds = len(items), len(skiplist.kinds(items))
+        self.unwanted_action.setText(f"받지 않는 결의서 ({unwanted}건" + (f" · 구분 {kinds}개)" if kinds else ")"))
         self.unwanted_action.setEnabled(unwanted > 0)
         self._sync_empty()
         self.counts_changed.emit()
@@ -970,14 +971,19 @@ class DownloadPage(QWidget):
     # ── 받지 않는 결의서(skiplist.py) ───────────────────────────────────
     def _show_unwanted(self) -> None:
         items = skiplist.load()
+        kinds = skiplist.kinds(items)
         rows = [ReportRow("받지 않음", "neutral",
                           [i.get("project", ""), i.get("seq", ""), i.get("gubun", ""), i.get("cont", ""), i.get("at", "")],
                           detail=f"까닭: {i.get('reason', '')}" + (f"\n문서번호: {i['docNo']}" if i.get("docNo") else ""))
                  for i in items]
         clear = show_report(
             self, title="받지 않는 결의서", heading=f"목록 읽기에서 빼는 결의서 {len(items)}건", tone="neutral",
-            summary=["청구서출력이 없어 받을 수 없는 결의서(잔액조정 · 대체 등)입니다. 받기가 만나면 저절로 여기 들어오고, 목록 읽기에서 빠집니다.",
-                     "결의서구분에 '청구' 가 든 결의서(일반청구 · 카드청구 · 대량청구)는 들어오지 않습니다 — 못 받으면 다음에 다시 해 봅니다."],
+            summary=[("처음부터 빼는 결의서구분: " + " · ".join(f"'{k}'" for k in kinds)
+                      + " — 이 구분의 결의서는 새로 올라온 것 · 다른 과제의 것도 모두 받을 목록에 넣지 않습니다.") if kinds
+                     else "처음부터 빼는 결의서구분은 아직 없습니다.",
+                     "청구서출력이 없어 받을 수 없는 결의서(잔액조정 · 대체 등)입니다. 받기가 만나면 저절로 여기 들어오고, 그 결의서구분은 다음 목록 읽기부터 통째로 빠집니다.",
+                     "결의서구분에 '청구' 가 든 결의서(일반청구 · 카드청구 · 대량청구)는 들어오지 않습니다 — 못 받으면 다음에 다시 해 봅니다.",
+                     "처음부터 빼는 것: 진행구분이 '승인' 이 아닌 것 · 문서번호나 지출예정일이 없는 것 · 결의서구분에 '반납' · '자금대체' 가 든 것 · 이미 받은 것(문서번호)."],
             columns=[("상태", 104), ("과제", 118), ("결의번호", 80), ("결의서구분", 140), ("내용", 300), ("넣은 때", None)], rows=rows,
             footer="목록을 비우면 다음 받기에서 다시 해 보고, 그래도 못 받으면 다시 들어옵니다.",
             accept_text="목록 비우기" if items else "")

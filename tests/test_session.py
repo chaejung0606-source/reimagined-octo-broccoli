@@ -96,6 +96,27 @@ def test_document_without_print_button_is_skipped_without_relogin(monkeypatch):
     assert skiplist.matches(skiplist.load(), make_row(docNo="A")) and not skiplist.matches(skiplist.load(), make_row(docNo="B"))
 
 
+def test_rest_of_a_kind_without_print_button_is_not_opened(monkeypatch):
+    """담당자 2026-10-22 "처음부터 목록에 없으면 소요시간이 감소" — 받는 중 한 건이 청구서출력이 없어 그 결의서구분이 목록에 들어오면,
+    같은 구분의 남은 건은 상세조회를 열어 보지 않고 '받지 않음' 으로 넘긴다(청구 결의서는 그대로 받는다)."""
+    calls = []
+
+    def no_print(page, row, *rest):
+        calls.append(row["docNo"])
+        if row["gubun"] == "일반대체":
+            raise session_mod.erp.NoPrintScreen("상세화면에 '청구서출력' 이 없음")
+        return _ok(page, row, *rest)
+
+    s, logs, asked = _session(no_print, monkeypatch=monkeypatch)
+    items = []
+    summary = s.download([make_row(docNo="A", gubun="일반대체"), make_row(docNo="B", gubun="일반 대체"),
+                          make_row(docNo="C", gubun="일반청구")], on_item=lambda *a: items.append(a))
+    assert calls == ["A", "C"] and asked == []
+    assert [r["docNo"] for r in summary.unwanted] == ["A", "B"] and summary.ok == 1 and summary.failed == []
+    assert (1, "unwanted", "결의서구분 '일반대체' 은 청구서출력이 없어 받지 않음") in items
+    assert any("받지 않는 결의서구분이라 열지 않고 넘깁니다" in line for line in logs)
+
+
 def test_claim_type_without_print_button_is_not_put_on_the_skip_list(monkeypatch):
     """결의서구분에 '청구' 가 든 결의서는 청구서출력이 있어야 한다 — 못 받았어도 목록에 넣지 않고 다음에 다시 해 본다(누락 막기)."""
     def no_print(page, row, *rest):

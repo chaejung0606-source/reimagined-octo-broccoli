@@ -71,3 +71,17 @@ def test_why_not():
     assert skiplist.why_not("대량청구", "청구서출력 없음")
     assert skiplist.why_not("", "청구서출력 없음") and skiplist.why_not("?", "x")
     assert skiplist.why_not("일반대체", "ERP 알림: 세션이 끝났습니다")
+
+
+def test_kinds_on_the_list_are_left_out_whole(isolated_home):
+    """담당자 2026-10-22 "이전에 다운받지 않아도 된다고 했던 것들이 포함되어 있습니다 … 처음부터 목록에 없으면 소요시간이 감소" — 구분 단위로.
+    목록에 든 결의서구분은 새 결의서 · 다른 과제의 결의서도 뺀다. '청구' 가 든 구분은 손으로 넣어 두었어도 빼지 않는다."""
+    settings.log_path().write_text(LOG, encoding="utf-8")
+    items = skiplist.load()
+    assert skiplist.kinds(items) == ["예산잔액조정신청", "일반대체"]
+    names = skiplist.kinds(items + [{"gubun": "대량청구"}, {"gubun": ""}, {"gubun": "일반 대체"}])
+    assert names == ["예산잔액조정신청", "일반대체"]                       # 같은 구분(띄어쓰기만 다름)은 한 번 · 청구 · 빈 구분 없음
+    assert skiplist.kind_of(names, make_row(seq="77", gubun="일반 대체")) == "일반대체"
+    assert skiplist.kind_of(names, make_row(gubun="예산잔액조정신청", docNo="202409710003-20260101-3")) == "예산잔액조정신청"
+    assert skiplist.kind_of(names, make_row(gubun="일반청구")) == "" and skiplist.kind_of(names, make_row(gubun="")) == ""
+    assert skiplist.kind_of(["카드청구"], make_row(gubun="카드청구")) == ""
