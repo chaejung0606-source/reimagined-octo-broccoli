@@ -743,7 +743,8 @@ async (href) => {
       // 무엇이 왔는지 보려고 form action · 스크립트의 주소 꼴 · 글자 앞부분만 (값은 적지 않는다)
       const act = (text.match(/action=["']([^"'?]{0,60})/i) || [])[1] || '';
       const go = (text.match(/(location[.\w]*\s*=|\.submit\(|window\.open|alert\()/) || [])[1] || '';
-      const body = text.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+      const body = text.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ')
+        .replace(/[\u0000-\u001f\u007f\ufffd]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);   // 제어 글자는 기록 · 클립보드를 끊는다
       return {ok: false, why: 'HTML 이 왔습니다' + (m ? " (제목 '" + m[1].trim() + "')" : '') + ' · HTTP ' + r.status
         + (act ? ' · form ' + act : '') + (go ? ' · ' + go : '') + (body ? " · 글 '" + body + "'" : '')};
     }

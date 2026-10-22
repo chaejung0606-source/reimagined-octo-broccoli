@@ -53,6 +53,10 @@ _LONG = re.compile(r"(?<!\d)\d{10,16}(?!\d)")
 _STUDENT_NO = re.compile(r"(?<![\d-])(20\d{2})\d{5}(?![\d-])")
 _WIN_USER = re.compile(r"(?i)([A-Z]:\\Users\\)[^\\\s/]+")
 _NIX_USER = re.compile(r"(/home/|/Users/)[^/\s]+")
+# 받은 파일의 글 앞부분(결재문서 · 그림)이 기록에 섞이면 제어 글자가 따라온다. 윈도우 클립보드는 NUL 에서 글을 끊어
+# 붙여 넣은 기록이 그 줄에서 잘렸다(2026-10-22 19:34 — 18:35 줄 'Handysoft Approval Document File' 뒤). 줄바꿈 · 탭만 남긴다.
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_MARK = "\ue000"                 # 남길 번호의 자리 표시 — 숫자 · 낱말 글자가 아니라 번호 규칙에 걸리지 않는다
 # 기록에서 이름이 오는 자리(scholarship · session 의 log 글 모양). 여기서 찾은 이름은 기록 전체에서 가린다 —
 # 같은 학생이 적요 · 파일 경로 · 신청 전 확인 줄에도 나오는데 그 자리는 이름인지 알 수 없어서다.
 _NAME_SPOTS = [
@@ -105,10 +109,11 @@ def project_numbers() -> set[str]:
 
 def mask_text(text: str, names: Iterable[str] = (), keep: Iterable[str] = ()) -> str:
     """keep 의 번호(과제번호)는 가리지 않는다 — 가리기 전에 표시로 바꿔 두었다가 되돌린다."""
+    text = _CONTROL.sub("", text)
     saved: dict[str, str] = {}
     for i, number in enumerate(sorted({str(k) for k in keep if k}, key=len, reverse=True)):
         if number in text:
-            mark = "\x00" + "".join(chr(0x41 + int(d)) for d in str(i)) + "\x00"     # 숫자 없는 표시 — 번호 규칙에 걸리지 않게
+            mark = _MARK + "".join(chr(0x41 + int(d)) for d in str(i)) + _MARK     # 숫자 없는 표시 — 번호 규칙에 걸리지 않게
             text = text.replace(number, mark)
             saved[mark] = number
     text = _SSN.sub("******-*******", text)

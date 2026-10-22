@@ -99,6 +99,18 @@ def test_known_project_numbers_stay_but_other_long_numbers_are_hidden():
     assert "110594395796" not in out and "202409710003" not in out     # 모르는 12자리는 그대로 가린다
 
 
+def test_control_characters_are_dropped_so_the_paste_is_not_cut():
+    # 실제(2026-10-22 19:34): 받은 결재문서의 글 앞부분이 기록에 섞여 NUL 에서 클립보드가 끊겼다 — 그 뒤 기록이 사라졌다
+    from claim_downloader import share_log
+    settings.log_path().write_text(
+        "18:35:29 ✖ 내부품의.pdf — HTML 이 왔습니다 · 글 'Handysoft Approval Document File\ufffd\x01\x02\x00\x00\x1b'\n"
+        "18:35:30 과제 202408470003 · 계좌 110594395796\t끝\n", encoding="utf-8")
+    text = share_log.compose(keep={"202408470003"})
+    assert not any(ord(c) < 32 and c not in "\n\t" for c in text) and "\x7f" not in text
+    assert "Document File\ufffd'" in text and text.rstrip().endswith("끝")         # 끊기지 않고 마지막 줄까지
+    assert "과제 202408470003" in text and "110594395796" not in text and "\ue000" not in text
+
+
 def test_send_without_any_log():
     sent = log_send.send("일반청구", config=_config())
     assert not sent.ok and not sent.text and "없습니다" in sent.note
