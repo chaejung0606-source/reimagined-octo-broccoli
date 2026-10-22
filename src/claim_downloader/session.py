@@ -26,7 +26,7 @@ from .claims import record as claim_record
 from .claims import scholarship as claim_scholarship
 from .claims import taxbill as claim_taxbill
 from .claims import taxbill_run
-from . import archive, diagnose, erp, logout as logout_mod, naming, navigate, project_folders, settings as settings_mod, skiplist
+from . import archive, diagnose, erp, logout as logout_mod, naming, navigate, project_folders, purchase, settings as settings_mod, skiplist
 from .reconcile import reconcile
 from .targets import Selection, select_targets
 
@@ -92,6 +92,7 @@ class RunSummary:
     stopped: bool = False
     missing: list[dict] = field(default_factory=list)   # 엑셀 대조 누락
     unwanted: list[dict] = field(default_factory=list)  # 청구서출력이 없어 받지 않는 결의서 목록에 넣은 건(skiplist) — 실패가 아니다
+    purchase: object = None                             # 구매요청(계약) 서류 결과(purchase.PurchaseSummary) — 그 줄이 있었을 때만
 
 
 # on_item(번호, 상태, 설명) — 상태: 'running' | 'done' | 'retry' | 'failed' | 'unwanted'(받지 않는 결의서 목록에 넣음)
@@ -1501,16 +1502,107 @@ class ErpSession:
                     f" · 못 읽은 과제 {len(total.blocked)}개" if total.blocked else ""))
         return total
 
+    def read_purchases(self, projects: list[str]) -> Selection:
+        """구매요청(계약) 서류 — 구매·자산 → 구매진행관리 목록을 고른 과제들의 과제기간(2년씩)으로 조회해 그 과제의 건을 받기 표의 줄로(purchase.py, 23절).
+        ERP 에서 과제를 고르지 않고 메인화면에서 바로 들어간다(담당자 2026-10-22). 과제기간은 로그인 뒤 읽어 둔 과제 목록(_과제목록.json · 지금 보이는 과제현황)에서."""
+        if not self.browser_open:
+            raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
+        ctx = self.page.context
+        sel = Selection()
+        wanted = [n for n in (re.sub(r"\D", "", str(p or "")) for p in projects) if n]
+        known = {p.no: p for p in navigate.load_projects()[0]}
+        known.update({p.no: p for p in navigate.read_projects(ctx)})
+        picked = [known[n] for n in wanted if n in known and known[n].start and known[n].end]
+        for n in wanted:
+            if n not in {p.no for p in picked}:
+                sel.blocked.append((n, "과제기간을 몰라 구매요청(계약) 서류를 읽지 않았습니다 — 로그인 뒤 메인화면 과제현황(전체과제)이 보일 때 다시 하세요"))
+        rng = purchase.span(picked)
+        if not rng:
+            self.log("⚠ 고른 과제의 과제기간을 몰라 구매요청(계약) 서류를 읽지 못했습니다")
+            return sel
+        self.log("구매요청(계약) 서류 — 구매·자산 메뉴로 갑니다 (과제기간 %s ~ %s)" % rng)
+        frame, why = purchase.open_list(ctx, self.log, self._wait)
+        if frame is None:
+            raise ListNotFound(erp.dump_context(ctx), why)
+        self.page = getattr(frame, "page", self.page)
+        cfg = self._load_settings()
+        seen: set[str] = set()
+        others = 0
+        for start, end in purchase.windows(*rng):
+            if self.should_stop():
+                break
+            ok, why = purchase.search(frame, start, end, self.log, self._wait)
+            if not ok:
+                raise ListNotFound(erp.dump_context(ctx), f"구매진행관리 조회 실패: {why}")
+            rows = purchase.read_rows(frame)
+            if rows is None:
+                raise ListNotFound(erp.dump_context(ctx), "구매진행관리 목록(IBSheet)을 읽지 못했습니다 — 그 화면을 [화면 구조 저장] 으로 보내 주세요")
+            mine = 0
+            for row in rows:
+                no = str(row.get("req_no") or "")
+                prj = re.sub(r"\D", "", str(row.get("prj_no") or ""))
+                if not no or no in seen:
+                    continue
+                if prj not in wanted:
+                    others += 1
+                    continue
+                seen.add(no)
+                mine += 1
+                folder, _why = purchase.case_dir(cfg.out_root, prj, no, row.get("title", ""), row.get("req_dt", ""))
+                sel.targets.append(purchase.as_target(row, folder))
+            self.log(f"구매진행관리 {start} ~ {end}: {len(rows)}줄 · 고른 과제의 건 {mine}건")
+        for n in wanted:
+            base, why = purchase.project_base(cfg.out_root, n)
+            if base is None and any(t.get("project") == n for t in sel.targets):
+                # 과제 폴더가 없는 과제의 건은 받지 않는다(담당자 2026-10-22 — 22절 청구서와 같은 규칙)
+                self.log("⚠ " + why)
+                sel.blocked.append((n, why))
+                sel.targets = [t for t in sel.targets if t.get("project") != n]
+        sel.projects = [p.no for p in picked]
+        self.log("구매요청(계약) 건 %d건" % len(sel.targets) + (f" (다른 과제의 건 {others}건은 뺌)" if others else "")
+                 + " — 받을 때 건마다 상세를 열어 첨부를 받고, 이미 있는 파일은 건너뜁니다")
+        return sel
+
+    def read_docs(self, projects: list[str], claims: bool = True, purchases: bool = False) -> Selection:
+        """받기 화면 ① 의 서류 — 청구서(결의서내역)와 구매요청(계약) 서류를 한 표로. 구매 쪽을 못 읽으면 청구서 줄은 두고 까닭만 남긴다."""
+        total = Selection()
+        if claims:
+            sel = self.read_lists(projects) if len(projects) != 1 else self.read_list(projects[0])
+            total.targets += sel.targets
+            total.skipped += sel.skipped
+            total.excluded += sel.excluded
+            total.projects += sel.projects
+            total.blocked += sel.blocked
+        if purchases:
+            try:
+                psel = self.read_purchases(projects)
+            except ListNotFound as error:
+                if not claims:
+                    raise
+                why = str(error).splitlines()[0]
+                self.log("⚠ 구매요청(계약) 서류를 읽지 못했습니다 — " + why)
+                total.blocked.append(("구매요청(계약) 서류", why))
+            else:
+                total.targets += psel.targets
+                total.blocked += psel.blocked
+                for no in psel.projects:
+                    if no not in total.projects:
+                        total.projects.append(no)
+        return total
+
     # ── 받기 ─────────────────────────────────────────────────────────────
     def download(self, targets: list[dict], on_item: ItemCallback | None = None, project_no: str = "") -> RunSummary:
         cfg = self._load_settings()
         notify = on_item or (lambda *_: None)
         summary = RunSummary()
         retried: dict[str, int] = {}
+        # 구매요청(계약) 서류 줄(purchase.KIND)은 청구서와 다른 화면(구매·자산)에서 받는다 — 아래 청구서 고리는 건너뛰고 끝에 따로(purchase.run)
+        purchase_idx = [i for i, r in enumerate(targets) if r.get("kind") == purchase.KIND]
+        claims_left = len(targets) - len(purchase_idx)
         # 일반청구 작성 화면에도 '청구서출력' 이 있어 받기가 그 화면을 상세화면으로 볼 수 있다(7절 8번). 탐지 코드는 겪기 전까지
         # 바꾸지 않기로 했으니, 받기 전에 그 탭을 닫게 한다 — 엉뚱한 화면을 기다리다 ERP 를 새로 열면 작성 중인 값이 사라진다.
         try:
-            form_open = self.claim_form_open()
+            form_open = self.claim_form_open() if claims_left else False
         except Exception:  # noqa: BLE001
             form_open = False
         if form_open:
@@ -1534,6 +1626,9 @@ class ErpSession:
                 self.log("멈춤 요청 — 여기서 그만 받습니다.")
                 break
             row = targets[i]
+            if row.get("kind") == purchase.KIND:
+                i += 1
+                continue
             project = re.sub(r"\D", "", str(row.get("project") or "")) or fallback
             if project != current:
                 current = project
@@ -1641,10 +1736,27 @@ class ErpSession:
                 notify(i, "done", dest.name)
             i += 1
 
+        if purchase_idx and not summary.stopped:
+            self.log("── 구매요청(계약) 서류 %d건 — 구매·자산 메뉴에서 받습니다" % len(purchase_idx))
+            picked = [targets[i] for i in purchase_idx]
+            psum = purchase.run(self.page.context, self.page, picked, cfg.out_root, self.log, self._wait,
+                                lambda k, status, detail: notify(purchase_idx[k], status, detail), self.should_stop)
+            summary.purchase = psum
+            summary.ok += psum.ok
+            failed_req = {c.req_no for c in psum.failed}
+            summary.failed += [t for t in picked if str(t.get("req_no") or "") in failed_req]
+            summary.stopped = summary.stopped or psum.stopped
+        elif purchase_idx:
+            for i in purchase_idx:
+                summary.failed.append(targets[i])
+                notify(i, "failed", "멈춤 요청으로 받지 않음")
         self.log("── 끝: 성공 %d건 / 실패 %d건" % (summary.ok, len(summary.failed))
                  + (" / 받지 않음 %d건(받지 않는 결의서 목록에 넣음)" % len(summary.unwanted) if summary.unwanted else ""))
         for r in summary.failed:
-            self.log("   실패: No %s 결의 %s %s" % (r.get("no"), r.get("seq"), (r.get("cont") or "")[:30]))
+            if r.get("kind") == purchase.KIND:
+                self.log("   실패: 구매요구 %s %s" % (r.get("req_no"), (r.get("cont") or "")[:30]))
+            else:
+                self.log("   실패: No %s 결의 %s %s" % (r.get("no"), r.get("seq"), (r.get("cont") or "")[:30]))
         summary.missing = reconcile(cfg.excel_path, self.done, self.log)
         return summary
 

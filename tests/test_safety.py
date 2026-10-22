@@ -367,3 +367,36 @@ def test_structure_card_only_reads_and_does_not_reload_open_sites():
     assert show.index("bring_to_front") < show.index("goto")        # 열린 ERP 창이 있으면 앞으로만 — 그 뒤에야 새로 연다
     page = (SRC / "ui" / "pages" / "structure.py").read_text(encoding="utf-8")
     assert "evaluate" not in page and "playwright" not in page.lower()
+
+
+def test_purchase_presses_only_menu_search_pick_detail_list_and_item_rows():
+    """구매요청(계약) 서류 받기(purchase.py, 2026-10-22 · 23절)가 누르는 것은 위 메뉴 '구매·자산'(#menu_id_3) · 왼쪽 메뉴 글자 · 위쪽 탭 ·
+    [검색](#btnSearch) · 목록 줄의 선택 칸(chk, IBSheet setValue) · [상세조회/변경](#btnDetail) · [진행관리목록](#btnList) · 검사처리 줄의 라디오 ·
+    물품정보 줄 더블클릭뿐이다. 값을 넣는 칸은 조회 조건의 일자 둘(#START_DATE · #END_DATE)뿐. 등록 · 삭제 · 저장 · 구매요청 · 취소 · 검사처리(취소) ·
+    완료 · 첨부 추가/삭제 · 사진등록/삭제 · [구매진행상세] · [구매요청서] 출력은 누르지 않고, 파일은 링크 주소를 받기만 한다."""
+    from claim_downloader import purchase
+    text = (SRC / "purchase.py").read_text(encoding="utf-8")
+    pressing = {"MENU_JS": purchase.MENU_JS, "LEFT_MENU_JS": purchase.LEFT_MENU_JS, "TOP_TAB_JS": purchase.TOP_TAB_JS,
+                "SEARCH_JS": purchase.SEARCH_JS, "PICK_DETAIL_JS": purchase.PICK_DETAIL_JS, "LIST_BACK_JS": purchase.LIST_BACK_JS,
+                "INSPECT_PICK_JS": purchase.INSPECT_PICK_JS}
+    assert text.count(".click()") == 7 and all(js.count(".click()") == 1 for js in pressing.values())
+    assert "getElementById('menu_id_3')" in purchase.MENU_JS and "t !== '구매자산'" in purchase.MENU_JS
+    assert "getElementById('btnSearch')" in purchase.SEARCH_JS
+    assert "getElementById('btnDetail')" in purchase.PICK_DETAIL_JS and "t.startsWith('상세조회')" in purchase.PICK_DETAIL_JS
+    assert "getElementById('btnList')" in purchase.LIST_BACK_JS and "t.includes('목록')" in purchase.LIST_BACK_JS
+    assert "input[type=radio]" in purchase.INSPECT_PICK_JS and "k_PURCH_REQ_NO" in purchase.INSPECT_PICK_JS
+    assert "hits.length !== 1" in purchase.LEFT_MENU_JS and "shown.length !== 1" in purchase.TOP_TAB_JS
+    # 선택 칸만 setValue — 다른 열은 안 된다. 그 줄 하나만 체크됐는지 getRowsByChecked 로 다시 본 뒤에야 단추를 누른다
+    assert re.findall(r"setValue\(\s*[^,()]+,\s*'(\w+)'", text) == ["chk", "chk"] and text.count("setValue(") == 2
+    assert "checked.length !== 1" in purchase.PICK_DETAIL_JS
+    # 값을 넣는 칸은 일자 둘뿐(SET_RANGE_JS 의 el.value = v 한 곳)
+    assert re.findall(r"\w+\.value\s*=[^=]\s*\w*", text) == ["el.value = v"] and "'START_DATE'" in purchase.SET_RANGE_JS and "'END_DATE'" in purchase.SET_RANGE_JS
+    assert text.count("dblclick(") == 1 and "k_CONT_ITEM_NM_KR" in purchase.ITEM_ROW_SELECTOR
+    for name in (".fill(", ".type(", ".press(", "set_input_files(", "keyboard.", "import playwright", "from playwright"):
+        assert name not in text, name
+    # 검사처리 화면을 알아보는 데만 #btnPunch 가 쓰인다(있는지 보기만) — 누르지 않는다
+    assert text.count("btnPunch") == 1 and "!!document.getElementById('btnPunch')" in purchase.INSPECT_PROBE_JS
+    for forbidden in ("btnInsert", "btnDelete", "btnSave", "btnRequest", "btnCancel", "btnWorkSave", "btnWorkCancel", "btnAttachSave",
+                      "btnMyGrid2", "btnImgIns", "btnImgDel", "btnFileAdd", "btnFileDel", "btnPrint", "gridDonw", "btnDownload", "btnSaveAdd",
+                      "btnUpdate", "btnImpCopy", "btn_detail", "btnContItem", "btnCAC"):
+        assert f"'{forbidden}'" not in text and f'"{forbidden}"' not in text and f"#{forbidden}" not in text.replace("`#btnDetail`", ""), forbidden

@@ -151,6 +151,11 @@ class SessionWorker(QObject):
         self._stop.clear()
         self._put("read_lists", (list(projects),), "download")
 
+    def read_docs(self, projects: list[str], claims: bool = True, purchases: bool = False) -> None:
+        """받기 화면 ① 의 서류대로 — 청구서(결의서내역) · 구매요청(계약) 서류(구매·자산)를 한 표로(session.read_docs)."""
+        self._stop.clear()
+        self._put("read_docs", (list(projects), bool(claims), bool(purchases)), "download")
+
     def plan_rebudget(self) -> None:
         """이미 받은 대응자금 파일 — 예산 탭 차례를 읽고 바꿀 이름을 정한다(옮기지 않음)."""
         self._put("plan_rebudget", (), "download")
@@ -528,6 +533,19 @@ class SessionWorker(QObject):
         try:
             selection = session.read_lists(projects)
         except BrowserClosed as error:
+            self.list_failed.emit(str(error))
+            return
+        self.listed.emit(selection)
+
+    def _do_read_docs(self, session: ErpSession, projects: list[str], claims: bool, purchases: bool) -> None:
+        if session.browser_open and session.erp_page() is None:
+            self._do_read_list(session, "")          # 주차등록만 열린 브라우저 — ERP 를 열고 로그인을 기다린다
+            return
+        self._ensure_scanned(session)
+        self.busy.emit(True, "받을 서류 목록을 읽는 중…")
+        try:
+            selection = session.read_docs(projects, claims, purchases)
+        except (ListNotFound, BrowserClosed) as error:
             self.list_failed.emit(str(error))
             return
         self.listed.emit(selection)
