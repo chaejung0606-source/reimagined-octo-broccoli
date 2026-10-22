@@ -37,7 +37,8 @@ def select_targets(rows: list[dict], done: set[str]) -> Selection:
 
 
 def volume_warning(sel: Selection) -> str:
-    n = len(sel.targets)
+    # 구매요청(계약) 서류 줄은 보관 스캔과 상관없다(건마다 폴더의 파일 이름으로 중복을 본다) — 청구서 줄만 센다
+    n = sum(1 for t in sel.targets if t.get("kind") != "purchase")
     if n >= MANY_TARGETS and sel.skipped < n:
         return (f"⚠⚠ 받을 건이 {n}건으로 많습니다(이미 보관되어 건너뛴 건 {sel.skipped}건).\n"
                 "      저장 폴더가 맞는지 먼저 확인하세요. 처음 쓰는 것이라면 그대로 진행해도 됩니다.")
