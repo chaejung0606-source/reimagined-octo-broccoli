@@ -161,6 +161,11 @@ class SettingsPage(QWidget):
         self.parking_card = ParkingLoginCard()
         self.parking_card.changed.connect(self.changed.emit)
         column.addWidget(self.parking_card)
+        # 관리대장 구글 시트 — 담당자 요청 2026-10-22: "할인내역을 구글시트에 저장하고 그 구글시트를 연동해서 어플에서 관리대장을 확인"
+        from ..parking_sheet_card import ParkingSheetCard
+        self.sheet_card = ParkingSheetCard()
+        self.sheet_card.changed.connect(self.changed.emit)
+        column.addWidget(self.sheet_card)
 
         # 동작
         behave = Card("동작", "받는 방식을 조절합니다", art="settings")

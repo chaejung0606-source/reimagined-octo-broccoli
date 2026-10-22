@@ -5,8 +5,10 @@
 
 - 표의 내용 · 사용자 · 차량번호 · 비고 · 구입 · 배부 · 일자는 그 자리에서 고친다(두 번 누르기). 잔여는 앱이 셈한다.
 - [줄 추가] 로 구입(이월) · 배부를 적는다. 할인 적용 · 할인 링크에서 적은 줄은 그 화면이 넣는다(pages/parking.py).
-- [사이트 할인 내역 불러오기] 는 사이트 '운영 → 할인 내역' 의 첫 쪽을 읽어(읽기만) 대장과 차량번호 · 일자로 맞춰 보고, 대장에 없는 줄은
-  [대장에 넣기] 로 배부 1 줄씩 넣는다 — 사용자 · 내용은 표에서 채운다. 그 화면의 열 이름은 실측 전이라 못 맞추면 그렇다고만 알린다.
+- [사이트 할인 내역 불러오기] 는 사이트 '운영 → 할인 내역' 의 첫 쪽을 읽어(읽기만) 대장과 차량번호 · 일자로 맞춰 보고, 대장에 없는 공무확인증 줄은
+  바로 관리대장 양식으로 넣는다(2026-10-22) — 사용자 · 내용은 표에서 채운다.
+- 구글 시트를 연결했으면(설정 → 관리대장 구글 시트, parking_sheet.py) 화면을 열 때 · 대장을 고친 뒤 시트의 '관리대장' 탭과 맞추고(뒤 스레드 — ui/sheet_sync.py),
+  불러온 사이트 할인 내역은 '할인내역' 탭에 쌓는다.
 """
 from __future__ import annotations
 
@@ -36,7 +38,8 @@ from PySide6.QtWidgets import (
 )
 
 from ... import parking_ledger as ledger
-from ... import settings
+from ... import parking_sheet, settings
+from ..sheet_sync import instance as sheet_sync
 from ..widgets import Card, EmptyState, Field, Pill, muted_label
 
 # (머리글, Entry 칸) — 잔여 · 적은 곳은 앱이 채운다(고칠 수 없음)
@@ -148,6 +151,26 @@ class LedgerPanel(QWidget):
         self.totals = muted_label("")
         self.totals.setWordWrap(True)
         layout.addWidget(self.totals)
+        # 구글 시트 — 연결했으면 맞춘 때 · [지금 맞추기] · [시트 열기]
+        sheet_row = QHBoxLayout()
+        sheet_row.setSpacing(8)
+        self.sheet_state = Pill("구글 시트 연결 안 됨", "neutral")
+        sheet_row.addWidget(self.sheet_state, 0, Qt.AlignVCenter)
+        self.sheet_note = muted_label("")
+        self.sheet_note.setWordWrap(True)
+        sheet_row.addWidget(self.sheet_note, 1, Qt.AlignVCenter)
+        self.sync_button = QPushButton("지금 맞추기")
+        self.sync_button.setObjectName("ghost")
+        self.sync_button.setToolTip("구글 시트의 '관리대장' 탭과 맞춥니다 — 시트에서 고친 것을 가져오고, 앱에서 고친 것을 올립니다")
+        self.sync_button.clicked.connect(lambda: (self._sheet_busy(), sheet_sync().run_now()))
+        sheet_row.addWidget(self.sync_button)
+        self.sheet_button = QPushButton("시트 열기")
+        self.sheet_button.setObjectName("ghost")
+        self.sheet_button.clicked.connect(self._open_sheet)
+        sheet_row.addWidget(self.sheet_button)
+        layout.addLayout(sheet_row)
+        sheet_sync().synced.connect(self._on_synced)
+        sheet_sync().history_saved.connect(self._on_history_saved)
 
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels([name for name, _ in COLUMNS])
@@ -274,12 +297,12 @@ class LedgerPanel(QWidget):
             value = day
         entry = self._entries[item.row()]
         self._show(ledger.update(entry.id, **{key: value}))
-        self.changed.emit()
+        self._local_change()
 
     def add_entry(self, entry: ledger.Entry) -> ledger.Entry:
         """할인 적용 · 할인 링크 화면이 부른다. (적은 줄, 그 뒤 잔여) 를 알리려고 줄을 돌려준다."""
         self._show(ledger.add(entry))
-        self.changed.emit()
+        self._local_change()
         return entry
 
     def left_after(self, entry: ledger.Entry) -> int:
@@ -303,7 +326,7 @@ class LedgerPanel(QWidget):
                                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         self._show(ledger.remove(entry.id))
-        self.changed.emit()
+        self._local_change()
 
     def _export(self) -> None:
         name = f"{ledger.TITLE}_{dt.date.today():%Y%m%d}.xlsx"
@@ -321,6 +344,61 @@ class LedgerPanel(QWidget):
         if QMessageBox.question(self, "엑셀로 받기", f"관리대장을 엑셀로 저장했습니다.\n{path}\n\n지금 열까요?",
                                 QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    # ── 구글 시트 ────────────────────────────────────────────────────────
+    def _local_change(self) -> None:
+        """앱에서 대장을 고쳤다 — 화면들에 알리고 시트와 맞춘다(잇달아 고치면 한 번에)."""
+        self.changed.emit()
+        sheet_sync().request()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.reload()
+        self._sheet_row()
+        if sheet_sync().connected():
+            self._sheet_busy()
+            sheet_sync().run_now()             # 열 때마다 시트에서 고친 것을 가져온다
+
+    def _sheet_busy(self) -> None:
+        if sheet_sync().connected():
+            self.sheet_state.set_status("구글 시트와 맞추는 중", "info")
+
+    def _sheet_row(self, result=None) -> None:
+        config = parking_sheet.load_config()
+        self.sync_button.setVisible(config.connected)
+        self.sheet_button.setVisible(bool(config.connected and config.sheet_url))
+        if not config.connected:
+            self.sheet_state.set_status("구글 시트 연결 안 됨", "neutral")
+            self.sheet_note.setText("설정 → '관리대장 구글 시트' 에서 연결하면 시트에서도 보고 고칠 수 있습니다.")
+            return
+        result = result or sheet_sync().last
+        name = f"'{config.sheet_name}' " if config.sheet_name else ""
+        if result is None:
+            self.sheet_state.set_status("구글 시트 연결됨", "success")
+            self.sheet_note.setText(f"시트 {name}— 열 때 · 고친 뒤 맞춥니다.")
+        elif result.ok:
+            self.sheet_state.set_status("구글 시트와 맞춤", "success")
+            self.sheet_note.setText(f"{result.when} 에 시트 {name}의 '관리대장' 탭과 맞췄습니다(대장 {result.total}줄).")
+        else:
+            self.sheet_state.set_status("구글 시트 못 맞춤", "danger")
+            self.sheet_note.setText(result.note)
+
+    def _on_synced(self, result) -> None:
+        if result.ok and result.changed:
+            self._show(ledger.load())
+            self.changed.emit()                # 사용자 · 내용 보기를 새로(다시 맞추지는 않는다)
+        self._sheet_row(result)
+
+    def _on_history_saved(self, result) -> None:
+        if result.ok and result.added:
+            self.site_info.setText(self.site_info.text() + f"\n구글 시트 '할인내역' 탭에 새 줄 {result.added}개를 쌓았습니다.")
+        elif not result.ok and result.note not in ("연결 안 됨", "줄 없음"):
+            self.site_info.setText(self.site_info.text() + "\n" + result.note)
+
+    def _open_sheet(self) -> None:
+        url = parking_sheet.load_config().sheet_url
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
 
     def users(self) -> list[str]:
         return sorted({e.user for e in self._entries if e.user})
@@ -369,6 +447,7 @@ class LedgerPanel(QWidget):
             info.append("사이트가 처음 보여 주는 쪽만 읽었습니다 — 다른 쪽 · 다른 기간은 브라우저 화면에서 봅니다.")
         self.site_info.setText(" · ".join(info))
         self._rematch()
+        sheet_sync().save_history(self._site_headers, self._site_rows)     # 구글 시트 '할인내역' 탭에 쌓기(연결했으면)
         added = self._fill_from_site()
         if added:
             self.site_info.setText(self.site_info.text() + f"\n대장에 없던 공무확인증 사용 {added}줄을 관리대장에 넣었습니다(배부 1 · 일자 · 차량번호 · 비고). "
@@ -382,10 +461,11 @@ class LedgerPanel(QWidget):
         if match is None or not match.ok or not match.missing:
             return 0
         entries = ledger.from_site(self._site_headers, self._site_rows, match.missing, match)
-        stored = ledger.load() + entries
-        ledger.save(stored)
+        with ledger._LOCK:
+            stored = ledger.load() + entries
+            ledger.save(stored)
         self._show(stored)
-        self.changed.emit()
+        self._local_change()
         return len(entries)
 
     def _rematch(self) -> None:
@@ -429,10 +509,11 @@ class LedgerPanel(QWidget):
                                 "링크를 만들 때 배부 수량으로 이미 적었다면 두 번 세게 됩니다.",
                                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        stored = ledger.load() + entries
-        ledger.save(stored)
+        with ledger._LOCK:
+            stored = ledger.load() + entries
+            ledger.save(stored)
         self._show(stored)
-        self.changed.emit()
+        self._local_change()
 
     def _filter_site(self, text: str) -> None:
         word = _squash(text)

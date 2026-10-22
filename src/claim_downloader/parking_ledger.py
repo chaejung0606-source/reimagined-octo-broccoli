@@ -10,12 +10,16 @@
 - 사이트 할인 내역(parking_screens.read_history)과 맞춰 볼 때는 차량번호 + 일자로 대장의 배부 줄을 찾는다 — 그 화면의 열 이름은
   실측 전이라 머리글 글자(차량 · 일시/일자)로 열을 고르고, 못 고르면 맞춰 보지 않는다(match_site).
 - 사용자 이름 · 차량번호가 들어 있어 사용자 폴더(`_공무확인증관리대장.json`)에만 두고 저장소 · 배포 · 기록(_실행로그)에는 남기지 않는다.
+  담당자가 구글 시트 연동을 켜면(2026-10-22, parking_sheet.py) 그 시트의 '관리대장' 탭과 맞춘다 — 이 파일은 그때도 이 PC 의 사본이다.
+  맞추기(merge)는 줄마다 id 로: 양쪽에 있으면 고친 때(updated)가 늦은 쪽, 한쪽에만 있으면 새로 적은 것 — 단 지난번 맞출 때 있었던 줄이
+  시트에서 사라졌으면 시트에서 지운 것, 이 PC 에서 지운 줄(deleted)은 시트에서도 지운다.
 """
 from __future__ import annotations
 
 import datetime as dt
 import json
 import re
+import threading
 import uuid
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -23,6 +27,12 @@ from pathlib import Path
 from . import settings
 
 BUY, GIVE = "buy", "give"
+_LOCK = threading.RLock()       # 화면(고치기)과 구글 시트 맞추기 스레드가 같은 파일을 읽고 쓴다
+
+
+def now_stamp() -> str:
+    """고친 때 — 세계시 ISO(구글 시트 스크립트의 toISOString 과 같은 꼴이라 글자로 견줄 수 있다)."""
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 SOURCES = {"apply": "할인 적용", "link": "할인 링크", "manual": "직접", "site": "사이트 할인 내역"}
 TITLE = "공무확인증 관리대장"
 
@@ -39,6 +49,7 @@ class Entry:
     source: str = "manual"        # apply · link · manual · site
     created: str = field(default_factory=lambda: dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    updated: str = field(default_factory=now_stamp)     # 고친 때 — 구글 시트와 맞출 때 늦은 쪽이 이긴다
 
     @property
     def kind(self) -> str:
@@ -53,60 +64,141 @@ def path() -> Path:
     return settings.parking_ledger_path()
 
 
-def load() -> list[Entry]:
-    """적은 줄 — 파일이 없거나 깨졌으면 빈 목록(깨진 파일은 덮어쓰기 전에 옆에 남긴다, save)."""
+def _read() -> dict:
     try:
         data = json.loads(path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return []
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _entries_of(rows) -> list[Entry]:
     names = {f.name for f in fields(Entry)}
     out = []
-    for row in data.get("entries", []) if isinstance(data, dict) else []:
+    for row in rows or []:
         if isinstance(row, dict) and row.get("date"):
             values = {k: v for k, v in row.items() if k in names}
             for key in ("bought", "given"):
                 values[key] = _int(values.get(key))
+            values.setdefault("updated", "")
             out.append(Entry(**values))
     return out
 
 
-def save(entries: list[Entry]) -> None:
-    target = path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        try:
-            json.loads(target.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            # 손으로 고치다 깨진 파일 — 덮어쓰면 그동안 적은 것이 사라진다. 옆에 남겨 둔다
-            target.replace(target.with_name(target.name + ".읽지못함"))
-    temp = target.with_name(target.name + ".tmp")
-    temp.write_text(json.dumps({"entries": [asdict(e) for e in ordered(entries)]}, ensure_ascii=False, indent=1), encoding="utf-8")
-    temp.replace(target)
+def load() -> list[Entry]:
+    """적은 줄 — 파일이 없거나 깨졌으면 빈 목록(깨진 파일은 덮어쓰기 전에 옆에 남긴다, save)."""
+    with _LOCK:
+        return _entries_of(_read().get("entries"))
+
+
+def sync_state() -> tuple[set[str], set[str]]:
+    """(지난번 구글 시트와 맞춘 줄 id, 이 PC 에서 지웠지만 아직 시트에 알리지 않은 줄 id)."""
+    with _LOCK:
+        sync = _read().get("sync") or {}
+        return set(sync.get("ids") or []), set(sync.get("deleted") or [])
+
+
+def save(entries: list[Entry], sync: dict | None = None) -> None:
+    with _LOCK:
+        target = path()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        old = {}
+        if target.exists():
+            try:
+                old = json.loads(target.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                # 손으로 고치다 깨진 파일 — 덮어쓰면 그동안 적은 것이 사라진다. 옆에 남겨 둔다
+                target.replace(target.with_name(target.name + ".읽지못함"))
+        data = {"entries": [asdict(e) for e in ordered(entries)]}
+        keep = sync if sync is not None else (old.get("sync") if isinstance(old, dict) else None)
+        if keep:
+            data["sync"] = keep
+        temp = target.with_name(target.name + ".tmp")
+        temp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        temp.replace(target)
 
 
 def add(entry: Entry) -> list[Entry]:
-    entries = load()
-    entries.append(entry)
-    save(entries)
-    return ordered(entries)
+    with _LOCK:
+        entries = load()
+        entries.append(entry)
+        save(entries)
+        return ordered(entries)
 
 
 def update(entry_id: str, **changes) -> list[Entry]:
-    entries = load()
-    for e in entries:
-        if e.id == entry_id:
-            for key, value in changes.items():
-                if key in ("bought", "given"):
-                    value = _int(value)
-                setattr(e, key, value)
-    save(entries)
-    return ordered(entries)
+    with _LOCK:
+        entries = load()
+        for e in entries:
+            if e.id == entry_id:
+                for key, value in changes.items():
+                    if key in ("bought", "given"):
+                        value = _int(value)
+                    setattr(e, key, value)
+                e.updated = now_stamp()
+        save(entries)
+        return ordered(entries)
 
 
 def remove(entry_id: str) -> list[Entry]:
-    entries = [e for e in load() if e.id != entry_id]
-    save(entries)
-    return ordered(entries)
+    """지운 줄은 구글 시트에도 알린다(deleted) — 시트와 맞추는 중에 지운 줄이 되살아나지 않게 맞춘 적이 없는 줄도 적어 둔다.
+    시트에 알리면 목록에서 뺀다(mark_synced). 연동하지 않는 PC 에서 끝없이 쌓이지 않게 최근 500개만."""
+    with _LOCK:
+        entries = [e for e in load() if e.id != entry_id]
+        ids, deleted = sync_state()
+        save(entries, {"ids": sorted(ids), "deleted": sorted(deleted | {entry_id})[-500:]})
+        return ordered(entries)
+
+
+def mark_synced(ids: set[str], told: set[str]) -> None:
+    """구글 시트에 다 써 넣은 뒤 — 맞춘 줄 id 를 남기고, 시트에 알린 지운 줄은 목록에서 뺀다."""
+    with _LOCK:
+        _old_ids, deleted = sync_state()
+        save(load(), {"ids": sorted(ids), "deleted": sorted(deleted - told)})
+
+
+def merge(local: list[Entry], remote: list[Entry], synced: set[str], deleted: set[str]) -> list[Entry]:
+    """이 PC 의 대장과 구글 시트의 대장을 줄 id 로 맞춘다(위 머리말의 규칙)."""
+    mine = {e.id: e for e in local}
+    theirs = {e.id: e for e in remote}
+    out = []
+    for key in list(mine) + [k for k in theirs if k not in mine]:
+        if key in deleted:
+            continue
+        a, b = mine.get(key), theirs.get(key)
+        if a and b:
+            out.append(b if (b.updated or "") > (a.updated or "") else a)
+        elif a:
+            if key not in synced:                     # 아직 시트에 올리지 않은 새 줄
+                out.append(a)
+        else:
+            out.append(b)
+    return ordered(out)
+
+
+# ── 구글 시트 '관리대장' 탭의 줄 ──────────────────────────────────────────
+SHEET_HEAD = ("일자", "구입", "배부", "잔여", "내용", "사용자", "차량번호", "비고", "적은 곳", "id", "수정시각", "적은 때")
+_SOURCE_OF = {label: key for key, label in SOURCES.items()}
+
+
+def to_sheet(entries: list[Entry]) -> list[list]:
+    """시트에 쓸 줄 — 옛 관리대장 차례 + 잔여(앱이 셈) + 맞추기에 쓰는 id · 수정시각."""
+    return [[e.date, e.bought or "", e.given or "", left, e.content, e.user, e.car, e.note, SOURCES.get(e.source, e.source), e.id,
+             e.updated, e.created] for e, left in with_balance(entries)]
+
+
+def from_sheet(rows: list[list]) -> list[Entry]:
+    """시트의 줄(머리글 빼고, 글자로 읽은 값) → 대장 줄. 일자를 못 읽는 줄은 뺀다. id 가 없는 줄(시트에 손으로 더한 줄)은 새 id."""
+    out = []
+    for row in rows:
+        cell = lambda i: str(row[i]).strip() if i < len(row) and row[i] is not None else ""  # noqa: E731
+        date = day_of(cell(0))
+        if not date:
+            continue
+        out.append(Entry(date=date, bought=_int(cell(1)), given=_int(cell(2)), content=cell(4), user=cell(5), car=cell(6),
+                         note=cell(7), source=_SOURCE_OF.get(cell(8), "manual"), id=cell(9) or uuid.uuid4().hex,
+                         updated=cell(10) or now_stamp(), created=cell(11) or dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    return out
 
 
 def ordered(entries: list[Entry]) -> list[Entry]:

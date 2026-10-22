@@ -118,6 +118,11 @@ def parking_ledger_path() -> Path:
     return data_dir() / "_공무확인증관리대장.json"
 
 
+def parking_sheet_path() -> Path:
+    """공무확인증 관리대장의 구글 시트 연동(parking_sheet.py) — 웹 앱 주소 · 토큰. 그 둘이면 시트를 읽고 쓸 수 있어 저장소 · 배포에서 뺀다."""
+    return data_dir() / "_구글시트연동.json"
+
+
 def skip_path() -> Path:
     """받지 않는 결의서(skiplist.py) — 청구서출력이 없어 받을 수 없는 결의서. 대표적요(사람 이름이 들 수 있음)가 있어 저장소 · 배포에서 뺀다."""
     return data_dir() / "_받지않는결의서.json"
