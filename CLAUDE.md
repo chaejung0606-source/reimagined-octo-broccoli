@@ -1730,6 +1730,20 @@ ERP 를 새로 누르거나 미실측 화면이 필요한 것(출장비 · 기�
   (5~7 판의 `GetTotalRows · LastCol · ColSaveName` 은 없고 `version` 은 함수) — 8 판은 **줄이 객체**(`Kind` 'Data' · 'Header')이고 **열은 `Cols`**(열 이름 → 열 객체, `Header` · `Type`),
   값은 `GetValue(줄, 열이름)` · `GetText` · `GetString`. 진단 모드를 그 함수들로 다시 고쳤다(같은 날) — 열 이름 · 앞 줄은 **다음 실측**에서 잡힌다. 구매요구서작성(14:20 프레임 4)에는
   IBSheet 가 셋(`[0]` 재원 · `[1]` 물품 · `[4]` 증빙문서 — 번호가 건너뛴다).
+- **18번(14:48, 새 판 — 구매진행관리 목록, 구매요청일자 `2026-06-01 ~ 2026-10-22`, 글자 줄 21)**: IBSheet 8 읽기가 처음으로 돌아 **열 이름(`Cols`) 30개가 잡혔다**
+  (`IBSheet 스크립트 [0] id sheet · 줄 수 모름 · 열 30 · 쪽 0`): `Panel<Panel> | chk(선택)<Bool> | ROW_SEQ(No)<Int> | PURCH_PROG_DETAIL(구매진행상세)<Button> | PURCH_KIND_NM(구분) |
+  ITEM_DTL_DIV_NM(세부구분) | DEPT_NM(수행기관) | PRJ_RSPR_EMP_DEPT_NM(소속기관) | PRJ_RSPR_EMP_NM(과제책임자) | PRJ_NO(대표과제번호) | PRJ_NM(대표과제명) | PURCH_AMT(구매요구액)<Int> |
+  CONT_AMT(계약금액)<Int> | REQ_AMT_20(신청금액)<Int> | REQ_AMT_30(승인금액)<Int> | REQ_DT(요청일자)<Date> | PURCH_PROG_STS_NM(진행상태) | PRJ_RCH_DT(연차기간) | SUP_RCH_DT(단계기간) |
+  UP_SUP_RCH_DT(총괄기간) | PURCH_CONT(내용) | ACPT_USER_NM(접수자) | PURCH_REQ_NO(구매요청번호) | CONT_NO(계약번호) | CONT_PROG_STS_NM(계약진행상태) | APPR_SEQ_NO(구매요청번호) |
+  CONT_CHANGE_CNT(계약변경횟수) | CONT_CANCEL_YN(계약취소여부) | SEQ(SEQ)<Int> | _ConstWidth<Html>`(글자 열은 `<Text>`). **줄은 아직 못 읽었다** — `GetDataRows` · `GetRows` 로 자료 줄이 안 나왔다.
+  함수 목록은 열거 차례대로 160개를 적어 난독 이름(gTC · nH …)과 `ActionSetBorder…` 뿐이었다 — 쓸 이름이 안 보였다. 14:19 실측의 40개(`GetRows · GetRow · GetFixedRows · GetFirstRev · GetLast ·
+  GetNextRev · GetPrevVisible · GetValue · GetCaption · GetDataPage · GetPageNum · GetSort · GetCellRC · Collapse · ChangeDef · Escape …`)와 `Cols` · `Rows` 는 **TreeGrid 의 API 꼴**이다 —
+  IBSheet 8 은 TreeGrid 를 바탕으로 하고 제 API 는 **소문자**(`getDataRows` · `getRowCount` · `getValue` · `getText` · `getFocusedRow` …)로 둔다. 그래서 진단 모드를 같은 날 다시 고쳤다:
+  줄은 `getDataRows()` → `GetDataRows()` → **TreeGrid 걷기 `GetFirst()` / `GetNext(줄)`**(`Kind` 'Data' 만) → `getFirstRow`/`getNextRow` → `GetRows()` → `Rows` 객체 차례로(어느 길로 읽었는지
+  `줄은 … 로 읽음`), 값은 소문자 `getText · getString · getValue` → 대문자 → 줄 객체의 `row[열이름]`, 함수 목록은 API 꼴(get · Get · set · Rows · Cols …)을 앞에 두고 난독 · Action… 은 뺀다(200개까지).
+  **처리기도 적는다**: 시트 객체의 `on…`/`On…` 함수(`OnClick` 등 — '구매진행상세' 단추가 무엇을 부르는지) 앞 240자, 그리고 id 가 있고 onclick 속성이 없는 단추 · 링크(`#btnDetail` 같은 것)에
+  jQuery 로 붙인 click 처리기(`jQuery._data(el,'events')`, 읽기만) 앞 240자 + 그 글에 보이는 전역 함수(`fn_…` · `uf_…`) 하나의 앞 400자 — 줄 고르기 → [상세조회/변경] 이 어떻게 이어지는지
+  코드로 본다. 테스트는 14:48 모양의 가짜(Cols 만 있고 GetDataRows 없음 · GetFirst/GetNext · getValue · OnClick · jQuery 단추)로 실제 Chromium 에서.
 - **구조에서 나온 설계 메모**: ① 검사처리는 JGM 그리드라 받기 코드의 그리드 읽기(`.jgrid-row` · `k_*` · 가상 스크롤)가 그대로 쓰인다 — 줄마다 라디오 → 아래 첨부 표의 `a.btn_lnk` 링크 받기 → 물품정보 표가
   있으면 줄마다 물품내역팝업을 열어(어떻게 여는지 실측 뒤) 사진 받기. ② 구매진행관리는 IBSheet — 스크립트 읽기가 되면 줄마다 (대표과제번호 · 구매요청번호 · 요청일자 · 내용) 를 읽고,
   줄을 골라 [상세조회/변경] → 같은 프레임의 구매요구서작성에서 증빙문서 링크 받기 → [진행관리목록] 으로 돌아오기. 줄을 고르는 법(IBSheet 칸 클릭 · 선택 체크)은 미실측 — `SheetClick` 이 받는 것이
@@ -1741,7 +1755,8 @@ ERP 를 새로 누르거나 미실측 화면이 필요한 것(출장비 · 기�
 (9~15번으로 목록 · 상세 · 검사처리 고른 상태 · 물품내역팝업 · 사진 주소는 받았다. 남은 것 — **[새로고침] 으로 새 판(IBSheet 8 판 읽기)을 받은 뒤**:)
 1. **구매진행관리 목록**(구매요청일자를 넓혀 줄이 있는 상태)을 한 번 더 — 'IBSheet 스크립트' 줄에 열 이름(`Cols`) · 앞 세 줄이 잡히는지. 14:19 판은 5~7 판 함수만 불러 '줄 수 모름' 이었다.
    **14:26 · 14:43 실측(16 · 17번)도 아직 옛 판이었다** — 'IBSheet 스크립트 [0] 판 function() {try{  if · 줄 수 모름 · 열 수 모름' 줄과 함수 40개가 14:19 와 글자 하나 다르지 않다.
-   담당자 PC 의 앱이 d97cc08 이후 판(IBSheet 8 읽기)을 아직 받지 않은 것이다 — [새로고침](홈 띠 · 업데이트 화면 · 사용자 메뉴)으로 새 판을 받았는지(업데이트 화면의 판 · `_실행로그.txt` 의
-   업데이트 줄) 확인한 뒤 다시 저장해야 한다. 새 판의 줄은 `IBSheet 스크립트 [0] id … 판 8.… · 줄 N · 열 M · 머리글 줄 H` 꼴이고 그 아래 `열: …` · `줄 1: …` 이 붙는다.
+   담당자 PC 의 앱이 d97cc08 이후 판(IBSheet 8 읽기)을 아직 받지 않은 것이었다. **14:48(18번)에 새 판으로 저장돼 열 이름이 잡혔다**(위 '18번') — 줄 · 처리기는 또 고친 판(TreeGrid 걷기 ·
+   소문자 API · 처리기 읽기)으로 **한 번 더**: [새로고침] 뒤 구매진행관리 목록(줄이 있는 상태)에서 [화면 구조 저장]. 바라는 줄: `IBSheet 스크립트 [0] id sheet · 줄 N · 열 30 · 줄은 GetFirst/GetNext 로 읽음`
+   + `줄 1: …` + `처리기 OnClick: …` + `#btnDetail … 처리기=…`.
 (물품내역팝업은 물품정보 표의 줄 **더블클릭**으로 연다 — 담당자 답 2026-10-22.)
 (받을 서류 · 어느 건 · 저장 위치 · 과제 구분 · 일자 범위는 위에 답이 다 있다 — 2026-10-22 담당자 답. [구매요청서] 출력 창은 받지 않으므로 실측하지 않는다.)

@@ -131,6 +131,9 @@ def test_ibsheet_api_and_images_are_written():
               "sample": [["", "20…", "노트북 구입"]]}]
     lines = diagnose._grid_lines(grids)
     assert lines[0] == "IBSheet 스크립트 [0] id sheet1 판 8.0 · 줄 58 · 열 3 · 머리글 줄 1"
+    with_how = dict(grids[0], rowsHow="getDataRows", events=[{"name": "OnClick", "src": "function(r){}"}])
+    more = diagnose._grid_lines([with_how])
+    assert more[0].endswith(" · 줄은 getDataRows 로 읽음") and "  처리기 OnClick: function(r){}" in more
     assert lines[1] == "  함수: GetDataRows GetValue"
     assert lines[2] == "  열: sChk | PURCH_REQ_NO(구매요청번호)<Text> | PURCH_CONT(내용)"
     assert lines[3] == "  줄 1: - | 20… | 노트북 구입"
@@ -166,8 +169,15 @@ def test_ibsheet_api_and_images_are_read_in_a_real_browser():
       const rows = [['', '선택', '구매요청번호', '대표건명'], ['', '', '202604130007', '노트북 구입'], ['', '', '202609290005', '용역']];
       const v7 = {version: '7.0', GetTotalRows: () => 2, LastCol: () => 2, HeaderRows: () => 1, LastRow: () => 2,
         ColSaveName: c => ['sChk', 'PURCH_REQ_NO', 'PURCH_CONT'][c], GetHeaderText: c => rows[0][c + 1], GetCellText: (r, c) => rows[r][c + 1]};
-      window.IBSheet = [v8, v7, v8b];
-    </script>"""
+      // 14:48 실측 모양 — Cols 는 있는데 GetDataRows · GetRows 가 없고(TreeGrid 바탕), 제 API 는 소문자 · 줄 걷기는 GetFirst/GetNext · 처리기는 OnClick
+      const tg = [{Kind: 'Header'}, {Kind: 'Data', ROW_SEQ: 1, PURCH_REQ_NO: '202610220001', PURCH_CONT: '취약점 진단'}, {Kind: 'Data', ROW_SEQ: 2, PURCH_REQ_NO: '202610220002', PURCH_CONT: '서버'}];
+      const v8c = {id: 'sheet', Cols: {ROW_SEQ: {Header: 'No', Type: 'Int'}, PURCH_REQ_NO: {Header: '구매요청번호', Type: 'Text'}, PURCH_CONT: {Header: '내용', Type: 'Text'}},
+        GetFirst: () => tg[0], GetNext: r => tg[tg.indexOf(r) + 1] || null, getValue: (r, c) => r[c], gTC: () => 1, ActionSetBorder: () => 1,
+        OnClick: function(row, col) { if (col === 'PURCH_PROG_DETAIL') fn_purchDetail(row); }, getRowCount: () => 2};
+      window.IBSheet = [v8, v7, v8b, v8c];
+      window.fn_detail = function() { var r = IBSheet[0].getFocusedRow(); if (!r) { alert('선택'); return; } goDetail(r.PURCH_REQ_NO); };
+      window.jQuery = {_data: (el, key) => (key === 'events' && el.id === 'btnDetail') ? {click: [{handler: function() { fn_detail(); }}]} : null};
+    </script><a id='btnDetail'>상세조회/변경</a><a id='btnInsert' onclick='x()'>등록</a>"""
     try:
         with sync_api.sync_playwright() as p:
             path = "/opt/pw-browsers/chromium"
@@ -180,8 +190,16 @@ def test_ibsheet_api_and_images_are_read_in_a_real_browser():
     except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
         pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
     api = [g for g in grids if g["kind"] == "ibsheet-api"]
-    assert len(api) == 3
-    v8, v7, v8b = api
+    assert len(api) == 4
+    v8, v7, v8b, v8c = api
+    # TreeGrid 바탕(14:48 실측 모양): GetFirst/GetNext 로 걷고 소문자 getValue 로 읽는다. 난독 · Action… 이름은 함수 목록에서 뺀다
+    assert v8c["total"] == 2 and v8c["rowsHow"] == "GetFirst/GetNext" and v8c["sample"] == [["1", "20…", "취약점 진단"], ["2", "20…", "서버"]]
+    assert "GetFirst" in v8c["funcs"] and "getValue" in v8c["funcs"] and "gTC" not in v8c["funcs"] and "ActionSetBorder" not in v8c["funcs"]
+    assert v8c["events"] == [{"name": "OnClick", "src": "function(row, col) { if (col === 'PURCH_PROG_DETAIL') fn_purchDetail(row); }"}]
+    detail = next(el for el in probe["elements"] if el["id"] == "btnDetail")
+    assert detail["handler"].startswith("function() { fn_detail(); }  → fn_detail: function() { var r = IBSheet[0].getFocusedRow();")
+    assert next(el for el in probe["elements"] if el["id"] == "btnInsert")["handler"] == ""       # onclick 속성이 있으면 그것으로 충분
+    assert diagnose._element_line(detail).endswith("처리기=" + detail["handler"])
     assert [c["save"] for c in v8b["cols"]] == ["Kind", "id", "PURCH_REQ_NO", "CONT", "Visible"] and v8b["pages"] == 3
     assert v8b["sample"] == [["Data", "r1", "20…", "의자", "true"]]
     assert "GetDataRows" in v8b["funcs"]

@@ -76,7 +76,22 @@ _PROBE_JS = r"""() => {
     if (/(pw|pass|pwd|secret|비밀|login|userid|user_id|usr_id|loginid|암호|auth|token|csrf|sso)/.test(key)) value = value ? '(가림)' : '';
     const clickable = tag === 'button' || tag === 'a' || e.getAttribute('role') === 'button'
                       || type === 'button' || type === 'submit' || type === 'image';
+    // jQuery 로 붙인 click 처리기(읽기만) — 구매진행관리의 #btnDetail 처럼 onclick 속성이 없는 단추가 어느 함수를 부르는지 보려고(2026-10-22).
+    // 처리기 글에 fn_… · uf_… 같은 전역 함수 이름이 있으면 그 함수의 앞부분도 적는다(한 개).
+    let handler = '';
+    if (clickable && e.id && !e.getAttribute('onclick')) {
+      try {
+        const jq = window.jQuery; const ev = jq && jq._data ? jq._data(e, 'events') : null;
+        const list = ev && (ev.click || ev.mousedown || ev.mouseup); const h = list && list[0] && list[0].handler;
+        if (typeof h === 'function') {
+          handler = String(h).replace(/\s+/g, ' ').slice(0, 240);
+          const m = handler.match(/\b(?!function\b)((?:fn|uf|f|ctl|go|do)_?[A-Za-z]\w*)\s*\(/);
+          if (m && typeof window[m[1]] === 'function') handler += '  → ' + m[1] + ': ' + String(window[m[1]]).replace(/\s+/g, ' ').slice(0, 400);
+        }
+      } catch (err) { /* jQuery 없음 */ }
+    }
     out.push({
+      handler,
       tag, type,
       id: e.id || '',
       name: e.getAttribute('name') || '',
@@ -193,14 +208,36 @@ _GRID_JS = r"""() => {
       const call = (name, ...args) => { try { return typeof s[name] === 'function' ? s[name](...args) : undefined; } catch (err) { return undefined; } };
       const num = v => (typeof v === 'number' && isFinite(v)) ? v : (typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : undefined);
       const str = v => (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') ? String(v) : '';
-      const funcs = [];
+      // 함수 이름은 다 모은 뒤 API 꼴(get… · Get… · set… · do… · Rows · Cols …)을 앞에, 짧은 난독 이름(gTC · nH)은 뒤에 — 14:48 실측에서
+      // 열거 차례대로 160개를 적으니 난독 이름과 Action… 뿐이라 GetRows 같은 쓸 이름이 하나도 안 보였다
+      let funcs = [], events = [];
       try {
-        for (const k in s) { if (typeof s[k] === 'function' && !/^(on|_)/.test(k)) funcs.push(k); if (funcs.length >= 160) break; }
+        for (const k in s) {
+          if (typeof s[k] !== 'function') continue;
+          if (/^on[A-Z]/i.test(k)) { if (events.length < 12) events.push({name: k, src: String(s[k]).replace(/\s+/g, ' ').slice(0, 240)}); continue; }
+          if (!/^_/.test(k) && funcs.length < 800) funcs.push(k);
+        }
       } catch (err) { /* 열거가 막힌 객체 */ }
+      const apiLike = k => /^(get|set|do|is|has|can|focus|select|search|load|save|show|hide|add|remove|refresh|render|Get|Set|Do|Is|Select|Focus|Search|Load|Save|Show|Hide|Add|Remove|Rows?$|Cols?$)/.test(k);
+      const minified = k => /^[a-z][A-Za-z]{0,3}$/.test(k) || /^Action/.test(k);
+      funcs = funcs.filter(apiLike).sort().concat(funcs.filter(k => !apiLike(k) && !minified(k)).sort()).slice(0, 200);
       const version = str(s.version) || str(s.Version) || str(window.IBSheet && window.IBSheet.version) || '';
-      // 8 판: 자료 줄 객체 · Cols
-      let dataRows = call('GetDataRows');
-      if (!Array.isArray(dataRows)) { const rows = call('GetRows'); dataRows = Array.isArray(rows) ? rows.filter(r => r && (r.Kind === 'Data' || r.Kind === undefined)) : undefined; }
+      // 8 판: 자료 줄 객체 · Cols. 14:48 실측에서 GetDataRows · GetRows 로는 줄이 안 나왔다 — IBSheet 8 의 제 API 는 소문자(getDataRows · getValue),
+      // 대문자(GetFirst · GetNext · GetValue · Rows · Cols)는 바탕인 TreeGrid 의 것이라 둘 다 부른다(읽기 함수만).
+      const isData = r => r && typeof r === 'object' && (r.Kind === 'Data' || r.Kind === undefined);
+      let dataRows = call('getDataRows');
+      if (!Array.isArray(dataRows)) dataRows = call('GetDataRows');
+      if (!Array.isArray(dataRows)) {           // TreeGrid 걷기 — 첫 줄부터 다음 줄로(자식 줄은 안 들어간다)
+        const walk = (first, next) => { const acc = []; let r = call(first); for (let n = 0; r && n < 5000; n++) { if (isData(r)) acc.push(r); r = call(next, r); } return acc; };
+        if (typeof s.GetFirst === 'function' && typeof s.GetNext === 'function') dataRows = walk('GetFirst', 'GetNext');
+        if ((!dataRows || !dataRows.length) && typeof s.getFirstRow === 'function' && typeof s.getNextRow === 'function') dataRows = walk('getFirstRow', 'getNextRow');
+      }
+      if (!Array.isArray(dataRows) || !dataRows.length) { const rows = call('GetRows'); if (Array.isArray(rows)) dataRows = rows.filter(isData); }
+      if ((!Array.isArray(dataRows) || !dataRows.length) && s.Rows && typeof s.Rows === 'object') {
+        const rows = Object.values(s.Rows).filter(isData);
+        if (rows.length) dataRows = rows;
+      }
+      const rowsHow = Array.isArray(dataRows) && dataRows.length ? (typeof s.getDataRows === 'function' ? 'getDataRows' : (typeof s.GetFirst === 'function' ? 'GetFirst/GetNext' : 'GetRows/Rows')) : '';
       const colsObj = (s.Cols && typeof s.Cols === 'object') ? s.Cols : null;
       let cols = [];
       if (!colsObj && Array.isArray(dataRows) && dataRows[0] && typeof dataRows[0] === 'object') {
@@ -213,11 +250,13 @@ _GRID_JS = r"""() => {
         const head = str(call('GetCaption', name)) || str(c.Header) || str(c.Caption) || '';
         return {save: name.slice(0, 24), head: head.replace(/\s+/g, ' ').slice(0, 16), type: str(c.Type).slice(0, 10)};
       });
-      let total = Array.isArray(dataRows) ? dataRows.length : (num(call('GetTotalRowCount')) ?? num(call('GetDataRowCount')));
+      let total = Array.isArray(dataRows) && dataRows.length ? dataRows.length
+        : (num(call('getRowCount')) ?? num(call('getTotalRowCount')) ?? num(call('GetTotalRowCount')) ?? num(call('GetDataRowCount')));
       let headerRows = Array.isArray(call('GetHeaderRows')) ? call('GetHeaderRows').length : undefined;
       const sample = [];
       if (cols.length && Array.isArray(dataRows)) dataRows.slice(0, 3).forEach(row => {
-        sample.push(cols.map(c => mask(str(call('GetText', row, c.save)) || str(call('GetString', row, c.save)) || str(call('GetValue', row, c.save))
+        sample.push(cols.map(c => mask(str(call('getText', row, c.save)) || str(call('getString', row, c.save)) || str(call('getValue', row, c.save))
+                                        || str(call('GetText', row, c.save)) || str(call('GetString', row, c.save)) || str(call('GetValue', row, c.save))
                                         || (row && typeof row === 'object' ? str(row[c.save]) : ''))));
       });
       // 5~7 판: 줄 번호 · ColSaveName
@@ -235,10 +274,10 @@ _GRID_JS = r"""() => {
           sample.push(cols.map((c, idx) => mask(String(call('GetCellText', r, idx) ?? call('GetCellValue', r, idx) ?? ''))));
         }
       }
-      const pages = num(call('GetPageNum')) ?? num(call('GetTotalPage')) ?? num(call('GetPageCount'));
-      const totalAll = num(call('GetTotalRowCount')) ?? num(call('GetTotalCount'));
+      const pages = num(call('getPageNum')) ?? num(call('GetPageNum')) ?? num(call('GetTotalPage')) ?? num(call('GetPageCount'));
+      const totalAll = num(call('getTotalRowCount')) ?? num(call('GetTotalRowCount')) ?? num(call('GetTotalCount'));
       out.push({kind: 'ibsheet-api', index: i, id: str(s.id || s.Id || s.Name).slice(0, 30), version: version.slice(0, 20),
-                total, totalAll, pages, headerRows, funcs, cols, sample});
+                total, totalAll, pages, headerRows, funcs, events, cols, sample, rowsHow});
     });
   } catch (err) { /* IBSheet 없음 */ }
   return out.slice(0, 16);
@@ -326,6 +365,8 @@ def _element_line(el: dict) -> str:
         parts.append("보기: " + " | ".join(o[:20] for o in el["options"]))
     if el.get("onclick"):
         parts.append("onclick=" + el["onclick"][:80])
+    if el.get("handler"):
+        parts.append("처리기=" + el["handler"])
     if el.get("href") and el["href"] not in ("#", "javascript:void(0)", "javascript:;"):
         parts.append("href=" + el["href"][:80])
     if el.get("cls"):
@@ -366,8 +407,12 @@ def _grid_lines(grids: list[dict]) -> list[str]:
             head += f" · 전체 줄 {g['totalAll']}" if g.get("totalAll") is not None else ""
             head += f" · 쪽 {g['pages']}" if g.get("pages") is not None else ""
             out.append(head)
+            if g.get("rowsHow"):
+                out[-1] += f" · 줄은 {g['rowsHow']} 로 읽음"
             if g.get("funcs"):
-                out.append("  함수: " + " ".join(g["funcs"][:160]))
+                out.append("  함수: " + " ".join(g["funcs"][:200]))
+            for ev in g.get("events", [])[:12]:
+                out.append(f"  처리기 {ev.get('name', '')}: {ev.get('src', '')}")
             if g.get("cols"):
                 out.append("  열: " + " | ".join((c.get("save") or "?") + (f"({c['head']})" if c.get("head") else "")
                                                  + (f"<{c['type']}>" if c.get("type") else "") for c in g["cols"]))
