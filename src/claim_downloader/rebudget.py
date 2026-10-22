@@ -64,7 +64,7 @@ def _rel(path: Path | None, root: Path | None) -> str:
 
 
 def fund_folders(out_root: str | Path, erp_names: dict[str, str] | None = None) -> list[ProjectFolder]:
-    """저장 폴더 아래의 대응자금 과제 폴더 — 폴더 이름이나 ERP 과제명에 '대응자금' 이 든 것."""
+    """저장 폴더 아래의 대응자금 · 연구지원비 과제 폴더 — 폴더 이름이나 ERP 과제명에 그 말이 든 것(naming.own_budget)."""
     names = erp_names or {}
     return [f for f in folders(out_root) if naming.own_budget(f.path.name, names.get(f.no, ""))]
 

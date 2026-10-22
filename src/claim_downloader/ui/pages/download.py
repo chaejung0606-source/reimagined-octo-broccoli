@@ -211,7 +211,7 @@ class DownloadPage(QWidget):
         self.tools_button.setObjectName("ghost")
         self.tools_menu = QMenu(self.tools_button)
         self.unwanted_action = self.tools_menu.addAction("받지 않는 결의서", self._show_unwanted)
-        self.rebudget_action = self.tools_menu.addAction("대응자금 파일 정리", self._rebudget)
+        self.rebudget_action = self.tools_menu.addAction("대응자금 · 연구지원비 파일 정리", self._rebudget)
         self.tools_menu.addSeparator()
         self.tools_menu.addAction("로그 파일 열기", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(settings.log_path()))))
         self.tools_menu.addAction("자세한 안내", lambda: QMessageBox.information(self, "증빙 다운로드 — 자세한 안내", GUIDE_DETAIL))
@@ -993,12 +993,12 @@ class DownloadPage(QWidget):
         if not self._browser_open:
             QMessageBox.information(
                 self, "대응자금 파일 정리",
-                "대응자금 과제마다 ERP 의 과제정보 → 예산 탭에서 비목 차례를 읽어야 합니다.\n\n"
-                "③ [브라우저 열기] 로 ERP 에 로그인한 뒤 [도구] → [대응자금 파일 정리] 를 다시 누르세요. (받기를 묻는 창이 뜨면 [아니요] 로 닫아도 됩니다)")
+                "대응자금 · 연구지원비 과제마다 ERP 의 과제정보 → 예산 탭에서 비목 차례를 읽어야 합니다.\n\n"
+                "③ [브라우저 열기] 로 ERP 에 로그인한 뒤 [도구] → [대응자금 · 연구지원비 파일 정리] 를 다시 누르세요. (받기를 묻는 창이 뜨면 [아니요] 로 닫아도 됩니다)")
             return
         self._rebudget_asked = True
         self._set_state("대응자금 파일 보는 중", "info",
-                        "대응자금 과제마다 예산 탭의 비목 차례를 읽고 받은 파일을 봅니다. 옮기기 전에 표로 보여 드립니다.")
+                        "대응자금 · 연구지원비 과제마다 예산 탭의 비목 차례를 읽고 받은 파일을 봅니다. 옮기기 전에 표로 보여 드립니다.")
         self.worker.plan_rebudget()
 
     def _on_rebudget_planned(self, plan) -> None:
@@ -1027,7 +1027,7 @@ class DownloadPage(QWidget):
             notes.append(f"업로드 폴더 안의 파일 {uploaded}개는 앱이 옮기지 않습니다 — 바꿀 이름을 보고 직접 고치세요")
         changes = plan.changes()
         if not plan.budgets and not plan.blocked:
-            QMessageBox.information(self, "대응자금 파일 정리", "저장 폴더에 대응자금 과제 폴더가 없습니다.")
+            QMessageBox.information(self, "대응자금 파일 정리", "저장 폴더에 대응자금 · 연구지원비 과제 폴더가 없습니다.")
             self._set_state("준비", "neutral", self._stage_guide())
             return
         self._set_state("대응자금 파일 확인", "info", "표를 보고 바꿀지 정하세요.")

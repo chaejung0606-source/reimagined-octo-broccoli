@@ -1424,7 +1424,7 @@ class ErpSession:
                     row["budget"] = budget       # 받을 때 비목 번호 · 폴더를 이 차례로(naming.budget_code)
             else:
                 # 비목 번호를 모르고 받으면 사업비 폴더(01. 인건비 …)나 미분류에 섞인다 — 받지 않고 까닭을 남긴다
-                why = (f"과제 {listed} 는 대응자금이라 비목이 사업비와 다릅니다 — 과제정보 → 예산 탭에서 비목을 읽지 못해({why}) 받지 않았습니다. "
+                why = (f"과제 {listed} 는 비목이 사업비와 다릅니다(대응자금 · 연구지원비) — 과제정보 → 예산 탭에서 비목을 읽지 못해({why}) 받지 않았습니다. "
                        "다시 목록을 읽거나, 그대로면 [문제 보내기] 로 기록을 보내 주세요")
                 self.log("⚠ " + why)
                 sel.blocked.append((listed, why))
@@ -1434,7 +1434,7 @@ class ErpSession:
         return sel
 
     def _own_budget(self, project: str, root) -> bool:
-        """비목이 사업비와 달라 예산 탭 차례로 번호를 붙이는 과제인지 — 과제 폴더 · ERP 과제명에 '대응자금' 이 있으면(담당자 2026-10-21)."""
+        """비목이 사업비와 달라 예산 탭 차례로 번호를 붙이는 과제인지 — 과제 폴더 · ERP 과제명에 '대응자금' · '연구지원비' 가 있으면(담당자 2026-10-21 · 10-22)."""
         names = [getattr(root, "name", "")] if project_folders.project_of(root or "") == project else []
         names += [p.name for p in navigate.load_projects()[0] if p.no == project]
         return naming.own_budget(*names)
@@ -1446,7 +1446,7 @@ class ErpSession:
             if not budget:
                 return [], why
             self._budgets[project] = budget
-            self.log(f"과제 {project} 는 대응자금이라 비목 번호를 예산 탭 차례로 붙입니다: "
+            self.log(f"과제 {project} 는 비목이 사업비와 달라(대응자금 · 연구지원비) 비목 번호를 예산 탭 차례로 붙입니다: "
                      + " · ".join("%02d %s" % (i, name) for i, (_code, name) in enumerate(budget, 1)))
         return self._budgets[project], ""
 

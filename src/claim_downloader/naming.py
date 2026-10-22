@@ -95,12 +95,15 @@ def code_from_doctext(full: str, amt) -> str:
 
 # 대응자금 과제 — 담당자 2026-10-21 "대응자금은 사업비와 비목이 다릅니다" · "과제정보-예산에서 확인하고 순서대로 숫자를 붙여주세요".
 # 예산 탭 예산내역(실측 그림: 비목코드 A10110002 장학금 · A10110012 연구시설/장비비)의 차례가 번호다. 이름에 이 말이 든 과제가 그렇다.
-OWN_BUDGET = "대응자금"
+# 연구지원비 과제(2025081N0001)도 그렇다 — 2026-10-22 첫 받기에서 청구서 15건이 모두 사업비 '01. 인건비' 로 들어갔다. 그 과제 청구서의 비목 표는
+# 인건비 · 연구시설/장비비 · 연구활동비 셋이고(카드 결제 · 맥북 구입 · 학회 여비 · 강사료는 연구활동비 · 연구시설/장비비였다), 적요에 0N_ 이 없다.
+OWN_BUDGET = ("대응자금", "연구지원비")
 
 
 def own_budget(*names) -> bool:
-    """과제 이름(과제 폴더 · ERP 과제명) 중에 '대응자금' 이 있는지 — 그 과제는 비목 번호를 예산 탭 차례로 붙인다."""
-    return any(OWN_BUDGET in re.sub(r"\s", "", str(n or "")) for n in names)
+    """과제 이름(과제 폴더 · ERP 과제명) 중에 '대응자금' · '연구지원비' 가 있는지 — 그 과제는 비목 번호를 예산 탭 차례로 붙인다."""
+    flat = [re.sub(r"\s", "", str(n or "")) for n in names]
+    return any(word in name for name in flat for word in OWN_BUDGET)
 
 
 def budget_code(budget, remark: str, info: dict, amt) -> str:
