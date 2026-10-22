@@ -11,6 +11,7 @@ Playwright 동기 API 는 시작한 스레드에서만 써야 한다. 그래서 
 """
 from __future__ import annotations
 
+import datetime as dt
 import re
 import time
 from pathlib import Path
@@ -745,12 +746,16 @@ class ErpSession:
     def read_parking_history(self, url: str = "", login: tuple[str, str] | None = None):
         """주차등록 — 운영 → 할인 내역 화면의 표를 읽기만 한다(parking_screens.py) + 보유 잔량([새 링크] 창의 상품 보기, parking_link.read_products).
         창 없이. 표가 없으면 그 화면의 모양을 남긴다."""
-        from . import parking_link, parking_screens
+        from . import parking_ledger, parking_link, parking_screens
+
+        since = parking_ledger.history_since()          # 올해 1월 1일(또는 대장의 가장 이른 일자)부터 — 모든 쪽(담당자 2026-10-22)
 
         def work(page, base, wait):
-            report = parking_screens.read_history(page, self.log, wait=wait, base_url=base)
+            report = parking_screens.read_history(page, self.log, wait=wait, base_url=base, since=since)
             if report.ok:
                 report.products = parking_link.read_products(page, self.log, wait=wait, base_url=base).products
+                # 잔량은 표 다음에 읽는다 — 다음에 읽을 때 '그 사이 사용' 은 이 때 뒤의 줄로 센다(parking_ledger.check_drain)
+                report.read_stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             return report
 
         result = self._on_parking_hidden(url, login, work, lambda note: parking_screens.HistoryReport(note=note))

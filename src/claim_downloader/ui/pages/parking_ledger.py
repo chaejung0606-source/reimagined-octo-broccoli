@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
 
 from ... import parking_ledger as ledger
 from ... import parking, parking_sheet, settings
+from ...minutes import logbook
 from ..sheet_sync import instance as sheet_sync
 from ..widgets import Field, Pill, muted_label
 
@@ -150,6 +151,10 @@ class LeftBox(QFrame):
         self.counts = QLabel("", objectName="leftNote")
         self.counts.setWordWrap(True)
         notes.addWidget(self.counts)
+        # 적용금액 0 인 사용(무료 시간 안)이 공무확인증을 쓰는지 — 앱이 잔량 변화로 확인한 결과(담당자 2026-10-22 "확인해주세요")
+        self.rule = QLabel("", objectName="leftNote")
+        self.rule.setWordWrap(True)
+        notes.addWidget(self.rule)
         notes.addStretch(1)
         row.addLayout(notes, 1)
 
@@ -167,6 +172,10 @@ class LeftBox(QFrame):
             self.counts.setText((f"처음 수량 {start:,} · " if start else "") + f"구입 {bought - start:,} · 배부 {given:,}")
         self.site.setText(f"사이트 보유 잔량 {site:,} ({cfg.parking_left_at} 읽음)" if site is not None
                           else "사이트 보유 잔량은 아직 읽지 않았습니다.")
+        rule, at = cfg.parking_free_rule, cfg.parking_free_rule_at
+        self.rule.setText({"all": f"적용금액 0 인 사용도 공무확인증이 차감됩니다({at} 잔량 변화로 확인)",
+                           "paid": f"적용금액 0 인 사용은 차감되지 않습니다({at} 잔량 변화로 확인) — 대장에서 배부 0"}.get(
+            rule, "적용금액 0 인 사용이 차감되는지는 아직 모릅니다 — 두 번 읽는 사이에 그런 사용이 있으면 잔량 변화로 앱이 확인합니다"))
         if entries and any(n < 0 for _e, n in rows):
             self.state.set_status("잔여가 0 아래인 줄이 있음 — 사이트에서 가져오면 다시 셈", "danger")
         elif site is None:
@@ -437,32 +446,56 @@ class LedgerPanel(QWidget):
         self.site_line.setText("사이트에서 가져오지 못했습니다 — " + message)
 
     def show_site(self, report) -> None:
-        """사이트 할인 내역(첫 쪽)과 보유 잔량 — 표로 보이지 않고 대장에만 넣는다(담당자 2026-10-22)."""
+        """사이트 할인 내역(모든 쪽)과 보유 잔량 — 표로 보이지 않고 대장에만 넣는다(담당자 2026-10-22)."""
         if not report.ok:
             self.site_failed(" ".join(report.lines()).lstrip("✗ "))
             return
         self._read_at = time.monotonic()
         headers = [ledger.clean_header(h) for h in report.headers]
         sheet_sync().save_history(headers, report.rows)        # 구글 시트 '할인내역' 탭에 쌓기(연결했으면)
-        parts = [f"{report.read_at} 에 사이트에서 가져옴"]
-        match = ledger.match_site(self._entries, headers, report.rows)
+        parts = [f"{report.read_at} 에 사이트에서 가져옴({report.pages}쪽 {len(report.rows)}줄"
+                 + (f" · {report.since}부터" if report.since else "") + ")"]
+        cfg = settings.load()
+        count = ledger.site_count(report.products)
+        with ledger._LOCK:
+            entries = ledger.load()
+            match = ledger.match_site(entries, headers, report.rows)
+            changed = ledger.note_applied(report.rows, match) if match.ok else 0
+            drain = (ledger.check_drain(cfg.parking_seen_left, cfg.parking_seen_at, count, report.rows, match)
+                     if count is not None else None)
+            rule = cfg.parking_free_rule
+            if drain is not None:
+                logbook.log("주차 잔량 확인: " + drain.text())
+                if drain.verdict and drain.verdict != rule:
+                    if rule:
+                        logbook.log(f"⚠ 적용금액 0 인 사용의 차감 판정이 앞과 다릅니다({rule} → {drain.verdict})")
+                    rule = drain.verdict
+                    settings.update(parking_free_rule=rule, parking_free_rule_at=dt.datetime.now().strftime("%m-%d %H:%M"))
+                    parts.append(drain.text())
+            new = ledger.from_site(headers, report.rows, match.missing, match, free_drawn=rule != "paid") if match.ok else []
+            entries += new
+            changed += ledger.apply_free_rule(entries) if rule == "paid" else ledger.restore_free(entries)
+            if new or changed:
+                ledger.save(entries)
+        if count is not None:
+            settings.update(parking_seen_left=count, parking_seen_at=report.read_stamp)
         if not match.ok:
             parts.append(match.note)
-        elif match.missing:
-            with ledger._LOCK:
-                stored = ledger.load() + ledger.from_site(headers, report.rows, match.missing, match)
-                ledger.save(stored)
-            parts.append(f"새 사용 {len(match.missing)}건을 관리대장에 넣음(사용자 · 내용은 공란)")
+        elif new:
+            parts.append(f"새 사용 {len(new)}건을 관리대장에 넣음(사용자 · 내용은 공란)")
         else:
             parts.append("새 사용 없음")
         if report.pager:
-            parts.append("사이트 첫 쪽만 읽음")
-        count = ledger.site_count(report.products)
+            parts.append(report.pager)
         if count is not None:
             fit = self.fit_site(count, save=False)
             parts.append(f"보유 잔량 {count:,} → 처음 수량 {fit.start:,}")
             if fit.short:
                 parts.append(f"대장의 구입이 보유 잔량보다 {fit.short:,} 많습니다 — 대장에 없는 사용이 있거나 구입 줄이 틀렸습니다")
+            free = sum(1 for e in fit.entries if e.given == 1 and ledger.is_free(e.note))
+            if free and not rule:
+                parts.append(f"적용금액 0 인 사용 {free}건 — 그것도 차감되면 처음 수량 {fit.start:,}, 적용금액 있는 것만 차감되면 "
+                             f"{max(fit.start - free, 0):,}(산 수와 맞는 쪽이 맞습니다)")
         elif report.products:
             parts.append("할인권 보기에 공무확인증 잔량이 없어 잔여는 그대로")
         self.reload()

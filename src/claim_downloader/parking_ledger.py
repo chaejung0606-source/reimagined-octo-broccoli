@@ -276,6 +276,7 @@ DATE_WORDS = ("할인일시", "적용일시", "사용일시", "일시", "일자"
 CAR_WORDS = ("차량번호", "차량", "차번", "번호판")
 PRODUCT_WORDS = ("할인명", "상품", "할인권", "템플릿")
 METHOD_WORDS = ("적용방식",)
+APPLIED_WORDS = ("적용금액",)      # 할인이 실제로 덮은 주차 요금 — 0 이면 무료 시간 안이었던 것으로 보인다(담당자 2026-10-22 "적용금액이 있는 건만 차감되는지")
 TICKET = "공무확인증"
 MANUAL = "수동"                # 적용방식 — 사이트 화면에서 직접 적용한 것(할인 적용). 링크 · QR 로 쓴 것은 다른 글자로 보인다(추정)
 _ICON = re.compile(r"(arrow_(up|down)ward|arrow_drop_(up|down)|unfold_(more|less)|expand_(more|less)|keyboard_arrow_\w+|swap_vert|sort)\s*$")
@@ -292,7 +293,9 @@ class SiteMatch:
     date_col: int = -1
     product_col: int = -1
     method_col: int = -1
+    applied_col: int = -1
     matched: list[int] = field(default_factory=list)     # 대장에 이미 있는 사이트 줄(같은 날 · 같은 차)
+    pairs: list = field(default_factory=list)            # (사이트 줄 번호, 그 줄과 짝지은 대장 줄)
     missing: list[int] = field(default_factory=list)     # 대장에 없는 공무확인증 줄 — 넣는다(사이트에서 직접 적용한 것도 링크 · QR 로 쓴 것도)
     others: list[int] = field(default_factory=list)      # 공무확인증이 아닌 할인 — 대장과 상관없다
     note: str = ""
@@ -338,43 +341,174 @@ def match_site(entries: list[Entry], headers: list[str], rows: list[list[str]]) 
     링크 · QR 로 쓴 줄도 사용 한 건씩 넣는다(담당자 2026-10-22 "할인링크나 qr로 사용한 내역도 바로바로 관리대장에 반영") — 그래서 할인 링크를 만들 때는
     배부를 적지 않는다(배부 0 인 기록 줄). 차량 · 일시 열을 못 찾으면 맞춰 보지 않는다."""
     result = SiteMatch(car_col=_column(headers, CAR_WORDS), date_col=_column(headers, DATE_WORDS),
-                       product_col=_column(headers, PRODUCT_WORDS), method_col=_column(headers, METHOD_WORDS))
+                       product_col=_column(headers, PRODUCT_WORDS), method_col=_column(headers, METHOD_WORDS),
+                       applied_col=_column(headers, APPLIED_WORDS))
     if not result.ok:
         result.note = "할인 내역의 차량번호 · 일시 열을 알아보지 못해 대장과 맞춰 보지 못했습니다"
         return result
-    pool: dict[tuple[str, str], int] = {}
+    pool: dict[tuple[str, str], list] = {}
     for e in entries:
-        if e.given and e.car:
-            key = (e.date, _squash(e.car))
-            pool[key] = pool.get(key, 0) + e.given
+        if e.car and (e.given or is_free(e.note)):              # 적용금액 0 이라 배부 0 으로 둔 줄도 그 사이트 줄의 짝이다
+            pool.setdefault((e.date, _squash(e.car)), []).extend([e] * max(e.given, 1))
     cell = lambda row, c: row[c] if 0 <= c < len(row) else ""  # noqa: E731
     for i, row in enumerate(rows):
         if result.product_col >= 0 and TICKET not in _squash(cell(row, result.product_col)):
             result.others.append(i)
             continue
         key = (day_of(cell(row, result.date_col)), _squash(cell(row, result.car_col)))
-        if all(key) and pool.get(key, 0) > 0:
-            pool[key] -= 1
+        if all(key) and pool.get(key):
+            result.pairs.append((i, pool[key].pop(0)))
             result.matched.append(i)
         else:
             result.missing.append(i)
     return result
 
 
-def from_site(headers: list[str], rows: list[list[str]], indexes: list[int], match: SiteMatch) -> list[Entry]:
+def amount_of(text: str) -> int | None:
+    """'6,700' · '0' · '1,000원' → 정수. 빈칸 · '-' 는 None(모름)."""
+    digits = re.sub(r"[^\d]", "", str(text or ""))
+    return int(digits) if digits else None
+
+
+def applied_of(row: list[str], match: SiteMatch) -> int | None:
+    c = match.applied_col
+    return amount_of(row[c]) if 0 <= c < len(row) else None
+
+
+FREE_NOT_DRAWN = "차감 안 됨"
+_FREE = re.compile(r"적용금액 0(?![\d,])")
+
+
+def is_free(note: str) -> bool:
+    """비고에 '적용금액 0' 이 있는 줄 — 적용금액이 0 인 사용(무료 시간 안으로 보임)."""
+    return bool(_FREE.search(note or ""))
+
+
+def from_site(headers: list[str], rows: list[list[str]], indexes: list[int], match: SiteMatch,
+              free_drawn: bool = True) -> list[Entry]:
     """사이트 줄 → 관리대장 양식의 배부 1 줄(담당자 2026-10-22 "관리대장 양식에 맞춰서 정보 기입 … 없는 정보는 공란"):
-    일자 = 할인일시의 날짜 · 배부 1 · 차량번호 · 비고 = 할인명과 할인 시각. 사용자 · 내용은 사이트에 없어 비워 둔다."""
+    일자 = 할인일시의 날짜 · 배부 1 · 차량번호 · 비고 = 할인명 · 할인 시각 · (링크 · QR 이면) 적용방식 · 적용금액. 사용자 · 내용은 사이트에 없어 비워 둔다.
+    적용금액이 0 인 사용이 공무확인증을 쓰지 않는다고 확인됐으면(free_drawn=False, check_drain) 그 줄은 배부 0."""
     out = []
     for i in indexes:
         row = rows[i]
         cell = lambda c: row[c] if 0 <= c < len(row) else ""  # noqa: E731
         when = cell(match.date_col)
         method = cell(match.method_col).strip()
+        applied = applied_of(row, match)
         note = " · ".join(x for x in (cell(match.product_col).strip(), (_time_of(when) + " 할인") if _time_of(when) else "",
-                                      method if method and method != MANUAL else "") if x)        # 링크 · QR 로 쓴 것은 그 적용방식을 함께
-        out.append(Entry(date=day_of(when) or dt.date.today().isoformat(), given=1, car=cell(match.car_col).strip(),
-                         note=note, source="site"))
+                                      method if method and method != MANUAL else "",        # 링크 · QR 로 쓴 것은 그 적용방식을 함께
+                                      f"적용금액 {applied:,}" if applied is not None else "",
+                                      FREE_NOT_DRAWN if applied == 0 and not free_drawn else "") if x)
+        out.append(Entry(date=day_of(when) or dt.date.today().isoformat(), given=0 if applied == 0 and not free_drawn else 1,
+                         car=cell(match.car_col).strip(), note=note, source="site"))
     return out
+
+
+def note_applied(rows: list[list[str]], match: SiteMatch) -> int:
+    """이미 대장에 있는 짝(할인 적용 · 전에 가져온 줄)의 비고에 적용금액이 없으면 붙인다. 고친 줄 수."""
+    changed = 0
+    for i, e in match.pairs:
+        applied = applied_of(rows[i], match)
+        if applied is None or "적용금액" in e.note:
+            continue
+        e.note = (e.note + " · " if e.note else "") + f"적용금액 {applied:,}"
+        e.updated = now_stamp()
+        changed += 1
+    return changed
+
+
+def apply_free_rule(entries: list[Entry]) -> int:
+    """적용금액 0 인 사용이 공무확인증을 쓰지 않는다고 확인된 뒤 — 그 줄(비고 '적용금액 0')의 배부를 0 으로. 고친 줄 수."""
+    changed = 0
+    for e in entries:
+        if e.given == 1 and is_free(e.note):
+            e.given = 0
+            if FREE_NOT_DRAWN not in e.note:
+                e.note += " · " + FREE_NOT_DRAWN
+            e.updated = now_stamp()
+            changed += 1
+    return changed
+
+
+def restore_free(entries: list[Entry]) -> int:
+    """적용금액 0 인 사용도 차감된다고 확인되면(또는 아직 모르면) — '차감 안 됨' 으로 배부 0 이 된 줄을 배부 1 로 되돌린다. 고친 줄 수."""
+    changed = 0
+    for e in entries:
+        if e.given == 0 and is_free(e.note) and FREE_NOT_DRAWN in e.note:
+            e.given = 1
+            e.note = e.note.replace(" · " + FREE_NOT_DRAWN, "").replace(FREE_NOT_DRAWN, "")
+            e.updated = now_stamp()
+            changed += 1
+    return changed
+
+
+def history_since(entries: list[Entry] | None = None, today: dt.date | None = None) -> str:
+    """할인 내역을 읽을 시작일 — 올해 1월 1일과 대장의 가장 이른 일자 중 이른 쪽(해가 바뀌어도 대장에 있는 때부터는 읽는다)."""
+    today = today or dt.date.today()
+    dates = [e.date for e in (entries if entries is not None else load()) if e.date and e.source != CARRY]
+    return min([dt.date(today.year, 1, 1).isoformat()] + dates)
+
+
+def stamp_of(text: str) -> str:
+    """'2026-10-20 17:37:04' · '2026.10.20 17:37' → '2026-10-20 17:37:04'(초가 없으면 00). 날짜가 없으면 ''."""
+    text = str(text or "")
+    day = day_of(text)
+    if not day:
+        return ""
+    after = text[re.search(r"20\d\d\s*[-./년]\s*\d{1,2}\s*[-./월]\s*\d{1,2}", text).end():]
+    m = re.search(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", after)
+    return f"{day} {int(m.group(1)):02d}:{m.group(2)}:{m.group(3) or '00'}" if m else f"{day} 00:00:00"
+
+
+@dataclass
+class Drain:
+    """두 번 읽은 사이트 보유 잔량 사이에 줄어든 수와 그 사이 공무확인증 사용(적용금액 있음 · 0)."""
+    before: int
+    after: int
+    since: str
+    used: int = 0
+    paid: int = 0
+    free: int = 0
+    verdict: str = ""        # "all"(적용금액 0 도 차감) · "paid"(적용금액 있는 것만) · ""(아직 모름)
+
+    def text(self) -> str:
+        drop = self.before - self.after
+        head = f"보유 잔량 {self.before:,} → {self.after:,}({self.since[5:16]} 뒤 {self.after - self.before:+,}) · 그 사이 사용 {self.used}건"
+        if self.free:
+            head += f"(적용금액 0 인 것 {self.free}건)"
+        if self.verdict == "all":
+            return head + " — 적용금액 0 인 사용도 공무확인증이 차감됩니다"
+        if self.verdict == "paid":
+            return head + " — 적용금액이 있는 사용만 차감됩니다(적용금액 0 인 것은 차감 안 됨)"
+        if drop == self.used:
+            return head + " — 잔량 변화와 사용 수가 맞습니다"
+        return head + " — 잔량 변화와 사용 수가 맞지 않습니다(그 사이 구입했거나 사이트 시각과 이 PC 시각이 다를 수 있음)"
+
+
+def check_drain(before: int, before_at: str, after: int, rows: list[list[str]], match: SiteMatch) -> Drain | None:
+    """앞서 사이트에서 읽은 잔량(before, before_at 'YYYY-MM-DD HH:MM:SS')과 지금 잔량(after) 사이에 줄어든 수를, 그 사이 할인 내역의
+    공무확인증 사용과 맞춰 본다(담당자 2026-10-22 "적용금액이 있는 건만 공무확인증이 차감되는건지도 확인"). 그 사이 적용금액 0 인 사용이 있을 때만
+    판정한다 — 줄어든 수 = 모든 사용이면 'all', = 적용금액 0 을 뺀 사용이면 'paid'. 앞 잔량이 없으면 None."""
+    if before < 0 or not before_at or not match.ok:
+        return None
+    d = Drain(before=before, after=after, since=before_at)
+    for i in sorted(match.matched + match.missing):
+        when = stamp_of(rows[i][match.date_col] if match.date_col < len(rows[i]) else "")
+        if not when or when <= before_at:
+            continue
+        d.used += 1
+        applied = applied_of(rows[i], match)
+        if applied == 0:
+            d.free += 1
+        elif applied:
+            d.paid += 1
+    drop = before - after
+    if d.free and drop == d.used:
+        d.verdict = "all"
+    elif d.free and drop == d.used - d.free:
+        d.verdict = "paid"
+    return d
 
 
 # ── 엑셀 ─────────────────────────────────────────────────────────────────

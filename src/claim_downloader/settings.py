@@ -89,6 +89,10 @@ class Settings:
     parking_products: str = ""             # 사이트에서 본 할인권 상품 보기(줄마다 하나, 남은 수 포함) — 화면의 고르기 칸을 채운다
     parking_left: int = -1                 # 마지막으로 읽은 사이트 보유 잔량(공무확인증) — 관리대장 처음 수량을 셈한다(-1 = 아직 못 읽음)
     parking_left_at: str = ""              # 그 잔량을 읽은 때(MM-DD HH:MM)
+    parking_seen_left: int = -1            # 사이트에서 실제로 본 잔량(적용 뒤 하나 뺀 셈이 아니라) — 다음에 읽을 때 줄어든 수와 그 사이 사용을 맞춰 본다
+    parking_seen_at: str = ""              # 그 잔량을 본 때(YYYY-MM-DD HH:MM:SS)
+    parking_free_rule: str = ""            # 적용금액 0 인 사용이 차감되는지 — "all"(차감됨) · "paid"(차감 안 됨) · ""(아직 모름). parking_ledger.check_drain
+    parking_free_rule_at: str = ""         # 그렇게 확인한 때와 근거 한 줄
 
 
 def data_dir() -> Path:
