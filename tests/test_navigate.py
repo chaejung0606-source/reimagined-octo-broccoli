@@ -830,3 +830,20 @@ def test_read_list_leaves_out_documents_on_the_skip_list(isolated_home, monkeypa
     sel = s.read_lists(["202408470003", "202408470002"])
     assert [(t["project"], t["seq"]) for t in sel.targets] == [("202408470003", "2"), ("202408470002", "1")]   # 다른 과제의 결의번호 1 은 그대로
     assert sel.excluded == 1 and any("받지 않는 결의서 1건" in line for line in logs)
+
+
+def test_read_list_leaves_out_every_document_of_a_kind_on_the_skip_list(isolated_home, monkeypatch, tmp_path):
+    """담당자 2026-10-22 — 목록에 든 결의서구분은 통째로 뺀다: 다른 과제 · 새 결의번호여도. 청구 결의서는 그대로."""
+    from claim_downloader import skiplist
+    from claim_downloader.session import ErpSession
+    monkeypatch.setattr(ErpSession, "browser_open", property(lambda self: True))
+    root = _folders(tmp_path, "(202408470003)_2026년도 사업비", "(202408470002)_2025년도 사업비")
+    screen = Screen()
+    screen.lists = {"202408470003": [dict(_approved("5", "새 잔액조정"), gubun="예산잔액조정신청"), _approved("2", "09_사무용품")],
+                    "202408470002": [dict(_approved("8", "정산 잔액조정"), gubun="예산잔액조정신청", docNo="202408470002-20250901-8"),
+                                     dict(_approved("1", "09_정수기"), docNo="202408470002-20250901-1")]}
+    s, logs, _saved = _folder_session(screen, root)
+    assert skiplist.add(dict(_approved("1", "정산 완료 후 잔액조정"), gubun="예산잔액조정신청"), "청구서출력 없음", "202408470001")[0]
+    sel = s.read_lists(["202408470003", "202408470002"])
+    assert [(t["project"], t["seq"]) for t in sel.targets] == [("202408470003", "2"), ("202408470002", "1")]
+    assert sel.excluded == 2 and any("결의서구분으로 뺀 것: '예산잔액조정신청' 1건" in line for line in logs)

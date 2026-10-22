@@ -7,6 +7,7 @@ ERP 화면을 실제로 누르는 흐름은 모의 카드청구 화면 + Chromiu
 from __future__ import annotations
 
 import datetime as dt
+import os
 
 import openpyxl
 
@@ -128,7 +129,7 @@ def test_plan_shows_who_the_app_types_and_who_the_person_adds(tmp_path):
     assert "참여인력: 가(100001)" in text and "내부참석자: 나 · 가나다학과 — 사람이 돋보기로" in text
     assert "외부참석자: 다 · 한림대학교 — 앱이 넣음" in text and "09_" in text
     assert card_erp.attachments(item)[0].endswith("회의비 지출 공문.pdf")          # 공문이 맨 앞, PDF · 그림만
-    assert {p.rsplit("/", 1)[-1] for p in card_erp.attachments(item)} == {"회의비 지출 공문.pdf", "0915 영수증.pdf", "사진.jpg"}
+    assert {os.path.basename(p) for p in card_erp.attachments(item)} == {"회의비 지출 공문.pdf", "0915 영수증.pdf", "사진.jpg"}
     _v, _p, missing = card_erp.meeting_plan(item, [])
     assert not missing
     job, short = _meeting_item(tmp_path / "s", content=["짧음."], attendees=[])

@@ -13,8 +13,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-ALL = "*"                    # 받기 화면의 '폴더 만든 과제 모두'
-SOME = "+"                   # 받기 화면의 '고른 과제 여럿'(담당자 요청 2026-10-21 "여러개 과제를 선택해서 연속적으로")
 PROJECT_DIR = re.compile(r"^\s*\(\s*(\d{6,})\s*\)\s*[_\-\s]*(.*)$")
 
 
@@ -57,6 +55,12 @@ def folders(out_root: str | Path) -> list[ProjectFolder]:
     return out
 
 
+def signature(out_root: str | Path) -> tuple[str, ...]:
+    """지금 있는 과제 폴더의 과제번호 묶음(이름 순) — 받기 화면이 열릴 때 이것이 바뀌었으면 과제 칸을 다시 채운다
+    (담당자가 앱을 켠 채 과제 폴더를 더 만든 2026-10-22 — 다시 켜지 않아도 칸에 보이게)."""
+    return tuple(f.no for f in folders(out_root))
+
+
 def by_project(out_root: str | Path) -> dict[str, list[ProjectFolder]]:
     found: dict[str, list[ProjectFolder]] = {}
     for folder in folders(out_root):
@@ -68,6 +72,36 @@ def pick(found: list[str], saved: str) -> list[str]:
     """고른 과제(설정에 쉼표로 남긴 번호) 중 지금 폴더가 있는 것 — 폴더 차례대로. 폴더를 지웠으면 빠진다."""
     wanted = set(re.findall(r"\d{6,}", str(saved or "")))
     return [no for no in found if no in wanted]
+
+
+def initial_choice(found: list[str], scope: str, saved: str, last: str) -> list[str]:
+    """받기 화면 ② 를 열 때 체크해 둘 과제 — 지난번 고른 그대로. 'all'(모두 체크했던 것)이면 지금 있는 과제 모두 — 그 뒤에 만든 폴더도
+    (담당자가 과제 폴더를 더 만든 2026-10-22). 남은 것이 없으면(폴더를 지웠으면) 모두."""
+    if scope == "some":
+        chosen = pick(found, saved)
+    elif scope == "one":
+        chosen = [last] if last in found else []
+    else:
+        chosen = list(found)
+    return chosen or list(found)
+
+
+def scope_of(chosen: list[str], found: list[str]) -> str:
+    """설정 download_scope 에 남길 말 — 모두 체크했으면 'all'(다음에 폴더가 늘면 그것도 체크), 하나면 'one', 그 밖은 'some'."""
+    if chosen and set(found) <= set(chosen):
+        return "all"
+    return "one" if len(chosen) == 1 else "some"
+
+
+def _plain(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or "")).lower()
+
+
+def matches(query: str, *texts: str) -> bool:
+    """과제 찾기 칸 — 띄어쓰기로 나눈 낱말이 모두 과제번호 · 폴더 이름 · ERP 과제명 어딘가에 있으면(띄어쓰기 · 대소문자는 보지 않는다).
+    담당자 2026-10-22 "그리고 검색 기능도" — 과제가 13개로 늘어 '연구지원비' · '0003' 처럼 일부만 넣어 찾는다."""
+    haystack = _plain(" ".join(texts))
+    return all(_plain(word) in haystack for word in str(query or "").split())
 
 
 def save_root(out_root: str | Path, project_no: str) -> tuple[Path | None, str]:

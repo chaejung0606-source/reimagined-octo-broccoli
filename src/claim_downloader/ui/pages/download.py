@@ -211,7 +211,7 @@ class DownloadPage(QWidget):
         self.tools_button.setObjectName("ghost")
         self.tools_menu = QMenu(self.tools_button)
         self.unwanted_action = self.tools_menu.addAction("받지 않는 결의서", self._show_unwanted)
-        self.rebudget_action = self.tools_menu.addAction("대응자금 파일 정리", self._rebudget)
+        self.rebudget_action = self.tools_menu.addAction("대응자금 · 연구지원비 파일 정리", self._rebudget)
         self.tools_menu.addSeparator()
         self.tools_menu.addAction("로그 파일 열기", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(settings.log_path()))))
         self.tools_menu.addAction("자세한 안내", lambda: QMessageBox.information(self, "증빙 다운로드 — 자세한 안내", GUIDE_DETAIL))
@@ -255,28 +255,33 @@ class DownloadPage(QWidget):
         return step
 
     def _build_what(self) -> FlowStep:
-        """② 어느 과제 — 과제 칸. [다음] 으로 마친다."""
-        step = FlowStep("2", "어느 과제의 서류를 받을까요?", "과제를 고르고 [다음] 을 누르세요. 과제는 여러 개를 골라 차례로 받을 수 있습니다.")
+        """② 어느 과제 — 과제 폴더마다 체크(하나면 그 과제, 여럿이면 차례로) + 찾기 칸. [다음] 으로 마친다.
+
+        담당자 2026-10-22 "과제 체크체크해서 단일이나 복수 선택할 수 있도록" · "그리고 검색 기능도"(ui/project_box.ProjectChecklist).
+        과제 폴더가 없는 옛 저장 폴더면 일반청구와 같은 과제 칸 하나.
+        """
+        step = FlowStep("2", "어느 과제의 서류를 받을까요?")
         step.edit.connect(self._edit_what)
-        row = QHBoxLayout()
+        self._what = step
+        # 과제 폴더가 있을 때 — 체크 목록 · 찾기 칸
+        self.project_list = project_box.ProjectChecklist()
+        self.project_list.changed.connect(self._project_changed)
+        step.add(self.project_list)
+        # 과제 폴더가 없을 때 — ERP 과제 칸 하나(일반청구와 같은 칸 · 같은 기본값). 목록 읽기가 이 과제의 결의서내역으로 간다
+        self.combo_row = QWidget()
+        row = QHBoxLayout(self.combo_row)
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
         project_label = QLabel("과제")
         project_label.setObjectName("fieldLabel")
         row.addWidget(project_label, 0, Qt.AlignVCenter)
-        # ERP 과제 — 일반청구와 같은 칸 · 같은 기본값(ui/project_box.py). 목록 읽기가 이 과제의 결의서내역으로 간다
         self.project_box = project_box.project_box()
-        # 저장 폴더가 과제 폴더로 나뉘어 있으면 '폴더 만든 과제 모두' · '고른 과제 여럿' · 과제 하나씩 — 담당자 2026-10-21. 마지막 고른 것을 다시 쓴다
-        scope = settings.load().download_scope
-        start = {"some": project_folders.SOME, "one": project_box.last_project()}.get(scope, project_folders.ALL)
-        if start == project_folders.SOME and not project_box.chosen_projects():
-            start = project_folders.ALL
-        project_box.fill_download_box(self.project_box, start)
         self.project_box.currentIndexChanged.connect(self._project_changed)
-        self.project_box.activated.connect(self._project_activated)
         project_label.setBuddy(self.project_box)
         row.addWidget(self.project_box, 0, Qt.AlignVCenter)
         row.addStretch(1)
-        step.add_layout(row)
+        step.add(self.combo_row)
+        self._fill_projects(keep=False)
         buttons = QHBoxLayout()
         self.next_button = QPushButton("다음")
         self.next_button.setObjectName("primary")
@@ -414,8 +419,9 @@ class DownloadPage(QWidget):
             self.folder_button.setToolTip("")
         names = {p.no: p.name for p in navigate.load_projects()[0]}
         self.rebudget_action.setVisible(bool(rebudget.fund_folders(cfg.out_root, names)) if cfg.out_root else False)
-        unwanted = len(skiplist.load())
-        self.unwanted_action.setText(f"받지 않는 결의서 ({unwanted}건)")
+        items = skiplist.load()
+        unwanted, kinds = len(items), len(skiplist.kinds(items))
+        self.unwanted_action.setText(f"받지 않는 결의서 ({unwanted}건" + (f" · 구분 {kinds}개)" if kinds else ")"))
         self.unwanted_action.setEnabled(unwanted > 0)
         self._sync_empty()
         self.counts_changed.emit()
@@ -493,7 +499,7 @@ class DownloadPage(QWidget):
         stage = download_stage(self._docs_picked, self._picked, self._reading, self._listed)
         states = flow_states(DOWNLOAD_ORDER, stage)
         sites = getattr(self.worker, "sites", {}) or {}
-        summaries = {"docs": self._docs_text(), "project": self._project_text(),
+        summaries = {"docs": self._docs_text(), "project": self._project_summary(),
                      "login": "ERP 로그인됨" if sites.get("erp_login") else "브라우저 열림"}
         for key, step in self.steps.items():
             step.set_state(states[key], summaries.get(key))
@@ -503,8 +509,9 @@ class DownloadPage(QWidget):
     def _sync_buttons(self) -> None:
         busy = self._busy
         self.project_box.setEnabled(not busy)
+        self.project_list.setEnabled(not busy)
         self.docs_button.setEnabled(not busy and any(self._docs()))
-        self.next_button.setEnabled(not busy and any(self._docs()))
+        self.next_button.setEnabled(not busy and any(self._docs()) and bool(self._projects()))
         self.step_docs.edit_button.setEnabled(not busy)
         self.step_what.edit_button.setEnabled(not busy)
         # ③ — 브라우저가 열려 있으면 '고른 과제의 목록을 읽고 받기'(담당자 요청 2026-10-21)
@@ -559,8 +566,8 @@ class DownloadPage(QWidget):
                 "받은 청구서를 넣을 폴더를 먼저 지정해 주세요.\n과제 폴더('(과제번호)_…')나 비목 폴더(01. 인건비 …)가 바로 아래 있는 폴더입니다.")
             self.need_settings.emit()
             return
-        if self._all() and not self._projects():
-            self._set_state("과제 없음", "warning", "받을 과제를 고르세요 — 과제 칸의 '여러 과제 고르기…'.")
+        if not self._projects():
+            self._set_state("과제 없음", "warning", "받을 과제를 하나 이상 체크하세요.")
             return
         self._picked = True
         if self._browser_open and (getattr(self.worker, "sites", {}) or {}).get("erp_login"):
@@ -611,6 +618,10 @@ class DownloadPage(QWidget):
             self.worker.open_browser(watch=True)    # 로그인 뒤 목록이 보이면 list_ready → 읽고 받기
 
     def _project(self) -> str:
+        """과제 하나 — 체크 목록이면 체크한 첫 과제(하나만 체크했을 때 쓴다), 과제 칸이면 고른 과제."""
+        if self._has_folders:
+            chosen = self.project_list.chosen()
+            return chosen[0] if chosen else ""
         return str(self.project_box.currentData() or project_box.last_project())
 
     def _folder_label(self, target: dict) -> str:
@@ -622,31 +633,44 @@ class DownloadPage(QWidget):
         return no or "—"
 
     def _all(self) -> bool:
-        """여러 과제를 차례로 — '폴더 만든 과제 모두' 이거나 '고른 과제 여럿'."""
-        return self._project() in (project_folders.ALL, project_folders.SOME)
+        """여러 과제를 차례로 — 둘 이상 체크했을 때."""
+        return len(self._projects()) > 1
 
     def _projects(self) -> list[str]:
-        if self._project() == project_folders.ALL:
-            return [f.no for f in project_box.folder_projects()]
-        if self._project() == project_folders.SOME:
-            return project_box.chosen_projects()
+        """받을 과제 — 체크한 과제(폴더 차례), 과제 칸이면 그 과제 하나."""
+        if self._has_folders:
+            return self.project_list.chosen()
         return [self._project()]
 
     def _project_text(self) -> str:
-        if self._project() == project_folders.ALL:
-            return f"폴더 만든 과제 {len(project_box.folder_projects())}개"
-        if self._project() == project_folders.SOME:
-            return f"고른 과제 {len(project_box.chosen_projects())}개"
-        return f"과제 {self._project()}"
+        """안내 글에 넣는 과제 — '과제 202408470003' · '고른 과제 3개' · '폴더 만든 과제 13개'."""
+        projects = self._projects()
+        if len(projects) == 1:
+            return f"과제 {projects[0]}"
+        if self._has_folders and len(projects) == len(self.project_list.found()):
+            return f"폴더 만든 과제 {len(projects)}개"
+        return f"고른 과제 {len(projects)}개"
+
+    def _project_summary(self) -> str:
+        """② 를 접었을 때 한 줄 — 체크한 과제의 짧은 이름(셋까지)."""
+        projects = self._projects()
+        if not self._has_folders or not projects:
+            return self._project_text() if projects else "체크한 과제 없음"
+        names = [self.project_list.label_of(no) for no in projects]
+        if len(names) == 1:
+            return names[0]
+        head = f"{self._project_text()} — " + " · ".join(names[:3])
+        return head + (f" 외 {len(names) - 3}개" if len(names) > 3 else "")
 
     def _read_list(self) -> None:
+        projects = self._projects()
+        if not projects or not projects[0]:
+            self._auto_run = False
+            self._picked = False
+            self._set_state("과제 없음", "warning", "받을 과제를 하나 이상 체크하세요.")
+            self._sync_buttons()
+            return
         if self._all():
-            projects = self._projects()
-            if not projects:
-                self._auto_run = False
-                self._picked = False
-                self._set_state("과제 없음", "warning", "받을 과제를 고르세요 — 과제 칸의 '여러 과제 고르기…'.")
-                return
             self._reading = True
             if self._docs()[1]:
                 self._set_state("목록 읽는 중", "info", f"{self._project_text()}의 {self._lists_text()}을 읽고 있습니다…")
@@ -667,29 +691,13 @@ class DownloadPage(QWidget):
         claims, purchases = self._docs()
         return " · ".join(name for on, name in ((claims, "결의서내역"), (purchases, "구매진행관리(구매·자산)")) if on)
 
-    def _project_activated(self, index: int) -> None:
-        """'여러 과제 고르기…' 를 누르면(이미 골라져 있어도 다시 누르면) 체크 창을 띄운다."""
-        if self.project_box.itemData(index) != project_folders.SOME:
-            return
-        before = project_box.chosen_projects()
-        if project_box.pick_projects(self):
-            project_box.fill_download_box(self.project_box, project_folders.SOME)       # 칸 글자 '고른 과제 N개'
-            if project_box.chosen_projects() != before:
-                self._project_changed(index)
-        elif not before:
-            self.project_box.setCurrentIndex(max(self.project_box.findData(project_folders.ALL), 0))   # 하나도 안 골랐으면 '모두' 로
-
-    def _project_changed(self, _index: int) -> None:
-        no = self._project()
-        if no == project_folders.ALL:
-            settings.update(download_scope="all")
-        elif no == project_folders.SOME:
-            settings.update(download_scope="some")
+    def _project_changed(self, *_args) -> None:
+        if self._has_folders:
+            project_box.remember_choice(self.project_list.chosen(), self.project_list.found())
         else:
+            no = self._project()
             self.project_box.setToolTip("ERP 과제: " + navigate.label_of(no))
             project_box.remember(no)
-            if project_box.folder_projects():
-                settings.update(download_scope="one")
         if self._listed and not self._busy:
             # 읽어 둔 목록은 앞 과제의 것이다 — 받기 전에 새 과제의 목록을 다시 읽게 한다
             self._listed = False
@@ -700,8 +708,37 @@ class DownloadPage(QWidget):
         self._sync_buttons()
 
     def _refresh_projects(self) -> None:
-        """로그인 뒤 과제현황을 새로 읽었으면(또는 저장 폴더가 바뀌면) 보기를 다시 채운다 — 고른 과제는 그대로."""
-        project_box.fill_download_box(self.project_box, self._project())
+        """로그인 뒤 과제현황을 새로 읽었으면(또는 저장 폴더 · 과제 폴더가 바뀌면) 보기를 다시 채운다 — 고른 과제는 그대로."""
+        self._fill_projects(keep=True)
+        self._sync_buttons()
+
+    def _fill_projects(self, keep: bool) -> None:
+        """과제 폴더가 있으면 체크 목록, 없으면 과제 칸. keep 이면 지금 체크를 그대로 두고, 모두 체크해 둔 것('all')이면 새 폴더도 체크한다."""
+        found = project_box.folder_projects()
+        self._folders_seen = project_folders.signature(settings.load().out_root)
+        self._has_folders = bool(found)
+        self.project_list.setVisible(self._has_folders)
+        self.combo_row.setVisible(not self._has_folders)
+        self._what.set_hint("받을 과제를 체크하고 [다음] 을 누르세요. 하나만 체크하면 그 과제만, 여럿이면 위에서부터 차례로 받습니다."
+                            if found else "과제를 고르고 [다음] 을 누르세요.")
+        if not found:
+            project_box.fill_project_box(self.project_box, str(self.project_box.currentData() or project_box.last_project()))
+            return
+        nos = [f.no for f in found]
+        if keep and self.project_list.checks:
+            before = self.project_list.chosen()
+            everything = set(self.project_list.found()) <= set(before)
+            chosen = nos if everything else [no for no in nos if no in before]
+        else:
+            chosen = project_box.start_choice(nos)
+        self.project_list.fill(found, chosen)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """화면을 열 때 저장 폴더 아래 과제 폴더가 늘거나 줄었으면 과제 칸을 다시 채운다 — 담당자가 앱을 켠 채 과제 폴더를 더 만든 날
+        (2026-10-22 연구지원비 다섯, "과제옵션에 추가해주세요") 앱을 다시 켜지 않아도 '폴더 만든 과제 모두 (N개)' 와 과제 하나씩이 바로 맞게."""
+        super().showEvent(event)
+        if project_folders.signature(settings.load().out_root) != self._folders_seen:
+            self._refresh_projects()
 
     def _download(self, limit: int) -> None:
         rows = self._remaining()
@@ -856,7 +893,7 @@ class DownloadPage(QWidget):
             QMessageBox.information(
                 self, "받지 않은 과제",
                 "아래 과제는 받지 않았습니다.\n\n" + "\n".join(f"· {no or '(모름)'}: {why}" for no, why in selection.blocked)
-                + "\n\n목록을 못 띄운 과제는 브라우저에서 그 과제의 과제정보 → 청구서를 띄운 뒤, ② 의 과제 칸에서 그 과제를 골라 다시 하세요.")
+                + "\n\n목록을 못 띄운 과제는 브라우저에서 그 과제의 과제정보 → 청구서를 띄운 뒤, ② 에서 그 과제만 체크해 다시 하세요.")
         self._sync_empty()
         self._sync_buttons()
         self.counts_changed.emit()
@@ -934,14 +971,19 @@ class DownloadPage(QWidget):
     # ── 받지 않는 결의서(skiplist.py) ───────────────────────────────────
     def _show_unwanted(self) -> None:
         items = skiplist.load()
+        kinds = skiplist.kinds(items)
         rows = [ReportRow("받지 않음", "neutral",
                           [i.get("project", ""), i.get("seq", ""), i.get("gubun", ""), i.get("cont", ""), i.get("at", "")],
                           detail=f"까닭: {i.get('reason', '')}" + (f"\n문서번호: {i['docNo']}" if i.get("docNo") else ""))
                  for i in items]
         clear = show_report(
             self, title="받지 않는 결의서", heading=f"목록 읽기에서 빼는 결의서 {len(items)}건", tone="neutral",
-            summary=["청구서출력이 없어 받을 수 없는 결의서(잔액조정 · 대체 등)입니다. 받기가 만나면 저절로 여기 들어오고, 목록 읽기에서 빠집니다.",
-                     "결의서구분에 '청구' 가 든 결의서(일반청구 · 카드청구 · 대량청구)는 들어오지 않습니다 — 못 받으면 다음에 다시 해 봅니다."],
+            summary=[("처음부터 빼는 결의서구분: " + " · ".join(f"'{k}'" for k in kinds)
+                      + " — 이 구분의 결의서는 새로 올라온 것 · 다른 과제의 것도 모두 받을 목록에 넣지 않습니다.") if kinds
+                     else "처음부터 빼는 결의서구분은 아직 없습니다.",
+                     "청구서출력이 없어 받을 수 없는 결의서(잔액조정 · 대체 등)입니다. 받기가 만나면 저절로 여기 들어오고, 그 결의서구분은 다음 목록 읽기부터 통째로 빠집니다.",
+                     "결의서구분에 '청구' 가 든 결의서(일반청구 · 카드청구 · 대량청구)는 들어오지 않습니다 — 못 받으면 다음에 다시 해 봅니다.",
+                     "처음부터 빼는 것: 진행구분이 '승인' 이 아닌 것 · 문서번호나 지출예정일이 없는 것 · 결의서구분에 '반납' · '자금대체' 가 든 것 · 이미 받은 것(문서번호)."],
             columns=[("상태", 104), ("과제", 118), ("결의번호", 80), ("결의서구분", 140), ("내용", 300), ("넣은 때", None)], rows=rows,
             footer="목록을 비우면 다음 받기에서 다시 해 보고, 그래도 못 받으면 다시 들어옵니다.",
             accept_text="목록 비우기" if items else "")
@@ -957,12 +999,12 @@ class DownloadPage(QWidget):
         if not self._browser_open:
             QMessageBox.information(
                 self, "대응자금 파일 정리",
-                "대응자금 과제마다 ERP 의 과제정보 → 예산 탭에서 비목 차례를 읽어야 합니다.\n\n"
-                "③ [브라우저 열기] 로 ERP 에 로그인한 뒤 [도구] → [대응자금 파일 정리] 를 다시 누르세요. (받기를 묻는 창이 뜨면 [아니요] 로 닫아도 됩니다)")
+                "대응자금 · 연구지원비 과제마다 ERP 의 과제정보 → 예산 탭에서 비목 차례를 읽어야 합니다.\n\n"
+                "③ [브라우저 열기] 로 ERP 에 로그인한 뒤 [도구] → [대응자금 · 연구지원비 파일 정리] 를 다시 누르세요. (받기를 묻는 창이 뜨면 [아니요] 로 닫아도 됩니다)")
             return
         self._rebudget_asked = True
         self._set_state("대응자금 파일 보는 중", "info",
-                        "대응자금 과제마다 예산 탭의 비목 차례를 읽고 받은 파일을 봅니다. 옮기기 전에 표로 보여 드립니다.")
+                        "대응자금 · 연구지원비 과제마다 예산 탭의 비목 차례를 읽고 받은 파일을 봅니다. 옮기기 전에 표로 보여 드립니다.")
         self.worker.plan_rebudget()
 
     def _on_rebudget_planned(self, plan) -> None:
@@ -991,7 +1033,7 @@ class DownloadPage(QWidget):
             notes.append(f"업로드 폴더 안의 파일 {uploaded}개는 앱이 옮기지 않습니다 — 바꿀 이름을 보고 직접 고치세요")
         changes = plan.changes()
         if not plan.budgets and not plan.blocked:
-            QMessageBox.information(self, "대응자금 파일 정리", "저장 폴더에 대응자금 과제 폴더가 없습니다.")
+            QMessageBox.information(self, "대응자금 파일 정리", "저장 폴더에 대응자금 · 연구지원비 과제 폴더가 없습니다.")
             self._set_state("준비", "neutral", self._stage_guide())
             return
         self._set_state("대응자금 파일 확인", "info", "표를 보고 바꿀지 정하세요.")

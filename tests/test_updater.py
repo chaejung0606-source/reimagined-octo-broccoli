@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import os
 import subprocess
 
 import pytest
@@ -180,7 +181,9 @@ def test_git_disables_line_ending_conversion(monkeypatch):
     monkeypatch.setattr(updater.subprocess, "run", run)
     updater._git("status", "--porcelain")
     assert "core.autocrlf=false" in seen["args"]
-    assert seen["args"][0].endswith("git") and seen["args"][-2:] == ["status", "--porcelain"]
+    # 윈도우에서는 PATH 의 git 이 `C:\Program Files\Git\...\git.EXE` 처럼 전체 경로 · 확장자로 잡힌다
+    assert os.path.splitext(os.path.basename(seen["args"][0]))[0].lower() == "git"
+    assert seen["args"][-2:] == ["status", "--porcelain"]
 
 
 def test_git_hides_console_window_on_windows(monkeypatch):
@@ -265,3 +268,84 @@ def test_relaunch_detaches_new_process(monkeypatch, tmp_path):
     assert seen["kwargs"]["cwd"] == str(tmp_path) and seen["kwargs"]["start_new_session"] is True
     # 부모의 입출력을 물려받으면 부모가 끝나지 못한다(파이프를 붙든 채 남는다)
     assert all(seen["kwargs"][k] == subprocess.DEVNULL for k in ("stdin", "stdout", "stderr"))
+
+
+def _f5_page(monkeypatch, status, answers):
+    """F5(UpdatesPage.update_and_restart) 시험 — git 대신 가짜 확인 · 적용, 묻는 창은 answers 차례로 답한다."""
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    from claim_downloader.ui.pages import updates
+
+    app = QApplication.instance() or QApplication([])
+    applied, asked = [], []
+    monkeypatch.setattr(updater, "check", lambda: status)
+    monkeypatch.setattr(updater, "apply", lambda: (applied.append(1) or True, "업데이트를 적용했습니다."))
+    monkeypatch.setattr(updater, "current_version", lambda: "test")
+
+    def question(_parent, title, text, *_args):
+        asked.append(text)
+        return QMessageBox.Yes if answers.pop(0) else QMessageBox.No
+    monkeypatch.setattr(updates.QMessageBox, "question", question)
+    monkeypatch.setattr(updates.QMessageBox, "warning", lambda *a: asked.append(a[2]))
+    page = updates.UpdatesPage()
+    restarted = []
+    page.restart_requested.connect(lambda: restarted.append(1))
+
+    def run():
+        page.update_and_restart()
+        for _ in range(400):
+            app.processEvents()
+            if not page.busy() and (restarted or asked):
+                app.processEvents()
+                if not page.busy():
+                    break
+            _wait_a_bit()
+        return restarted, applied, asked
+    return page, run
+
+
+def _close(page) -> None:
+    """화면을 Qt 가 끝나기 전에 지운다 — 남겨 두면 파이썬이 끝날 때 QApplication 보다 늦게 지워져 시험 프로세스가 죽는다(malloc 오류)."""
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    page.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+def _wait_a_bit():
+    """확인 · 적용 스레드가 끝나기를 잠깐 기다린다(processEvents 사이)."""
+    from PySide6.QtCore import QThread
+    QThread.msleep(5)
+
+
+def test_f5_applies_update_then_restarts(monkeypatch):
+    """담당자 2026-10-22 "f5를 누르면 새로고침되게" — 업데이트가 있으면 무엇이 바뀌는지 보이고 한 번 묻고 적용한 뒤 새로고침."""
+    status = updater.UpdateStatus(available=True, behind=2, messages=("과제 체크 목록", "F5 새로고침"))
+    page, run = _f5_page(monkeypatch, status, [True])
+    restarted, applied, asked = run()
+    assert applied == [1] and restarted == [1]
+    assert len(asked) == 1 and "새 업데이트 2건" in asked[0] and "과제 체크 목록" in asked[0]   # 적용 뒤 '지금 새로고침할까요?' 는 다시 묻지 않는다
+    page.update_and_restart()                       # 적용해 두었으면 다음 F5 는 확인 없이 바로
+    assert restarted == [1, 1]
+    _close(page)
+
+
+def test_f5_restarts_when_latest_and_asks_when_check_fails(monkeypatch):
+    page, run = _f5_page(monkeypatch, updater.UpdateStatus(), [])
+    restarted, applied, asked = run()
+    assert restarted == [1] and not applied and not asked          # 최신이면 묻지 않고 새로고침
+    _close(page)
+
+    page, run = _f5_page(monkeypatch, updater.UpdateStatus(error="망에 닿지 않음"), [False])
+    restarted, applied, asked = run()
+    assert not restarted and not applied and "확인하지 못했습니다" in asked[0]   # 못 하면 까닭을 보이고 앱만 새로고침할지 묻는다
+    _close(page)
+
+
+def test_f5_declined_update_does_not_restart(monkeypatch):
+    page, run = _f5_page(monkeypatch, updater.UpdateStatus(available=True, behind=1, messages=("x",)), [False])
+    restarted, applied, asked = run()
+    assert not restarted and not applied and len(asked) == 1
+    _close(page)

@@ -128,3 +128,7 @@ def test_matching_fund_folders(tmp_path):
     assert naming.destination(tmp_path, "02", "x.pdf", BUDGET).parent == mine
     assert naming.own_budget("(202409710003)_2026년도 대응자금_254,907,000") and naming.own_budget("", "사업[대응 자금-교내]")
     assert not naming.own_budget("(202408470003)_2026년도 사업비", "가짜사업_이월금")
+    # 연구지원비 과제도 비목이 사업비와 달라 예산 탭 차례로(2026-10-22 — 사업비 '01. 인건비' 로 다 들어갔다)
+    assert naming.own_budget("(202508100001)_2025년 연구지원비(책임자)_20,000,000")
+    assert naming.budget_code([["A1", "인건비"], ["A2", "연구시설/장비비"], ["A3", "연구활동비"]], "",
+                              {"bimok": "연구활동비"}, 404520) == "03"

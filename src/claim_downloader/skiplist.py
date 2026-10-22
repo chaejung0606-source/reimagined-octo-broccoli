@@ -9,6 +9,10 @@
 - 이 목록이 생기기 전에 건너뛴 것은 _실행로그.txt 의 '↷ 건너뜀' 줄에서 처음 한 번 가져온다. 그 줄에는 문서번호가 없어
   과제번호 + 결의번호로 알아본다(결의번호는 과제 안에서 하나뿐이다).
 - 받기 화면에서 목록을 보고 비울 수 있다. 비우면 다음 받기에서 다시 해 보고, 그래도 못 받으면 다시 들어온다.
+- **목록에 든 결의서구분은 통째로 뺀다**(담당자 2026-10-22: "이전에 다운받지 않아도 된다고 했던 것들이 포함되어 있습니다. 처음부터 목록에
+  없으면 소요시간이 감소" — 구분 단위로 빼는 것을 골랐다). 전에는 결의서마다 한 번씩 열어 보고(건마다 10초 넘게) 나서야 들어와, 같은 구분의
+  새 결의서 · 다른 과제의 결의서가 받을 목록에 계속 나왔다. 이제 한 번이라도 청구서출력이 없던 구분(`kinds`)은 그 구분의 모든 결의서를 목록 읽기에서
+  빼고, 받는 중에 새로 들어온 구분의 남은 건도 열지 않고 넘긴다. '청구' 가 든 구분은 여기서도 빼지 않는다(why_not).
 """
 from __future__ import annotations
 
@@ -135,6 +139,28 @@ def add(row: dict, reason: str, project: str = "") -> tuple[bool, str]:
                   "reason": (reason or "").strip()[:160], "at": time.strftime("%Y-%m-%d %H:%M")})
     _save(items)
     return True, ""
+
+
+def _kind(gubun) -> str:
+    return re.sub(r"\s+", "", str(gubun or ""))
+
+
+def kinds(items: list[dict]) -> list[str]:
+    """통째로 뺄 결의서구분 — 목록에 든 구분 가운데 '청구' 가 없고 알 수 있는 것(넣은 차례, 같은 구분은 한 번)."""
+    found: dict[str, str] = {}
+    for item in items:
+        gubun = str(item.get("gubun") or "").strip()
+        if gubun and not why_not(gubun, "") and _kind(gubun) not in found:
+            found[_kind(gubun)] = gubun
+    return list(found.values())
+
+
+def kind_of(names: list[str], row: dict) -> str:
+    """이 목록 행의 결의서구분이 통째로 빼는 구분이면 그 이름, 아니면 ''."""
+    gubun = _kind(row.get("gubun"))
+    if not gubun or "청구" in gubun:
+        return ""
+    return next((name for name in names if _kind(name) == gubun), "")
 
 
 def clear() -> None:

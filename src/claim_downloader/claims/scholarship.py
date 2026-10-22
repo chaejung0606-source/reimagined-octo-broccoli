@@ -320,6 +320,15 @@ class Job:
     def files_for(self, index: int) -> list[str]:
         return list(self.common_files) + list(self.person_files.get(index, []))
 
+    def shared_course_files(self, index: int) -> list[str]:
+        """이 줄의 개별증빙 중 같은 학생의 다른 교과목 줄에도 붙는 것 — 경로에 교과목이 없어 개인 서류로 본 파일.
+        한 학생이 교과목 여럿을 맡았을 때만 뜻이 있다(담당자 주의 2026-10-22 — 다른 과목 증빙이 섞이지 않았는지 담당자가 본다)."""
+        rows = course_rows_of(index, self.people)
+        if len(rows) < 2:
+            return []
+        others = [set(self.person_files.get(i, [])) for i in rows if i != index]
+        return [f for f in self.person_files.get(index, []) if all(f in o for o in others)]
+
     def row_summary(self, index: int) -> str:
         return row_summary(self.main_summary, self.people[index], self.roster.kind, self.rules)
 
@@ -388,16 +397,48 @@ def _subdirs_with(folder: str, word: str) -> list[str]:
     return [os.path.join(folder, n) for n in names if word in n and os.path.isdir(os.path.join(folder, n))]
 
 
+def _loose(text) -> str:
+    """교과목 이름 비교용 — 공백 · 문장부호 · 밑줄을 모두 걷어내고 대소문자를 무시한다('자료구조(01분반)' 의 괄호, 'Data Structure' 의 띄어쓰기)."""
+    return re.sub(r"[\W_]+", "", str(text or ""), flags=re.UNICODE).casefold()
+
+
+def _course_keys(course: str) -> set[str]:
+    """명단 교과목 이름이 파일 경로에 어떻게 적혀 있어도 알아보게 — 전체 · 괄호 안을 뺀 것 · 앞 괄호 안(영문 약칭 등). 두 글자 미만은 뺀다."""
+    raw = str(course or "").strip()
+    names = {raw, re.sub(r"[(（\[].*?[)）\]]", " ", raw, flags=re.S)}
+    names.update(re.findall(r"[(（\[](.*?)[)）\]]", raw, flags=re.S))
+    return {k for k in (_loose(n) for n in names) if len(k) >= 2}
+
+
 def _rows_of_student(key: str, indexes: list[int], people: list[roster_mod.Person]) -> list[int]:
     """같은 이름 줄들 중 이 파일(경로 글자 key)의 줄. 담당자 규칙(2026-10-14): 학번이 다르면 다른 학생, 학번까지 같으면
     한 학생이 교과목 여럿을 맡은 것. 그래서 학번으로 학생을 정하고(동명이인이면 경로에 학번이 있어야 한다), 그 학생의 줄이
-    여럿이면 경로에 교과목이 있는 줄 하나 — 교과목이 없으면 그 학생의 모든 줄(교과목마다 같은 개인 서류를 붙인다)."""
+    여럿이면 **경로에 교과목이 적힌 줄만** — 교과목이 하나도 없는 파일(개인 서류)만 그 학생의 모든 줄에 붙인다.
+    담당자 주의(2026-10-22): 한 학생이 A · B · C 과목 TA 면 A 과목 줄에 B · C 과목 개별증빙이 붙어서는 안 된다. 그래서
+    교과목은 띄어쓰기 · 괄호 · 대소문자를 무시하고 맞추고('자료구조(01분반)' ↔ '자료구조 근무일지'), '자료구조' 와 '자료구조실습' 처럼
+    한 이름이 다른 이름에 들어 있으면 **더 긴 쪽이 맞는 줄**만 고른다. 두 교과목이 다 적힌 파일은 그 두 줄에만(셋째 줄 아님)."""
     if len({people[i].student_no for i in indexes}) > 1:
         indexes = [i for i in indexes if people[i].student_no and people[i].student_no in key]
         if len({people[i].student_no for i in indexes}) != 1:
             return []
-    by_course = [i for i in indexes if people[i].course and _squash(people[i].course) in key]
-    return by_course if len(by_course) == 1 else indexes
+    loose_key = _loose(key)
+    matched: dict[int, str] = {}            # 줄 → 경로에 든 그 줄의 교과목 글자(가장 긴 것)
+    for i in indexes:
+        hits = [k for k in _course_keys(people[i].course) if k in loose_key]
+        if hits:
+            matched[i] = max(hits, key=len)
+    if not matched:
+        return indexes                       # 교과목이 없는 개인 서류 — 교과목마다 같은 서류를 붙인다
+    # '자료구조' 줄은 '자료구조실습' 줄이 맞은 파일에서는 빠진다(그 글자가 더 긴 이름의 일부일 뿐). 서로 다른 두 과목이 다 적혔으면 둘 다 남는다
+    return [i for i in indexes if i in matched
+            and not any(j != i and matched[i] != matched[j] and matched[i] in matched[j] for j in matched)]
+
+
+def course_rows_of(index: int, people: list[roster_mod.Person]) -> list[int]:
+    """이 줄의 학생(이름 · 학번이 같은)이 맡은 교과목 줄 전부 — 한 학생이 TA 여럿일 때 줄이 둘 이상이다."""
+    me = people[index]
+    return [i for i, p in enumerate(people)
+            if _squash(p.name) == _squash(me.name) and (p.student_no or f"#{i}") == (me.student_no or f"#{index}")]
 
 
 def _group_aliases(text: str) -> set[str]:
@@ -753,6 +794,11 @@ def plan_person(job: Job, index: int) -> PersonResult:
     notes = [p.note] if p.note else []
     if (job.person_files or job.unmatched) and not job.person_files.get(index):
         notes.append("개별증빙 없음 — 공통증빙만 붙습니다")
+    shared = job.shared_course_files(index)
+    if shared:
+        # TA 교과목 여럿인 학생 — 교과목 이름이 없는 파일은 개인 서류로 보고 모든 교과목 줄에 붙인다. 다른 과목 증빙이면 파일 이름에 교과목을 넣어야 한다
+        notes.append("교과목 이름이 없는 개별증빙 %d개는 이 학생의 교과목 줄 모두에 붙습니다(다른 과목 서류면 파일 이름에 교과목을 넣으세요): %s"
+                     % (len(shared), " · ".join(os.path.basename(f) for f in shared[:4])))
     if p.foreign_nation and job.spec.payroll:
         notes.append(f"외국인({p.nation}) — 국적은 앱이 고름")
     if notes:

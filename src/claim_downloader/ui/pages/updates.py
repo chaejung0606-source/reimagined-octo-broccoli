@@ -9,7 +9,7 @@ import html
 
 import traceback
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QFrame,
@@ -60,6 +60,8 @@ class UpdatesPage(QWidget):
         self.setObjectName("page")
         self._thread: QThread | None = None
         self._status: updater.UpdateStatus | None = None
+        self._then_restart = False        # F5 — 확인 · 적용이 끝나면 묻지 않고 새로고침까지
+        self._applied = False             # 적용하고 아직 새로고침하지 않음 — F5 는 바로 새로고침
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -146,6 +148,61 @@ class UpdatesPage(QWidget):
         if settings.load().auto_update_check:
             self._start("check")
 
+    def update_and_restart(self) -> None:
+        """F5 · 사용자 메뉴 '앱 새로고침' — 업데이트를 확인해 있으면 적용하고 새로고침, 없으면 그대로 새로고침.
+
+        담당자 2026-10-22 "f5를 누르면 새로고침되게" — [새로고침] 만 누르면 앱을 다시 띄울 뿐이라 새 기능이 들어오지 않았다
+        (업데이트 화면에서 [업데이트 확인] → [업데이트 적용] 을 먼저 눌러야 했다). 확인 · 적용 중이면 그것이 끝난 뒤 이어서 한다.
+        적용 전에는 무엇이 바뀌는지 보이고 한 번 묻는다(이 화면의 원칙 — 확인만 자동, 적용은 사람이 누른다).
+        """
+        self._then_restart = True
+        if self._thread is not None:
+            return
+        if self._applied:
+            self._then_restart = False
+            self.restart_requested.emit()
+            return
+        self._say("업데이트를 확인하고 있습니다… 끝나면 새로고침합니다 (F5)")
+        self._start("check")
+
+    def _say(self, text: str) -> None:
+        """창 아래 상태 줄 — F5 를 누른 사람이 이 화면을 보고 있지 않아도 지금 무엇을 하는지 알게."""
+        window = self.window()
+        if hasattr(window, "statusBar"):
+            if text:
+                window.statusBar().showMessage(text)
+            else:
+                window.statusBar().clearMessage()
+
+    def _after_check(self, status) -> None:
+        """F5 로 확인했을 때 — 있으면 묻고 적용, 없으면 새로고침, 못 하면 까닭."""
+        self._then_restart = False
+        self._say("")
+        if status.error or (status.available and not status.can_apply):
+            answer = QMessageBox.question(
+                self, "새로고침",
+                f"{status.describe()}\n\n업데이트 없이 앱만 새로고침할까요?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer == QMessageBox.Yes:
+                self.restart_requested.emit()
+            return
+        if not status.available:
+            self._say("최신 버전입니다. 새로고침합니다…")
+            self.restart_requested.emit()
+            return
+        changes = "\n".join(f"· {message}" for message in status.messages[:6])
+        if len(status.messages) > 6:
+            changes += f"\n· … 외 {len(status.messages) - 6}건"
+        answer = QMessageBox.question(
+            self, "새로고침",
+            f"새 업데이트 {status.behind}건이 있습니다.\n\n{changes}\n\n"
+            "적용하고 새로고침할까요? 창이 닫혔다가 새 버전으로 다시 열립니다.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if answer == QMessageBox.Yes:
+            self._then_restart = True
+            self._say("업데이트를 적용하고 있습니다… 끝나면 새로고침합니다 (F5)")
+            self._start("apply")
+
     def _start(self, action: str) -> None:
         if self._thread is not None:
             return
@@ -201,6 +258,10 @@ class UpdatesPage(QWidget):
             self.log.setHtml(
                 f"<p style='color:{COLORS['text_muted']};'>받아 올 변경이 없습니다.</p>"
             )
+        if self._then_restart:
+            # 이 처리기(확인 일꾼의 신호) 밖에서 잇는다 — 사람이 [업데이트 적용] 을 누르는 것과 같은 때. 처리기 안에서 적용 스레드를 띄우면
+            # 신호를 보낸 일꾼을 그 신호를 처리하는 중에 갈아 끼우게 된다.
+            QTimer.singleShot(0, lambda: self._after_check(status))
 
     def _confirm_apply(self) -> None:
         if self._status is None or not self._status.can_apply:
@@ -222,9 +283,15 @@ class UpdatesPage(QWidget):
         self.version_changed.emit(updater.current_version())
         self.apply_button.setEnabled(False)
         self.restart_button.setVisible(ok)
+        self._applied = self._applied or ok
         self.applied.emit(ok)
+        then_restart, self._then_restart = self._then_restart, False
+        self._say("")
         if not ok:
             QMessageBox.warning(self, "업데이트", message)
+            return
+        if then_restart:
+            self.restart_requested.emit()       # F5 — 적용하기 전에 이미 물었다
             return
         answer = QMessageBox.question(
             self, "업데이트",
@@ -236,6 +303,9 @@ class UpdatesPage(QWidget):
     def _on_failed(self, message: str) -> None:
         """예상 못 한 예외. 마지막 줄이라도 화면에 띄워야 원인을 알 수 있다."""
         self._stop()
+        if self._then_restart:
+            self._then_restart = False
+            self._say("업데이트 처리 중 오류가 나서 새로고침하지 않았습니다 — 업데이트 화면을 보세요.")
         lines = [line.strip() for line in message.splitlines() if line.strip()]
         reason = lines[-1] if lines else "알 수 없는 오류"
         self.status_label.setText(f"업데이트 처리 중 오류가 발생했습니다 — {reason}")

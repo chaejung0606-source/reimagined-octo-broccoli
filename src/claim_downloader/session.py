@@ -1402,12 +1402,22 @@ class ErpSession:
         sel = select_targets(rows, self.done)
         unwanted = skiplist.load()
         if unwanted:
-            # 청구서출력이 없어 받을 수 없는 결의서(담당자 2026-10-21 "받지 않아도 되는 결의서 목록") — 받을 것에서 뺀다
-            keep = [r for r in sel.targets if not skiplist.matches(unwanted, r, listed)]
+            # 청구서출력이 없어 받을 수 없는 결의서(담당자 2026-10-21 "받지 않아도 되는 결의서 목록") — 받을 것에서 뺀다.
+            # 목록에 든 결의서구분은 통째로(담당자 2026-10-22 — 같은 구분의 새 결의서를 또 열어 보느라 시간이 들었다)
+            names = skiplist.kinds(unwanted)
+            by_kind: dict[str, int] = {}
+            keep = []
+            for r in sel.targets:
+                kind = skiplist.kind_of(names, r)
+                if kind:
+                    by_kind[kind] = by_kind.get(kind, 0) + 1
+                elif not skiplist.matches(unwanted, r, listed):
+                    keep.append(r)
             sel.excluded = len(sel.targets) - len(keep)
             sel.targets = keep
             if sel.excluded:
-                self.log(f"받지 않는 결의서 {sel.excluded}건은 뺐습니다 (청구서출력이 없는 결의서 — 받기 화면 [받지 않는 결의서] 에서 봅니다)")
+                self.log(f"받지 않는 결의서 {sel.excluded}건은 뺐습니다 (청구서출력이 없는 결의서 — 받기 화면 [도구] → [받지 않는 결의서] 에서 봅니다)"
+                         + ("" if not by_kind else " — 결의서구분으로 뺀 것: " + " · ".join(f"'{k}' {n}건" for k, n in by_kind.items())))
         sel.projects = [listed] if listed else []
         for row in sel.targets:
             row["project"] = listed          # 받을 때 이 과제의 폴더에 둔다(project_folders)
@@ -1424,7 +1434,7 @@ class ErpSession:
                     row["budget"] = budget       # 받을 때 비목 번호 · 폴더를 이 차례로(naming.budget_code)
             else:
                 # 비목 번호를 모르고 받으면 사업비 폴더(01. 인건비 …)나 미분류에 섞인다 — 받지 않고 까닭을 남긴다
-                why = (f"과제 {listed} 는 대응자금이라 비목이 사업비와 다릅니다 — 과제정보 → 예산 탭에서 비목을 읽지 못해({why}) 받지 않았습니다. "
+                why = (f"과제 {listed} 는 비목이 사업비와 다릅니다(대응자금 · 연구지원비) — 과제정보 → 예산 탭에서 비목을 읽지 못해({why}) 받지 않았습니다. "
                        "다시 목록을 읽거나, 그대로면 [문제 보내기] 로 기록을 보내 주세요")
                 self.log("⚠ " + why)
                 sel.blocked.append((listed, why))
@@ -1434,7 +1444,7 @@ class ErpSession:
         return sel
 
     def _own_budget(self, project: str, root) -> bool:
-        """비목이 사업비와 달라 예산 탭 차례로 번호를 붙이는 과제인지 — 과제 폴더 · ERP 과제명에 '대응자금' 이 있으면(담당자 2026-10-21)."""
+        """비목이 사업비와 달라 예산 탭 차례로 번호를 붙이는 과제인지 — 과제 폴더 · ERP 과제명에 '대응자금' · '연구지원비' 가 있으면(담당자 2026-10-21 · 10-22)."""
         names = [getattr(root, "name", "")] if project_folders.project_of(root or "") == project else []
         names += [p.name for p in navigate.load_projects()[0] if p.no == project]
         return naming.own_budget(*names)
@@ -1446,7 +1456,7 @@ class ErpSession:
             if not budget:
                 return [], why
             self._budgets[project] = budget
-            self.log(f"과제 {project} 는 대응자금이라 비목 번호를 예산 탭 차례로 붙입니다: "
+            self.log(f"과제 {project} 는 비목이 사업비와 달라(대응자금 · 연구지원비) 비목 번호를 예산 탭 차례로 붙입니다: "
                      + " · ".join("%02d %s" % (i, name) for i, (_code, name) in enumerate(budget, 1)))
         return self._budgets[project], ""
 
@@ -1657,6 +1667,15 @@ class ErpSession:
                 notify(i, "failed", why_doc)
                 i += 1
                 continue
+            kind = skiplist.kind_of(skiplist.kinds(skiplist.load()), row)
+            if kind:
+                # 이번 받기에서 같은 구분의 결의서가 청구서출력이 없다고 들어왔다 — 남은 건은 열어 보지 않고 넘긴다(담당자 2026-10-22)
+                self.log("[%d/%d] No %s (결의 %s · %s) — 받지 않는 결의서구분이라 열지 않고 넘깁니다" % (
+                    i + 1, len(targets), row.get("no"), row.get("seq"), kind))
+                summary.unwanted.append(row)
+                notify(i, "unwanted", f"결의서구분 '{kind}' 은 청구서출력이 없어 받지 않음")
+                i += 1
+                continue
             if row.get("docNo") and row["docNo"] in self.done:
                 # 목록을 읽은 뒤 다시 훑은 보관 폴더에 이미 있는 건 — 표가 옛것이어도 다시 받지 않는다(2026-10-14 점검)
                 self.log("[%d/%d] No %s — 이미 받은 문서번호라 건너뜀" % (i + 1, len(targets), row.get("no")))
@@ -1751,7 +1770,7 @@ class ErpSession:
                 summary.failed.append(targets[i])
                 notify(i, "failed", "멈춤 요청으로 받지 않음")
         self.log("── 끝: 성공 %d건 / 실패 %d건" % (summary.ok, len(summary.failed))
-                 + (" / 받지 않음 %d건(받지 않는 결의서 목록에 넣음)" % len(summary.unwanted) if summary.unwanted else ""))
+                 + (" / 받지 않음 %d건(청구서출력이 없는 결의서 — 받지 않는 결의서 목록)" % len(summary.unwanted) if summary.unwanted else ""))
         for r in summary.failed:
             if r.get("kind") == purchase.KIND:
                 self.log("   실패: 구매요구 %s %s" % (r.get("req_no"), (r.get("cont") or "")[:30]))
