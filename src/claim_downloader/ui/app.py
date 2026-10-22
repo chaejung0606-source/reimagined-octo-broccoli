@@ -450,8 +450,10 @@ def load_fonts() -> str:
     설치된 글꼴에 기대지 않는다 — 동료 PC 에 Pretendard 가 없으면 맑은 고딕으로 바뀌어
     같은 화면이 다르게 보인다. 등록에 실패하면 대체 목록(tokens.FONT_FAMILY)이 쓰인다.
     """
+    # TrueType(.ttf) 판을 쓴다 — 같은 1.309 판의 OTF(CFF 외곽선)는 윈도우에서 12~13px 일 때 '그' · '크' · '의' 의 가로획(ㅡ)이 지워져
+    # 'ㄱ' · 'ㅋ' 처럼 보였다(담당자 2026-10-22). 공식 배포본의 static/alternative TTF 그대로(OFL — 고치지 않았으니 이름도 그대로).
     loaded = []
-    for path in sorted((ASSETS / "fonts").glob("Pretendard-*.otf")):
+    for path in sorted((ASSETS / "fonts").glob("Pretendard-*.ttf")):
         index = QFontDatabase.addApplicationFont(str(path))
         if index >= 0:
             loaded.extend(QFontDatabase.applicationFontFamilies(index))

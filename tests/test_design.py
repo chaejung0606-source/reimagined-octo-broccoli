@@ -51,8 +51,9 @@ def test_every_art_meaning_has_an_asset():
 
 def test_fonts_are_bundled():
     """글꼴 선언만 있고 파일이 없으면 동료 PC 에서 대체 글꼴이 나온다."""
-    fonts = sorted(p.name for p in (UI / "assets" / "fonts").glob("Pretendard-*.otf"))
-    assert fonts == ["Pretendard-Bold.otf", "Pretendard-Medium.otf", "Pretendard-Regular.otf", "Pretendard-SemiBold.otf"]
+    fonts = sorted(p.name for p in (UI / "assets" / "fonts").glob("Pretendard-*"))
+    # TrueType 판 — OTF 는 윈도우의 작은 글씨에서 가로획(ㅡ)이 지워졌다(담당자 2026-10-22, app.load_fonts)
+    assert fonts == ["Pretendard-Bold.ttf", "Pretendard-Medium.ttf", "Pretendard-Regular.ttf", "Pretendard-SemiBold.ttf"]
 
 
 def test_pages_use_art_by_meaning_only():
