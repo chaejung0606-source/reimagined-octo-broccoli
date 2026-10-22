@@ -156,7 +156,8 @@ DETAIL = """<!doctype html><html><body>
 <input type="hidden" id="PROC_TYP_CD" value="C10"><input type="hidden" id="PURCH_REQ_NO" value="__NO__">
 <input type="hidden" id="PRJ_NO" value="__PRJ__"><input id="REQ_DT" value="__DT__" readonly><input id="PURCH_CONT" value="__TITLE__" readonly>
 <input id="PURCH_PROG_STS_NM" value="__STATE__" readonly>
-<div>__LINKS__</div>
+<div id="links"></div>
+<script>setTimeout(() => { document.getElementById('links').innerHTML = __LINKS__; }, 1200);</script>
 <a id="btnPrint">구매요청서</a> <a id="btnSave">임시저장</a> <a id="btnRequest">구매요청</a> <a id="btnCancel">구매요청취소</a>
 <a id="btnList" href="javascript:" onclick="location.href='/rexpe_0155_01.act?s=__S__&e=__E__'">진행관리목록</a>
 <script>document.getElementById('btnSave').onclick = () => fetch('/saved'); document.getElementById('btnRequest').onclick = () => fetch('/requested');</script>
@@ -178,7 +179,7 @@ function render() {
   document.getElementById('list').innerHTML = rows.map((r, i) => '<div class="jgrid-row" r="' + i + '"><input type="radio" name="radioJGM5" onclick="pick(' + i + ')">'
     + '<span class="k_ROW_SEQ">' + (i + 1) + '</span> <span class="k_PRJ_NM">가짜사업</span> <span class="k_CONT_NO">' + r.cont_no + '</span>'
     + '<span class="k_CONT_PROG_STS_NM">' + r.state + '</span> <span class="k_CONT_DT">' + r.cont_dt + '</span> <span class="k_CONT_NM">' + r.cont_nm + '</span>'
-    + '<span class="k_PURCH_REQ_NO">' + r.req_no + '</span></div>').join('');
+    + '<span class="k_CONT_KIND_NM">' + (r.kind || '물품') + '</span> <span class="k_PURCH_REQ_NO">' + r.req_no + '</span></div>').join('');
 }
 function search() {
   const s = document.getElementById('START_DATE').value, e = document.getElementById('END_DATE').value;
@@ -239,15 +240,20 @@ class _Erp(BaseHTTPRequestHandler):
             c = next(c for c in CASES if c["no"] == q.get("no"))
             links = "".join(f'<a href="/comm0008_01.act?USEFAC_SEQ_NO=10&ATTFILE_SEQ_NO={seq}&SKEY=zz">{name}</a>' for seq, name in c["files"])
             html = (DETAIL.replace("__NO__", c["no"]).replace("__PRJ__", c["prj"]).replace("__DT__", c["dt"]).replace("__TITLE__", c["title"])
-                    .replace("__STATE__", c["state"]).replace("__LINKS__", links).replace("__S__", q.get("s", "")).replace("__E__", q.get("e", "")))
+                    .replace("__STATE__", c["state"]).replace("__LINKS__", json.dumps(links)).replace("__S__", q.get("s", "")).replace("__E__", q.get("e", "")))
             return self._send(html.encode())
         if u.path == "/rexpe_0201_01.act":
             rows = [{"req_no": "202606170005", "prj": "202408470003", "cont_no": "C-1", "state": "검사완료", "cont_dt": "2026-07-01", "cont_nm": "[물품] 노트북",
                      "files": [["7", "계약 관련 서류(2026-0701-001).pdf"]], "items": ["노트북 15인치"]},
                     {"req_no": "202509010002", "prj": "202408470002", "cont_no": "C-2", "state": "지출청구", "cont_dt": "2025-10-01", "cont_nm": "[물품] 다른 과제",
-                     "files": [["3", "다른.pdf"]], "items": []}]
+                     "files": [["3", "다른.pdf"]], "items": []},
+                    # 용역 계약 — 물품정보 줄은 있지만 물품내역팝업에 사진 칸이 없다(2026-10-22 실제 22건이 이것으로 '못 받음')
+                    {"req_no": "202504010001", "prj": "202408470003", "cont_no": "C-3", "state": "지출청구", "cont_dt": "2025-05-01", "cont_nm": "[용역] 연사 초청",
+                     "kind": "용역", "files": [["7", "용역 계약 서류.pdf"]], "items": ["연사 초청 용역"]}]
             return self._send(INSPECT.replace("__ROWS__", json.dumps(rows, ensure_ascii=False)).encode())
         if u.path == "/rexpe_0054_t01_02.act":
+            if "용역" in q.get("item", ""):
+                return self._send(f'<!doctype html><html><body><input id="CONT_ITEM_NM_KR" value="{q.get("item", "")}"></body></html>'.encode())
             return self._send(POPUP.replace("__ITEM__", q.get("item", "")).encode())
         if u.path == "/comm0008_01.act":
             # 실제 ERP 처럼 화면 밖(Referer 없음)에서 부르면 로그인 화면 HTML 을 준다
@@ -322,7 +328,10 @@ def test_purchase_documents_are_received_from_a_mock_erp(erp_server, tmp_path):
     assert (base / "(250401) 작년 봄 장비_(202504010001)" / "작년.pdf").exists()
     assert by_no["202610220001"].summary() == "첨부 없음" and not (base / "(261022) 2026년 AI 기반 자동 취약점 진단 솔루션_(202610220001)").exists()
     assert not list((root / purchase.FOLDER_NAME).glob("*202408470002*"))                          # 다른 과제의 건은 받지 않음
-    assert summary.inspected_rows == 2
+    assert summary.inspected_rows == 3
+    assert by_no["202504010001"].inspected and by_no["202504010001"].ok and by_no["202504010001"].photos == 0
+    assert (base / "(250401) 작년 봄 장비_(202504010001)" / purchase.INSPECT_DIR / "용역 계약 서류.pdf").exists()
+    assert any("용역 · 공사 계약이라 사진 없이 넘어갑니다" in line for line in logs)
     assert not any(h in ("/saved", "/requested", "/deleted", "/completed") for h in _Erp.hits)
     assert [st for _i, st, _d in notes if st == "done"] and all(st != "failed" for _i, st, _d in notes)
     assert all(not p.name.endswith(".part") for p in root.rglob("*"))
@@ -391,3 +400,40 @@ def test_photo_ext_comes_from_bytes_and_bad_names_are_fixed(tmp_path):
     fixed = purchase.fix_photo_names(tmp_path)
     assert sorted(p.name for p in fixed) == ["물품사진_모니터_1.jpg", "물품사진_모니터_2.png"]
     assert (folder / "물품사진_모니터_3.html").exists()
+
+
+def test_old_done_records_are_ignored(tmp_path, monkeypatch):
+    """증빙문서를 일찍 읽어 '0개' 로 끝난 건이 '다 받음' 으로 남았을 수 있다(2026-10-22) — 판이 없는 옛 기록은 없는 것으로 본다."""
+    import json
+    monkeypatch.setenv("CLAIM_DOWNLOADER_HOME", str(tmp_path))
+    purchase.done_path().write_text(json.dumps({"202501050001": {"at": "2026-10-22 19:19", "files": 0, "title": "옛 기록"}}), encoding="utf-8")
+    assert purchase.load_done() == {}
+    ok = purchase.CaseResult("202501050002", "새 기록")
+    purchase.remember_done([ok])
+    assert list(purchase.load_done()) == ["202501050002"]
+
+
+def test_service_and_construction_contracts_have_no_photos():
+    assert purchase.no_photo_contract({"kind": "용역", "cont_nm": "온라인 교육 콘텐츠 개발"})
+    assert purchase.no_photo_contract({"kind": "", "cont_nm": "[공사]강원대학교 미래관 5층 서버실 방음공사"})
+    assert not purchase.no_photo_contract({"kind": "물품", "cont_nm": "[물품] 노트북"})
+
+
+class _LateFrame:
+    """증빙문서 링크가 세 번째 읽기부터 보이는 상세 화면."""
+
+    def __init__(self, files_from=2, files=2):
+        self.calls, self.files_from, self.files = 0, files_from, files
+
+    def evaluate(self, js, *args):
+        self.calls += 1
+        files = [{"name": f"{i}.pdf", "href": f"/x?ATTFILE_SEQ_NO={i}"} for i in range(self.files)] if self.calls > self.files_from else []
+        return {"req_no": "1", "files": files}
+
+
+def test_detail_links_are_read_after_they_settle():
+    frame = _LateFrame()
+    info = purchase.settled_detail(frame, lambda sec: None)
+    assert len(info["files"]) == 2 and frame.calls == 2 + purchase.DETAIL_STABLE
+    empty = _LateFrame(files=0)
+    assert purchase.settled_detail(empty, lambda sec: None)["files"] == [] and empty.calls == purchase.DETAIL_MIN_EMPTY

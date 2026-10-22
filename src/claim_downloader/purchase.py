@@ -45,6 +45,13 @@ MAX_DAYS = 730                         # 구매요청일자 조회 한도(실측
 LIST_TRIES = 40                        # 0.5초씩 — 메뉴를 누른 뒤 목록 · 상세 · 검사처리 화면이 뜨기를 기다리는 횟수
 SETTLE_TRIES = 30                      # [검색] 뒤 줄 수가 두 번 연달아 같을 때까지
 POPUP_TIMEOUT_MS = 8000
+# 상세(구매요구서작성)의 증빙문서 표는 화면이 뜬 뒤 따로 그려진다 — 2026-10-22 실제: 같은 건이 19:28 에는 '증빙문서 0개', 20:05 에는 7개.
+# 링크 수가 DETAIL_STABLE 번 연달아 같아야 읽은 것으로 보고, 0개면 DETAIL_MIN_EMPTY 번(0.5초씩)은 더 기다린다.
+DETAIL_STABLE = 3
+DETAIL_MIN_EMPTY = 8
+DETAIL_MAX_TRIES = 20
+# 끝까지 받은 건 기록의 판 — 증빙문서를 일찍 읽어 '0개' 로 끝난 건이 '다 받음' 으로 남았을 수 있어(위) 판 2 부터 새로 쌓는다
+DONE_VERSION = 2
 NAME_ROOM = 120                        # 파일 이름 · 건 폴더 이름의 글자 한도(경로 260 안에 들게)
 
 # ── 날짜 · 폴더 (Qt · 브라우저 없이) ─────────────────────────────────────────
@@ -205,12 +212,15 @@ def done_path() -> Path:
 
 
 def load_done() -> dict:
-    """끝까지 받은 건(구매요구번호 → 받은 때 · 파일 수). 다음 목록 읽기에서 그 건은 빼서 58건을 매번 다시 열지 않는다(담당자 2026-10-22 "너무 시간 낭비")."""
+    """끝까지 받은 건(구매요구번호 → 받은 때 · 파일 수). 다음 목록 읽기에서 그 건은 빼서 58건을 매번 다시 열지 않는다(담당자 2026-10-22 "너무 시간 낭비").
+    판(DONE_VERSION)이 다른 옛 기록은 없는 것으로 본다 — 한 번 더 열어 빠진 서류를 받는다(있는 파일은 건너뛴다)."""
     try:
         data = json.loads(done_path().read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001
         return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict) and v.get("v") == DONE_VERSION}
 
 
 def remember_done(results: list["CaseResult"]) -> None:
@@ -218,7 +228,7 @@ def remember_done(results: list["CaseResult"]) -> None:
     done = load_done()
     for r in results:
         if r.ok and r.req_no:
-            done[r.req_no] = {"at": time.strftime("%Y-%m-%d %H:%M"), "files": len(r.saved) + r.existed, "title": r.title}
+            done[r.req_no] = {"at": time.strftime("%Y-%m-%d %H:%M"), "files": len(r.saved) + r.existed, "title": r.title, "v": DONE_VERSION}
     tmp = done_path().with_suffix(".tmp")
     tmp.write_text(json.dumps(done, ensure_ascii=False, indent=1), encoding="utf-8")
     tmp.replace(done_path())
@@ -413,7 +423,7 @@ INSPECT_ROWS_JS = """() => {
     const c = k => { const d = el.querySelector('.k_' + k); if (!d) return '';
       const t = d.getAttribute('title'); return (t && t.trim()) ? t.trim() : (d.textContent || '').trim(); };
     out.push({r: el.getAttribute('r'), req_no: c('PURCH_REQ_NO').replace(/\\D/g, ''), cont_nm: c('CONT_NM'), cont_dt: c('CONT_DT'),
-              cont_no: c('CONT_NO'), state: c('CONT_PROG_STS_NM'), prj_nm: c('PRJ_NM'), seq: c('ROW_SEQ')});
+              cont_no: c('CONT_NO'), state: c('CONT_PROG_STS_NM'), prj_nm: c('PRJ_NM'), seq: c('ROW_SEQ'), kind: c('CONT_KIND_NM')});
   });
   return out;
 }"""
@@ -864,6 +874,21 @@ def _frame_url(frame) -> str:
         return ""
 
 
+def settled_detail(frame, wait: Callable[[float], None]) -> dict:
+    """상세의 값 · 증빙문서 링크 — 링크 수가 DETAIL_STABLE 번 연달아 같을 때까지, 0개면 적어도 DETAIL_MIN_EMPTY 번 본다."""
+    info: dict = {}
+    last, same = None, 0
+    for tries in range(DETAIL_MAX_TRIES):
+        info = _eval(frame, DETAIL_JS) or {}
+        count = len(info.get("files") or [])
+        same = same + 1 if count == last else 1
+        last = count
+        if same >= DETAIL_STABLE and (count > 0 or tries + 1 >= DETAIL_MIN_EMPTY):
+            break
+        wait(0.5)
+    return info
+
+
 def receive_case(context, page, frame, target: dict, out_root: str, log: Callable[[str], None],
                  wait: Callable[[float], None]) -> tuple[CaseResult, object]:
     """구매진행관리 목록에서 한 건 — chk → [상세조회/변경] → 증빙문서 링크 받기 → [진행관리목록]. (결과, 다시 뜬 목록 프레임 또는 None)."""
@@ -873,7 +898,7 @@ def receive_case(context, page, frame, target: dict, out_root: str, log: Callabl
     if detail is None:
         result.ok, result.note = False, why
         return result, list_frame(context)
-    info = _eval(detail, DETAIL_JS) or {}
+    info = settled_detail(detail, wait)
     project = re.sub(r"\D", "", str(info.get("prj_no") or "")) or result.project
     result.project = project
     result.title = info.get("title") or result.title
@@ -981,9 +1006,25 @@ def _photo_urls(info: dict) -> list[tuple[int, str]]:
     return out
 
 
+def no_photo_contract(row: dict) -> bool:
+    """용역 · 공사 계약 — 물품정보 줄이 있어도 물품 사진이 없다(2026-10-22 실제: 이런 건 22건이 모두 사진 칸에서 '못 받음' 이 됐다)."""
+    kind = re.sub(r"\s", "", str(row.get("kind") or ""))
+    name = str(row.get("cont_nm") or "").lstrip()
+    return any(k in kind for k in ("용역", "공사")) or name.startswith(("[용역]", "[공사]"))
+
+
+def _photo_problem(result: CaseResult, why: str, optional: bool, log: Callable[[str], None]) -> None:
+    if optional:
+        log(f"      · {why} — 용역 · 공사 계약이라 사진 없이 넘어갑니다")
+        return
+    log(f"      ✖ {why}")
+    result.failed.append(why)
+    result.ok = False
+
+
 def item_photos(context, page, frame, item: dict, folder: Path, result: CaseResult, log: Callable[[str], None],
-                wait: Callable[[float], None]) -> None:
-    """물품정보 줄을 더블클릭해 물품내역팝업을 열고 사진을 받은 뒤 그 창을 닫는다."""
+                wait: Callable[[float], None], optional: bool = False) -> None:
+    """물품정보 줄을 더블클릭해 물품내역팝업을 열고 사진을 받은 뒤 그 창을 닫는다. optional(용역 · 공사)이면 사진이 없어도 실패가 아니다."""
     popup = None
     try:
         with context.expect_page(timeout=POPUP_TIMEOUT_MS) as opened:
@@ -996,16 +1037,14 @@ def item_photos(context, page, frame, item: dict, folder: Path, result: CaseResu
         info = _wait_for(lambda: _eval(popup.main_frame, POPUP_JS), wait, 16)
     except Exception as error:  # noqa: BLE001
         why = str(error).splitlines()[0][:100] if str(error) else type(error).__name__
-        result.failed.append(f"물품 '{item.get('name', '')}' 사진: 팝업이 뜨지 않음({why})")
-        result.ok = False
+        _photo_problem(result, f"물품 '{item.get('name', '')}' 사진: 팝업이 뜨지 않음({why})", optional, log)
         info = None
     if info:
         name = info.get("item") or item.get("name") or "물품"
         for index, src in _photo_urls(info):
             body, ctype, why = fetch_in(popup.main_frame, page, urljoin(str(popup.url or ""), src))
             if body is None:
-                result.failed.append(f"물품사진 {name} {index}: {why}")
-                result.ok = False
+                _photo_problem(result, f"물품사진 {name} {index}: {why}", optional, log)
                 continue
             dest = folder / INSPECT_DIR / photo_name(name, index, ctype, body)
             if dest.exists():
@@ -1017,8 +1056,7 @@ def item_photos(context, page, frame, item: dict, folder: Path, result: CaseResu
             result.photos += 1
             log(f"      ✓ {INSPECT_DIR}/{dest.name} ({len(body):,} B)")
     elif popup is not None:
-        result.failed.append(f"물품 '{item.get('name', '')}' 사진: 팝업에 사진 칸이 없음")
-        result.ok = False
+        _photo_problem(result, f"물품 '{item.get('name', '')}' 사진: 팝업에 사진 칸이 없음", optional, log)
     if popup is not None:
         try:
             popup.close()
@@ -1076,14 +1114,16 @@ def inspect_cases(context, page, cases: dict[str, CaseResult], folders: dict[str
             if not ok:
                 result.failed.append(f"검사처리 줄({row.get('cont_nm', '')[:20]}): {why}")
                 result.ok = False
+                log(f"      ✖ {result.failed[-1]}")
                 continue
             result.inspected = True
             files = _eval(frame, INSPECT_FILES_JS) or []
             items = _eval(frame, ITEMS_JS) or []
             log(f"      검사처리 '{row.get('cont_nm', '')[:30]}' — 첨부 {len(files)}개 · 물품 {len(items)}개")
             _save_files(page, _frame_url(frame), files, folder / INSPECT_DIR, result, log, prefix=INSPECT_DIR + "/", frame=frame)
+            optional = no_photo_contract(row)
             for item in items:
-                item_photos(context, page, frame, item, folder, result, log, wait)
+                item_photos(context, page, frame, item, folder, result, log, wait, optional=optional)
 
 
 def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], None], wait: Callable[[float], None],
@@ -1153,5 +1193,10 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
             remember_done(summary.cases)
         except Exception as error:  # noqa: BLE001
             log(f"⚠ 받은 기록을 남기지 못함: {error}")
+    for result in summary.failed:
+        # 기록의 '실패: 구매요구 …' 줄만으로는 까닭을 몰랐다(2026-10-22 19:19 · 19:31 실제 — 22건)
+        reasons = result.failed[:3] + ([result.note] if result.note else [])
+        more = f" 외 {len(result.failed) - 3}개" if len(result.failed) > 3 else ""
+        log(f"   ✖ 구매요구 {result.req_no} — {' / '.join(reasons) or '까닭 모름'}{more}")
     log("── 구매요청(계약) 서류 끝: 건 %d · 새 파일 %d개 · 못 받은 건 %d" % (len(summary.cases), summary.files, len(summary.failed)))
     return summary
