@@ -104,20 +104,28 @@ def test_parking_apply_presses_only_the_described_steps():
     """할인 적용(parking_screens.py) — 담당자가 알려 준 차례(2026-10-21: "차량번호를 입력하고 보유 할인권에서 공무확인증 클릭, 그리고 할인선택에서
     공무확인증 선택하고 종료 버튼 클릭하면 할인이 적용됩니다. 이런 과정이 어플내에서")만 누른다: 차량번호 칸에 넣고 Enter · [조회](Enter 로 안 될 때) ·
     그 차의 줄 · '공무확인증' 이 든 것 · 할인 선택 고르기 칸의 보기 · [종료]. 화면 스크립트는 표시를 붙이기만 하고 누르지 않는다(누르기는
-    표시를 붙인 것 하나를 Playwright 로). 할인 내역은 읽기만. 로그인 정보 · ERP 는 보지 않는다."""
+    표시를 붙인 것 하나를 Playwright 로). 할인 내역은 읽기만 — 모든 쪽을 읽으려고(담당자 2026-10-22 "전체 페이지 확인해주세요") 시작일 칸 ·
+    건수 고르기(100건) · [검색] · 다음 쪽 '›' 만 다룬다. 로그인 정보 · ERP 는 보지 않는다."""
     from claim_downloader import parking_screens
     text = (SRC / "parking_screens.py").read_text(encoding="utf-8")
-    assert re.findall(r"\.fill\(([A-Z_]+),", text) == ["CAR_SELECTOR"]
+    assert re.findall(r"\.fill\(([A-Z_]+),", text) == ["CAR_SELECTOR", "HISTORY_FROM"]
     assert re.findall(r"\.press\(([A-Z_]+), \"(\w+)\"\)", text) == [("CAR_SELECTOR", "Enter")]
-    assert re.findall(r"\.click\(([^)]*)\)", text) == ['f"[data-coss-apply={mark}]", timeout=5000']     # _click 하나뿐
+    assert re.findall(r"\.click\(([^)]*)\)", text) == ['f"[data-coss-apply={mark}]", timeout=5000',      # _click 하나
+                                                       'f"[data-coss-history={mark}]", timeout=5000']    # _press 하나
+    assert sorted(set(re.findall(r"_press\(frame, \"(\w+)\"\)", text))) == ["next", "search"]
+    assert re.findall(r"\.select_option\(([A-Z_]+),", text) == ["HISTORY_SIZE"]
     marks = re.findall(r"_click\(frame, f?\"([a-z]+)-", text)
     assert sorted(set(marks)) == ["car", "finish", "search", "ticket"]
     assert re.findall(r"\.select_option\(f\"\[data-coss-apply=(\w+)-", text) == ["select"]
     for name in (".type(", "keyboard.", "set_checked(", "set_input_files(", "dispatchEvent", "submit(", ".value =", "load_login",
                  "ERP_URL", "knu-icf"):
         assert name not in text, name
-    for js in (parking_screens.MARK_CAR_JS, parking_screens.TABLE_JS, parking_screens.SCAN_APPLY_JS, parking_screens.FEEDBACK_JS):
+    for js in (parking_screens.MARK_CAR_JS, parking_screens.TABLE_JS, parking_screens.SCAN_APPLY_JS, parking_screens.FEEDBACK_JS,
+               parking_screens.HISTORY_CONTROLS_JS, parking_screens.HISTORY_NEXT_JS):
         assert "click(" not in js and ".value =" not in js
+    # 할인 내역에서 누를 후보는 [검색](글자 12자 이하) 하나와 '›' 하나 — 엑셀 · 차량번호 단추 · 줄은 아니다
+    assert "엑셀" not in parking_screens.HISTORY_CONTROLS_JS and "/검색|조회/" in parking_screens.HISTORY_CONTROLS_JS
+    assert "t === '›'" in parking_screens.HISTORY_NEXT_JS
     # 누를 후보는 이름으로만 — [종료] · [조회] 는 글자가 그것뿐인 단추, 할인권은 '공무확인증' 이 든 것
     assert "/^종료(하기)?$/" in parking_screens.SCAN_APPLY_JS and parking_screens.TICKET_WORD == "공무확인증"
     for word in ("삭제", "수정", "취소", "로그아웃", "비밀번호"):

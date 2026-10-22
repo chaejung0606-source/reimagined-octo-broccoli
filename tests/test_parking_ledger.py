@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 
 import pytest
@@ -124,3 +125,55 @@ def test_export_has_the_old_ledger_shape(isolated_home, tmp_path):
     assert [sheet[f"{c}5"].value for c in "ABCD"] == ["2026-10-01", 100, None, 100]
     assert [sheet[f"{c}6"].value for c in "ACDEFG"] == ["2026-10-02", 1, 99, "자문위원 방문", "가나다", "12가3456"]
     assert [sheet[f"{c}7"].value for c in "ABCD"] == ["합계", 100, 1, 99]
+
+
+SITE_HEAD = ["할인일시arrow_downward", "차량번호", "입차시각", "할인명", "적용방식", "할인시간", "할인금액", "적용금액", "절사금액", "결제금액"]
+
+
+def _site(when, car, applied, method="수동"):
+    return [when, car, when, "공무확인증4시간", method, "240분", "", applied, "0", "0"]
+
+
+def test_applied_amount_goes_into_the_note_and_matched_rows_get_it_too(isolated_home):
+    """담당자 2026-10-22 "적용금액이 있는 건만 공무확인증이 차감되는건지도 확인" — 줄마다 적용금액을 비고에 남긴다."""
+    old = ledger.Entry(date="2026-10-20", given=1, car="12가3456", source="apply")
+    rows = [_site("2026-10-20 17:37:04", "12가3456", "6,700"), _site("2026-10-21 09:00:00", "34나5678", "0", "QR")]
+    match = ledger.match_site([old], SITE_HEAD, rows)
+    assert match.applied_col == 7 and match.pairs == [(0, old)] and match.missing == [1]
+    assert ledger.note_applied(rows, match) == 1 and old.note == "적용금액 6,700"
+    assert ledger.note_applied(rows, match) == 0                                  # 두 번 붙이지 않는다
+    (free,) = ledger.from_site(SITE_HEAD, rows, match.missing, match)
+    assert free.given == 1 and free.note == "공무확인증4시간 · 09:00 할인 · QR · 적용금액 0" and ledger.is_free(free.note)
+    (not_drawn,) = ledger.from_site(SITE_HEAD, rows, match.missing, match, free_drawn=False)
+    assert not_drawn.given == 0 and not_drawn.note.endswith("적용금액 0 · 차감 안 됨")
+    again = ledger.match_site([old, not_drawn], SITE_HEAD, rows)                  # 배부 0 으로 둔 줄도 그 사이트 줄의 짝
+    assert again.missing == [] and len(again.pairs) == 2
+
+
+def test_free_rule_switches_given_both_ways():
+    entries = [ledger.Entry(date="2026-10-21", given=1, car="34나5678", note="공무확인증4시간 · 적용금액 0", source="site"),
+               ledger.Entry(date="2026-10-21", given=1, car="56다7890", note="공무확인증4시간 · 적용금액 1,000", source="site")]
+    assert ledger.apply_free_rule(entries) == 1 and [e.given for e in entries] == [0, 1] and "차감 안 됨" in entries[0].note
+    assert ledger.restore_free(entries) == 1 and [e.given for e in entries] == [1, 1] and "차감 안 됨" not in entries[0].note
+
+
+def test_check_drain_tells_whether_free_uses_are_drawn():
+    """두 번 읽은 잔량 사이에 줄어든 수 = 모든 사용이면 'all', = 적용금액 있는 사용만이면 'paid'. 그 사이 적용금액 0 사용이 없으면 판정하지 않는다."""
+    rows = [_site("2026-10-22 10:20:00", "11가1111", "3,700"), _site("2026-10-22 10:15:00", "22나2222", "0"),
+            _site("2026-10-22 09:59:00", "33다3333", "0")]                       # 앞서 읽은 때(10:00) 전 — 세지 않는다
+    match = ledger.match_site([], SITE_HEAD, rows)
+    drain = ledger.check_drain(85, "2026-10-22 10:00:00", 83, rows, match)
+    assert (drain.used, drain.paid, drain.free, drain.verdict) == (2, 1, 1, "all") and "차감됩니다" in drain.text()
+    assert ledger.check_drain(85, "2026-10-22 10:00:00", 84, rows, match).verdict == "paid"
+    assert ledger.check_drain(85, "2026-10-22 10:00:00", 80, rows, match).verdict == ""     # 그 사이 구입 · 시각 차이 — 모름
+    only_paid = ledger.check_drain(85, "2026-10-22 10:16:00", 84, rows, match)
+    assert only_paid.verdict == "" and "맞습니다" in only_paid.text()
+    assert ledger.check_drain(-1, "", 84, rows, match) is None
+
+
+def test_history_since_and_stamps():
+    entries = [ledger.Entry(date="2025-11-03", given=1), ledger.Entry(date="2025-01-01", bought=9, source=ledger.CARRY)]
+    assert ledger.history_since(entries, dt.date(2026, 10, 22)) == "2025-11-03"
+    assert ledger.history_since([], dt.date(2026, 10, 22)) == "2026-01-01"
+    assert ledger.stamp_of("2026-10-20 17:37:04") == "2026-10-20 17:37:04" and ledger.stamp_of("2026.9.5 9:03") == "2026-09-05 09:03:00"
+    assert (ledger.amount_of("6,700"), ledger.amount_of("0"), ledger.amount_of(""), ledger.amount_of("-")) == (6700, 0, None, None)

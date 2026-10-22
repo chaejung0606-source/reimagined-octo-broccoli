@@ -40,6 +40,8 @@ class Frame:
             return self.scans.get(self.stage, self.scans.get("*", {}))
         if js == ps.FEEDBACK_JS:
             return self.feedback
+        if js in (ps.HISTORY_CONTROLS_JS, ps.HISTORY_NEXT_JS):
+            return {}                      # 거르기 칸 · 쪽 단추가 없는 화면
         raise AssertionError(js[:60])
 
     def fill(self, selector, value):
@@ -221,7 +223,7 @@ def test_history_reads_table_and_logs_only_headers():
     assert report.ok and report.rows == [["2026-10-21 10:00", CAR, "교환공무확인증4시간"]] and report.headers[1] == "차량번호"
     assert page.went == ["https://traffic.kangwon.ac.kr/discount-history"]
     assert CAR not in "\n".join(logs) and "차량번호" in logs[0] and "1줄" in logs[0]   # 차량번호 값은 기록에 남기지 않는다
-    assert any("처음 보여 주는 쪽" in line for line in report.lines()) and "총 12건" in report.lines()[0]
+    assert report.pages == 1 and "1쪽" in report.lines()[0] and not report.pager and "총 12건" in logs[0]
 
 
 def test_history_empty_and_missing():
@@ -247,3 +249,81 @@ def test_history_waits_while_loading():
     assert report.ok and report.rows == [["10:00", CAR]]
     report = ps.read_history(Page(Frame(table=loading)), [].append, wait=lambda s: None, base_url="", tries=4)
     assert not report.ok and "넘어가지 않았습니다" in report.note
+
+
+HEAD = ["할인일시arrow_downward", "차량번호", "할인명", "적용방식", "적용금액"]
+
+
+class HistoryFrame:
+    """할인 내역 화면(실측 2026-10-22 10:07) — 시작일 · 건수 고르기 · [검색] · 쪽 단추 '›'. 처음엔 사이트 기본 기간(첫 묶음)만 보인다."""
+
+    def __init__(self, pages, from_value="2026-09-22", size="20건", moves=True, searches=1):
+        self.pages, self.from_value, self.size, self.moves, self.searches = pages, from_value, size, moves, searches
+        self.widened = False
+        self.index = 0
+        self.filled, self.clicked, self.selected = [], [], []
+        self.page = None
+
+    def _shown(self):
+        return self.pages if self.widened else self.pages[:1]
+
+    def evaluate(self, js, *args):
+        if js == parking.LOGIN_FORM_JS:
+            return 0
+        if js == ps.TABLE_JS:
+            return {"tables": 1, "headers": HEAD, "rows": [list(r) for r in self._shown()[self.index]], "note": "",
+                    "pager": " ".join(str(n + 1) for n in range(len(self._shown()))), "total": ""}
+        if js == ps.HISTORY_CONTROLS_JS:
+            return {"from": self.from_value, "dates": 2, "size": self.size, "big": "100건", "searches": self.searches}
+        if js == ps.HISTORY_NEXT_JS:
+            last = len(self._shown())
+            return {"current": str(self.index + 1), "last": last, "next": self.index + 1 < last}
+        raise AssertionError(js[:60])
+
+    def select_option(self, selector, label=None, timeout=None):
+        assert selector == "[data-coss-history=size]"
+        self.selected.append(label)
+        self.size = label
+
+    def fill(self, selector, value, timeout=None):
+        assert selector == "[data-coss-history=from]"
+        self.filled.append(value)
+        self.from_value = value
+
+    def click(self, selector, timeout=None):
+        mark = selector.split("=", 1)[1].rstrip("]")
+        assert mark in ("search", "next"), mark            # 표의 줄 · 차량번호 · 엑셀은 누르지 않는다
+        self.clicked.append(mark)
+        if mark == "search":
+            self.widened, self.index = True, 0
+        elif self.moves:
+            self.index += 1
+
+
+def _rows(n, start=0):
+    return [[f"2026-10-{20 - i:02d} 10:00:00", f"{10 + i}가{1000 + i}", "공무확인증4시간", "수동", "1,000"] for i in range(start, start + n)]
+
+
+def test_history_reads_every_page_from_the_start_date():
+    """담당자 2026-10-22: "지금 1페이지만 확인했는데 전체 페이지 확인해주세요" — 시작일을 앞당기고 100건씩 '›' 로 끝 쪽까지."""
+    frame = HistoryFrame([_rows(3), _rows(3, 3), _rows(2, 6)])
+    page, logs = Page(frame), []
+    report = ps.read_history(page, logs.append, wait=lambda s: None, base_url="https://traffic.kangwon.ac.kr", tries=6, since="2026-01-01")
+    assert report.ok and len(report.rows) == 8 and report.pages == 3 and not report.pager and report.since == "2026-01-01"
+    assert frame.selected == ["100건"] and frame.filled == ["2026-01-01"] and frame.clicked == ["search", "next", "next"]
+    assert "3쪽" in logs[-1] and "2026-01-01부터" in logs[-1] and "10가1000" not in "\n".join(logs)
+    assert report.read_stamp[:2] == "20" and len(report.read_stamp) == 19
+
+
+def test_history_keeps_an_earlier_start_and_stops_when_paging_sticks():
+    frame = HistoryFrame([_rows(2), _rows(2, 2), _rows(1, 4)], from_value="2025-12-01", size="100건", moves=False)
+    frame.widened = True
+    report = ps.read_history(Page(frame), [].append, wait=lambda s: None, base_url="", tries=6, since="2026-01-01")
+    assert report.ok and frame.filled == [] and frame.selected == [] and report.since == "2025-12-01"
+    assert len(report.rows) == 2 and "1쪽에서 다음 쪽으로 넘어가지 않아" in report.pager
+
+
+def test_history_without_search_button_reads_default_range_and_says_so():
+    frame = HistoryFrame([_rows(2), _rows(2, 2)], searches=0)
+    report = ps.read_history(Page(frame), [].append, wait=lambda s: None, base_url="", tries=6, since="2026-01-01")
+    assert report.ok and len(report.rows) == 2 and "기본 기간만" in report.pager and frame.clicked == []

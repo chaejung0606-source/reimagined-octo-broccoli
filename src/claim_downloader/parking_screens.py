@@ -82,6 +82,54 @@ TABLE_JS = """() => {
 }""" % (_VIS, _CLEAN)
 
 
+# 할인 내역의 거르기 칸(실측 2026-10-22 10:07): 시작일 · 종료일(date) · 차량번호 · 할인유형 · 적용방식 · [검색] · 엑셀, 표 아래 건수 고르기(10 · 20 · 50 · 100건)와
+# 쪽 단추(« ‹ 1 2 3 4 › », class page-link). 표시만 붙이고 누르는 것은 Playwright(아래 read_history). 값을 넣는 칸은 시작일 하나, 고르기는 건수 하나.
+HISTORY_CONTROLS_JS = """() => {
+  %s %s
+  document.querySelectorAll('[data-coss-history]').forEach(e => e.removeAttribute('data-coss-history'));
+  const away = e => !!e.closest('nav, aside, .sidebar, .dropdown-menu');
+  const labelOf = e => {
+    let t = [e.getAttribute('aria-label'), e.getAttribute('title'), e.getAttribute('placeholder'), e.name, e.id].filter(Boolean).join(' ');
+    if (e.id) { const l = document.querySelector('label[for="' + e.id + '"]'); if (l) t = clean(l.innerText) + ' ' + t; }
+    return clean(t);
+  };
+  const dates = Array.from(document.querySelectorAll('input[type=date]')).filter(e => vis(e) && !away(e) && !e.disabled);
+  const from = dates.find(e => /시작|from|start/i.test(labelOf(e))) || (dates.length === 2 ? dates[0] : null);
+  if (from) from.setAttribute('data-coss-history', 'from');
+  const sizes = Array.from(document.querySelectorAll('select')).filter(e => vis(e) && !away(e)
+    && Array.from(e.options).some(o => /^100\\s*(건|개)?$/.test(clean(o.text))));
+  const size = sizes.length === 1 ? sizes[0] : null;
+  let big = '';
+  if (size) {
+    size.setAttribute('data-coss-history', 'size');
+    big = clean(Array.from(size.options).find(o => /^100\\s*(건|개)?$/.test(clean(o.text))).text);
+  }
+  const searches = Array.from(document.querySelectorAll('button, input[type=submit], input[type=button]'))
+    .filter(b => vis(b) && !away(b) && !b.disabled && /검색|조회/.test(clean(b.innerText || b.value)) && clean(b.innerText || b.value).length <= 12);
+  if (searches.length === 1) searches[0].setAttribute('data-coss-history', 'search');
+  return {from: from ? from.value : null, dates: dates.length, size: size ? clean(size.options[size.selectedIndex].text) : null,
+          big, searches: searches.length};
+}""" % (_VIS, _CLEAN)
+
+# 다음 쪽 단추 '›'(또는 '다음' · aria-label next) 하나 — 꺼져 있으면(disabled · li.disabled · aria-disabled) 없음으로. 지금 쪽 · 보이는 쪽 번호도.
+HISTORY_NEXT_JS = """() => {
+  %s %s
+  document.querySelectorAll('[data-coss-history=next]').forEach(e => e.removeAttribute('data-coss-history'));
+  const links = Array.from(document.querySelectorAll('.pagination a, .pagination button, a.page-link, button.page-link')).filter(vis);
+  const off = b => b.disabled || b.getAttribute('aria-disabled') === 'true' || !!(b.closest('li') && b.closest('li').classList.contains('disabled'));
+  const nexts = links.filter(b => { const t = clean(b.innerText), a = b.getAttribute('aria-label') || '';
+    return t === '›' || t === '>' || t === '다음' || /^next/i.test(a) || a === '다음'; });
+  const active = links.find(b => (b.closest('li') && b.closest('li').classList.contains('active')) || b.getAttribute('aria-current') === 'page');
+  const numbers = links.map(b => clean(b.innerText)).filter(t => /^\\d+$/.test(t)).map(Number);
+  const out = {current: active ? clean(active.innerText) : '', last: numbers.length ? Math.max(...numbers) : 0, next: false};
+  if (nexts.length === 1 && !off(nexts[0])) { nexts[0].setAttribute('data-coss-history', 'next'); out.next = true; }
+  return out;
+}""" % (_VIS, _CLEAN)
+HISTORY_MAX_PAGES = 60
+HISTORY_FROM = "[data-coss-history=from]"
+HISTORY_SIZE = "[data-coss-history=size]"
+
+
 def _evaluate(frame, js, arg=None):
     try:
         return frame.evaluate(js) if arg is None else frame.evaluate(js, arg)
@@ -441,57 +489,167 @@ class HistoryReport:
     headers: list[str] = field(default_factory=list)
     rows: list[list[str]] = field(default_factory=list)
     empty_note: str = ""          # 사이트가 띄운 '내역 없음' 글
-    pager: str = ""               # 쪽 넘기기 글자 — 있으면 첫 쪽만 읽은 것
+    pager: str = ""               # 다 읽지 못했을 때 그 까닭(쪽 넘기기가 안 됨 등) — 비었으면 모든 쪽을 읽은 것
     products: list[str] = field(default_factory=list)   # 같이 읽은 할인권 상품 보기(보유 잔량, parking_link.read_products)
     total: str = ""               # 화면의 '총 N건'
     read_at: str = ""
+    read_stamp: str = ""          # 읽은 때 'YYYY-MM-DD HH:MM:SS' — 다음에 읽을 때 잔량 변화와 그 사이 사용을 맞춰 본다
+    since: str = ""               # 시작일(거르기) — 비었으면 사이트 기본 기간
+    pages: int = 0                # 읽은 쪽 수
     steps: list[str] = field(default_factory=list)
 
     def lines(self) -> list[str]:
         if not self.ok:
             return ["✗ 할인 내역을 읽지 못했습니다" + (f" — {self.note}" if self.note else "")]
-        head = f"✓ 할인 내역 {len(self.rows)}줄을 읽었습니다" + (f" ({self.total})" if self.total else "")
+        head = f"✓ 할인 내역 {len(self.rows)}줄을 읽었습니다" + (f" ({self.pages}쪽" + (f" · {self.since}부터" if self.since else "") + ")"
+                                                               if self.pages else "")
         if self.empty_note:
             head = f"✓ 할인 내역 — 사이트: {self.empty_note}"
         out = [head]
         if self.pager:
-            out.append("  · 사이트가 처음 보여 주는 쪽만 읽었습니다 — 다른 쪽 · 다른 기간은 브라우저에서")
+            out.append("  · " + self.pager)
         return out
 
 
+def _signature(table: dict) -> tuple:
+    rows = table.get("rows") or []
+    return (len(rows), tuple(rows[0]) if rows else (), tuple(rows[-1]) if rows else (), table.get("pager") or "", table.get("note") or "")
+
+
+def _settle(frame, wait: Callable[[float], None], tries: int, before: tuple | None = None) -> dict:
+    """표를 다시 읽어 줄 수가 두 번 연달아 같을 때(목록을 받아 오는 중이 아닐 때)까지. before 가 있으면 그 모양에서 바뀐 뒤를 기다리되,
+    끝내 안 바뀌면(거르기를 바꿔도 같은 목록) 그대로 돌려준다. 표가 없으면 {}."""
+    table: dict = {}
+    last = None
+    changed = before is None
+    for i in range(tries):
+        if _logged_out(frame):
+            return {"logged_out": True}
+        table = _evaluate(frame, TABLE_JS) or {}
+        sig = _signature(table) if table.get("tables") else None
+        loading = bool(LOADING.search(str(table.get("note") or "")))
+        changed = changed or (sig is not None and sig != before) or i >= tries // 2
+        if sig is not None and not loading and changed and sig == last and (sig[0] or sig[4] or i >= 6):
+            break
+        last = sig
+        wait(0.5)
+    return table
+
+
+def _press(frame, mark: str) -> str:
+    try:
+        frame.click(f"[data-coss-history={mark}]", timeout=5000)
+        return ""
+    except Exception as error:  # noqa: BLE001 — 가려졌거나 사라짐
+        return str(error).splitlines()[0][:100] if str(error) else type(error).__name__
+
+
+def _widen(frame, wait: Callable[[float], None], since: str, table: dict, report: HistoryReport) -> dict:
+    """한 쪽에 100건 · 시작일을 since 로(사이트 기본은 한 달 전부터 20건씩) — 담당자 2026-10-22 "전체 페이지 확인해주세요".
+    값을 넣는 것은 시작일 하나, 누르는 것은 [검색] 하나. 칸을 못 알아보면 그대로 두고 기본 기간만 읽는다(까닭을 남긴다)."""
+    controls = _evaluate(frame, HISTORY_CONTROLS_JS) or {}
+    if controls.get("size") is not None and controls.get("big") and controls.get("size") != controls.get("big"):
+        try:
+            before = _signature(table)
+            frame.select_option(HISTORY_SIZE, label=controls["big"], timeout=5000)
+            report.steps.append(f"한 쪽에 {controls['big']}")
+            table = _settle(frame, wait, 16, before) or table
+        except Exception as error:  # noqa: BLE001
+            report.steps.append("건수를 바꾸지 못함: " + (str(error).splitlines()[0][:80] if str(error) else type(error).__name__))
+        controls = _evaluate(frame, HISTORY_CONTROLS_JS) or {}
+    current = controls.get("from")
+    if not since:
+        return table
+    if current is None:
+        report.pager = "시작일 칸을 알아보지 못해 사이트 기본 기간만 읽었습니다"
+        return table
+    if current and current <= since:
+        report.since = current
+        return table
+    if controls.get("searches") != 1:
+        report.pager = "[검색] 단추를 알아보지 못해 사이트 기본 기간만 읽었습니다"
+        return table
+    try:
+        frame.fill(HISTORY_FROM, since, timeout=5000)
+    except Exception as error:  # noqa: BLE001
+        report.pager = "시작일을 넣지 못해 사이트 기본 기간만 읽었습니다(" + (str(error).splitlines()[0][:60] if str(error) else "") + ")"
+        return table
+    before = _signature(table)
+    why = _press(frame, "search")
+    if why:
+        report.pager = "[검색] 을 누르지 못해 사이트 기본 기간만 읽었습니다(" + why + ")"
+        return table
+    report.since = since
+    report.steps.append(f"시작일 {since} · [검색]")
+    table = _settle(frame, wait, 20, before) or table
+    again = _evaluate(frame, HISTORY_CONTROLS_JS) or {}
+    if again.get("size") is not None and again.get("big") and again.get("size") != again.get("big"):   # [검색] 이 건수를 되돌렸으면
+        return _widen(frame, wait, "", table, report)
+    return table
+
+
 def read_history(page, log: Callable[[str], None], wait: Callable[[float], None], base_url: str = "",
-                 tries: int = 20) -> HistoryReport:
-    """할인 내역 화면을 열고 표를 읽는다(읽기만). 줄 수가 두 번 연달아 같으면(목록을 받아 오는 중이 아니면) 끝."""
+                 tries: int = 20, since: str = "") -> HistoryReport:
+    """할인 내역 화면을 열고 표를 **모든 쪽** 읽는다(담당자 2026-10-22 "지금 1페이지만 확인했는데 전체 페이지 확인해주세요").
+    시작일을 since 로 바꾸고 한 쪽에 100건으로 한 뒤 '›' 로 끝 쪽까지 — 표의 줄 · 차량번호 단추 · 엑셀은 누르지 않는다(읽기만)."""
     report = HistoryReport()
     frame = page.main_frame
     _goto(page, base_url, HISTORY_PATH, report)
-    table: dict = {}
-    last = None
-    for i in range(tries):
-        if _logged_out(frame):
-            report.note = NOT_LOGGED_IN
-            return report
-        table = _evaluate(frame, TABLE_JS) or {}
-        count = (len(table.get("rows") or []), table.get("note") or "")
-        loading = bool(LOADING.search(count[1]))
-        if table.get("tables") and not loading and (count == last and (count[0] or count[1] or i >= 6)):
-            break
-        last = count if table.get("tables") else None
-        wait(0.5)
+    table = _settle(frame, wait, tries)
+    if table.get("logged_out"):
+        report.note = NOT_LOGGED_IN
+        return report
     if not table.get("tables"):
         report.note = "화면에 표가 없습니다 — 사이트 모양이 다르면 '화면 구조 저장' 업무로 그 화면을 저장해 보내 주세요"
         return report
-    report.ok = True
-    report.headers = [str(h) for h in table.get("headers") or []]
-    report.rows = [[str(c) for c in r] for r in table.get("rows") or []]
+    table = _widen(frame, wait, since, table, report)
+    if table.get("logged_out"):
+        report.note = NOT_LOGGED_IN
+        return report
     report.empty_note = str(table.get("note") or "")
     if LOADING.search(report.empty_note):
-        report.ok, report.note = False, f"표가 '{report.empty_note}' 에서 넘어가지 않았습니다 — 잠시 뒤 다시 [불러오기]"
+        report.note = f"표가 '{report.empty_note}' 에서 넘어가지 않았습니다 — 잠시 뒤 다시"
         return report
-    report.pager = str(table.get("pager") or "")
+    report.headers = [str(h) for h in table.get("headers") or []]
+    seen: set[tuple] = set()
+
+    def take(t: dict) -> None:
+        for r in t.get("rows") or []:
+            row = [str(c) for c in r]
+            if tuple(row) not in seen:          # 읽는 사이 새 줄이 생겨 앞 쪽 줄이 밀려 오면 한 번만
+                seen.add(tuple(row))
+                report.rows.append(row)
+
+    take(table)
+    report.pages = 1
+    while report.pages < HISTORY_MAX_PAGES:
+        pager = _evaluate(frame, HISTORY_NEXT_JS) or {}
+        if not pager.get("next"):
+            break
+        before = _signature(table)
+        why = _press(frame, "next")
+        if why:
+            report.pager = f"{report.pages}쪽 다음으로 넘기지 못해 거기까지만 읽었습니다({why})"
+            break
+        table = _settle(frame, wait, 16, before)
+        if table.get("logged_out") or not table.get("tables"):
+            report.pager = f"{report.pages}쪽 다음에서 표가 사라져 거기까지만 읽었습니다"
+            break
+        if _signature(table) == before:
+            last = pager.get("last") or 0
+            if not (last and str(last) == str(pager.get("current"))):
+                report.pager = f"{report.pages}쪽에서 다음 쪽으로 넘어가지 않아 거기까지만 읽었습니다"
+            break
+        take(table)
+        report.pages += 1
+    else:
+        report.pager = f"{HISTORY_MAX_PAGES}쪽까지만 읽었습니다"
+    report.ok = True
     report.total = str(table.get("total") or "")
-    report.read_at = dt.datetime.now().strftime("%H:%M")
+    now = dt.datetime.now()
+    report.read_at, report.read_stamp = now.strftime("%H:%M"), now.strftime("%Y-%m-%d %H:%M:%S")
     # 줄에는 차량번호가 있어 기록에는 머리글 · 줄 수만
-    log(f"주차 할인 내역 열: {' | '.join(report.headers) or '(머리글 없음)'} · {len(report.rows)}줄"
-        + (f" · {report.total}" if report.total else "") + (" · 쪽 넘기기 있음" if report.pager else ""))
+    log(f"주차 할인 내역 열: {' | '.join(report.headers) or '(머리글 없음)'} · {len(report.rows)}줄 · {report.pages}쪽"
+        + (f" · {report.since}부터" if report.since else "") + (f" · {report.total}" if report.total else "")
+        + (f" · {report.pager}" if report.pager else "") + (" · " + " · ".join(report.steps[1:]) if len(report.steps) > 1 else ""))
     return report
