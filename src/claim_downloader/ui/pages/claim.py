@@ -890,7 +890,7 @@ class ClaimPage(QWidget):
             self._append_log(f"'{os.path.basename(path)}' — 지급내역 엑셀이 있어 개인 지급(기타)으로 넣습니다(표 위에서 바꿀 수 있습니다)")
         self._dirs.append(path)
         self._status.append("waiting")
-        self._data.append(schema.normalize({}))
+        self._data.append(schema.normalize(kinds.fixed_values(kind)))      # 세금계산서 종류는 읽기 전에도 증빙구분이 보이게
         self._problems.append([])
         self._kinds.append(kind)
         self._jobs.append(None)
@@ -1543,7 +1543,7 @@ class ClaimPage(QWidget):
         else:
             # 일반으로 바꾸면 AI 로 다시 읽어야 한다
             self._jobs[row] = None
-            self._data[row] = schema.normalize({})
+            self._data[row] = schema.normalize(kinds.fixed_values(kind))
             self._problems[row] = []
             self._set_status(row, "waiting")
         self._refresh_row(row)
