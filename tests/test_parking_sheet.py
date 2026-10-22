@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import http.server
 import json
+import socket
 import threading
+import urllib.error
+import urllib.request
 import uuid
 
 import pytest
@@ -184,3 +187,119 @@ def test_script_has_the_actions_the_app_uses():
     assert "body.token !== TOKEN" in sheet.SCRIPT and "LockService" in sheet.SCRIPT
     head = sheet.SCRIPT.split("const LEDGER_HEAD = [")[1].split("]")[0]
     assert [h.strip(" '") for h in head.split(",")] == list(ledger.SHEET_HEAD)
+
+
+# ── 구글에 붙기 · 못 붙을 때의 진단 ─────────────────────────────────────────
+# 담당자 PC(2026-10-22): [저장하고 연결 확인] → '[WinError 10060] … 응답이 없어 연결하지 못했거나' (깃허브 · Claude · 브라우저는 됨).
+def _listener():
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(4)
+    return server, server.getsockname()[1]
+
+
+def _closed_port():
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    return port
+
+
+def _addrinfo(*entries):
+    return [(family, socket.SOCK_STREAM, 6, "", where) for family, where in entries]
+
+
+def test_connect_tries_ipv4_first_and_keeps_the_read_timeout(monkeypatch):
+    server, port = _listener()
+    made = []
+    real = socket.socket
+
+    class Recording(real):
+        def __init__(self, family=-1, *args, **kwargs):
+            made.append(family)
+            super().__init__(family, *args, **kwargs)
+
+    # 운영체제가 IPv6 를 먼저 준다 — 그 주소는 닿지 않는다고 본다
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _addrinfo(
+        (socket.AF_INET6, ("2404:6800::1", 443, 0, 0)), (socket.AF_INET, ("127.0.0.1", port))))
+    monkeypatch.setattr(socket, "socket", Recording)
+    monkeypatch.setattr(sheet, "CONNECT_TIMEOUT", 1)
+    try:
+        sock = sheet._connect(("script.google.com", 443), timeout=40)
+        assert made == [socket.AF_INET] and sock.getpeername()[0] == "127.0.0.1"
+        assert sock.gettimeout() == 40                                    # 붙은 뒤에는 읽기 시간 그대로
+        sock.close()
+    finally:
+        server.close()
+
+
+def test_connect_failure_names_every_address(monkeypatch):
+    closed = _closed_port()
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: _addrinfo(
+        (socket.AF_INET6, ("::1", closed, 0, 0)), (socket.AF_INET, ("127.0.0.1", closed))))
+    with pytest.raises(OSError) as caught:
+        sheet._connect(("script.google.com", 443), timeout=5)
+    text = str(caught.value)
+    assert text.startswith("script.google.com 에 붙지 못함 — IPv4 127.0.0.1 거절됨 · IPv6 ::1 ")   # IPv6 를 못 쓰는 곳이어도 그 까닭으로
+
+
+def test_https_requests_use_the_ipv4_first_connection():
+    assert sheet._Https("script.google.com")._create_connection is sheet._connect
+    opener = urllib.request.build_opener(sheet._HttpsHandler())
+    assert any(isinstance(h, sheet._HttpsHandler) for h in opener.handlers)
+    assert not any(type(h) is urllib.request.HTTPSHandler for h in opener.handlers)
+
+
+def test_check_writes_why_google_could_not_be_reached(isolated_home, monkeypatch):
+    def unreachable(request, timeout=0):
+        raise urllib.error.URLError(OSError("script.google.com 에 붙지 못함 — IPv4 142.250.0.1 응답 없음"))
+
+    monkeypatch.setattr(sheet, "network_report", lambda url, wait=0: ["깃허브(앱 업데이트)에는 붙는데 구글에는 못 붙습니다", "github.com: IPv4 붙음"])
+    result = sheet.check(sheet.Config(url="https://script.google.com/macros/s/x/exec", token="tok"), opener=unreachable)
+    assert not result.ok and "IPv4 142.250.0.1 응답 없음" in result.note
+    assert "진단 — 깃허브(앱 업데이트)에는 붙는데" in result.note
+    from claim_downloader import settings
+    logged = settings.log_path().read_text(encoding="utf-8")
+    assert "구글 시트 연결 확인 실패" in logged and "진단: github.com: IPv4 붙음" in logged
+    # 시트가 거절한 것(닿기는 함)에는 진단을 붙이지 않는다
+    refused = FakeWebApp()
+    try:
+        assert "진단" not in sheet.check(refused.config(token="다른것")).note
+    finally:
+        refused.close()
+
+
+def test_network_report_says_what_to_do(monkeypatch):
+    server, port = _listener()
+    closed = _closed_port()
+    table = {}
+    monkeypatch.setattr(socket, "getaddrinfo", lambda name, *a, **k: table[name]())
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {})
+    monkeypatch.setattr(sheet, "_windows_proxy", lambda: ("", False))
+    good = lambda: _addrinfo((socket.AF_INET, ("127.0.0.1", port)))       # noqa: E731
+    bad = lambda: _addrinfo((socket.AF_INET, ("127.0.0.1", closed)))      # noqa: E731
+
+    def nothing():
+        raise socket.gaierror(11001, "getaddrinfo failed")
+
+    try:
+        table.update({"script.google.com": good, "script.googleusercontent.com": good, "github.com": good})
+        lines = sheet.network_report("https://script.google.com/macros/s/x/exec", wait=1)
+        assert lines[0].startswith("지금은 구글에 붙습니다") and lines[1].startswith("script.google.com: IPv4 127.0.0.1 붙음(")
+        table.update({"script.google.com": bad})
+        lines = sheet.network_report("https://script.google.com/macros/s/x/exec", wait=1)
+        assert lines[0].startswith("깃허브(앱 업데이트)에는 붙는데 구글에는 못 붙습니다") and "거절됨" in lines[1]
+        assert lines[4] == "앱(파이썬)이 쓰는 프록시: 없음"
+        # 브라우저만 자동 구성 스크립트(프록시)로 나가는 PC
+        monkeypatch.setattr(sheet, "_windows_proxy", lambda: ("프록시 서버 끔 · 자동 구성 스크립트 http://pac.example/proxy.pac", True))
+        lines = sheet.network_report("", wait=1)
+        assert "자동 구성 스크립트" in lines[0] and lines[-1].startswith("윈도우 인터넷 설정: 프록시 서버 끔")
+        table.update({"github.com": nothing})
+        monkeypatch.setattr(sheet, "_windows_proxy", lambda: ("", False))
+        monkeypatch.setattr(urllib.request, "getproxies", lambda: {"https": "http://kim:비밀@proxy.example:8080"})
+        lines = sheet.network_report("", wait=1)
+        assert lines[0].startswith("구글 · 깃허브 모두 붙지 못합니다") and lines[3].startswith("github.com: 주소를 찾지 못함")
+        assert "비밀" not in lines[4] and "//***@proxy.example:8080" in lines[4]
+    finally:
+        server.close()

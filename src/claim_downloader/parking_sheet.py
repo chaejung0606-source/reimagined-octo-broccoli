@@ -14,17 +14,24 @@
 """
 from __future__ import annotations
 
+import http.client
 import json
+import re
 import secrets
+import socket
+import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 
 from . import parking_ledger as ledger
 from . import settings
+from .minutes.logbook import log
 
 TIMEOUT = 40          # 구글 웹 앱은 처음 부를 때 몇 초 걸린다
+CONNECT_TIMEOUT = 12  # 주소 하나에 붙어 보는 시간 — 구글은 보통 1초 안에 붙는다. 넘으면 다음 주소로(_connect)
 
 # 담당자가 시트의 확장 프로그램 → Apps Script 에 붙여 넣는 글. __TOKEN__ 은 앱이 바꿔 넣는다(script_text).
 SCRIPT = r"""// COSS 업무데스크 — 공무확인증 관리대장 연동 스크립트 (앱이 만든 글입니다. 고치지 마세요)
@@ -257,6 +264,68 @@ class SheetError(RuntimeError):
     pass
 
 
+class NetworkError(SheetError):
+    """구글에 닿지도 못함(시트가 거절한 것이 아니다) — [연결 확인] 은 이때 network_report 로 까닭을 적는다."""
+
+
+# 담당자 PC(2026-10-22): [저장하고 연결 확인] 이 '[WinError 10060] 연결된 구성원으로부터 응답이 없어 …' 로 끝났다. 같은 PC 에서 git(깃허브) ·
+# Claude Code(node) · 브라우저는 인터넷에 닿는다 — 그것들은 IPv6 · IPv4 주소를 함께 시도하는데, 파이썬 urllib 는 운영체제가 준 차례(대개 IPv6 먼저)대로
+# 하나씩 붙어 보며 주소마다 운영체제가 포기할 때(약 21초)까지 기다린다. 깃허브는 IPv6 주소가 없고 구글은 있다. 그래서 IPv4 를 먼저, 주소마다
+# CONNECT_TIMEOUT 만 기다린다(까닭은 추정 — 그래도 안 되면 network_report 가 무엇이 막혔는지 적는다).
+def _short(error: BaseException) -> str:
+    code = getattr(error, "winerror", None) or getattr(error, "errno", None)
+    if isinstance(error, (TimeoutError, socket.timeout)) or code in (10060, 110):
+        return "응답 없음"
+    if isinstance(error, ConnectionRefusedError) or code in (10061, 111):
+        return "거절됨"
+    if code in (10051, 10065, 101, 113):
+        return "갈 길 없음"
+    return (str(error).splitlines() or [type(error).__name__])[0][:60]
+
+
+def _connect(address, timeout=None, source_address=None, *rest, **extra) -> socket.socket:
+    """socket.create_connection 대신 — IPv4 주소 먼저, 주소마다 짧게. 다 실패하면 주소마다의 까닭을 한 글로."""
+    host, port = address[0], address[1]
+    wait_total = timeout if isinstance(timeout, (int, float)) else socket.getdefaulttimeout()
+    wait = min(wait_total, CONNECT_TIMEOUT) if wait_total else CONNECT_TIMEOUT
+    infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    infos.sort(key=lambda info: info[0] != socket.AF_INET)       # 같은 꼴 안에서는 운영체제 차례 그대로
+    errors = []
+    for family, kind, proto, _name, where in infos:
+        sock = None
+        try:
+            sock = socket.socket(family, kind, proto)              # IPv6 를 못 쓰는 PC 면 여기서부터 실패 — 다음 주소로
+            sock.settimeout(wait)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(where)
+        except OSError as error:
+            if sock is not None:
+                sock.close()
+            errors.append(f"{'IPv6' if family == socket.AF_INET6 else 'IPv4'} {where[0]} {_short(error)}")
+            continue
+        sock.settimeout(wait_total)
+        return sock
+    raise OSError(f"{host} 에 붙지 못함 — " + " · ".join(errors) if errors else f"{host} 의 주소가 없음")
+
+
+class _Https(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _connect          # HTTPConnection.connect 가 부르는 자리(프록시를 거칠 때도 같다)
+
+
+class _HttpsHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        extra = {"check_hostname": self._check_hostname} if hasattr(self, "_check_hostname") else {}   # 3.11 까지의 꼴
+        return self.do_open(_Https, req, context=self._context, **extra)
+
+
+def _urlopen(request, timeout=TIMEOUT):
+    """urllib.request.urlopen 과 같되 붙는 차례만 다르다(프록시 설정 · 302 따라가기는 그대로)."""
+    return urllib.request.build_opener(_HttpsHandler()).open(request, timeout=timeout)
+
+
 def call(config: Config, action: str, opener=None, **payload) -> dict:
     """웹 앱에 POST — 구글은 302 로 결과 주소를 돌려주고 urllib 가 GET 으로 따라간다."""
     if not config.connected:
@@ -265,12 +334,12 @@ def call(config: Config, action: str, opener=None, **payload) -> dict:
     request = urllib.request.Request(config.url.strip(), data=body, method="POST",
                                      headers={"Content-Type": "text/plain;charset=utf-8"})
     try:
-        with (opener or urllib.request.urlopen)(request, timeout=TIMEOUT) as response:
+        with (opener or _urlopen)(request, timeout=TIMEOUT) as response:
             text = response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as error:
         raise SheetError(f"구글 시트에 닿았지만 거절됐습니다(HTTP {error.code}) — 배포 주소가 맞는지 보세요") from error
     except (urllib.error.URLError, OSError) as error:
-        raise SheetError("구글 시트에 닿지 못했습니다 — 인터넷 연결을 보세요 (" + str(getattr(error, "reason", error))[:80] + ")") from error
+        raise NetworkError("구글 시트에 닿지 못했습니다 — 인터넷 연결을 보세요 (" + str(getattr(error, "reason", error))[:240] + ")") from error
     try:
         data = json.loads(text)
     except ValueError as error:
@@ -300,11 +369,96 @@ class Result:
     when: str = field(default_factory=lambda: time.strftime("%H:%M"))
 
 
+REPORT_WAIT = 4.0     # 진단에서 주소 하나에 붙어 보는 시간
+
+
+def _hide_login(text: str) -> str:
+    """프록시 주소에 아이디 · 비밀번호가 섞여 있으면 가린다."""
+    return re.sub(r"//[^/@\s]+@", "//***@", str(text))[:120]
+
+
+def _windows_proxy() -> tuple[str, bool]:
+    """윈도우 인터넷 옵션의 프록시 — 브라우저는 이것을 다 쓰지만 파이썬은 '프록시 서버' 만 읽고 '자동 구성 스크립트' 는 못 쓴다. (글, 자동 구성 스크립트가 있는지)."""
+    if sys.platform != "win32":
+        return "", False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings") as key:
+            def value(name):
+                try:
+                    return winreg.QueryValueEx(key, name)[0]
+                except OSError:
+                    return None
+            enable, server, pac = value("ProxyEnable"), value("ProxyServer"), value("AutoConfigURL")
+    except Exception as error:  # noqa: BLE001 — 진단이 진단 때문에 멈추면 안 된다
+        return f"읽지 못함 ({_short(error)})", False
+    text = "프록시 서버 " + (f"켬 {_hide_login(server)}" if enable and server else "끔")
+    text += " · 자동 구성 스크립트 " + (_hide_login(pac) if pac else "없음")
+    return text, bool(pac)
+
+
+def _probe(name: str, wait: float) -> tuple[str, bool]:
+    """그 이름의 주소마다 443 에 붙어 보기만 한다(보내는 것 없음)."""
+    try:
+        infos = socket.getaddrinfo(name, 443, 0, socket.SOCK_STREAM)
+    except OSError as error:
+        return f"{name}: 주소를 찾지 못함 ({_short(error)})", False
+    parts, ok, seen = [], False, set()
+    for family, kind, proto, _name, where in infos:
+        if where[0] in seen or len(seen) >= 4:
+            continue
+        seen.add(where[0])
+        label = "IPv6" if family == socket.AF_INET6 else "IPv4"
+        sock = None
+        start = time.monotonic()
+        try:
+            sock = socket.socket(family, kind, proto)
+            sock.settimeout(wait)
+            sock.connect(where)
+            parts.append(f"{label} {where[0]} 붙음({time.monotonic() - start:.1f}초)")
+            ok = True
+        except OSError as error:
+            parts.append(f"{label} {where[0]} {_short(error)}")
+        finally:
+            if sock is not None:
+                sock.close()
+    return f"{name}: " + (" · ".join(parts) or "주소 없음"), ok
+
+
+def network_report(url: str = "", wait: float = REPORT_WAIT) -> list[str]:
+    """구글에 닿지 못했을 때 무엇이 막혔는지 — 첫 줄은 할 일, 다음은 주소마다 붙어 본 결과 · 프록시 설정. 주소 · 설정만 적는다(개인정보 없음).
+    깃허브는 견줌용이다 — 앱 업데이트(git)가 되는 PC 면 그곳에는 닿는다."""
+    host = urllib.parse.urlsplit(url or "").hostname or "script.google.com"
+    google, google_ok = _probe(host, wait)
+    content, content_ok = _probe("script.googleusercontent.com", wait)
+    github, github_ok = _probe("github.com", wait)
+    proxies = {key: _hide_login(value) for key, value in urllib.request.getproxies().items()}
+    windows, pac = _windows_proxy()
+    if google_ok and content_ok:
+        hint = "지금은 구글에 붙습니다 — [저장하고 연결 확인] 을 다시 눌러 보세요(잠깐 끊겼던 것으로 보입니다)."
+    elif pac and not proxies:
+        hint = "이 PC 의 브라우저는 '자동 구성 스크립트'(프록시)로 인터넷에 나가는데 앱은 그것을 쓰지 못합니다 — 이 화면을 Claude 에게 보내 주세요."
+    elif github_ok:
+        hint = "깃허브(앱 업데이트)에는 붙는데 구글에는 못 붙습니다 — 학교망이나 이 PC 의 보안 프로그램이 앱의 구글 연결을 막는 것으로 보입니다. 이 화면을 Claude 에게 보내 주세요."
+    else:
+        hint = "구글 · 깃허브 모두 붙지 못합니다 — 이 PC 의 인터넷 연결을 보세요."
+    lines = [hint, google, content, github, "앱(파이썬)이 쓰는 프록시: " + (", ".join(f"{k}={v}" for k, v in sorted(proxies.items())) or "없음")]
+    if windows:
+        lines.append("윈도우 인터넷 설정: " + windows)
+    return lines
+
+
 def check(config: Config | None = None, opener=None) -> Result:
-    """[연결 확인] — 토큰까지 맞는지(ping)."""
+    """[연결 확인] — 토큰까지 맞는지(ping). 구글에 닿지도 못했으면 까닭을 살펴 기록 · 화면에 적는다(network_report)."""
     config = config or load_config()
     try:
         data = call(config, "ping", opener=opener)
+    except NetworkError as error:
+        lines = network_report(config.url)
+        log(f"구글 시트 연결 확인 실패 — {error}")
+        for line in lines:
+            log("   진단: " + line)
+        return Result(note=f"{error}\n\n진단 — " + "\n".join(lines))
     except SheetError as error:
         return Result(note=str(error))
     _remember(config, data)
