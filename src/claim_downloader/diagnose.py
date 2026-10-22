@@ -182,8 +182,9 @@ _GRID_JS = r"""() => {
   });
   out.forEach(g => delete g.root);
   // IBSheet 의 스크립트(읽기 함수만) — DOM 의 tr 로는 머리글 줄과 자료 줄의 칸 수가 달라(고정 열 · 가로 스크롤 table 로 나뉜다) 열을 자리로 못 맞췄다
-  // (2026-10-22 13:46 구매진행관리 실측: 머리글 27칸 · 자료 줄 20칸). IBSheet 가 화면에 둔 객체(IBSheet[0] …)의 Get… 함수로 줄 수 · 열 이름(SaveName) ·
-  // 머리글 · 앞 세 줄을 읽는다. 판마다 함수 이름이 달라 있는 것만 부르고, 있는 함수 이름도 적어 다음 판에서 읽는 법을 정한다. Set… · Select… 는 부르지 않는다.
+  // (2026-10-22 13:46 구매진행관리 실측: 머리글 27칸 · 자료 줄 20칸). 14:19 실측에서 IBSheet 가 **8 판**으로 드러났다(GetRows · GetValue · GetFixedRows · GetCaption …,
+  // GetTotalRows · LastCol 같은 5~7 판 함수는 없고 version 은 함수) — 8 판은 줄이 객체(Kind 'Data' · 'Header')이고 열은 Cols(이름 → 열) 이다. 두 판의 함수를 다 부른다(있는 것만).
+  // 열 이름(Name) · 머리글 · 앞 세 줄 · 있는 Get… 함수 이름을 적는다. Set… · Select… · Focus 는 부르지 않는다.
   try {
     const sheets = window.IBSheet;
     const list = !sheets ? [] : (Array.isArray(sheets) || typeof sheets.length === 'number') ? Array.from(sheets) : Object.values(sheets);
@@ -191,26 +192,45 @@ _GRID_JS = r"""() => {
       if (!s || typeof s !== 'object') return;
       const call = (name, ...args) => { try { return typeof s[name] === 'function' ? s[name](...args) : undefined; } catch (err) { return undefined; } };
       const num = v => (typeof v === 'number' && isFinite(v)) ? v : (typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : undefined);
+      const str = v => (typeof v === 'string' || typeof v === 'number') ? String(v) : '';
       const funcs = [];
       try {
-        for (const k in s) { if (typeof s[k] === 'function' && /^(Get|Last|Col|Row|Header|Save|Total|Data|Fix)/.test(k)) funcs.push(k); if (funcs.length >= 40) break; }
+        for (const k in s) { if (typeof s[k] === 'function' && /^(Get|Last|Col|Row|Header|Save|Total|Data|Fix|Cols)/.test(k)) funcs.push(k); if (funcs.length >= 80) break; }
       } catch (err) { /* 열거가 막힌 객체 */ }
-      const total = num(call('GetTotalRows')) ?? num(call('RowCount')) ?? num(call('GetDataRows')) ?? num(call('LastRow'));
-      const lastCol = num(call('LastCol')) ?? num(call('GetColCount')) ?? num(call('ColCount'));
-      const headerRows = num(call('HeaderRows')) ?? num(call('GetHeaderRows'));
-      const cols = [];
-      if (lastCol !== undefined) for (let c = 0; c <= lastCol && c < 60; c++) {
-        const save = call('ColSaveName', c) ?? call('GetColSaveName', c) ?? '';
-        const head = call('GetHeaderText', c) ?? (headerRows ? call('GetCellText', headerRows - 1, c) : undefined) ?? '';
-        cols.push({save: String(save || '').slice(0, 24), head: String(head || '').replace(/\s+/g, ' ').slice(0, 16)});
-      }
+      const version = str(s.version) || str(s.Version) || str(window.IBSheet && window.IBSheet.version) || '';
+      // 8 판: 자료 줄 객체 · Cols
+      let dataRows = call('GetDataRows');
+      if (!Array.isArray(dataRows)) { const rows = call('GetRows'); dataRows = Array.isArray(rows) ? rows.filter(r => r && (r.Kind === 'Data' || r.Kind === undefined)) : undefined; }
+      const colsObj = (s.Cols && typeof s.Cols === 'object') ? s.Cols : null;
+      let cols = [];
+      if (colsObj) cols = Object.keys(colsObj).slice(0, 60).map(name => {
+        const c = colsObj[name] || {};
+        const head = str(call('GetCaption', name)) || str(c.Header) || str(c.Caption) || '';
+        return {save: name.slice(0, 24), head: head.replace(/\s+/g, ' ').slice(0, 16), type: str(c.Type).slice(0, 10)};
+      });
+      let total = Array.isArray(dataRows) ? dataRows.length : (num(call('GetTotalRowCount')) ?? num(call('GetDataRowCount')));
+      let headerRows = Array.isArray(call('GetHeaderRows')) ? call('GetHeaderRows').length : undefined;
       const sample = [];
-      const firstRow = headerRows !== undefined ? headerRows : 1;
-      if (total && cols.length) for (let r = firstRow; r < firstRow + 3 && r <= (num(call('LastRow')) ?? firstRow + total - 1); r++) {
-        sample.push(cols.map((c, idx) => mask(String(call('GetCellText', r, idx) ?? call('GetCellValue', r, idx) ?? ''))));
+      if (cols.length && Array.isArray(dataRows)) dataRows.slice(0, 3).forEach(row => {
+        sample.push(cols.map(c => mask(str(call('GetText', row, c.save)) || str(call('GetString', row, c.save)) || str(call('GetValue', row, c.save)))));
+      });
+      // 5~7 판: 줄 번호 · ColSaveName
+      if (!cols.length) {
+        total = total ?? num(call('GetTotalRows')) ?? num(call('RowCount')) ?? num(call('LastRow'));
+        const lastCol = num(call('LastCol')) ?? num(call('GetColCount')) ?? num(call('ColCount'));
+        headerRows = headerRows ?? num(call('HeaderRows'));
+        if (lastCol !== undefined) for (let c = 0; c <= lastCol && c < 60; c++) {
+          const save = call('ColSaveName', c) ?? call('GetColSaveName', c) ?? '';
+          const head = call('GetHeaderText', c) ?? (headerRows ? call('GetCellText', headerRows - 1, c) : undefined) ?? '';
+          cols.push({save: String(save || '').slice(0, 24), head: String(head || '').replace(/\s+/g, ' ').slice(0, 16)});
+        }
+        const firstRow = headerRows !== undefined ? headerRows : 1;
+        if (total && cols.length) for (let r = firstRow; r < firstRow + 3 && r <= (num(call('LastRow')) ?? firstRow + total - 1); r++) {
+          sample.push(cols.map((c, idx) => mask(String(call('GetCellText', r, idx) ?? call('GetCellValue', r, idx) ?? ''))));
+        }
       }
-      out.push({kind: 'ibsheet-api', index: i, version: String(s.version || s.Version || s.ver || '').slice(0, 20),
-                total, lastCol, headerRows, funcs, cols, sample});
+      out.push({kind: 'ibsheet-api', index: i, id: str(s.id || s.Id || s.Name).slice(0, 30), version: version.slice(0, 20),
+                total, headerRows, funcs, cols, sample});
     });
   } catch (err) { /* IBSheet 없음 */ }
   return out.slice(0, 16);
@@ -330,15 +350,17 @@ def _grid_lines(grids: list[dict]) -> list[str]:
         elif g.get("kind") == "ibsheet-api":
             # IBSheet 스크립트로 읽은 것 — 열은 SaveName(머리글), 줄은 칸 차례 그대로(빈 칸은 '-')
             head = f"IBSheet 스크립트 [{g.get('index', 0)}]"
+            head += f" id {g['id']}" if g.get("id") else ""
             head += f" 판 {g['version']}" if g.get("version") else ""
             head += f" · 줄 {g['total']}" if g.get("total") is not None else " · 줄 수 모름"
-            head += f" · 열 {g['lastCol'] + 1}" if g.get("lastCol") is not None else " · 열 수 모름"
+            head += f" · 열 {len(g['cols'])}" if g.get("cols") else " · 열 수 모름"
             head += f" · 머리글 줄 {g['headerRows']}" if g.get("headerRows") is not None else ""
             out.append(head)
             if g.get("funcs"):
-                out.append("  함수: " + " ".join(g["funcs"][:40]))
+                out.append("  함수: " + " ".join(g["funcs"][:80]))
             if g.get("cols"):
-                out.append("  열: " + " | ".join((c.get("save") or "?") + (f"({c['head']})" if c.get("head") else "") for c in g["cols"]))
+                out.append("  열: " + " | ".join((c.get("save") or "?") + (f"({c['head']})" if c.get("head") else "")
+                                                 + (f"<{c['type']}>" if c.get("type") else "") for c in g["cols"]))
             for i, cells in enumerate(g.get("sample", [])[:3], 1):
                 out.append(f"  줄 {i}: " + " | ".join(v or "-" for v in cells))
         else:

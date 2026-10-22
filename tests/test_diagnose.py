@@ -125,14 +125,14 @@ def test_ibsheet_rows_are_read_in_a_real_browser():
 def test_ibsheet_api_and_images_are_written():
     """IBSheet 스크립트로 읽은 열 · 줄과 그림(물품 사진) 주소가 보고서에 적힌다 — 2026-10-22 13:46 · 13:49 실측에서 DOM 만으로는
     머리글 27칸 · 자료 줄 20칸이라 열을 못 맞췄고, 물품 사진은 숨은 번호 칸만 잡혔다."""
-    grids = [{"kind": "ibsheet-api", "index": 0, "version": "7.0", "total": 58, "lastCol": 2, "headerRows": 1,
-              "funcs": ["GetTotalRows", "LastCol"], "cols": [{"save": "sChk", "head": ""}, {"save": "PURCH_REQ_NO", "head": "구매요청번호"},
+    grids = [{"kind": "ibsheet-api", "index": 0, "id": "sheet1", "version": "8.0", "total": 58, "headerRows": 1,
+              "funcs": ["GetDataRows", "GetValue"], "cols": [{"save": "sChk", "head": ""}, {"save": "PURCH_REQ_NO", "head": "구매요청번호", "type": "Text"},
                                                             {"save": "PURCH_CONT", "head": "내용"}],
               "sample": [["", "20…", "노트북 구입"]]}]
     lines = diagnose._grid_lines(grids)
-    assert lines[0] == "IBSheet 스크립트 [0] 판 7.0 · 줄 58 · 열 3 · 머리글 줄 1"
-    assert lines[1] == "  함수: GetTotalRows LastCol"
-    assert lines[2] == "  열: sChk | PURCH_REQ_NO(구매요청번호) | PURCH_CONT(내용)"
+    assert lines[0] == "IBSheet 스크립트 [0] id sheet1 판 8.0 · 줄 58 · 열 3 · 머리글 줄 1"
+    assert lines[1] == "  함수: GetDataRows GetValue"
+    assert lines[2] == "  열: sChk | PURCH_REQ_NO(구매요청번호)<Text> | PURCH_CONT(내용)"
     assert lines[3] == "  줄 1: - | 20… | 노트북 구입"
     images = [{"src": "/comm0008_01.act?ATTFILE_SEQ_NO=19…", "alt": "물품사진", "w": 120, "h": 90, "nw": 640, "nh": 480,
                "id": "img1", "onclick": "", "visible": True},
@@ -154,11 +154,17 @@ def test_ibsheet_api_and_images_are_read_in_a_real_browser():
     html = """<img src='/img/icon.gif' width=16 height=16><img id='photo' src='/comm0008_01.act?USEFAC_SEQ_NO=10&ATTFILE_SEQ_NO=1922592' width=120 height=90 alt='사진'>
     <div class='SheetMain' onclick='return IBSheet[0].SheetClick(event)'></div>
     <script>
+      // 8 판 흉내(14:19 실측 — 줄은 객체 · 열은 Cols · version 은 함수) + 7 판 흉내 하나
+      const data = [{Kind: 'Data', sChk: 0, PURCH_REQ_NO: '202604130007', PURCH_CONT: '노트북 구입'},
+                    {Kind: 'Data', sChk: 0, PURCH_REQ_NO: '202609290005', PURCH_CONT: '용역'}];
+      const v8 = {id: 'sheet1', version: () => '8.0.1', SheetClick: () => true, SetValue: () => { throw new Error('눌림'); },
+        Cols: {sChk: {Header: '선택', Type: 'Bool'}, PURCH_REQ_NO: {Header: '구매요청번호', Type: 'Text'}, PURCH_CONT: {Header: '대표건명', Type: 'Text'}},
+        GetDataRows: () => data, GetRows: () => [{Kind: 'Header'}].concat(data), GetHeaderRows: () => [{Kind: 'Header'}],
+        GetValue: (row, col) => row[col], GetCaption: col => v8.Cols[col].Header};
       const rows = [['', '선택', '구매요청번호', '대표건명'], ['', '', '202604130007', '노트북 구입'], ['', '', '202609290005', '용역']];
-      window.IBSheet = [{version: '7.0', SheetClick: () => true, SetCellValue: () => { throw new Error('눌림'); },
-        GetTotalRows: () => 2, LastCol: () => 2, HeaderRows: () => 1, LastRow: () => 2,
-        ColSaveName: c => ['sChk', 'PURCH_REQ_NO', 'PURCH_CONT'][c],
-        GetHeaderText: c => rows[0][c + 1], GetCellText: (r, c) => rows[r][c + 1]}];
+      const v7 = {version: '7.0', GetTotalRows: () => 2, LastCol: () => 2, HeaderRows: () => 1, LastRow: () => 2,
+        ColSaveName: c => ['sChk', 'PURCH_REQ_NO', 'PURCH_CONT'][c], GetHeaderText: c => rows[0][c + 1], GetCellText: (r, c) => rows[r][c + 1]};
+      window.IBSheet = [v8, v7];
     </script>"""
     try:
         with sync_api.sync_playwright() as p:
@@ -172,11 +178,15 @@ def test_ibsheet_api_and_images_are_read_in_a_real_browser():
     except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
         pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
     api = [g for g in grids if g["kind"] == "ibsheet-api"]
-    assert len(api) == 1 and api[0]["total"] == 2 and api[0]["lastCol"] == 2 and api[0]["headerRows"] == 1
-    assert [c["save"] for c in api[0]["cols"]] == ["sChk", "PURCH_REQ_NO", "PURCH_CONT"]
-    assert api[0]["cols"][1]["head"] == "구매요청번호"
-    assert api[0]["sample"] == [["", "20…", "노트북 구입"], ["", "20…", "용역"]]        # 머리글 다음 줄부터 · 긴 번호는 가림
-    assert "GetTotalRows" in api[0]["funcs"] and "SetCellValue" not in api[0]["funcs"]
+    assert len(api) == 2
+    v8, v7 = api
+    assert v8["id"] == "sheet1" and v8["version"] == "" and v8["total"] == 2 and v8["headerRows"] == 1    # version 이 함수면 적지 않는다
+    assert [c["save"] for c in v8["cols"]] == ["sChk", "PURCH_REQ_NO", "PURCH_CONT"] and v8["cols"][1]["head"] == "구매요청번호"
+    assert v8["cols"][1]["type"] == "Text"
+    assert v8["sample"] == [["0", "20…", "노트북 구입"], ["0", "20…", "용역"]]           # 긴 번호는 가림
+    assert "GetDataRows" in v8["funcs"] and "SetValue" not in v8["funcs"]
+    assert v7["total"] == 2 and [c["save"] for c in v7["cols"]] == ["sChk", "PURCH_REQ_NO", "PURCH_CONT"]
+    assert v7["sample"] == [["", "20…", "노트북 구입"], ["", "20…", "용역"]]
     images = probe["images"]
     assert len(images) == 1 and images[0]["id"] == "photo" and "ATTFILE_SEQ_NO=1922592" in images[0]["src"] and images[0]["alt"] == "사진"
 
