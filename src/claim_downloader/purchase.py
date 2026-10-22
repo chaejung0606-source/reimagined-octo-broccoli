@@ -28,7 +28,9 @@ from __future__ import annotations
 import datetime as dt
 import mimetypes
 import os
+import json
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -196,6 +198,34 @@ def case_dir(out_root: str | Path, project_no: str, req_no: str, title: str, req
             if child.is_dir() and child.name.endswith(f"_({req_no})"):
                 return child, ""
     return base / case_dir_name(req_no, title, req_dt), ""
+
+
+def done_path() -> Path:
+    return settings.data_dir() / "_구매받은기록.json"
+
+
+def load_done() -> dict:
+    """끝까지 받은 건(구매요구번호 → 받은 때 · 파일 수). 다음 목록 읽기에서 그 건은 빼서 58건을 매번 다시 열지 않는다(담당자 2026-10-22 "너무 시간 낭비")."""
+    try:
+        data = json.loads(done_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def remember_done(results: list["CaseResult"]) -> None:
+    """못 받은 파일이 하나도 없는 건만 적는다 — 실패가 남은 건은 다음에 다시 연다."""
+    done = load_done()
+    for r in results:
+        if r.ok and r.req_no:
+            done[r.req_no] = {"at": time.strftime("%Y-%m-%d %H:%M"), "files": len(r.saved) + r.existed, "title": r.title}
+    tmp = done_path().with_suffix(".tmp")
+    tmp.write_text(json.dumps(done, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(done_path())
+
+
+def forget_done() -> None:
+    done_path().unlink(missing_ok=True)
 
 
 def existing_files(folder: Path | None) -> int:
@@ -1073,5 +1103,10 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
         result = cases.get(req_no)
         if result is not None:
             notify(i, "done" if result.ok else "failed", result.summary())
+    if not summary.stopped:
+        try:
+            remember_done(summary.cases)
+        except Exception as error:  # noqa: BLE001
+            log(f"⚠ 받은 기록을 남기지 못함: {error}")
     log("── 구매요청(계약) 서류 끝: 건 %d · 새 파일 %d개 · 못 받은 건 %d" % (len(summary.cases), summary.files, len(summary.failed)))
     return summary

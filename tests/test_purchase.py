@@ -362,3 +362,17 @@ def test_widen_grows_a_one_day_range_but_not_past_today_or_the_limit():
     a, b = purchase.widen("2024-06-01", "2026-10-22", today=today)
     assert a == "2024-06-01" and b == "2026-10-22"  # 이미 2년을 넘는 범위는 그대로(창으로 나뉜다)
     assert purchase.widen("", "", today=today) == ("", "")
+
+
+def test_done_record_skips_finished_cases_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAIM_DOWNLOADER_HOME", str(tmp_path))
+    ok = purchase.CaseResult("202502030002", "끝난 건", "202408470001")
+    ok.saved = ["a.pdf"]
+    bad = purchase.CaseResult("202502030003", "실패 남은 건", "202408470001")
+    bad.failed.append("b.pdf: HTML")
+    bad.ok = False
+    purchase.remember_done([ok, bad])
+    done = purchase.load_done()
+    assert "202502030002" in done and "202502030003" not in done
+    purchase.forget_done()
+    assert purchase.load_done() == {}

@@ -1548,6 +1548,8 @@ class ErpSession:
             if rows is None:
                 raise ListNotFound(erp.dump_context(ctx), "구매진행관리 목록(IBSheet)을 읽지 못했습니다 — 그 화면을 [화면 구조 저장] 으로 보내 주세요")
             mine = 0
+            done_before = purchase.load_done()
+            already = 0
             for row in rows:
                 no = str(row.get("req_no") or "")
                 prj = re.sub(r"\D", "", str(row.get("prj_no") or ""))
@@ -1557,10 +1559,14 @@ class ErpSession:
                     others += 1
                     continue
                 seen.add(no)
+                if no in done_before:
+                    # 지난 받기에서 끝까지 받은 건 — 다시 열지 않는다(담당자 2026-10-22). 다시 받으려면 [도구] 의 받은 기록 비우기
+                    already += 1
+                    continue
                 mine += 1
                 folder, _why = purchase.case_dir(cfg.out_root, prj, no, row.get("title", ""), row.get("req_dt", ""))
                 sel.targets.append(purchase.as_target(row, folder))
-            self.log(f"구매진행관리 {start} ~ {end}: {len(rows)}줄 · 고른 과제의 건 {mine}건")
+            self.log(f"구매진행관리 {start} ~ {end}: {len(rows)}줄 · 고른 과제의 건 {mine}건" + (f" · 이미 다 받은 건 {already}건은 뺌" if already else ""))
         for n in wanted:
             base, why = purchase.project_base(cfg.out_root, n)
             if base is None and any(t.get("project") == n for t in sel.targets):

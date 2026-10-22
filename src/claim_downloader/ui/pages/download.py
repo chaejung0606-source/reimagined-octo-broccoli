@@ -213,6 +213,7 @@ class DownloadPage(QWidget):
         self.unwanted_action = self.tools_menu.addAction("받지 않는 결의서", self._show_unwanted)
         self.rebudget_action = self.tools_menu.addAction("대응자금 · 연구지원비 파일 정리", self._rebudget)
         self.tools_menu.addSeparator()
+        self.tools_menu.addAction("구매요청(계약) 받은 기록 비우기", self._forget_purchase_done)
         self.tools_menu.addAction("로그 파일 열기", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(settings.log_path()))))
         self.tools_menu.addAction("자세한 안내", lambda: QMessageBox.information(self, "증빙 다운로드 — 자세한 안내", GUIDE_DETAIL))
         self.tools_button.setMenu(self.tools_menu)
@@ -991,6 +992,19 @@ class DownloadPage(QWidget):
                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
             skiplist.clear()
             self.refresh_counts()
+
+    def _forget_purchase_done(self) -> None:
+        """끝까지 받은 구매 건은 다음 목록 읽기에서 빠진다(23절) — 그 건을 다시 열어 보려면 기록을 비운다."""
+        done = purchase.load_done()
+        if not done:
+            QMessageBox.information(self, "받은 기록", "끝까지 받은 구매요청(계약) 건의 기록이 없습니다.")
+            return
+        if QMessageBox.question(self, "받은 기록 비우기",
+                                f"끝까지 받은 구매요청(계약) 건 {len(done)}건의 기록을 비웁니다.\n다음 목록 읽기에서 그 건들을 다시 열어 새 파일이 있는지 봅니다(이미 받은 파일은 건너뜁니다).",
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        purchase.forget_done()
+        self._set_state("받은 기록 비움", "info", "목록을 다시 읽으면 구매 건을 모두 다시 봅니다.")
 
     # ── 대응자금 파일 정리(rebudget.py) ─────────────────────────────────
     def _rebudget(self) -> None:
