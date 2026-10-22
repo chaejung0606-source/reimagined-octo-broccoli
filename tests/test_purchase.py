@@ -99,7 +99,8 @@ CASES = [
     {"no": "202504010001", "prj": "202408470003", "dt": "2025-04-01", "title": "작년 봄 장비", "state": "지급완료", "files": [("4", "작년.pdf")]},
 ]
 FILES = {"1": (b"%PDF-1.4 quote", "application/pdf"), "2": (b"PK\x03\x04 xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-         "3": (b"%PDF-1.4 other", "application/pdf"), "4": (b"%PDF-1.4 old", "application/pdf"),
+         # 4: 실제 ERP 처럼 진짜 PDF 에 Content-Type 을 text/html 로 붙여 준다(2026-10-22 18:35) — 그래도 파일로 받아야 한다
+         "3": (b"%PDF-1.4 other", "application/pdf"), "4": (b"%PDF-1.4 old", "text/html"),
          "7": (b"%PDF-1.4 contract", "application/pdf"), "9": (b"\xff\xd8\xff photo", "image/jpeg")}
 
 TOP = """<!doctype html><html><body>
@@ -217,7 +218,7 @@ class _Erp(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        if not ctype.startswith("text/html"):
+        if not body.lstrip().lower().startswith((b"<!doctype", b"<html")):
             self.send_header("Content-Disposition", "attachment; filename=f.bin")
         self.end_headers()
         self.wfile.write(body)
@@ -340,3 +341,24 @@ def test_purchase_root_setting_moves_case_folders(tmp_path, monkeypatch):
     base, why = purchase.project_base(root, "202408470001")
     assert base == drive / "(202408470001)_2024년도 사업비_1", why
     assert purchase.project_base(root, "202408470002")[0] is None   # 과제 폴더가 없으면 여전히 받지 않음
+
+
+def test_looks_like_html_judges_by_body_not_content_type():
+    # 2026-10-22 18:35 실제: %PDF · 한글(Handysoft) · OLE 파일이 text/html 로 와서 'HTML' 로 버려졌다
+    assert not purchase.looks_like_html(b"%PDF-1.4 ...")
+    assert not purchase.looks_like_html(b"Handysoft Approval Document File")
+    assert not purchase.looks_like_html(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1 ole")
+    assert purchase.looks_like_html(b"\xef\xbb\xbf\n  <!DOCTYPE html><html>")
+    assert purchase.looks_like_html(b"<html><body>login</body></html>")
+
+
+def test_widen_grows_a_one_day_range_but_not_past_today_or_the_limit():
+    import datetime as dt
+    today = dt.date(2026, 10, 22)
+    a, b = purchase.widen("2025-02-03", "2025-02-03", today=today)
+    assert a == "2024-08-07" and b == "2025-08-02"
+    a, b = purchase.widen("2026-10-20", "2026-10-22", today=today)
+    assert b == "2026-10-22"                      # 오늘을 넘기지 않는다
+    a, b = purchase.widen("2024-06-01", "2026-10-22", today=today)
+    assert a == "2024-06-01" and b == "2026-10-22"  # 이미 2년을 넘는 범위는 그대로(창으로 나뉜다)
+    assert purchase.widen("", "", today=today) == ("", "")

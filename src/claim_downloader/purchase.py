@@ -96,6 +96,20 @@ def windows(start: str, end: str, max_days: int = MAX_DAYS) -> list[tuple[str, s
     return out
 
 
+def widen(start: str, end: str, days: int = 180, today: dt.date | None = None) -> tuple[str, str]:
+    """받을 건이 적을 때(한 건 다시 받기) 조회 범위를 앞뒤 days 일씩 넓힌다 — 하루 범위 조회는 ERP 목록에 그 줄이 안 나왔다
+    (2026-10-22 18:52 실제; 요청일자 칸과 목록의 일자 기준이 다를 수 있다). 끝은 오늘을 넘기지 않고, 창 한도(730일) 안."""
+    a, b = _date(start), _date(end)
+    if not a or not b:
+        return start, end
+    today = today or dt.date.today()
+    a2 = a - dt.timedelta(days=days)
+    b2 = min(b + dt.timedelta(days=days), max(today, b))
+    if (b2 - a2).days + 1 > MAX_DAYS:
+        a2 = max(a2, b2 - dt.timedelta(days=MAX_DAYS - 1)) if (b - a).days + 1 <= MAX_DAYS else a
+    return a2.isoformat(), b2.isoformat()
+
+
 def window_for(day: str, start: str, end: str) -> tuple[str, str] | None:
     """그 날이 든 창(없으면 None)."""
     d = _date(day)
@@ -615,6 +629,12 @@ def back_to_list(context, detail, log: Callable[[str], None], wait: Callable[[fl
     return _wait_for(lambda: list_frame(context), wait, LIST_TRIES)
 
 
+def looks_like_html(body: bytes) -> bool:
+    """몸통이 HTML 문서인지 — 앞글자가 <!doctype · <html 일 때만(BOM · 공백은 뗀다). 응답 종류(Content-Type)는 믿지 않는다."""
+    head = (body or b"")[:40].lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    return head.startswith((b"<!doctype", b"<html"))
+
+
 def fetch(page, url: str):
     """같은 브라우저 묶음의 쿠키로 파일을 받는다 → (bytes, content_type, 까닭). 로그인 화면(HTML)이 오면 받지 않는다."""
     try:
@@ -628,7 +648,8 @@ def fetch(page, url: str):
         body = resp.body()
     except Exception as error:  # noqa: BLE001
         return None, "", str(error).splitlines()[0][:120] if str(error) else type(error).__name__
-    if ctype.startswith("text/html") or body[:15].lstrip().lower().startswith((b"<!doctype", b"<html")):
+    # 2026-10-22 18:35 실제: ERP 가 진짜 파일(%PDF · HWP · OLE)에도 Content-Type 을 text/html 로 붙여 보낸다 — 응답 종류가 아니라 몸통 앞글자로만 가린다
+    if looks_like_html(body):
         return None, ctype, "HTML 이 왔습니다(로그인이 풀렸거나 파일이 아님)"
     if not body:
         return None, ctype, "빈 파일"
@@ -643,8 +664,9 @@ async (href) => {
     const r = await fetch(href, {credentials: 'include'});
     const ctype = (r.headers.get('content-type') || '').toLowerCase();
     const buf = new Uint8Array(await r.arrayBuffer());
-    const head = String.fromCharCode.apply(null, buf.slice(0, 15)).trim().toLowerCase();
-    if (ctype.startsWith('text/html') || head.startsWith('<!doctype') || head.startsWith('<html')) {
+    // 응답 종류(text/html)는 믿지 않는다 — 실제 ERP 가 진짜 파일에도 text/html 을 붙인다(2026-10-22 18:35). 몸통 앞글자로만.
+    const head = String.fromCharCode.apply(null, buf.slice(0, 40)).replace(/^\uFEFF|^[\s\u00EF\u00BB\u00BF]+/, '').trim().toLowerCase();
+    if (head.startsWith('<!doctype') || head.startsWith('<html')) {
       const text = new TextDecoder().decode(buf.slice(0, 4000));
       const m = text.match(/<title[^>]*>([^<]{0,60})/i);
       // 무엇이 왔는지 보려고 form action · 스크립트의 주소 꼴 · 글자 앞부분만 (값은 적지 않는다)
@@ -695,8 +717,13 @@ def click_download(frame, page, href: str, dest: Path):
     try:
         if not link.count():
             return None, "화면에 그 링크가 없음"
+        try:
+            link.scroll_into_view_if_needed(timeout=3000)
+        except Exception:  # noqa: BLE001
+            pass
         with page.expect_download(timeout=CLICK_TIMEOUT_MS) as got:
-            link.click(timeout=5000)
+            # 5초에서 시간 초과가 잦았다(2026-10-22 18:35 실제, 긴 목록 아래 링크) — 15초, 가려져 있으면 그대로 누른다
+            link.click(timeout=15000, force=True)
         download = got.value
         fail = download.failure()
         if fail:
@@ -704,8 +731,7 @@ def click_download(frame, page, href: str, dest: Path):
         dest.parent.mkdir(parents=True, exist_ok=True)
         temp = dest.with_name(dest.name + ".part")
         download.save_as(str(temp))
-        head = temp.read_bytes()[:15].lstrip().lower()
-        if head.startswith((b"<!doctype", b"<html")) or temp.stat().st_size == 0:
+        if looks_like_html(temp.read_bytes()[:40]) or temp.stat().st_size == 0:
             temp.unlink(missing_ok=True)
             return None, "눌러 받아도 HTML 이 왔습니다"
         size = temp.stat().st_size
@@ -801,6 +827,10 @@ def ensure_range(frame, start: str, end: str, log: Callable[[str], None], wait: 
     if current_range(frame) == (start, end):
         if not req_no or _wait_for(lambda: _has_row(frame, req_no), wait, 16):
             return True, ""
+    elif req_no and _has_row(frame, req_no):
+        # 지금 목록(범위가 달라도 — 목록 읽기 때의 넓은 범위)에 그 줄이 이미 보이면 다시 [검색] 하지 않는다
+        # (2026-10-22 18:52 실제: 한 건만 다시 받으며 하루 범위로 조회하자 줄이 안 보여 실패)
+        return True, ""
     ok, why = search(frame, start, end, log, wait)
     if not ok:
         return False, why
@@ -992,7 +1022,7 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
         return summary
     days = [t.get("expDt") or req_date(t.get("req_no", "")) for t in targets]
     days = [d for d in days if d]
-    start, end = (min(days), max(days)) if days else ("", "")
+    start, end = widen(min(days), max(days)) if days else ("", "")
     frame, why = open_list(context, log, wait)
     if frame is None:
         log("⚠ " + why)
