@@ -495,3 +495,44 @@ def test_reattach_asks_when_file_delete_empties_the_amount(monkeypatch):
     monkeypatch.setattr(attach, "upload", _upload_fake(frame, []))
     report = reattach.run(object(), frame, plan, lambda m: None, ask=lambda m: False, wait=lambda s: None, dry_run=False)
     assert report.saved == 0 and "청구액" in (report.results[0].note or "")
+
+
+def test_open_saved_sheet_accepts_a_fresh_sheet_whose_hidden_number_differs(monkeypatch):
+    """담당자 실제 2026-10-23 16:16 · 16:42: 보완요청 결의번호 223 줄을 [상세조회/변경] 으로 열자 작성 화면의 숨은 #REQ_CNT · 주소가 323 이었다
+    (그 화면의 '신청정보' 는 223 — 담당자 그림). '신청정보' 를 못 읽어도, 그 번호가 결의서내역의 다른 줄이 아니고 눌러서 새로 뜬 화면의 대표적요가 같으면
+    같은 청구서의 다른 번호로 보고 기록에 적는다. 목록의 다른 줄 번호면 다른 청구서라 여전히 멈춘다."""
+    rows = [{"seq": "223", "cont": "02_2026년도 9월 (나)형 근로장학금", "state": "보완요청", "amt": "7800000"},
+            {"seq": "224", "cont": "09_다른 것", "state": "승인", "amt": "1"}]
+    calls, form_frame = _patch_list(monkeypatch, rows, seq="323")
+    form_frame.url = "https://erp/rexpe_0084_01.act?PRJ_NO=202408470003&REQ_CNT=323&APPR_DIV_CD=45"
+    monkeypatch.setattr(navigate, "_shown_req_cnt", lambda f: "")
+    monkeypatch.setattr(navigate, "_appl_cont", lambda f: "02_2026년도 9월 (나)형  근로장학금")
+    logs: list[str] = []
+    page, frame, row, why = navigate.open_saved_sheet(object(), "202408470003", "02_2026년도 9월 (나)형 근로장학금", logs.append, lambda s: None)
+    assert frame is form_frame and why == "" and calls == ["줄:223", "상세조회"]
+    assert any("숨은 결의번호(#REQ_CNT · 주소)는 323" in line and "대표적요" in line for line in logs)
+    # '신청정보' 로 알아봤을 때도 숨은 번호를 기록에 적는다
+    calls, form_frame = _patch_list(monkeypatch, rows, seq="323")
+    monkeypatch.setattr(navigate, "_shown_req_cnt", lambda f: "223")
+    logs.clear()
+    page, frame, row, why = navigate.open_saved_sheet(object(), "202408470003", "02_2026년도 9월 (나)형 근로장학금", logs.append, lambda s: None)
+    assert frame is form_frame and why == "" and any("323" in line and "신청정보" in line for line in logs)
+    # 대표적요가 다르면 모름 — 까닭에 '결의서내역에 없는 번호' 와 본 대표적요
+    calls, form_frame = _patch_list(monkeypatch, rows, seq="323")
+    monkeypatch.setattr(navigate, "_shown_req_cnt", lambda f: "")
+    monkeypatch.setattr(navigate, "_appl_cont", lambda f: "02_다른 청구서")
+    page, frame, row, why = navigate.open_saved_sheet(object(), "202408470003", "02_2026년도 9월 (나)형 근로장학금", lambda m: None, lambda s: None)
+    assert frame is None and "결의번호 323 의 것" in why and "결의서내역에 없는 번호" in why and "02_다른 청구서" in why
+    # 숨은 번호가 목록의 다른 줄(224)이면 대표적요가 같아도 다른 청구서다
+    calls, form_frame = _patch_list(monkeypatch, rows, seq="224")
+    monkeypatch.setattr(navigate, "_appl_cont", lambda f: "02_2026년도 9월 (나)형 근로장학금")
+    page, frame, row, why = navigate.open_saved_sheet(object(), "202408470003", "02_2026년도 9월 (나)형 근로장학금", lambda m: None, lambda s: None)
+    assert frame is None and "결의번호 224 의 것" in why and "결의서내역의 다른 줄" in why
+    # 이미 떠 있던 화면(누르기 전)은 대표적요만으로는 그 청구서로 보지 않는다 — 신청정보나 번호로만
+    from claim_downloader.claims import form as form_mod
+    calls, form_frame = _patch_list(monkeypatch, rows, seq="323")
+    monkeypatch.setattr(navigate, "_shown_req_cnt", lambda f: "")
+    monkeypatch.setattr(form_mod, "find_form", lambda ctx: ("창", form_frame))
+    monkeypatch.setattr(navigate, "_sheet_state", lambda f: {"REQ_CNT": "323", "REQ_SEQ_NO": "TMP_1"})
+    page, frame, row, why = navigate.open_saved_sheet(object(), "202408470003", "02_2026년도 9월 (나)형 근로장학금", lambda m: None, lambda s: None)
+    assert frame is None and "누르기 전" not in why and "결의번호 323 의 것" in why and calls == ["줄:223", "상세조회"]

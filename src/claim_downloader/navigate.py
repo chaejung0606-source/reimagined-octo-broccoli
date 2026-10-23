@@ -1005,6 +1005,9 @@ def open_saved_sheet(context, project_no: str, summary: str, log: Callable[[str]
         return None, None, {}, f"진행구분이 {label} 인 대표적요 '{summary}' 청구서가 {len(cands)}개입니다 — {found}. ERP 에서 하나만 남기세요"
     row = cands[0]
     seq = str(row.get("seq") or "")
+    # 목록의 다른 줄 결의번호 — 작성 화면의 숨은 번호가 이 가운데 하나면 정말 다른 청구서가 뜬 것이고, 아니면(보완요청 223 의 숨은 #REQ_CNT 323 처럼)
+    # 같은 청구서의 다른 번호일 수 있다(담당자 실제 2026-10-23 16:16 · 16:42)
+    others = {str(r.get("seq") or "") for r in rows if str(r.get("seq") or "") and str(r.get("seq") or "") != seq}
 
     seen: dict = {}
 
@@ -1012,13 +1015,22 @@ def open_saved_sheet(context, project_no: str, summary: str, log: Callable[[str]
         p, f = form.find_form(context)
         if f is None:
             return None
-        why = sheet_mismatch(f, seq, summary, before if fresh_only else None)
+        note: dict = {}
+        why = sheet_mismatch(f, seq, summary, before if fresh_only else None, others=others, note=note)
         seen["why"] = why
+        seen["note"] = note
         return (p, f) if not why else None
+
+    def tell_hidden() -> None:
+        note = seen.get("note") or {}
+        if note.get("hidden"):
+            log("작성 화면의 숨은 결의번호(#REQ_CNT · 주소)는 %s 이지만 %s 가 같아 결의번호 %s 의 청구서로 봅니다"
+                % (note["hidden"], note.get("by") or "대표적요", seq))
 
     before = None
     got = opened()
     if got:
+        tell_hidden()
         log("작성 화면에 그 청구서(결의번호 %s · %s)가 이미 떠 있습니다" % (seq, row.get("state") or "?"))
         return got[0], got[1], row, ""
     _p0, current = form.find_form(context)
@@ -1036,15 +1048,21 @@ def open_saved_sheet(context, project_no: str, summary: str, log: Callable[[str]
     if not got:
         return None, None, row, (f"[상세조회/변경] 을 눌렀지만 결의번호 {seq} 의 작성 화면이 뜨지 않았습니다 — "
                                  + (seen.get("why") or "작성 화면 없음") + " — " + form.describe_frames(context))
+    tell_hidden()
     log("✓ 결의번호 %s 의 작성 화면이 떴습니다" % seq)
     return got[0], got[1], row, ""
 
 
-def sheet_mismatch(frame, seq: str, summary: str, before: dict | None = None) -> str:
+def sheet_mismatch(frame, seq: str, summary: str, before: dict | None = None,
+                   others: set[str] | frozenset[str] | None = None, note: dict | None = None) -> str:
     """작성 프레임이 결의번호 seq 의 청구서가 아니면 그 까닭(빈 글이면 맞다). 담당자 실제 2026-10-23: 보완요청 결의번호 223 을 [상세조회/변경] 으로
     열자 작성 프레임(rexpe_0084_01.act)은 떴는데 숨은 #REQ_CNT 가 그 번호가 아니라 '뜨지 않았습니다' 로 멈췄다 — #REQ_CNT 는 임시저장(실측 ⑤)에서만
-    확인된 칸이라 이것만 믿지 않는다. ① #REQ_CNT == seq ② 프레임 주소의 REQ_CNT=seq(실측 ⑤ 주소 꼴) ③ 둘 다 없고(다른 번호가 아니고) 눌러서 새로 뜬
-    화면(before 와 REQ_SEQ_NO 가 다름)의 대표적요(#APPL_CONT)가 summary 와 같으면 그 청구서로 본다. """
+    확인된 칸이라 이것만 믿지 않는다. ① #REQ_CNT == seq ② 프레임 주소의 REQ_CNT=seq(실측 ⑤ 주소 꼴) ②-2 화면 위 '신청정보' 칸의 첫 숫자
+    ③ 둘 다 없고(다른 번호가 아니고) 눌러서 새로 뜬 화면(before 와 REQ_SEQ_NO 가 다름)의 대표적요(#APPL_CONT)가 summary 와 같으면 그 청구서로 본다.
+    ④ 다른 번호가 있어도(같은 날 16:16 · 16:42 — 보완요청 223 의 숨은 #REQ_CNT · 주소가 323) 그 번호가 결의서내역의 다른 줄(others)이 아니고, 눌러서 새로 뜬 화면이며,
+    대표적요가 summary 와 같으면 같은 청구서의 다른 번호로 본다 — note 에 hidden(그 번호) · by(무엇으로 알아봤는지)를 남겨 기록에 적는다. 다른 줄의 번호면 여전히 아니다."""
+    note = note if note is not None else {}
+    others = set(others or ())
     state = _sheet_state(frame)
     cnt = state.get("REQ_CNT", "")
     if cnt == seq:
@@ -1055,12 +1073,25 @@ def sheet_mismatch(frame, seq: str, summary: str, before: dict | None = None) ->
     if url_cnt == seq:
         return ""
     shown = _shown_req_cnt(frame)
+    hidden = cnt or url_cnt
     if shown == seq:
+        if hidden:
+            note.update(hidden=hidden, by="신청정보")
         return ""
-    if cnt or url_cnt or shown:
-        return f"작성 화면은 결의번호 {cnt or url_cnt or shown} 의 것입니다(#REQ_CNT '{cnt}' · 주소 REQ_CNT '{url_cnt}' · 신청정보 '{shown}')"
+    fresh = before is not None and not (before.get("REQ_SEQ_NO") and state.get("REQ_SEQ_NO") == before.get("REQ_SEQ_NO"))
+    found = hidden or shown
+    if found:
+        listed = found in others
+        if fresh and not listed:
+            appl = _appl_cont(frame)
+            if appl and _squash(appl) == _squash(summary):
+                note.update(hidden=found, by="대표적요")
+                return ""
+        where = "결의서내역의 다른 줄" if listed else "결의서내역에 없는 번호"
+        return (f"작성 화면은 결의번호 {found} 의 것입니다({where} · #REQ_CNT '{cnt}' · 주소 REQ_CNT '{url_cnt}' · 신청정보 '{shown}'"
+                + ("" if listed or not fresh else f" · 대표적요 '{_appl_cont(frame) or '(없음)'}'") + ")")
     if before is not None:
-        if before.get("REQ_SEQ_NO") and state.get("REQ_SEQ_NO") == before.get("REQ_SEQ_NO"):
+        if not fresh:
             return "작성 화면이 누르기 전 것 그대로입니다(결의번호 칸 없음)"
         appl = _appl_cont(frame)
         if appl and _squash(appl) == _squash(summary):
