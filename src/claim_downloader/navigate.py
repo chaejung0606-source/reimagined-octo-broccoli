@@ -1054,8 +1054,11 @@ def sheet_mismatch(frame, seq: str, summary: str, before: dict | None = None) ->
     url_cnt = m.group(1) if m else ""
     if url_cnt == seq:
         return ""
-    if cnt or url_cnt:
-        return f"작성 화면은 결의번호 {cnt or url_cnt} 의 것입니다(#REQ_CNT '{cnt}' · 주소 REQ_CNT '{url_cnt}')"
+    shown = _shown_req_cnt(frame)
+    if shown == seq:
+        return ""
+    if cnt or url_cnt or shown:
+        return f"작성 화면은 결의번호 {cnt or url_cnt or shown} 의 것입니다(#REQ_CNT '{cnt}' · 주소 REQ_CNT '{url_cnt}' · 신청정보 '{shown}')"
     if before is not None:
         if before.get("REQ_SEQ_NO") and state.get("REQ_SEQ_NO") == before.get("REQ_SEQ_NO"):
             return "작성 화면이 누르기 전 것 그대로입니다(결의번호 칸 없음)"
@@ -1064,6 +1067,25 @@ def sheet_mismatch(frame, seq: str, summary: str, before: dict | None = None) ->
             return ""
         return f"작성 화면에 결의번호가 없고 대표적요가 '{appl or '(없음)'}' 라 결의번호 {seq} 의 것인지 모릅니다"
     return "작성 화면에 결의번호가 없습니다"
+
+
+# 작성 화면 위 '신청정보' 칸의 글 — `223 2026-10-19 임채정` 꼴(담당자 그림 2026-10-23, 보완요청 청구서). 첫 숫자 묶음이 결의번호.
+SHOWN_REQ_CNT_JS = """() => {
+  for (const el of document.querySelectorAll('th, td, div, span, label')) {
+    if ((el.textContent || '').replace(/\\s+/g, '') !== '신청정보') continue;
+    const next = el.nextElementSibling;
+    const m = ((next && next.textContent) || '').trim().match(/^(\\d+)\\b/);
+    if (m) return m[1];
+  }
+  return '';
+}"""
+
+
+def _shown_req_cnt(frame) -> str:
+    try:
+        return str(frame.evaluate(SHOWN_REQ_CNT_JS) or "")
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def _appl_cont(frame) -> str:

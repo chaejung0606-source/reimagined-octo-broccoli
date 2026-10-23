@@ -446,3 +446,17 @@ def test_open_saved_sheet_accepts_url_or_summary_when_req_cnt_is_missing(monkeyp
     calls, form_frame = _patch_list(monkeypatch, rows, seq="224")
     page, frame, row, why = navigate.open_saved_sheet(object(), "202408470003", "09_정수기 임차료(9월)", lambda m: None, lambda s: None)
     assert frame is None and "결의번호 224 의 것" in why
+
+
+def test_open_saved_sheet_accepts_the_visible_request_info_cell(monkeypatch):
+    """담당자 그림(2026-10-23): 보완요청 청구서의 '신청정보' 칸에 `223 2026-10-19 …` 가 보인다 — 숨은 칸 · 주소에 없어도 그것으로 알아본다."""
+    rows = [{"seq": "223", "cont": "02_x", "state": "보완요청", "amt": "1"}]
+    calls, form_frame = _patch_list(monkeypatch, rows, seq="")
+    form_frame.url = "https://erp/rexpe_0084_01.act?PRJ_NO=1"
+    monkeypatch.setattr(navigate, "_shown_req_cnt", lambda f: "223")
+    monkeypatch.setattr(navigate, "_appl_cont", lambda f: "")
+    page, frame, row, why = navigate.open_saved_sheet(object(), "202408470003", "02_x", lambda m: None, lambda s: None)
+    assert frame is form_frame and why == ""
+    monkeypatch.setattr(navigate, "_shown_req_cnt", lambda f: "224")
+    page, frame, row, why = navigate.open_saved_sheet(object(), "202408470003", "02_x", lambda m: None, lambda s: None)
+    assert frame is None and "결의번호 224 의 것" in why
