@@ -220,3 +220,39 @@ console.log(JSON.stringify({text: doGet({parameter: {key: 'KEY', id: sent.id}}).
     assert out["text"].endswith("\n=1+1 머리\n+둘째\n셋째")
     assert "업무 증빙 다운로드" in out["text"] and "오류 첨부 실패" in out["text"] and "앱 v1" in out["text"]
     assert all(cell.startswith("[조각 ") for cell in out["cells"])      # 시트가 '=' · '+' 를 수식으로 읽지 않게
+
+
+def test_read_url_without_id_is_the_fixed_latest_address_and_tool_reads_it(monkeypatch, capsys):
+    """고정 읽기 주소(id 없음 = 가장 최근)를 클라우드 환경 변수 COSS_LOG_URL 에 두면 tools/read_log.py 가 붙여 넣기 없이 읽는다(2026-10-23)."""
+    import importlib.util
+    from pathlib import Path
+    config = _config()
+    fixed = log_send.read_url(config)
+    assert fixed == "https://script.google.com/macros/s/abc/exec?key=" + "k" * 32
+    spec = importlib.util.spec_from_file_location("read_log", Path(__file__).resolve().parents[1] / "tools" / "read_log.py")
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+    assert tool.url_for(fixed) == fixed and tool.url_for(fixed, "list").endswith("&id=list") and tool.url_for(fixed, "x1").endswith("&id=x1")
+    opened = []
+
+    class Response:
+        def __init__(self, url):
+            self.url = url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return ("목록" if "id=list" in self.url else "기록 " + self.url.split("id=")[-1] if "id=" in self.url else "가장 최근").encode("utf-8")
+    monkeypatch.setattr(tool.urllib.request, "urlopen", lambda url, timeout=60: opened.append(url) or Response(url))
+    monkeypatch.delenv(tool.ENV, raising=False)
+    assert tool.main([]) == 2 and tool.ENV in capsys.readouterr().err
+    monkeypatch.setenv(tool.ENV, fixed)
+    assert tool.main([]) == 0 and capsys.readouterr().out == "가장 최근\n"
+    assert tool.main(["list"]) == 0 and capsys.readouterr().out == "목록\n"
+    assert tool.main(["x1"]) == 0 and capsys.readouterr().out == "기록 x1\n"
+    assert opened == [fixed, fixed + "&id=list", fixed + "&id=x1"]
+    assert "k" * 32 not in Path(spec.origin).read_text(encoding="utf-8")        # 도구에 열쇠 · 주소가 박혀 있지 않다

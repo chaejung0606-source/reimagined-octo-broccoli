@@ -282,10 +282,12 @@ def save_config(config: Config) -> None:
 
 
 def forget() -> None:
+    """연동 끊기 — 연결 정보를 지우고, 지난 시트와 맞춘 기록도 잊는다(다음에 다른 시트에 연결해도 이 PC 의 대장이 지워지지 않게)."""
     try:
         settings.parking_sheet_path().unlink()
     except OSError:
         pass
+    ledger.reset_sync()
 
 
 def script_text(config: Config | None = None) -> tuple[str, Config]:
@@ -408,6 +410,10 @@ def call(config: Config, action: str, opener=None, **payload) -> dict:
 
 def _remember(config: Config, data: dict) -> None:
     if data.get("url") and (data.get("url") != config.sheet_url or data.get("name") != config.sheet_name):
+        if config.sheet_url and data.get("url") != config.sheet_url:
+            # 다른 시트가 답했다 — 지난 시트와 맞춘 기록을 잊어야 이 PC 의 대장이 새 시트에 올라간다(ledger.reset_sync)
+            forgot = ledger.reset_sync()
+            log(f"구글 시트가 바뀌었습니다 — 이 PC 의 관리대장을 새 시트에 올립니다(지난 시트와 맞춘 줄 {forgot}개를 새 줄로)")
         config.sheet_url, config.sheet_name = str(data.get("url")), str(data.get("name", ""))
         save_config(config)
 
@@ -535,6 +541,11 @@ def sync_ledger(config: Config | None = None, opener=None) -> Result:
         with ledger._LOCK:
             local = ledger.load()
             synced, deleted = ledger.sync_state()
+            if not remote and local and synced:
+                # '관리대장' 탭이 비어 있는데 맞춘 기록이 있다 — 새 시트(또는 탭을 비운 시트)다. 맞춘 줄을 '시트에서 지운 줄' 로 보면
+                # 이 PC 의 대장이 통째로 사라지므로(2026-10-23), 모두 새 줄로 보고 시트에 다시 올린다
+                log("구글 시트의 관리대장 탭이 비어 있어 이 PC 의 관리대장 %d줄을 새로 올립니다" % len(local))
+                synced = set()
             merged = ledger.merge(local, remote, synced, deleted)
             before = [(e.id, e.updated) for e in ledger.ordered(local)]
             changed = before != [(e.id, e.updated) for e in merged]

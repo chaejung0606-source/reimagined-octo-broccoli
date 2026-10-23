@@ -52,6 +52,14 @@ class ParkingSheetCard(Card):
         self.open_button.setObjectName("ghost")
         self.open_button.clicked.connect(self._open_sheet)
         buttons.addWidget(self.open_button)
+        # Claude 가 묻지 않고 로그를 읽는 고정 주소(열쇠 든 주소, id 없음 = 가장 최근) — 클라우드 환경 변수 COSS_LOG_URL 에 한 번 넣어 두면
+        # 담당자는 [로그 보내기] 만 누르면 된다(담당자 2026-10-23: 보낼 때마다 채팅에 주소를 붙여 넣는 것이 전과 같은 불편). 주소에 열쇠가 있으니 채팅 · 문서에 두지 않는다
+        self.log_url_button = QPushButton("로그 읽기 주소 복사")
+        self.log_url_button.setObjectName("ghost")
+        self.log_url_button.setToolTip("Claude 가 읽을 고정 주소(열쇠 포함)를 복사합니다 — 클라우드 환경 설정의 변수 COSS_LOG_URL 에 넣어 두면\n"
+                                       "앞으로는 [로그 보내기] 만 누르고 채팅에 주소를 붙여 넣지 않아도 됩니다. 주소는 채팅 · 문서에 올리지 마세요.")
+        self.log_url_button.clicked.connect(self._copy_log_url)
+        buttons.addWidget(self.log_url_button)
         forget = QPushButton("연동 끊기")
         forget.setObjectName("ghost")
         forget.clicked.connect(self._forget)
@@ -70,6 +78,7 @@ class ParkingSheetCard(Card):
         config = parking_sheet.load_config()
         self.url_edit.setText(config.url)
         self.open_button.setVisible(bool(config.sheet_url))
+        self.log_url_button.setVisible(bool(config.connected and config.log_key))
         if config.connected:
             self.state.set_status("연결됨" if config.sheet_url else "확인 전", "success" if config.sheet_url else "warning")
             self.note.setText(f"시트 '{config.sheet_name}'" if config.sheet_name else "[저장하고 연결 확인] 을 눌러 확인하세요.")
@@ -92,6 +101,8 @@ class ParkingSheetCard(Card):
         if config.url != url:
             config.url, config.sheet_url, config.sheet_name = url, "", ""
             parking_sheet.save_config(config)
+            # 다른 웹 앱(= 다른 시트)에 연결한다 — 지난 시트와 맞춘 기록을 잊어야 이 PC 의 관리대장이 새 시트에 올라간다(2026-10-23)
+            parking_sheet.ledger.reset_sync()
         self.state.set_status("확인 중", "info")
         self.save_button.setEnabled(False)
         sheet_sync().check()
@@ -111,6 +122,15 @@ class ParkingSheetCard(Card):
             self.state.set_status("연결 안 됨", "danger")
             self.note.setText(result.note)
         self.changed.emit()
+
+    def _copy_log_url(self) -> None:
+        from ..log_send import read_url
+        config = parking_sheet.load_config()
+        if not (config.connected and config.log_key):
+            return
+        QGuiApplication.clipboard().setText(read_url(config))
+        self.note.setText("로그 읽기 주소를 복사했습니다 — 클라우드 환경 설정(세션 제목 줄의 환경 메뉴 → Edit)의 변수 COSS_LOG_URL 에 붙여 넣으세요. "
+                          "열쇠가 든 주소라 채팅 · 문서에는 올리지 마세요. 그 뒤로는 [로그 보내기] 만 누르면 Claude 가 읽습니다.")
 
     def _open_sheet(self) -> None:
         url = parking_sheet.load_config().sheet_url

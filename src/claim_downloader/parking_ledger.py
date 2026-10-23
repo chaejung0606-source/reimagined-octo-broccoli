@@ -152,6 +152,17 @@ def remove(entry_id: str) -> list[Entry]:
         return ordered(entries)
 
 
+def reset_sync() -> int:
+    """구글 시트가 바뀌었을 때(새 시트에 연결 · 연동 끊기) — 지난번 시트와 맞춘 줄 id 를 잊는다. 잊지 않으면 merge 가 새(빈) 시트에
+    없는 줄을 '시트에서 지운 줄' 로 보고 이 PC 의 대장을 통째로 지운다(2026-10-23, 담당자가 지워진 시트 대신 새 시트로 연결하려던 때 발견).
+    이 PC 에서 지웠지만 아직 시트에 알리지 않은 줄 목록은 둔다(새 시트에는 없으니 그냥 알린 셈이 된다). 잊은 id 수를 돌려준다."""
+    with _LOCK:
+        ids, deleted = sync_state()
+        if ids:
+            save(load(), {"ids": [], "deleted": sorted(deleted)})
+        return len(ids)
+
+
 def mark_synced(ids: set[str], told: set[str]) -> None:
     """구글 시트에 다 써 넣은 뒤 — 맞춘 줄 id 를 남기고, 시트에 알린 지운 줄은 목록에서 뺀다."""
     with _LOCK:

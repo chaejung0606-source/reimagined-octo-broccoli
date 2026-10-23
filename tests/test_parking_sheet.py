@@ -341,3 +341,32 @@ def test_network_report_says_what_to_do(monkeypatch):
         assert "비밀" not in lines[4] and "//***@proxy.example:8080" in lines[4]
     finally:
         server.close()
+
+
+def test_new_empty_sheet_does_not_wipe_the_local_ledger(app):
+    """담당자 실제(2026-10-23): 지워진 시트 대신 새 시트로 연결 — 지난 시트와 맞춘 줄이 새(빈) 시트에 없다고 이 PC 의 대장을 지우면 안 된다.
+    새 시트에는 이 PC 의 대장을 그대로 올린다. 웹 앱 URL 을 바꿔 저장하거나 연동을 끊어도 맞춘 기록을 잊는다."""
+    ledger.add(ledger.Entry(date="2026-10-01", bought=100, content="구입(이월)"))
+    ledger.add(ledger.Entry(date="2026-10-02", given=1, content="방문", user="가나다", car="12가3456"))
+    assert sheet.sync_ledger().ok and len(app.ledger) == 2 and len(ledger.sync_state()[0]) == 2
+    # ① 시트가 지워지고 새 시트(빈 관리대장 탭)가 같은 주소로 답하는 경우 — 탭이 비어 있으면 새로 올린다
+    app.ledger = []
+    result = sheet.sync_ledger()
+    assert result.ok and result.total == 2 and len(ledger.load()) == 2 and len(app.ledger) == 2
+    # ② 다른 시트가 답하면(주소가 다름) 맞춘 기록을 잊는다
+    old_url = app.url
+    config = sheet.load_config()
+    assert config.sheet_url.endswith("/x")
+    sheet._remember(config, {"url": "https://docs.google.com/spreadsheets/d/y", "name": "새 시트"})
+    assert ledger.sync_state()[0] == set() and sheet.load_config().sheet_url.endswith("/y")
+    # (가짜 시트는 늘 /x 로 답하므로 되돌려 둔다 — 다시 바뀐 것으로 보고 한 번 더 잊는다)
+    sheet._remember(sheet.load_config(), {"url": "https://docs.google.com/spreadsheets/d/x", "name": "공무확인증 관리대장"})
+    # ③ 지운 줄 목록은 잊지 않는다 · 연동을 끊어도 맞춘 기록을 잊는다
+    assert sheet.sync_ledger().ok and len(ledger.sync_state()[0]) == 2
+    gone = ledger.load()[1]
+    ledger.remove(gone.id)
+    assert ledger.reset_sync() == 2 and ledger.sync_state() == (set(), {gone.id})      # 지운 줄은 맞춘 id 에 남아 있다(remove 는 ids 를 안 건드린다)
+    assert sheet.sync_ledger().ok and len(ledger.sync_state()[0]) == 1
+    sheet.forget()
+    assert ledger.sync_state()[0] == set() and not sheet.load_config().connected and len(ledger.load()) == 1
+    assert old_url == app.url
