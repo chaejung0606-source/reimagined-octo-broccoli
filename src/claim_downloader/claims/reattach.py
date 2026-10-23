@@ -24,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from . import attach, kinds
-from .form import PICK_EL_JS, PROBE_JS, read_state, save_draft
+from .form import PICK_EL_JS, PROBE_JS, SET_TEXT_JS, read_state, save_draft
 from .payee import wait_until
 from .scholarship import MAX_ASKS, Ask, _read_sheet
 
@@ -351,6 +351,7 @@ def _reattach_row(page, frame, rp: RowPlan, res: RowResult, sheet_index: int, sh
             return False, "줄 다시 열기: " + why
         res.review.append("줄 다시 열기는 사람이 했음 — [화면 구조 저장] 을 보내 주시면 앱이 합니다")
     res.detail.append("✓ 청구내역 %d번째 줄 다시 열림" % (sheet_index + 1))
+    loaded_amt = _state(frame, ["REQ_AMT"]).get("REQ_AMT", "")
     # ② 첨부문서 비우기 — 실측 전: 안 되면 사람이 지우고 [계속]
     before = attach.file_count(frame)
     if before:
@@ -381,6 +382,11 @@ def _reattach_row(page, frame, rp: RowPlan, res: RowResult, sheet_index: int, sh
             return False, "첨부 올리기: " + why
         res.review.append("첨부 올리기는 사람이 했음 — 올린 파일이 맞는지 확인")
     res.uploaded = up.uploaded if up.ok else attach.file_count(frame)
+    # 담당자 그림(2026-10-23): 첨부문서를 '삭제' 한 뒤 청구액 칸이 비어 보였다 — 비었으면 줄을 열 때 읽은 값을 되돌려 놓는다(값을 새로 정하는 것이 아니다)
+    if loaded_amt.strip("0, ") and not _state(frame, ["REQ_AMT"]).get("REQ_AMT", "").strip("0, "):
+        put = frame.evaluate(SET_TEXT_JS, ["REQ_AMT", loaded_amt]) or {}
+        log("첨부를 다시 올린 뒤 청구액 칸이 비어 줄의 청구액 %s 을(를) 다시 넣음%s" % (loaded_amt, "" if put.get("ok") else " — 못 넣음: " + str(put.get("why"))))
+        res.review.append("첨부를 지운 뒤 청구액 칸이 비어 다시 넣었음 — 청구액 확인")
     # ④ [저장] — 수정 저장. 앞 줄의 알림이 남아 있으면 이 줄 저장이 끝난 것으로 보이므로 비운다(scholarship 과 같다)
     messages.clear()
     save = save_draft(frame, log, messages, wait)

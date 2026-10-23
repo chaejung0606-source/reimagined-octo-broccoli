@@ -60,6 +60,10 @@ class FakeSheet:
             if self.deletes:
                 self.list = self.list[self.selected:] if self.multiple else self.list[1:]
             return {"ok": True}
+        if js is form.SET_TEXT_JS:
+            self.v[arg[0]] = arg[1]
+            self.clicks.append("넣기:%s=%s" % tuple(arg))
+            return {"ok": True}
         if js is form.CLICK_SAVE_JS:
             self.clicks.append("저장:" + arg)
             if self.saves:
@@ -460,3 +464,23 @@ def test_open_saved_sheet_accepts_the_visible_request_info_cell(monkeypatch):
     monkeypatch.setattr(navigate, "_shown_req_cnt", lambda f: "224")
     page, frame, row, why = navigate.open_saved_sheet(object(), "202408470003", "02_x", lambda m: None, lambda s: None)
     assert frame is None and "결의번호 224 의 것" in why
+
+
+def test_reattach_restores_amount_emptied_by_file_delete(monkeypatch):
+    """담당자 그림 2026-10-23: 첨부문서를 '삭제' 한 뒤 청구액 칸이 비어 보였다 — 저장 전에 줄을 열 때 읽은 청구액을 되돌려 넣는다."""
+    folder_files = ["a.pdf"]
+    plan = reattach.plan_for(kinds.GENERAL, ".", {"summary": "09_정수기 임차료(9월)", "attachments": folder_files})
+    frame = FakeSheet(rows=["1 일반 09_정수기 임차료(9월) 51,900"], files=[["옛.pdf"]])
+    frame.amounts = ["51,900"]
+    orig_clear = reattach.clear_files
+
+    def clearing(fr, wait, log):
+        ok = orig_clear(fr, wait, log)
+        fr.v["REQ_AMT"] = ""            # ERP 가 삭제 뒤 청구액을 비운 듯
+        return ok
+    monkeypatch.setattr(reattach, "clear_files", clearing)
+    monkeypatch.setattr(attach, "upload", _upload_fake(frame, []))
+    logs: list[str] = []
+    report = reattach.run(object(), frame, plan, logs.append, wait=lambda s: None, dry_run=False)
+    assert report.saved == 1 and "넣기:REQ_AMT=51,900" in frame.clicks
+    assert any("청구액 칸이 비어" in line for line in logs) and any("청구액 확인" in r for r in report.results[0].review)
