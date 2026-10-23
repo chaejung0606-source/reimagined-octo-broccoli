@@ -49,6 +49,7 @@ from ...claims import card as card_mod
 from ...claims import card_erp
 from ...claims import participants as part_mod
 from ...claims import kinds, record, rules, schema
+from ...claims import reattach as reattach_mod
 from ...claims import taxbill_run
 from ...claims import scholarship as sch
 from ...minutes.backends import claude_cli
@@ -110,9 +111,43 @@ def _money(value) -> str:
 CARD_COLUMNS = [("상태", 96), ("사용일", 70), ("건명", 200), ("금액", 84), ("청구구분", 110), ("확인할 것", None)]
 TAXBILL_COLUMNS = [("상태", 110), ("폴더", 180), ("적요", 260), ("청구액", 90), ("승인번호 · 사업자번호", 190), ("첨부", 48)]
 SCH_COLUMNS = [("상태", 104), ("No", 44), ("이름", 92), ("학번", 104), ("청구액", 92), ("개별 적요", 300), ("첨부", 56), ("확인할 것", None)]
+# 첨부만 다시 올리기(claims/reattach.py) — 청구내역 줄마다 한 줄
+REATTACH_COLUMNS = [("상태", 96), ("줄", 44), ("이름 · 폴더", 150), ("적요", 280), ("파일", 48), ("지움", 48), ("올림", 48), ("확인할 것", None)]
+REATTACH_STATUS = {"planned": ("할 것", "neutral"), "saved": ("저장", "success"), "skipped": ("건너뜀", "warning"), "failed": ("실패", "danger"),
+                   "stopped": ("멈춤", "warning"), "waiting": ("대기", "neutral"), "erp": ("넣는 중", "info")}
 SCH_STATUS = {"planned": ("넣을 것", "neutral"), "saved": ("임시저장", "success"), "review": ("저장·확인", "warning"),
               "present": ("이미 있음", "neutral"), "stopped": ("멈춤", "warning"),
               "failed": ("실패", "danger"), "waiting": ("대기", "neutral")}
+
+
+def reattach_rows(report) -> list[ReportRow]:
+    """첨부만 다시 올리기 — 결과(RowResult)마다 표 한 줄. 파일 목록 · 진행 단계는 '자세히' 칸으로."""
+    rows = []
+    plan = report.plan
+    base = plan.folder if plan is not None else ""
+    for r in report.results:
+        status, tone = REATTACH_STATUS.get(r.status, (r.status, "neutral"))
+        if r.status == "saved" and r.review:
+            status, tone = "저장·확인", "warning"
+        if r.status == "planned" and r.note:
+            status, tone = "확인 필요", "warning"
+        summary = next((p.summary for p in (plan.rows if plan is not None else []) if p.index == r.index and p.label == r.label), "")
+        detail = [f"{r.label}" + (f"  ·  청구내역 {r.sheet_row + 1}번째 줄" if r.sheet_row >= 0 else ""), f"적요: {summary or '—'}",
+                  f"붙일 파일 {len(r.files)}개:"]
+        for path in r.files:
+            detail.append("  " + (os.path.relpath(path, base) if base else os.path.basename(path)))
+        for item in r.review:
+            detail.append(f"신청 전 확인: {item}")
+        if r.note and not r.review:
+            detail.append(f"확인할 것: {r.note}")
+        if r.detail:
+            detail.append("진행:")
+            detail.extend("  " + line for line in r.detail)
+        rows.append(ReportRow(status, tone, [str(r.sheet_row + 1) if r.sheet_row >= 0 else "—", r.label, summary, f"{len(r.files)}개",
+                                             f"{r.removed}개" if r.status == "saved" else "—", f"{r.uploaded}개" if r.status == "saved" else "—",
+                                             " / ".join(r.review) or r.note],
+                              detail="\n".join(detail), tips={2: summary}, right=(3, 4, 5)))
+    return rows
 
 
 def sheet_check_rows(check) -> list[ReportRow]:
@@ -241,6 +276,8 @@ class ClaimPage(QWidget):
         b.card_done.connect(self._on_card_done)
         b.taxbill_item.connect(self._on_taxbill_item)
         b.taxbill_run_done.connect(self._on_taxbill_run_done)
+        b.reattach_row.connect(self._on_reattach_row)
+        b.reattach_done.connect(self._on_reattach_done)
         b.projects_read.connect(self._refresh_projects)
         b.failed.connect(self._on_browser_failed)
         b.sites_changed.connect(lambda _sites: self._sync_put_state())
@@ -662,13 +699,19 @@ class ClaimPage(QWidget):
         self.save_button.setObjectName("primary")
         self.save_button.setToolTip("ERP 의 [저장] 을 눌러 임시저장합니다. [신청] 은 검토 후 직접 누르세요.")
         self.save_button.clicked.connect(self._save_draft)
+        # 이미 ERP 에 있는 청구서(임시저장 · 보완요청)의 첨부문서만 폴더의 지금 파일로 바꾼다 — 청구내역 값은 넣지 않는다(담당자 2026-10-23)
+        self.reattach_button = QPushButton("첨부만 다시 올리기")
+        self.reattach_button.setToolTip("ERP 에 이미 있는 이 폴더의 청구서(임시저장 · 보완요청)를 결의서내역에서 찾아 열고, 청구내역 줄마다 첨부문서를\n"
+                                        "모두 지운 뒤 폴더의 지금 파일을 다시 올려 [저장] 합니다. 청구내역 값은 넣지 않습니다. [신청] 은 직접.\n"
+                                        "'미리 보기만' 이 켜져 있으면 무엇을 올릴지 표로만 봅니다.")
+        self.reattach_button.clicked.connect(self._reattach)
         row = QHBoxLayout()
         row.setSpacing(10)
         self.open_button = QPushButton("브라우저 열기")
         self.open_button.setToolTip("앱이 연 브라우저에서 ERP 에 로그인하세요 — 결의서내역 · 새 청구서 화면은 앱이 띄웁니다")
         self.open_button.clicked.connect(lambda: self.browser.open_browser(scan=False, owner="claim"))
         row.addWidget(self.open_button)
-        for button in (self.fill_button, self.sheet_button, self.taxbill_button, self.payee_button, self.save_button):
+        for button in (self.fill_button, self.sheet_button, self.taxbill_button, self.payee_button, self.save_button, self.reattach_button):
             row.addWidget(button)
         row.addStretch(1)
         row.addLayout(options)
@@ -745,6 +788,10 @@ class ClaimPage(QWidget):
             self.fill_button.setToolTip("" if self._browser_open else
                                         "일반 줄은 미리 보기도 ERP 작성 화면을 봅니다 — 먼저 [브라우저 열기] 로 새 청구서 화면을 띄우세요.")
         self.sheet_button.setVisible(is_sch)
+        # 첨부만 다시 올리기 — 카드 줄은 아직(결제 건마다 증빙 창이 다르다). 미리 보기는 브라우저 없이
+        can_reattach = 0 <= self._current < len(self._dirs) and self._kind(self._current) != kinds.CARD and self._ready(self._current)
+        self.reattach_button.setVisible(can_reattach)
+        self.reattach_button.setEnabled(can_reattach and not busy and not self._browser_busy and (dry or self._browser_open))
         filled = (not is_sch and self._kind(self._current) != kinds.TAXBILL and 0 <= self._current < len(self._dirs)
                   and self._status[self._current] in ("filled", "saved"))
         self.save_button.setVisible(filled)
@@ -1854,6 +1901,96 @@ class ClaimPage(QWidget):
                                    + (" 이 창을 닫으면 다음 폴더로 넘어갑니다." if nxt is not None else ""))
             if nxt is not None and job is not None:
                 QTimer.singleShot(0, lambda: self._start_next(nxt, job))
+        self._sync_buttons()
+
+    # ── 첨부만 다시 올리기 ─────────────────────────────────────────────
+    def _reattach(self) -> None:
+        """고른 폴더의 청구서가 ERP 에 이미 있을 때(임시저장 · 보완요청) — 청구내역 줄마다 첨부문서를 지우고 폴더의 지금 파일을 다시 올려 [저장].
+        담당자 요청 2026-10-23. 값은 넣지 않는다. 미리 보기는 표만(브라우저 없이)."""
+        row = self._current
+        if not (0 <= row < len(self._dirs)) or self._erp_running or self._browser_busy:
+            return
+        kind = self._kind(row)
+        project = self._projects[row] if row < len(self._projects) else self._last_project()
+        job = self._jobs[row] if row < len(self._jobs) else None
+        if job is not None:
+            self.scholarship_panel.apply_options()
+            job.project_no = project
+        plan = reattach_mod.plan_for(kind, self._dirs[row], self._data[row] if row < len(self._data) else {}, job=job, project_no=project)
+        dry = self.dry_run.isChecked()
+        if plan.problems and (not dry or not plan.rows):
+            QMessageBox.warning(self, "첨부를 다시 올리기 전에 고칠 것", "\n".join("· " + p for p in plan.problems))
+            return
+        if not dry:
+            if not self._browser_open:
+                return
+            if not show_report(
+                    self, title="첨부만 다시 올리기", tone="warning",
+                    heading=f"청구내역 줄마다 첨부문서를 모두 지우고 다시 올려 [저장] 합니다 — {len(plan.rows)}줄 · [신청] 은 누르지 않습니다",
+                    summary=plan.summary_lines(), columns=REATTACH_COLUMNS,
+                    rows=reattach_rows(reattach_mod.run(None, None, plan, lambda _m: None, dry_run=True)), notes=plan.problems,
+                    footer="앱이 그 과제의 결의서내역에서 대표적요가 같은 임시저장 · 보완요청 청구서를 찾아 [상세조회/변경] 으로 엽니다. "
+                           "줄 다시 열기 · '삭제' 가 기대대로 안 되면 멈추고 위의 노란 띠로 묻습니다. 지운 첨부는 되돌리지 못합니다.",
+                    accept_text=f"첨부만 다시 올리기 ({len(plan.rows)}줄)"):
+                return
+        self._erp_row = row
+        if not dry:
+            self._erp_running = True
+            self.scholarship_panel.set_locked(True)
+            self._set_status(row, "erp")
+            self.busy_changed.emit(True)
+            self._set_state("첨부 다시 올리는 중", "info", "브라우저를 건드리지 말고 기다리세요. 앱이 물으면 위의 노란 띠를 따르세요.")
+        self.browser.reattach_files(plan, dry_run=dry)
+        self._sync_buttons()
+
+    def _on_reattach_row(self, index: int, status: str, note: str) -> None:
+        if self._current == self._erp_row and 0 <= self._erp_row < len(self._jobs) and self._jobs[self._erp_row] is not None:
+            shown = {"saved": "saved", "failed": "failed", "stopped": "stopped", "erp": "running"}.get(status, "waiting")
+            self.scholarship_panel.set_person_status(index, shown, note)
+
+    def _on_reattach_done(self, report) -> None:
+        self._append_log("\n".join(report.lines()))
+        self.ask_banner.hide()
+        row = self._erp_row
+        was_running = self._erp_running
+        self._erp_running = False
+        self.scholarship_panel.set_locked(False)
+        self.stop_button.setEnabled(True)
+        if was_running:
+            self.busy_changed.emit(False)
+        plan = report.plan
+        summary = plan.summary_lines() if plan is not None else None
+        if report.dry_run:
+            self._set_state("미리 봄", "info", "줄마다 지우고 올릴 파일은 표와 [진행 기록] 에 있습니다. 실제로 하려면 '미리 보기만' 체크를 풀고 "
+                                             "[첨부만 다시 올리기] 를 누르세요.")
+            show_report(self, title="첨부만 다시 올리기 — 미리 보기", tone="info",
+                        heading=f"ERP 에 넣지 않았습니다 — 이렇게 합니다 ({len(report.results)}줄)",
+                        summary=summary, columns=REATTACH_COLUMNS, rows=reattach_rows(report), notes=plan.problems if plan else None,
+                        footer="실제로 하려면 '미리 보기만' 체크를 풀고 [첨부만 다시 올리기] 를 누르세요.")
+        elif report.blocked:
+            if 0 <= row < len(self._status):
+                self._set_status(row, "read")
+            self._set_state("하지 못함", "warning", report.blocked)
+            QMessageBox.warning(self, "첨부를 다시 올리지 못했습니다", report.blocked)
+        else:
+            saved = report.saved
+            review = report.review_items()
+            if 0 <= row < len(self._status):
+                self._set_status(row, "saved" if saved and not report.stopped else "problem" if report.stopped else "read")
+            if saved and not report.stopped:
+                self._set_state("첨부 다시 올림", "success", f"{saved}줄의 첨부를 다시 올려 [저장] 했습니다. ERP 에서 확인하고 [신청] 은 직접 누르세요."
+                                + (f" 신청 전 확인할 것 {len(review)}건 — 결과 창에 있습니다." if review else ""))
+            elif report.stopped:
+                self._set_state("멈춤", "warning", f"{saved}줄까지 저장하고 멈췄습니다 — 결과 창의 까닭을 보고 다시 누르면 남은 줄을 합니다.")
+            else:
+                self._set_state("한 줄도 안 됨", "warning", "첨부를 다시 올린 줄이 없습니다 — 결과 창의 까닭을 보세요.")
+            show_report(self, title="첨부만 다시 올리기 — 결과", tone="success" if saved and not report.stopped else "warning",
+                        heading=f"첨부를 다시 올려 저장한 줄 {saved}/{len(report.results)}"
+                                + (f" · 결의번호 {report.req_cnt}" if report.req_cnt else "") + (f" ({report.state})" if report.state else "")
+                                + (" · 멈춤" if report.stopped else ""),
+                        summary=summary, columns=REATTACH_COLUMNS, rows=reattach_rows(report),
+                        notes=review or report.messages, notes_title="신청 전 확인할 것" if review else "ERP 알림",
+                        footer="ERP 에서 청구내역의 첨부를 검토하고 [신청] 을 직접 누르세요 — 앱은 누르지 않습니다.")
         self._sync_buttons()
 
     def _check_sheet(self) -> None:

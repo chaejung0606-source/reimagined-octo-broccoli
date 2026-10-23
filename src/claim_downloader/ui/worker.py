@@ -52,6 +52,8 @@ class SessionWorker(QObject):
     card_done = Signal(object)          # 카드: claims.card_erp.CardReport
     taxbill_item = Signal(int, str, str)   # 세금계산서 이어 넣기: 화면 줄 번호, 상태, 설명
     taxbill_run_done = Signal(object)      # 세금계산서 이어 넣기: claims.taxbill_run.TaxbillRunReport
+    reattach_row = Signal(int, str, str)   # 첨부만 다시 올리기: 줄(명단 번호), 상태, 설명
+    reattach_done = Signal(object)         # 첨부만 다시 올리기: claims.reattach.ReattachReport
     list_ready = Signal()               # 받기: 브라우저를 연 뒤 결의서내역 목록이 보인다 — 화면이 [목록 읽기] 를 저절로
     projects_read = Signal()            # 로그인 뒤 메인화면 과제현황에서 과제 목록을 읽어 _과제목록.json 에 남겼다 — 일반청구의 과제 고르기 칸이 다시 읽는다
     parking_opened = Signal(object)     # 주차등록: parking.OpenReport — 사이트를 열고 자동 로그인했는지
@@ -124,6 +126,11 @@ class SessionWorker(QObject):
         """청구 종류 '세금계산서' 폴더들을 하나씩 일반청구 탭에 넣고 [저장] — 조회에 안 뜨면 건너뛰고 다음 폴더(session.fill_taxbill_claims)."""
         self._stop.clear()
         self._put("fill_taxbill_claims", (list(items), dry_run, test_mode), "claim")
+
+    def reattach_files(self, plan, dry_run: bool = True) -> None:
+        """이미 있는 청구서(임시저장 · 보완요청)의 줄마다 첨부문서를 지우고 폴더 파일로 다시 붙여 [저장](session.reattach_files)."""
+        self._stop.clear()
+        self._put("reattach", (plan, dry_run), "claim")
 
     def open_parking(self, path: str = "") -> None:
         """주차등록 사이트를 앱 브라우저에서 열고(열려 있으면 그 탭) 로그인 정보가 있으면 한 번 자동 로그인(parking.py).
@@ -430,6 +437,12 @@ class SessionWorker(QObject):
         report = session.fill_taxbill_claims(items, dry_run=dry_run, test_mode=test_mode, ask=self._ask_person,
                                              on_item=self.taxbill_item.emit)
         self.taxbill_run_done.emit(report)
+
+    def _do_reattach(self, session: ErpSession, plan, dry_run: bool) -> None:
+        self.busy.emit(True, "첨부만 다시 올리기 계획을 만드는 중…" if dry_run
+                       else "그 청구서를 띄워 줄마다 첨부를 지우고 다시 올리는 중… (멈추면 안내를 따라 주세요)")
+        report = session.reattach_files(plan, dry_run=dry_run, ask=self._ask_person, on_row=self.reattach_row.emit)
+        self.reattach_done.emit(report)
 
     def _do_fill_card(self, session: ErpSession, job, sheet_index: int, dry_run: bool, project_no: str, test_mode: bool) -> None:
         self.busy.emit(True, "카드청구 계획을 만드는 중…" if dry_run else "카드청구를 넣는 중… (멈추면 안내를 따라 주세요)")

@@ -258,6 +258,16 @@ BUDGET_JS = r"""() => {
 
 
 NEW_SHEET_ID = "P10"
+DETAIL_BUTTON_ID = "btnDetail"
+# 결의서 목록의 [상세조회/변경] — 받기(erp.process_one)가 누르는 것과 같은 단추. 첨부만 다시 올리기(claims/reattach.py, 담당자 2026-10-23)가
+# 이미 있는 청구서(임시저장 · 보완요청)의 작성 화면을 띄울 때 줄을 고르고(erp.select_row) 누른다. #btnDelete · #btnClone 이 아니다.
+CLICK_DETAIL_JS = r"""() => {
+  const b = document.getElementById('btnDetail');
+  if (!b) return {ok: false, why: '[상세조회/변경] 단추가 없음'};
+  if (b.disabled) return {ok: false, why: '[상세조회/변경] 단추가 비활성'};
+  b.click();
+  return {ok: true};
+}"""
 # 결의서 목록의 [일반청구] — id 와 글자가 둘 다 맞을 때만 누른다(#P11 카드청구 · #P21 반납요구 같은 이웃 단추와 헷갈리지 않게).
 CLICK_NEW_SHEET_JS = r"""() => {
   const b = document.getElementById('P10');
@@ -960,6 +970,66 @@ def open_new_sheet(context, log: Callable[[str], None], wait: Callable[[float], 
         return False, "[일반청구] 를 눌렀지만 새 작성 화면이 뜨지 않았습니다", None
     log("✓ 새 청구서 작성 화면이 떴습니다")
     return True, "새 청구서", frame
+
+
+def _page_of(context, frame):
+    page = getattr(frame, "page", None)
+    if page is not None:
+        return page
+    return next((p for p, f in _frames(context) if f is frame), None)
+
+
+def open_saved_sheet(context, project_no: str, summary: str, log: Callable[[str], None], wait: Callable[[float], None],
+                     states: tuple[str, ...] = ("임시저장", "보완")):
+    """결의서내역에서 대표적요가 summary 이고 진행구분이 states(임시저장 · 보완요청)인 청구서 하나를 골라 [상세조회/변경](#btnDetail)으로
+    그 작성 화면을 띄운다 — (창, 작성 프레임, 그 줄, 까닭). 첨부만 다시 올리기(claims/reattach.py, 담당자 2026-10-23).
+    이미 그 청구서(결의번호)의 작성 화면이 떠 있으면 누르지 않고 그것을 돌려준다. 같은 대표적요가 둘 이상이거나 없으면 띄우지 않고 까닭만.
+    누르는 것: show_list 의 화면 이동 · 줄의 선택 칸(erp.select_row) · #btnDetail — 받기(erp.process_one)와 같다. 읽기는 가상 스크롤을 내리기만."""
+    from .claims import form
+    project_no = re.sub(r"\D", "", str(project_no or ""))
+    frame, why = show_list(context, project_no, log, wait)
+    if frame is None:
+        return None, None, {}, why
+    _wait(lambda: (_evaluate(frame, erp.GRID_ROWS_JS) or 0) > 0, wait, tries=10)
+    rows = erp.collect_all(frame)
+    want = _squash(summary)
+    same = [r for r in rows if want and _squash(r.get("cont", "")) == want]
+    cands = [r for r in same if any(w in _squash(r.get("state", "")) for w in states)]
+    label = " · ".join(states)
+    if not cands:
+        others = ", ".join(f"결의번호 {r.get('seq') or '?'}({r.get('state') or '진행구분 모름'})" for r in same[:5]) + (" 외" if len(same) > 5 else "")
+        return None, None, {}, (f"과제 {project_no} 의 결의서내역({len(rows)}건)에 대표적요 '{summary}' 청구서가 없습니다" if not same else
+                                f"대표적요 '{summary}' 청구서가 있지만 진행구분이 {label} 이(가) 아닙니다 — {others}")
+    if len(cands) > 1:
+        found = ", ".join(f"결의번호 {r.get('seq') or '?'}({r.get('state') or '?'})" for r in cands)
+        return None, None, {}, f"진행구분이 {label} 인 대표적요 '{summary}' 청구서가 {len(cands)}개입니다 — {found}. ERP 에서 하나만 남기세요"
+    row = cands[0]
+    seq = str(row.get("seq") or "")
+
+    def opened():
+        p, f = form.find_form(context)
+        if f is None:
+            return None
+        return (p, f) if _sheet_state(f).get("REQ_CNT") == seq else None
+
+    got = opened()
+    if got:
+        log("작성 화면에 그 청구서(결의번호 %s · %s)가 이미 떠 있습니다" % (seq, row.get("state") or "?"))
+        return got[0], got[1], row, ""
+    page = _page_of(context, frame)
+    if page is None or not erp.select_row(page, frame, row):
+        return None, None, row, f"결의서내역에서 결의번호 {seq} 줄을 고르지 못했습니다"
+    result = _evaluate(frame, CLICK_DETAIL_JS) or {}
+    if not result.get("ok"):
+        return None, None, row, "[상세조회/변경] 을 누르지 못했습니다: " + str(result.get("why") or "목록을 읽지 못함")
+    amt = str(row.get("amt", ""))
+    log("결의서내역에서 결의번호 %s(%s%s) 줄을 골라 [상세조회/변경] 을 눌렀습니다"
+        % (seq, row.get("state") or "?", f" · {int(amt):,}원" if amt.lstrip("-").isdigit() else ""))
+    got = _wait(opened, wait, tries=40)
+    if not got:
+        return None, None, row, (f"[상세조회/변경] 을 눌렀지만 결의번호 {seq} 의 작성 화면이 뜨지 않았습니다 — " + form.describe_frames(context))
+    log("✓ 결의번호 %s 의 작성 화면이 떴습니다" % seq)
+    return got[0], got[1], row, ""
 
 
 def typed_card_fields(state: dict) -> list[str]:

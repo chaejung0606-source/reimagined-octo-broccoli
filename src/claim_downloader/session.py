@@ -22,6 +22,7 @@ from .claims import attach as claim_attach
 from .claims import form as claim_form
 from .claims import kinds as claim_kinds
 from .claims import payee as claim_payee
+from .claims import reattach as claim_reattach
 from .claims import record as claim_record
 from .claims import scholarship as claim_scholarship
 from .claims import taxbill as claim_taxbill
@@ -1151,6 +1152,55 @@ class ErpSession:
         try:
             return claim_form.save_draft(frame, self.log, messages,
                                          wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)))
+        finally:
+            page.remove_listener("dialog", on_dialog)
+
+    # ── 첨부만 다시 올리기 ───────────────────────────────────────────────
+    def reattach_files(self, plan, dry_run: bool = True, ask=None, on_row=None) -> claim_reattach.ReattachReport:
+        """이미 있는 청구서(임시저장 · 보완요청)의 청구내역 줄마다 첨부문서를 지우고 폴더 파일로 다시 붙여 [저장](claims/reattach.py,
+        담당자 2026-10-23). 결의서내역에서 대표적요가 같은 그 청구서를 찾아 [상세조회/변경] 으로 띄운다(navigate.open_saved_sheet). [신청] 은 사람.
+
+        ask(문구) 는 실측 전 단계(줄 다시 열기 · '삭제')가 기대대로 안 될 때 사람에게 — True 면 [계속], False 면 [멈추기]."""
+        ask = ask or (lambda _m: False)
+        if dry_run:
+            return claim_reattach.run(None, None, plan, self.log, ask=ask, dry_run=True)
+        if not self.browser_open:
+            raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
+        report = claim_reattach.ReattachReport(dry_run=False, plan=plan)
+        project = self._project(getattr(plan, "project_no", ""))
+        _page, current = claim_form.wait_for_form(self.page.context, tries=1)
+        typed = self._typed_sheet(current)
+        if typed:
+            report.blocked = (f"작성 화면에 저장하지 않은 입력({' · '.join(typed)})이 있습니다 — 그 청구서를 [저장] 하거나 비운 뒤 다시 누르세요. "
+                              "앱은 그 화면을 바꾸지 않습니다.")
+            self.log(report.blocked)
+            return report
+        page, frame, row, why = navigate.open_saved_sheet(self.page.context, project, plan.summary, self.log, self._wait,
+                                                          states=claim_reattach.STATE_WORDS)
+        if frame is None:
+            report.blocked = why
+            self.log("첨부만 다시 올리기 — " + why)
+            return report
+        messages: list[str] = []
+
+        def on_dialog(dialog) -> None:
+            if self.hands_on:
+                # 노란 띠에서 사람을 기다리는 동안 사람이 누른 것 — 앱이 대신 [확인] 하지 않고 브라우저에 보이게 둔다(_on_dialog)
+                self.log("ERP 확인 창(브라우저에 보임 — 직접 누르세요): %s" % dialog.message.strip()[:200])
+                return
+            messages.append(dialog.message.strip())
+            self.log("ERP 알림: %s" % dialog.message.strip())
+            try:
+                dialog.accept()
+            except Exception:  # noqa: BLE001
+                pass
+
+        page.on("dialog", on_dialog)
+        try:
+            return claim_reattach.run(
+                page, frame, plan, self.log, ask=ask, wait=lambda seconds: page.wait_for_timeout(int(seconds * 1000)),
+                messages=messages, should_stop=self.should_stop, on_row=on_row, dry_run=False,
+                req_cnt=str(row.get("seq") or ""), state=str(row.get("state") or ""))
         finally:
             page.remove_listener("dialog", on_dialog)
 

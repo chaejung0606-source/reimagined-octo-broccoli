@@ -181,8 +181,11 @@ def test_navigation_presses_only_project_claim_tab_and_new_sheet():
                 "CLICK_NEW_SHEET_JS": navigate.CLICK_NEW_SHEET_JS, "CLICK_MAIN_TAB_JS": navigate.CLICK_MAIN_TAB_JS,
                 "CLICK_PROJECT_TAB_JS": navigate.CLICK_PROJECT_TAB_JS, "CLICK_CARD_SHEET_JS": navigate.CLICK_CARD_SHEET_JS,
                 "CLICK_PAGE_JS": navigate.CLICK_PAGE_JS, "ALL_PROJECTS_JS": navigate.ALL_PROJECTS_JS,
-                "CLICK_BUDGET_TAB_JS": navigate.CLICK_BUDGET_TAB_JS}
-    assert text.count(".click()") == 12 and sum(js.count(".click()") for js in pressing.values()) == 12
+                "CLICK_BUDGET_TAB_JS": navigate.CLICK_BUDGET_TAB_JS, "CLICK_DETAIL_JS": navigate.CLICK_DETAIL_JS}
+    assert text.count(".click()") == 13 and sum(js.count(".click()") for js in pressing.values()) == 13
+    # 첨부만 다시 올리기(2026-10-23)가 이미 있는 청구서를 여는 [상세조회/변경] — 받기와 같은 #btnDetail 하나뿐(#btnDelete · #btnClone 이 아니다)
+    assert "getElementById('btnDetail')" in navigate.CLICK_DETAIL_JS and navigate.CLICK_DETAIL_JS.count("getElementById") == 1
+    assert "open_saved_sheet" in text and 'DETAIL_BUTTON_ID = "btnDetail"' in text
     # 예산 탭은 글자가 정확히 '예산' 인 보이는 링크 하나만(그 화면의 [변경신청서작성] · [삭제] · [예산출력] 은 아니다), 예산내역은 읽기만
     assert "txt(a) === '예산'" in navigate.CLICK_BUDGET_TAB_JS and "shown.length !== 1" in navigate.CLICK_BUDGET_TAB_JS
     assert ".click()" not in navigate.BUDGET_JS and ".value =" not in navigate.BUDGET_JS
@@ -346,6 +349,28 @@ def test_card_presses_only_inquiry_payment_category_evidence_and_saves():
         for word in ('"btn_addEvid"', '"P11"', "btn_gridCard", '"btnRowAdd"', "btnRowAdd1", "btnEmpInfo", "oz_report", "CALL_PRE_SFRC",
                      "btn_del", "FORBIDDEN_IDS"):
             assert word not in line, line
+
+
+def test_reattach_presses_only_row_radio_file_delete_and_reuses_attach_and_save():
+    """첨부만 다시 올리기(claims/reattach.py, 담당자 2026-10-23 "네 삭제 눌러도 됩니다") — 누르는 것은 청구내역 줄의 ○(CUR_REQ 라디오)와
+    첨부문서 목록(#fileList) 옆의 '삭제' 뿐이고, 첨부는 attach.upload · [저장] 은 form.save_draft 를 그대로 쓴다. 값 넣기 · 파일 넣기는 없다.
+    '삭제' 는 #fileList 와 같은 칸 안의 글자 '삭제' 하나만 — 청구내역 줄의 '[삭제]'(btn_del_N) · 결의서 목록의 [삭제] · [신청] 은 아니다."""
+    from claim_downloader.claims import reattach
+    text = (SRC / "claims" / "reattach.py").read_text(encoding="utf-8")
+    assert text.count(".click()") == 2
+    assert ".click()" in reattach.OPEN_ROW_JS and ".click()" in reattach.CLICK_FILE_DELETE_JS
+    assert ".click()" not in reattach.SELECT_ALL_FILES_JS                      # 보기를 고르기만
+    assert "input[name=CUR_REQ]" in reattach.OPEN_ROW_JS and reattach.ROW_RADIO_NAME == "CUR_REQ"
+    js = reattach.CLICK_FILE_DELETE_JS
+    assert "pickEl('fileList')" in js and "!== '삭제'" in js and "/^btn_del/.test(e.id" in js and "hits.length !== 1" in js
+    assert "tr.querySelector('input[name=CUR_REQ]')" in js                     # 청구내역 줄 안의 것은 아니다
+    for word in ("신청", "btnDelete", "btnClone", "allCheck", "btn_file", "새 청구서", "초기화"):
+        assert word not in reattach.OPEN_ROW_JS + reattach.CLICK_FILE_DELETE_JS + reattach.SELECT_ALL_FILES_JS, word
+    for name in ("fill(", "type(", "press(", "set_input_files(", "keyboard.", "SET_TEXT_JS", "SET_SELECT_JS", "CLICK_SAVE_JS", "CLICK_ID_JS"):
+        assert name not in text, name
+    assert "attach.upload(" in text and "save_draft(" in text and "import playwright" not in text
+    assert reattach.STATE_WORDS == ("임시저장", "보완")                            # 승인된 청구서는 손대지 않는다
+    assert reattach.DELETE_TEXT == "삭제"
 
 
 def test_file_upload_lives_only_in_attach():
