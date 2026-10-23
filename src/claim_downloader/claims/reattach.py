@@ -24,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from . import attach, kinds
-from .form import PICK_EL_JS, PROBE_JS, SET_TEXT_JS, read_state, save_draft
+from .form import PICK_EL_JS, PROBE_JS, read_state, save_draft
 from .payee import wait_until
 from .scholarship import MAX_ASKS, Ask, _read_sheet
 
@@ -382,11 +382,18 @@ def _reattach_row(page, frame, rp: RowPlan, res: RowResult, sheet_index: int, sh
             return False, "첨부 올리기: " + why
         res.review.append("첨부 올리기는 사람이 했음 — 올린 파일이 맞는지 확인")
     res.uploaded = up.uploaded if up.ok else attach.file_count(frame)
-    # 담당자 그림(2026-10-23): 첨부문서를 '삭제' 한 뒤 청구액 칸이 비어 보였다 — 비었으면 줄을 열 때 읽은 값을 되돌려 놓는다(값을 새로 정하는 것이 아니다)
-    if loaded_amt.strip("0, ") and not _state(frame, ["REQ_AMT"]).get("REQ_AMT", "").strip("0, "):
-        put = frame.evaluate(SET_TEXT_JS, ["REQ_AMT", loaded_amt]) or {}
-        log("첨부를 다시 올린 뒤 청구액 칸이 비어 줄의 청구액 %s 을(를) 다시 넣음%s" % (loaded_amt, "" if put.get("ok") else " — 못 넣음: " + str(put.get("why"))))
-        res.review.append("첨부를 지운 뒤 청구액 칸이 비어 다시 넣었음 — 청구액 확인")
+    # 담당자 그림(2026-10-23): 첨부문서를 '삭제' 한 뒤 청구액 칸이 비어 보였다. 이 기능은 청구내역 값을 넣지 않으므로(담당자 "청구내역은 입력하지 않고
+    # 첨부문서만") 앱이 채우지 않고, 비어 있으면 사람이 줄의 청구액을 확인해 넣은 뒤 [계속] — 사람이 했으면 '신청 전 확인할 것' 에 남긴다.
+    def amount_back():
+        now = _state(frame, ["REQ_AMT"]).get("REQ_AMT", "")
+        return bool(now.strip("0, ")), "청구액 칸이 비어 있음"
+    if loaded_amt.strip("0, ") and not amount_back()[0]:
+        log("첨부를 다시 올린 뒤 청구액 칸이 비어 있습니다(줄을 열 때는 %s) — 사람에게 묻습니다" % loaded_amt)
+        ok, why = _ask_until(amount_back, ask,
+                             lambda w: (f"첨부를 지우고 다시 올린 뒤 청구액 칸이 비었습니다(줄을 열 때는 {loaded_amt}). ERP 작성 화면의 청구액에 그 값을 넣은 뒤 [계속]. ({w})"), wait)
+        if not ok:
+            return False, "청구액: " + why
+        res.review.append(f"첨부를 지운 뒤 청구액 칸이 비어 사람이 다시 넣었음(줄을 열 때 {loaded_amt}) — 청구액 확인")
     # ④ [저장] — 수정 저장. 앞 줄의 알림이 남아 있으면 이 줄 저장이 끝난 것으로 보이므로 비운다(scholarship 과 같다)
     messages.clear()
     save = save_draft(frame, log, messages, wait)

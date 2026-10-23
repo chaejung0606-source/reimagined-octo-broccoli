@@ -466,10 +466,9 @@ def test_open_saved_sheet_accepts_the_visible_request_info_cell(monkeypatch):
     assert frame is None and "결의번호 224 의 것" in why
 
 
-def test_reattach_restores_amount_emptied_by_file_delete(monkeypatch):
-    """담당자 그림 2026-10-23: 첨부문서를 '삭제' 한 뒤 청구액 칸이 비어 보였다 — 저장 전에 줄을 열 때 읽은 청구액을 되돌려 넣는다."""
-    folder_files = ["a.pdf"]
-    plan = reattach.plan_for(kinds.GENERAL, ".", {"summary": "09_정수기 임차료(9월)", "attachments": folder_files})
+def test_reattach_asks_when_file_delete_empties_the_amount(monkeypatch):
+    """담당자 그림 2026-10-23: 첨부문서를 '삭제' 한 뒤 청구액 칸이 비어 보였다 — 앱은 값을 넣지 않고(청구내역은 사람 몫) 사람에게 묻는다."""
+    plan = reattach.plan_for(kinds.GENERAL, ".", {"summary": "09_정수기 임차료(9월)", "attachments": ["a.pdf"]})
     frame = FakeSheet(rows=["1 일반 09_정수기 임차료(9월) 51,900"], files=[["옛.pdf"]])
     frame.amounts = ["51,900"]
     orig_clear = reattach.clear_files
@@ -480,7 +479,19 @@ def test_reattach_restores_amount_emptied_by_file_delete(monkeypatch):
         return ok
     monkeypatch.setattr(reattach, "clear_files", clearing)
     monkeypatch.setattr(attach, "upload", _upload_fake(frame, []))
-    logs: list[str] = []
-    report = reattach.run(object(), frame, plan, logs.append, wait=lambda s: None, dry_run=False)
-    assert report.saved == 1 and "넣기:REQ_AMT=51,900" in frame.clicks
-    assert any("청구액 칸이 비어" in line for line in logs) and any("청구액 확인" in r for r in report.results[0].review)
+    asked: list[str] = []
+
+    def person(msg):
+        asked.append(msg)
+        frame.v["REQ_AMT"] = "51,900"   # 사람이 넣고 [계속]
+        return True
+    report = reattach.run(object(), frame, plan, lambda m: None, ask=person, wait=lambda s: None, dry_run=False)
+    assert report.saved == 1 and len(asked) == 1 and "51,900" in asked[0]
+    assert any("청구액 확인" in r for r in report.results[0].review)
+    assert not any(c.startswith("넣기:") for c in frame.clicks)
+    # [멈추기] 면 그 줄은 실패
+    frame = FakeSheet(rows=["1 일반 09_정수기 임차료(9월) 51,900"], files=[["옛.pdf"]])
+    frame.amounts = ["51,900"]
+    monkeypatch.setattr(attach, "upload", _upload_fake(frame, []))
+    report = reattach.run(object(), frame, plan, lambda m: None, ask=lambda m: False, wait=lambda s: None, dry_run=False)
+    assert report.saved == 0 and "청구액" in (report.results[0].note or "")
