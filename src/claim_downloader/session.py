@@ -26,7 +26,7 @@ from .claims import record as claim_record
 from .claims import scholarship as claim_scholarship
 from .claims import taxbill as claim_taxbill
 from .claims import taxbill_run
-from . import archive, diagnose, erp, logout as logout_mod, naming, navigate, project_folders, purchase, settings as settings_mod, skiplist
+from . import archive, diagnose, erp, logout as logout_mod, naming, navigate, progress, project_folders, purchase, settings as settings_mod, skiplist
 from .reconcile import reconcile
 from .targets import Selection, select_targets
 
@@ -1441,6 +1441,12 @@ class ErpSession:
                 sel.targets = []
         self.log("대상 %d건 (이미 보관된 %d건은 건너뜀)" % (len(sel.targets), sel.skipped)
                  + (f" → {root}" if root is not None and sel.targets else ""))
+        try:
+            # 다운로드 현황(구글 시트 탭) — 목록의 모든 줄을 받을 것인지 · 왜 아닌지로(progress.py, 담당자 2026-10-23)
+            progress.record_claims(listed, rows, self.done, unwanted, root,
+                                   blocked=next((why for no, why in sel.blocked if no == listed), ""))
+        except OSError as error:
+            self.log(f"다운로드 현황을 남기지 못했습니다: {error}")
         return sel
 
     def _own_budget(self, project: str, root) -> bool:
@@ -1554,8 +1560,12 @@ class ErpSession:
         cfg = self._load_settings()
         seen: set[str] = set()
         others = 0
+        done_before = purchase.load_done(purchase.purchase_home(cfg.out_root))
+        listed: dict[str, list[dict]] = {n: [] for n in wanted}      # 다운로드 현황 — 고른 과제의 줄 전부(이미 다 받은 건도)
+        complete = True
         for start, end in purchase.windows(*rng):
             if self.should_stop():
+                complete = False
                 break
             ok, why = purchase.search(frame, start, end, self.log, self._wait)
             if not ok:
@@ -1564,7 +1574,6 @@ class ErpSession:
             if rows is None:
                 raise ListNotFound(erp.dump_context(ctx), "구매진행관리 목록(IBSheet)을 읽지 못했습니다 — 그 화면을 [화면 구조 저장] 으로 보내 주세요")
             mine = 0
-            done_before = purchase.load_done(purchase.purchase_home(cfg.out_root))
             already = 0
             for row in rows:
                 no = str(row.get("req_no") or "")
@@ -1575,6 +1584,7 @@ class ErpSession:
                     others += 1
                     continue
                 seen.add(no)
+                listed[prj].append(row)
                 if no in done_before:
                     # 지난 받기에서 끝까지 받은 건 — 다시 열지 않는다(담당자 2026-10-22). 다시 받으려면 [도구] 의 받은 기록 비우기
                     already += 1
@@ -1593,6 +1603,13 @@ class ErpSession:
         sel.projects = [p.no for p in picked]
         self.log("구매요청(계약) 건 %d건" % len(sel.targets) + (f" (다른 과제의 건 {others}건은 뺌)" if others else "")
                  + " — 받을 때 건마다 상세를 열어 첨부를 받고, 이미 있는 파일은 건너뜁니다")
+        if complete:
+            try:
+                for n in wanted:
+                    if dated(n):
+                        progress.record_purchases(n, listed[n], done_before)       # 다운로드 현황(구글 시트 탭)
+            except OSError as error:
+                self.log(f"다운로드 현황을 남기지 못했습니다: {error}")
         return sel
 
     def read_docs(self, projects: list[str], claims: bool = True, purchases: bool = False) -> Selection:
@@ -1625,7 +1642,15 @@ class ErpSession:
     # ── 받기 ─────────────────────────────────────────────────────────────
     def download(self, targets: list[dict], on_item: ItemCallback | None = None, project_no: str = "") -> RunSummary:
         cfg = self._load_settings()
-        notify = on_item or (lambda *_: None)
+        report = on_item or (lambda *_: None)
+
+        def notify(i: int, status: str, detail: str) -> None:
+            report(i, status, detail)
+            try:
+                progress.record_claim_item(targets[i], status, detail)       # 다운로드 현황(구글 시트 탭) — 건마다 O/X
+            except OSError as error:
+                self.log(f"다운로드 현황을 남기지 못했습니다: {error}")
+
         summary = RunSummary()
         retried: dict[str, int] = {}
         # 구매요청(계약) 서류 줄(purchase.KIND)은 청구서와 다른 화면(구매·자산)에서 받는다 — 아래 청구서 고리는 건너뛰고 끝에 따로(purchase.run)
@@ -1783,6 +1808,10 @@ class ErpSession:
             psum = purchase.run(self.page.context, self.page, picked, cfg.out_root, self.log, self._wait,
                                 lambda k, status, detail: notify(purchase_idx[k], status, detail), self.should_stop)
             summary.purchase = psum
+            try:
+                progress.record_purchase_results(psum.cases)                 # 다운로드 현황 — 구매요청 · 검사처리 칸
+            except OSError as error:
+                self.log(f"다운로드 현황을 남기지 못했습니다: {error}")
             summary.ok += psum.ok
             failed_req = {c.req_no for c in psum.failed}
             summary.failed += [t for t in picked if str(t.get("req_no") or "") in failed_req]

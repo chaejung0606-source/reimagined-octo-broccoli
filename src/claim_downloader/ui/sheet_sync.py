@@ -9,23 +9,27 @@ import threading
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from .. import parking_sheet
+from .. import parking_sheet, progress
 
 
 class SheetSync(QObject):
     synced = Signal(object)        # parking_sheet.Result — 관리대장을 맞춘 뒤
     checked = Signal(object)       # parking_sheet.Result — [연결 확인]
     history_saved = Signal(object)  # parking_sheet.Result — 할인내역 탭에 쌓은 뒤
+    status_pushed = Signal(object)  # parking_sheet.Result — 증빙 다운로드 현황을 '다운로드 현황' 탭에 쓴 뒤(progress.push)
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self.busy = False
         self._again = False
+        self.status_busy = False
+        self._status_again: str | None = None
         self.last: parking_sheet.Result | None = None
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.run_now)
         self.synced.connect(self._finished)
+        self.status_pushed.connect(self._status_finished)
 
     @staticmethod
     def connected() -> bool:
@@ -52,6 +56,24 @@ class SheetSync(QObject):
         if self.connected() and rows:
             threading.Thread(target=lambda: self.history_saved.emit(self._safe(lambda: parking_sheet.push_history(headers, rows))),
                              daemon=True).start()
+
+    def push_status(self, out_root: str = "") -> bool:
+        """증빙 다운로드 현황을 '다운로드 현황' 탭에 통째로 쓴다(progress.push). 쓰는 중이면 끝난 뒤 한 번 더(받기 중 건마다 바뀐 것이 빠지지 않게).
+        연결 전이면 False — 부른 쪽이 안내한다."""
+        if not self.connected():
+            return False
+        if self.status_busy:
+            self._status_again = out_root
+            return True
+        self.status_busy = True
+        threading.Thread(target=lambda: self.status_pushed.emit(self._safe(lambda: progress.push(out_root=out_root))), daemon=True).start()
+        return True
+
+    def _status_finished(self, _result) -> None:
+        self.status_busy = False
+        if self._status_again is not None:
+            again, self._status_again = self._status_again, None
+            self.push_status(again)
 
     @staticmethod
     def _safe(work) -> parking_sheet.Result:

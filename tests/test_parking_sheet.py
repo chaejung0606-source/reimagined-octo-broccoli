@@ -67,6 +67,9 @@ class FakeWebApp:
         if body["action"] == "ledger_put":
             self.ledger = [["" if c is None else str(c) for c in r] for r in body["rows"]]
             return dict(ok=True, count=len(self.ledger), **info)
+        if body["action"] == "status_put":
+            self.status = body
+            return dict(ok=True, count=len(body.get("rows") or []), **info)
         if body["action"] == "history_add":
             added = 0
             for row, key in zip(body["rows"], body["keys"]):
@@ -182,7 +185,7 @@ def test_history_rows_are_kept_once(app):
 
 
 def test_script_has_the_actions_the_app_uses():
-    for action in ("ping", "ledger_get", "ledger_put", "history_add"):
+    for action in ("ping", "ledger_get", "ledger_put", "history_add", "log_add", "status_put"):
         assert f"body.action === '{action}'" in sheet.SCRIPT
     assert "body.token !== TOKEN" in sheet.SCRIPT and "LockService" in sheet.SCRIPT
     head = sheet.SCRIPT.split("const LEDGER_HEAD = [")[1].split("]")[0]

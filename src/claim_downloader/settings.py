@@ -137,6 +137,11 @@ def parking_sheet_path() -> Path:
     return data_dir() / "_구글시트연동.json"
 
 
+def progress_path() -> Path:
+    """다운로드 현황(progress.py) — 결의서 · 구매요구 건마다 받았는지. 대표적요 · 대표건명(사람 이름이 들 수 있음)이 있어 저장소 · 배포에서 뺀다."""
+    return data_dir() / "_증빙현황.json"
+
+
 def skip_path() -> Path:
     """받지 않는 결의서(skiplist.py) — 청구서출력이 없어 받을 수 없는 결의서. 대표적요(사람 이름이 들 수 있음)가 있어 저장소 · 배포에서 뺀다."""
     return data_dir() / "_받지않는결의서.json"

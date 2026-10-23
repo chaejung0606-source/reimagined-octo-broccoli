@@ -594,6 +594,7 @@ class CaseResult:
     photos: int = 0
     size: int = 0                                         # 이번에 받은 바이트
     inspected: bool = False                               # 검사처리 화면에서 이 건을 봤는지
+    inspect_seen: int = 0                                 # 검사처리 화면에 있던 첨부 · 물품 수(받았든 이미 있든) — 다운로드 현황의 검사처리 칸
     note: str = ""                                        # 건 전체의 까닭(과제 폴더 없음 · 상세를 못 띄움 …)
     ok: bool = True
 
@@ -1248,6 +1249,7 @@ def inspect_cases(context, page, cases: dict[str, CaseResult], folders: dict[str
             result.inspected = True
             files = _eval(frame, INSPECT_FILES_JS) or []
             items = _eval(frame, ITEMS_JS) or []
+            result.inspect_seen += len(files) + len(items)
             log(f"      검사처리 '{row.get('cont_nm', '')[:30]}' — 첨부 {len(files)}개 · 물품 {len(items)}개")
             _save_files(page, _frame_url(frame), files, folder / INSPECT_DIR, result, log, prefix=INSPECT_DIR + "/", frame=frame)
             optional = no_photo_contract(row)

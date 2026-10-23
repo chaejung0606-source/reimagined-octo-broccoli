@@ -9,6 +9,8 @@
   맞춘 대장을 시트에 다시 쓴다 — 시트에서 고친 줄은 스크립트가 '수정시각' 을 찍어 앱보다 늦으면 시트 것이 이긴다.
 - '로그' 탭: 업무 화면의 [로그 보내기] 가 개인정보를 가린 실행 기록을 보낸다(log_send.py, 담당자 2026-10-22 — 깃허브 대신 구글 시트).
   스크립트의 doGet 이 열쇠(log_key)가 맞는 요청에만 그 기록을 글로 돌려준다 — 그 주소를 채팅에 붙이면 Claude 가 읽는다. 열쇠로는 기록만 읽힌다.
+- '다운로드 현황' 탭: 증빙 다운로드의 건마다 청구서 · 구매요청 · 검사처리 서류를 받았는지 O/X(progress.py, 담당자 2026-10-23). 앱이 표를 통째로
+  다시 쓰고(status_put) 스크립트가 서식(머리 고정 · 거르기 · 칸 너비 · O/X 색)을 입힌다 — 시트에서 고쳐도 다음에 쓸 때 덮인다(앱의 기록이 기준).
 웹 앱은 '모든 사용자' 접근으로 배포해야 앱이 로그인 없이 부를 수 있다 — 그래서 앱이 만든 토큰을 스크립트에 넣어, 토큰이 없는 요청은 아무것도 주지 않는다.
 주소 · 토큰은 이 PC 의 `_구글시트연동.json` 에만(저장소 · 배포 · 기록에는 두지 않는다). 시트의 줄(이름 · 차량번호)은 기록에 남기지 않는다.
 """
@@ -47,6 +49,8 @@ const TEXT_COLS = [1, 10, 11, 12];   // 날짜 · id · 시각은 글자 그대�
 const LOGS = '로그';
 const LOG_HEAD = ['id', '보낸 때', '업무', '오류', '앱', '조각', '내용'];
 const LOG_KEEP = 30;                  // 최근 30번 보낸 것만 남긴다
+const STATUS = '다운로드 현황';        // 증빙 다운로드 — 건마다 청구서 · 구매요청 · 검사처리 O/X (앱이 통째로 다시 쓴다)
+const MARK_STYLE = {'O': ['#1E7F37', '#D9EAD3'], 'X': ['#B3261E', '#F4CCCC'], '△': ['#8A6D00', '#FFF2CC'], '': ['#9E9E9E', '#E3E3E3']};
 
 function doGet(e) {
   const p = (e && e.parameter) || {};
@@ -63,8 +67,9 @@ function doPost(e) {
   try {
     const ss = SpreadsheetApp.getActive();
     const info = {name: ss.getName(), url: ss.getUrl()};
-    if (body.action === 'ping') { ledgerSheet(); return out(Object.assign({ok: true, logs: true}, info)); }
+    if (body.action === 'ping') { ledgerSheet(); return out(Object.assign({ok: true, logs: true, status: true}, info)); }
     if (body.action === 'log_add') return out(Object.assign({ok: true, id: addLog(body)}, info));
+    if (body.action === 'status_put') return out(Object.assign({ok: true, count: writeStatus(body)}, info));
     if (body.action === 'ledger_get') return out(Object.assign({ok: true, rows: readLedger()}, info));
     if (body.action === 'ledger_put') { writeLedger(body.rows || []); return out(Object.assign({ok: true, count: (body.rows || []).length}, info)); }
     if (body.action === 'history_add') return out(Object.assign({ok: true, added: addHistory(body.headers || [], body.rows || [], body.keys || [])}, info));
@@ -184,6 +189,44 @@ function addLog(body) {
     if (k > 0) sh.deleteRows(2, k);
   }
   return id;
+}
+
+// ── 다운로드 현황 — 앱이 표(머리글 · 줄)를 통째로 보내면 탭을 다시 쓰고 서식을 입힌다 ──
+// body.marks: O/X 칸 번호(1부터) · body.amount: 금액 칸 · body.texts: 글자 서식 칸(번호 · 날짜) · body.widths: 칸 너비(px) · body.legend: 1행 설명
+function writeStatus(body) {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(STATUS);
+  if (!sh) sh = ss.insertSheet(STATUS, 0);
+  const head = body.head || [], rows = body.rows || [], marks = body.marks || [], widths = body.widths || [];
+  const width = Math.max(head.length, 1);
+  const filter = sh.getFilter();
+  if (filter) filter.remove();
+  sh.clear();
+  if (sh.getMaxRows() < rows.length + 2) sh.insertRowsAfter(sh.getMaxRows(), rows.length + 2 - sh.getMaxRows());
+  if (sh.getMaxColumns() < width) sh.insertColumnsAfter(sh.getMaxColumns(), width - sh.getMaxColumns());
+  sh.getRange(1, 1, 1, sh.getMaxColumns()).breakApart();
+  sh.getRange(1, 1, 1, width).merge().setValue(String(body.legend || '')).setFontColor('#666666').setFontSize(9).setWrap(false);
+  sh.getRange(2, 1, 1, width).setValues([head]).setFontWeight('bold').setBackground('#EEEAFB').setFontColor('#3B3366')
+    .setHorizontalAlignment('center').setVerticalAlignment('middle');
+  sh.setFrozenRows(2);
+  sh.setFrozenColumns(Math.min(2, width));
+  widths.forEach((w, i) => { if (w) sh.setColumnWidth(i + 1, w); });
+  if (!rows.length) return 0;
+  (body.texts || []).forEach(c => sh.getRange(3, c, rows.length, 1).setNumberFormat('@'));
+  if (body.amount) sh.getRange(3, body.amount, rows.length, 1).setNumberFormat('#,##0').setHorizontalAlignment('right');
+  const area = sh.getRange(3, 1, rows.length, width);
+  area.setValues(rows.map(r => head.map((h, i) => r[i] === undefined || r[i] === null ? '' : r[i])));
+  area.setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP).setVerticalAlignment('middle')
+      .setBorder(true, true, true, true, true, true, '#DDDDDD', SpreadsheetApp.BorderStyle.SOLID);
+  marks.forEach(c => {
+    const col = sh.getRange(3, c, rows.length, 1);
+    const vals = rows.map(r => String(r[c - 1] === undefined || r[c - 1] === null ? '' : r[c - 1]));
+    col.setHorizontalAlignment('center').setFontWeight('bold').setFontSize(12);
+    col.setFontColors(vals.map(v => [(MARK_STYLE[v] || MARK_STYLE[''])[0]]));
+    col.setBackgrounds(vals.map(v => [(MARK_STYLE[v] || MARK_STYLE[''])[1]]));
+  });
+  sh.getRange(2, 1, rows.length + 1, width).createFilter();
+  return rows.length;
 }
 
 // 읽기 — id 가 없으면 가장 최근 것, 'list' 면 남은 것의 목록
@@ -380,6 +423,7 @@ class Result:
     changed: bool = False    # 이 PC 의 대장이 바뀌었는지(화면을 다시 그린다)
     added: int = 0           # 할인내역 탭에 더한 줄
     logs: bool = False       # 붙여 넣은 스크립트가 [로그 보내기] 를 받는 판인지(ping)
+    status: bool = False     # 붙여 넣은 스크립트가 [다운로드 현황] 을 받는 판인지(ping)
     when: str = field(default_factory=lambda: time.strftime("%H:%M"))
 
 
@@ -477,7 +521,7 @@ def check(config: Config | None = None, opener=None) -> Result:
         return Result(note=str(error))
     _remember(config, data)
     return Result(ok=True, note=f"연결됐습니다 — 시트 '{data.get('name', '')}'", sheet_url=config.sheet_url, sheet_name=config.sheet_name,
-                  logs=bool(data.get("logs")))
+                  logs=bool(data.get("logs")), status=bool(data.get("status")))
 
 
 def sync_ledger(config: Config | None = None, opener=None) -> Result:

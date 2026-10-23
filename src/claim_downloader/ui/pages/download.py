@@ -41,11 +41,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import archive, navigate, project_folders, purchase, rebudget, settings, skiplist
+from ... import archive, navigate, parking_sheet, progress, project_folders, purchase, rebudget, settings, skiplist
 from .. import project_box
 from ...targets import volume_warning
 from ..art import Art
 from ..log_button import LogSendButton, warn
+from ..sheet_sync import instance as sheet_sync
 from ..report_dialog import ReportRow, show_report
 from ..flow import CURRENT, FlowStep
 from ..flowlogic import DOWNLOAD_ORDER, download_stage, flow_states
@@ -173,6 +174,7 @@ class DownloadPage(QWidget):
         w.failed.connect(self._on_failed)
         w.browser_state.connect(self._on_browser_state)
         w.list_ready.connect(self._on_list_ready)
+        sheet_sync().status_pushed.connect(self._on_status_pushed)
         w.projects_read.connect(self._refresh_projects)
         w.rebudget_planned.connect(self._on_rebudget_planned)
         w.rebudget_applied.connect(self._on_rebudget_applied)
@@ -208,6 +210,11 @@ class DownloadPage(QWidget):
         self.log_button.setToolTip("앱이 한 일을 차례로 적은 기록을 아래에 펼칩니다")
         self.log_button.toggled.connect(lambda on: self.log_card.setVisible(on))
         head.addWidget(self.log_button, 0, Qt.AlignVCenter)
+        self.progress_button = QPushButton("다운로드 현황")
+        self.progress_button.setObjectName("ghost")
+        self.progress_button.setToolTip("과제마다 건별로 청구서 · 구매요청 · 검사처리 서류를 받았는지(O · X · △)를 구글 시트 '다운로드 현황' 탭에 쓰고 엽니다")
+        self.progress_button.clicked.connect(self._show_progress)
+        head.addWidget(self.progress_button, 0, Qt.AlignVCenter)
         head.addWidget(LogSendButton("증빙 다운로드"), 0, Qt.AlignVCenter)
         self.tools_button = QPushButton("도구")
         self.tools_button.setObjectName("ghost")
@@ -900,6 +907,7 @@ class DownloadPage(QWidget):
         self._sync_empty()
         self._sync_buttons()
         self.counts_changed.emit()
+        sheet_sync().push_status(settings.load().out_root)      # 다운로드 현황(구글 시트) — 연결돼 있을 때만, 조용히
 
     def _on_list_failed(self, message: str) -> None:
         self._auto_run = False
@@ -963,6 +971,52 @@ class DownloadPage(QWidget):
             self._set_state("완료", "success", text)
         self.refresh_counts()
         self._sync_buttons()
+        sheet_sync().push_status(settings.load().out_root)      # 다운로드 현황(구글 시트) — 건마다 O/X 가 바뀌었다
+
+    def _show_progress(self) -> None:
+        """[다운로드 현황] — 시트에 쓴 뒤 그 시트를 연다(담당자 2026-10-23 "클릭하면 구글시트가 열려서 다운로드 현황을 한눈에"). 연결 전이면 안내."""
+        summary = progress.summary_text(settings.load().out_root)
+        if not parking_sheet.load_config().connected:
+            box = QMessageBox(QMessageBox.Information, "다운로드 현황", progress.NOT_CONNECTED + "\n\n지금 앱이 기억하는 현황: " + summary,
+                              QMessageBox.Close, self)
+            open_settings = box.addButton("설정 열기", QMessageBox.ActionRole)
+            box.setDefaultButton(QMessageBox.Close)
+            box.exec()
+            if box.clickedButton() is open_settings:
+                self.need_settings.emit()
+            return
+        self._progress_wanted = True
+        self.progress_button.setEnabled(False)
+        self._status_message("다운로드 현황을 구글 시트에 쓰는 중…")
+        sheet_sync().push_status(settings.load().out_root)
+
+    def _on_status_pushed(self, result) -> None:
+        self.progress_button.setEnabled(True)
+        wanted, self._progress_wanted = getattr(self, "_progress_wanted", False), False
+        if result.ok:
+            self._status_message(f"다운로드 현황 — {result.note}")
+            if wanted and result.sheet_url:
+                QDesktopServices.openUrl(QUrl(result.sheet_url))
+            elif wanted:
+                QMessageBox.information(self, "다운로드 현황", result.note + "\n\n시트 주소를 아직 모릅니다 — 설정 → '구글 시트 연동' 의 [저장하고 연결 확인] 을 한 번 누르면 "
+                                        "그다음부터 이 단추가 시트를 엽니다.")
+            return
+        self._status_message("다운로드 현황을 구글 시트에 쓰지 못했습니다")
+        if wanted:
+            box = QMessageBox(QMessageBox.Warning, "다운로드 현황", result.note, QMessageBox.Close, self)
+            open_sheet = box.addButton("시트 열기", QMessageBox.ActionRole) if result.sheet_url else None
+            open_settings = box.addButton("설정 열기", QMessageBox.ActionRole)
+            box.setDefaultButton(QMessageBox.Close)
+            box.exec()
+            if open_sheet is not None and box.clickedButton() is open_sheet:
+                QDesktopServices.openUrl(QUrl(result.sheet_url))
+            elif box.clickedButton() is open_settings:
+                self.need_settings.emit()
+
+    def _status_message(self, text: str) -> None:
+        window = self.window()
+        if window is not None and hasattr(window, "statusBar"):
+            window.statusBar().showMessage(text, 6000)
 
     def _on_relogin(self, message: str) -> None:
         self.banner_text.setText(message)

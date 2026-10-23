@@ -25,10 +25,10 @@ class ParkingSheetCard(Card):
     changed = Signal()
 
     def __init__(self, parent=None):
-        super().__init__("구글 시트 연동 — 관리대장 · 로그 보내기",
+        super().__init__("구글 시트 연동 — 관리대장 · 로그 보내기 · 다운로드 현황",
                          "주차등록 사이트의 할인 내역을 구글 시트 '할인내역' 탭에 쌓고, 공무확인증 관리대장을 그 시트의 '관리대장' 탭과 "
-                         "맞춥니다 — 시트에서 고친 것도 앱에 보입니다. 업무 화면의 [로그 보내기] 도 이 시트의 '로그' 탭으로 보냅니다. "
-                         "시트는 담당자 구글 계정에 만듭니다.", art="overview")
+                         "맞춥니다 — 시트에서 고친 것도 앱에 보입니다. 업무 화면의 [로그 보내기] 는 이 시트의 '로그' 탭으로, 증빙 다운로드의 "
+                         "[다운로드 현황] 은 '다운로드 현황' 탭으로 씁니다. 시트는 담당자 구글 계정에 만듭니다.", art="overview")
         self.add(WrapLabel(STEPS))
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -100,9 +100,10 @@ class ParkingSheetCard(Card):
         self.save_button.setEnabled(True)
         if result.ok:
             self.state.set_status("연결됨", "success")
+            missing = [name for name, ok in (("[로그 보내기]", result.logs), ("[다운로드 현황]", result.status)) if not ok]
             self.note.setText(result.note + " — 주차등록 → 관리대장에서 시트와 맞춥니다."
-                              + (" [로그 보내기] 도 됩니다." if result.logs else
-                                 "\n스크립트가 옛 판이라 [로그 보내기] 는 아직 안 됩니다 — [스크립트 복사] 로 새 글을 붙여 넣고 "
+                              + (" [로그 보내기] · [다운로드 현황] 도 됩니다." if not missing else
+                                 f"\n스크립트가 옛 판이라 {' · '.join(missing)} 은 아직 안 됩니다 — [스크립트 복사] 로 새 글을 붙여 넣고 "
                                  "배포 → 배포 관리 → (연필) 수정 → 버전 '새 버전' → 배포."))
             self.open_button.show()
             sheet_sync().run_now()
