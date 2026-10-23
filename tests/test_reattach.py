@@ -422,3 +422,27 @@ def test_claim_page_button_previews_without_browser(tmp_path, monkeypatch):
     finally:
         _close(page)
         app.processEvents()
+
+
+def test_open_saved_sheet_accepts_url_or_summary_when_req_cnt_is_missing(monkeypatch):
+    """담당자 실제 2026-10-23: 보완요청 결의번호 223 을 열자 작성 프레임은 떴는데 숨은 #REQ_CNT 가 그 번호가 아니라 멈췄다 —
+    주소의 REQ_CNT=223 이나(결의번호 칸이 없으면) 새로 뜬 화면의 대표적요로도 그 청구서로 본다. 다른 번호면 여전히 아니다."""
+    rows = [{"seq": "223", "cont": "09_정수기 임차료(9월)", "state": "보완요청", "amt": "7800000"}]
+    calls, form_frame = _patch_list(monkeypatch, rows, seq="")
+    form_frame.url = "https://erp/rexpe_0084_01.act?PRJ_NO=202408470003&REQ_CNT=223&APPR_DIV_CD=45"
+    page, frame, row, why = navigate.open_saved_sheet(object(), "202408470003", "09_정수기 임차료(9월)", lambda m: None, lambda s: None)
+    assert frame is form_frame and why == "" and calls == ["줄:223", "상세조회"]
+    # 주소에도 없으면 — 눌러서 새로 뜬 화면의 대표적요로
+    calls, form_frame = _patch_list(monkeypatch, rows, seq="")
+    form_frame.url = "https://erp/rexpe_0084_01.act?PRJ_NO=202408470003"
+    monkeypatch.setattr(navigate, "_appl_cont", lambda f: "09_정수기  임차료(9월)")
+    page, frame, row, why = navigate.open_saved_sheet(object(), "202408470003", "09_정수기 임차료(9월)", lambda m: None, lambda s: None)
+    assert frame is form_frame and why == ""
+    # 대표적요도 다르면 모름 — 까닭에 본 값
+    monkeypatch.setattr(navigate, "_appl_cont", lambda f: "02_다른 청구서")
+    page, frame, row, why = navigate.open_saved_sheet(object(), "202408470003", "09_정수기 임차료(9월)", lambda m: None, lambda s: None)
+    assert frame is None and "02_다른 청구서" in why and "뜨지 않았습니다" in why
+    # 다른 결의번호의 화면은 아니다
+    calls, form_frame = _patch_list(monkeypatch, rows, seq="224")
+    page, frame, row, why = navigate.open_saved_sheet(object(), "202408470003", "09_정수기 임차료(9월)", lambda m: None, lambda s: None)
+    assert frame is None and "결의번호 224 의 것" in why

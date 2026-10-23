@@ -1006,16 +1006,23 @@ def open_saved_sheet(context, project_no: str, summary: str, log: Callable[[str]
     row = cands[0]
     seq = str(row.get("seq") or "")
 
-    def opened():
+    seen: dict = {}
+
+    def opened(fresh_only: bool = False):
         p, f = form.find_form(context)
         if f is None:
             return None
-        return (p, f) if _sheet_state(f).get("REQ_CNT") == seq else None
+        why = sheet_mismatch(f, seq, summary, before if fresh_only else None)
+        seen["why"] = why
+        return (p, f) if not why else None
 
+    before = None
     got = opened()
     if got:
         log("작성 화면에 그 청구서(결의번호 %s · %s)가 이미 떠 있습니다" % (seq, row.get("state") or "?"))
         return got[0], got[1], row, ""
+    _p0, current = form.find_form(context)
+    before = _sheet_state(current) if current is not None else {}
     page = _page_of(context, frame)
     if page is None or not erp.select_row(page, frame, row):
         return None, None, row, f"결의서내역에서 결의번호 {seq} 줄을 고르지 못했습니다"
@@ -1025,11 +1032,47 @@ def open_saved_sheet(context, project_no: str, summary: str, log: Callable[[str]
     amt = str(row.get("amt", ""))
     log("결의서내역에서 결의번호 %s(%s%s) 줄을 골라 [상세조회/변경] 을 눌렀습니다"
         % (seq, row.get("state") or "?", f" · {int(amt):,}원" if amt.lstrip("-").isdigit() else ""))
-    got = _wait(opened, wait, tries=40)
+    got = _wait(lambda: opened(fresh_only=True), wait, tries=40)
     if not got:
-        return None, None, row, (f"[상세조회/변경] 을 눌렀지만 결의번호 {seq} 의 작성 화면이 뜨지 않았습니다 — " + form.describe_frames(context))
+        return None, None, row, (f"[상세조회/변경] 을 눌렀지만 결의번호 {seq} 의 작성 화면이 뜨지 않았습니다 — "
+                                 + (seen.get("why") or "작성 화면 없음") + " — " + form.describe_frames(context))
     log("✓ 결의번호 %s 의 작성 화면이 떴습니다" % seq)
     return got[0], got[1], row, ""
+
+
+def sheet_mismatch(frame, seq: str, summary: str, before: dict | None = None) -> str:
+    """작성 프레임이 결의번호 seq 의 청구서가 아니면 그 까닭(빈 글이면 맞다). 담당자 실제 2026-10-23: 보완요청 결의번호 223 을 [상세조회/변경] 으로
+    열자 작성 프레임(rexpe_0084_01.act)은 떴는데 숨은 #REQ_CNT 가 그 번호가 아니라 '뜨지 않았습니다' 로 멈췄다 — #REQ_CNT 는 임시저장(실측 ⑤)에서만
+    확인된 칸이라 이것만 믿지 않는다. ① #REQ_CNT == seq ② 프레임 주소의 REQ_CNT=seq(실측 ⑤ 주소 꼴) ③ 둘 다 없고(다른 번호가 아니고) 눌러서 새로 뜬
+    화면(before 와 REQ_SEQ_NO 가 다름)의 대표적요(#APPL_CONT)가 summary 와 같으면 그 청구서로 본다. """
+    state = _sheet_state(frame)
+    cnt = state.get("REQ_CNT", "")
+    if cnt == seq:
+        return ""
+    url = str(getattr(frame, "url", "") or "")
+    m = re.search(r"[?&]REQ_CNT=(\d+)", url)
+    url_cnt = m.group(1) if m else ""
+    if url_cnt == seq:
+        return ""
+    if cnt or url_cnt:
+        return f"작성 화면은 결의번호 {cnt or url_cnt} 의 것입니다(#REQ_CNT '{cnt}' · 주소 REQ_CNT '{url_cnt}')"
+    if before is not None:
+        if before.get("REQ_SEQ_NO") and state.get("REQ_SEQ_NO") == before.get("REQ_SEQ_NO"):
+            return "작성 화면이 누르기 전 것 그대로입니다(결의번호 칸 없음)"
+        appl = _appl_cont(frame)
+        if appl and _squash(appl) == _squash(summary):
+            return ""
+        return f"작성 화면에 결의번호가 없고 대표적요가 '{appl or '(없음)'}' 라 결의번호 {seq} 의 것인지 모릅니다"
+    return "작성 화면에 결의번호가 없습니다"
+
+
+def _appl_cont(frame) -> str:
+    from .claims import form
+    try:
+        state = form.read_state(frame, ["APPL_CONT"])
+    except Exception:  # noqa: BLE001
+        return ""
+    return str((state.get("APPL_CONT") or {}).get("value", "") or "").strip()
 
 
 def typed_card_fields(state: dict) -> list[str]:
