@@ -97,6 +97,9 @@ GUIDE_READ = ("값을 확인한 뒤, 브라우저에서 결의서내역 → [일
               "실제로 넣으려면 '미리 보기만' 체크를 풀고 [ERP 에 채우기].")
 GUIDE_TAXBILL = ("세금계산서 폴더입니다 — 값(승인번호 · 사업자번호 · 금액)을 확인한 뒤 [ERP 에 넣기] 를 누르면 읽은 세금계산서 폴더를 하나씩 새 청구서에 "
                  "넣고 [저장] 합니다(조회 팝업에 안 뜨는 폴더는 건너뜀). 청구종류 · 증빙 창은 노란 띠가 뜨면 직접 작성하세요.")
+GUIDE_REATTACH = ("'할 일' 이 첨부만 다시 올리기입니다 — 위의 과제가 그 청구서가 있는 과제인지 확인한 뒤 ③ 의 [첨부만 다시 올리기] 를 누르세요. "
+                  "앱이 그 과제의 결의서내역에서 대표적요가 같은 임시저장 · 보완요청 청구서를 찾아 열고, 청구내역 줄마다 첨부문서를 지운 뒤 폴더의 지금 파일을 "
+                  "올려 [저장] 합니다. 청구내역 값은 넣지 않고 [신청] 은 직접. '미리 보기만' 이면 표로만 봅니다.")
 GUIDE_UNREAD = ("일반 폴더는 [내용 읽기] 를 누르면 AI 가 서류를 읽어 오른쪽 칸을 채웁니다(ERP 에는 아직 넣지 않습니다). "
                 "읽은 값을 확인하면 ③ 에서 ERP 에 넣습니다.")
 NO_BACKEND = ("일반 폴더의 [내용 읽기] 는 Claude Code 가 필요합니다(장학금 · 혁신인재지원금은 AI 없이 됩니다). Claude Code 를 설치한 뒤 "
@@ -113,6 +116,10 @@ TAXBILL_COLUMNS = [("상태", 110), ("폴더", 180), ("적요", 260), ("청구�
 SCH_COLUMNS = [("상태", 104), ("No", 44), ("이름", 92), ("학번", 104), ("청구액", 92), ("개별 적요", 300), ("첨부", 56), ("확인할 것", None)]
 # 첨부만 다시 올리기(claims/reattach.py) — 청구내역 줄마다 한 줄
 REATTACH_COLUMNS = [("상태", 96), ("줄", 44), ("이름 · 폴더", 150), ("적요", 280), ("파일", 48), ("지움", 48), ("올림", 48), ("확인할 것", None)]
+# ② 오른쪽 칸 위 '할 일' — 폴더마다 새 청구서에 넣을지, ERP 에 이미 있는 청구서(임시저장 · 보완요청)의 첨부만 다시 올릴지. ③ 의 큰 단추가 고른 것을 한다
+# (담당자 2026-10-23 "첨부문서만 다시 넣는거면은 2단계에서 선택하게 하면 헷갈릴게 줄어들지 않을까" — 전에는 ③ 에 단추가 둘이라 [ERP 에 넣기] 를 눌러 중복 띠에 막혔다).
+ACTION_FILL, ACTION_REATTACH = "fill", "reattach"
+ACTIONS = [(ACTION_FILL, "새 청구서에 넣기"), (ACTION_REATTACH, "첨부만 다시 올리기 — ERP 에 있는 임시저장 · 보완요청 청구서에")]
 REATTACH_STATUS = {"planned": ("할 것", "neutral"), "saved": ("저장", "success"), "skipped": ("건너뜀", "warning"), "failed": ("실패", "danger"),
                    "stopped": ("멈춤", "warning"), "waiting": ("대기", "neutral"), "erp": ("넣는 중", "info")}
 SCH_STATUS = {"planned": ("넣을 것", "neutral"), "saved": ("임시저장", "success"), "review": ("저장·확인", "warning"),
@@ -214,6 +221,7 @@ class ClaimPage(QWidget):
         self._jobs: list[sch.Job | None] = []            # 장학금 폴더의 명단 · 증빙
         self._cards: list[card_mod.CardJob | None] = []  # 카드 결제 기간 폴더 — 비목마다 청구서 · 결제 건
         self._projects: list[str] = []                   # 폴더마다 ERP 과제번호 — 폴더를 넣을 때 고른다(담당자 2026-10-19)
+        self._actions: list[str] = []                    # 폴더마다 할 일(ACTION_FILL · ACTION_REATTACH) — ② 오른쪽 칸 위에서 고른다
         self._running = False
         self._erp_running = False                        # 장학금을 ERP 에 넣는 중 (브라우저 스레드)
         self._stopping = False
@@ -397,6 +405,25 @@ class ClaimPage(QWidget):
         if no and no != self._last_project():
             settings.update(project_no=no)          # 마지막으로 고른 과제 — 로그인 뒤 그 과제의 청구서 화면으로 간다
 
+    def _show_row_action(self, row: int) -> None:
+        shown = 0 <= row < len(self._actions) and self._kind(row) != kinds.CARD
+        if shown:
+            self.row_action.blockSignals(True)
+            self.row_action.setCurrentIndex(max(self.row_action.findData(self._actions[row]), 0))
+            self.row_action.blockSignals(False)
+        self.row_action.setVisible(shown)
+        self._action_label.setVisible(shown)
+
+    def _row_action_changed(self, _index: int) -> None:
+        row = self._current
+        action = str(self.row_action.currentData() or ACTION_FILL)
+        if self._loading_form or not (0 <= row < len(self._actions)) or self.is_running() or action == self._actions[row]:
+            return
+        self._actions[row] = action
+        self._append_log(f"'{os.path.basename(self._dirs[row])}' 할 일: {dict(ACTIONS)[action]}")
+        self._show_form(row)              # 안내 글 · ③ 제목이 할 일을 따른다
+        self._sync_buttons()
+
     def _row_project_changed(self, _index: int) -> None:
         row = self._current
         no = str(self.row_project.currentData() or "")
@@ -565,6 +592,25 @@ class ClaimPage(QWidget):
         choose.addWidget(self.row_kind, 0, Qt.AlignVCenter)
         choose.addStretch(1)
         card.add_layout(choose)
+        # 할 일 — 새 청구서에 넣기 / 첨부만 다시 올리기. 보기 글이 길어 종류 줄에 같이 두면 좁은 오른쪽 칸(일반 줄은 2/5)에서 잘린다 — 줄 하나를 따로
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
+        action_label = QLabel("할 일")
+        action_label.setObjectName("fieldLabel")
+        action_row.addWidget(action_label, 0, Qt.AlignVCenter)
+        self.row_action = QComboBox()
+        for key, name in ACTIONS:
+            self.row_action.addItem(name, key)
+        self.row_action.setItemData(0, "그 과제의 결의서내역에 같은 청구서가 없는지 보고 새 청구서 작성 화면에 넣어 [저장] 합니다.", Qt.ToolTipRole)
+        self.row_action.setItemData(1, "ERP 에 이미 있는 이 폴더의 청구서(임시저장 · 보완요청)를 결의서내역에서 찾아 열고, 청구내역 줄마다 첨부문서를 모두 지운 뒤\n"
+                                       "폴더의 지금 파일을 다시 올려 [저장] 합니다. 청구내역 값은 넣지 않습니다. [신청] 은 직접.", Qt.ToolTipRole)
+        self.row_action.setToolTip("이 폴더로 ③ 에서 할 일 — 보완요청 · 임시저장 청구서의 첨부문서만 바꾸려면 '첨부만 다시 올리기'")
+        self.row_action.currentIndexChanged.connect(self._row_action_changed)
+        action_label.setBuddy(self.row_action)
+        action_row.addWidget(self.row_action, 0, Qt.AlignVCenter)
+        action_row.addStretch(1)
+        card.add_layout(action_row)
+        self._action_label = action_label
         # 과제는 이름이 길다 — 줄 하나를 다 쓰게 따로 둔다(한 줄에 두면 좁은 오른쪽 칸에서 과제명이 잘렸다, 담당자 2026-10-21)
         project_row = QHBoxLayout()
         project_row.setSpacing(8)
@@ -709,19 +755,14 @@ class ClaimPage(QWidget):
         self.save_button.setObjectName("primary")
         self.save_button.setToolTip("ERP 의 [저장] 을 눌러 임시저장합니다. [신청] 은 검토 후 직접 누르세요.")
         self.save_button.clicked.connect(self._save_draft)
-        # 이미 ERP 에 있는 청구서(임시저장 · 보완요청)의 첨부문서만 폴더의 지금 파일로 바꾼다 — 청구내역 값은 넣지 않는다(담당자 2026-10-23)
-        self.reattach_button = QPushButton("첨부만 다시 올리기")
-        self.reattach_button.setToolTip("ERP 에 이미 있는 이 폴더의 청구서(임시저장 · 보완요청)를 결의서내역에서 찾아 열고, 청구내역 줄마다 첨부문서를\n"
-                                        "모두 지운 뒤 폴더의 지금 파일을 다시 올려 [저장] 합니다. 청구내역 값은 넣지 않습니다. [신청] 은 직접.\n"
-                                        "'미리 보기만' 이 켜져 있으면 무엇을 올릴지 표로만 봅니다.")
-        self.reattach_button.clicked.connect(self._reattach)
+        # 첨부만 다시 올리기(임시저장 · 보완요청 청구서, 담당자 2026-10-23)는 따로 단추가 아니라 ② 의 '할 일' 로 고르고 fill_button 이 한다(_fill → _reattach)
         row = QHBoxLayout()
         row.setSpacing(10)
         self.open_button = QPushButton("브라우저 열기")
         self.open_button.setToolTip("앱이 연 브라우저에서 ERP 에 로그인하세요 — 결의서내역 · 새 청구서 화면은 앱이 띄웁니다")
         self.open_button.clicked.connect(lambda: self.browser.open_browser(scan=False, owner="claim"))
         row.addWidget(self.open_button)
-        for button in (self.fill_button, self.sheet_button, self.taxbill_button, self.payee_button, self.save_button, self.reattach_button):
+        for button in (self.fill_button, self.sheet_button, self.taxbill_button, self.payee_button, self.save_button):
             row.addWidget(button)
         row.addStretch(1)
         row.addLayout(options)
@@ -731,6 +772,13 @@ class ClaimPage(QWidget):
     # ── 상태 ────────────────────────────────────────────────────────────
     def _kind(self, row: int) -> str:
         return self._kinds[row] if 0 <= row < len(self._kinds) else kinds.GENERAL
+
+    def _action(self, row: int) -> str:
+        return self._actions[row] if 0 <= row < len(self._actions) else ACTION_FILL
+
+    def _reattaching(self, row: int) -> bool:
+        """그 줄의 할 일이 '첨부만 다시 올리기' 이고 할 수 있는 상태(카드가 아니고 폴더를 읽어 둠)인지."""
+        return self._action(row) == ACTION_REATTACH and self._reattach_possible(row)
 
     def _unread_rows(self) -> list[int]:
         """AI 로 읽을 폴더 — 일반 · 세금계산서 종류만. 장학금은 넣을 때 명단을 바로 읽는다."""
@@ -758,10 +806,23 @@ class ClaimPage(QWidget):
         self.open_button.setEnabled(not self._browser_busy)
         self.row_kind.setEnabled(can_edit and 0 <= self._current < len(self._dirs))
         self.row_project.setEnabled(can_edit and not self._browser_busy and 0 <= self._current < len(self._dirs))
+        self.row_action.setEnabled(can_edit and 0 <= self._current < len(self._dirs))
         dry = self.dry_run.isChecked()
         is_sch = kinds.uses_roster(self._kind(self._current)) and 0 <= self._current < len(self._dirs)
         is_card = self._kind(self._current) == kinds.CARD and 0 <= self._current < len(self._dirs)
-        if is_card:
+        reattach = self._reattaching(self._current)
+        if reattach:
+            # ② 의 할 일이 '첨부만 다시 올리기' — 큰 단추가 그것을 한다(_fill → _reattach). 명단은 체크한 사람 수, 일반 · 세금계산서는 한 줄.
+            # 미리 보기는 브라우저 없이 표만. 카드 줄은 아직 할 수 없다(결제 건마다 증빙 창이 다르다 — 할 일 칸 자체를 숨긴다)
+            job = self._jobs[self._current] if self._current < len(self._jobs) else None
+            count = job.count_text() if job is not None else "1줄"
+            can = (job is None or bool(job.chosen())) and not busy and not self._browser_busy and (dry or self._browser_open)
+            self.fill_button.setEnabled(can)
+            self.fill_button.setText(f"미리 보기 (첨부 · {count})" if dry else f"첨부만 다시 올리기 ({count})")
+            self.fill_button.setToolTip("ERP 에 있는 이 폴더의 청구서(임시저장 · 보완요청)를 찾아 열고 줄마다 첨부문서를 지운 뒤 폴더의 지금 파일을 올려 [저장] 합니다."
+                                        if dry or self._browser_open else "먼저 [브라우저 열기] 로 ERP 를 열고 로그인하세요. 그 청구서는 앱이 결의서내역에서 엽니다.")
+            self.sheet_button.setEnabled(job is not None and self._browser_open and not busy and not self._browser_busy)
+        elif is_card:
             # 미리 보기는 브라우저 없이. 넣기는 고른 청구서(비목) 하나의 남은 결제 건 — 카드청구 화면은 앱이 [카드청구](#P11)로 띄운다(session.fill_card)
             job = self._cards[self._current]
             index = self.card_panel.chosen_sheet() if job is not None else -1
@@ -798,11 +859,8 @@ class ClaimPage(QWidget):
             self.fill_button.setToolTip("" if self._browser_open else
                                         "일반 줄은 미리 보기도 ERP 작성 화면을 봅니다 — 먼저 [브라우저 열기] 로 새 청구서 화면을 띄우세요.")
         self.sheet_button.setVisible(is_sch)
-        # 첨부만 다시 올리기 — 카드 줄은 아직(결제 건마다 증빙 창이 다르다). 미리 보기는 브라우저 없이
-        can_reattach = self._reattach_possible(self._current)
-        self.reattach_button.setVisible(can_reattach)
-        self.reattach_button.setEnabled(can_reattach and not busy and not self._browser_busy and (dry or self._browser_open))
-        filled = (not is_sch and self._kind(self._current) != kinds.TAXBILL and 0 <= self._current < len(self._dirs)
+        # 채운 뒤의 단추들(입금처 · 세금계산서 · 임시저장)은 새 청구서에 넣을 때만 — 첨부만 다시 올리는 줄에는 뜻이 없다
+        filled = (not is_sch and not reattach and self._kind(self._current) != kinds.TAXBILL and 0 <= self._current < len(self._dirs)
                   and self._status[self._current] in ("filled", "saved"))
         self.save_button.setVisible(filled)
         self.save_button.setEnabled(filled and self._browser_open and not self._browser_busy and not running)
@@ -845,7 +903,7 @@ class ClaimPage(QWidget):
         if 0 <= self._current < len(self._dirs):
             # 제목에 고른 지출을 — 줄을 하나 더 쓰면 ② 의 표 · 칸이 그만큼 좁아진다
             name = os.path.basename(self._dirs[self._current])
-            self.step_put.title.setText(f"ERP 에 넣으세요 — {name}")
+            self.step_put.title.setText(f"{'첨부만 다시 올리세요' if self._reattaching(self._current) else 'ERP 에 넣으세요'} — {name}")
             project = self._projects[self._current] if self._current < len(self._projects) else ""
             self.step_put.title.setToolTip(f"{name} · {kinds.name_of(self._kind(self._current))}" + (f" · 과제 {project}" if project else ""))
         self.step_add.edit_button.setEnabled(not self.is_running())
@@ -955,6 +1013,7 @@ class ClaimPage(QWidget):
         self._jobs.append(None)
         self._cards.append(None)
         self._projects.append(str(self.add_project.currentData() or self._last_project()))
+        self._actions.append(ACTION_FILL)
         row = self.table.rowCount()
         self.table.setRowCount(row + 1)
         name = QTableWidgetItem(f"{os.path.basename(path)}  ·  {os.path.dirname(path)}")
@@ -994,7 +1053,7 @@ class ClaimPage(QWidget):
         if self._erp_running:
             return
         self._dirs, self._status, self._data, self._problems = [], [], [], []
-        self._kinds, self._jobs, self._cards, self._projects = [], [], [], []
+        self._kinds, self._jobs, self._cards, self._projects, self._actions = [], [], [], [], []
         self._current = -1
         self._done_count = 0
         self._folders_open = False
@@ -1036,6 +1095,7 @@ class ClaimPage(QWidget):
         self.row_kind.setCurrentIndex(max(self.row_kind.findData(kind), 0))
         self.row_kind.blockSignals(False)
         self._show_row_project(row)
+        self._show_row_action(row)
         if kind == kinds.CARD and 0 <= row < len(self._cards):
             self.form_stack.setCurrentWidget(self.card_scroll)
             self.card_panel.set_job(self._cards[row])
@@ -1059,7 +1119,7 @@ class ClaimPage(QWidget):
             self.form_card.setEnabled(True)
             self._loading_form = False
             if not self.is_running():
-                self._set_guide(GUIDE_PERSONAL if personal else
+                self._set_guide(GUIDE_REATTACH if self._reattaching(row) else GUIDE_PERSONAL if personal else
                                 GUIDE_SCHOLARSHIP_AUTO if settings.load().auto_new_sheet else GUIDE_SCHOLARSHIP)
             return
         self.form_stack.setCurrentIndex(0)
@@ -1083,7 +1143,8 @@ class ClaimPage(QWidget):
         self.form_card.setEnabled(0 <= row < len(self._data))
         self._show_problems(row)
         if 0 <= row < len(self._dirs) and not self.is_running():
-            self._set_guide(GUIDE_TAXBILL if self._ready(row) and self._kind(row) == kinds.TAXBILL else
+            self._set_guide(GUIDE_REATTACH if self._reattaching(row) else
+                            GUIDE_TAXBILL if self._ready(row) and self._kind(row) == kinds.TAXBILL else
                             GUIDE_READ if self._ready(row) else GUIDE_UNREAD)
 
     def _show_problems(self, row: int) -> None:
@@ -1249,6 +1310,9 @@ class ClaimPage(QWidget):
     # ── ERP 에 채우기 ────────────────────────────────────────────────────
     def _fill(self) -> None:
         row = self._current
+        if self._action(row) == ACTION_REATTACH:
+            self._reattach(row)
+            return
         if self._kind(row) == kinds.TAXBILL:
             self._fill_taxbill(row)
             return
@@ -1589,6 +1653,8 @@ class ClaimPage(QWidget):
         before = self._kinds[row]
         self._kinds[row] = kind
         self._cards[row] = None
+        if kind == kinds.CARD and row < len(self._actions):
+            self._actions[row] = ACTION_FILL          # 카드 줄은 첨부만 다시 올리기를 아직 못 한다
         if kinds.uses_ai(before) and kinds.uses_ai(kind) and self._status[row] not in ("waiting", "running", "failed", "skipped", "stopped"):
             # 일반 ↔ 세금계산서 — AI 로 읽은 값은 그대로 두고 종류가 정한 값(증빙구분)만 맞춘다. 다시 읽지 않는다
             self._data[row].update(kinds.fixed_values(kind))
@@ -1813,6 +1879,10 @@ class ClaimPage(QWidget):
         """중복 확인 띠의 [첨부만 다시 올리기](담당자 2026-10-23 "보완요청 와서 첨부문서 수정해야 한다고 … 그냥 장학금 청구하는 것처럼 파일만 다시 올려달라고") —
         넣기를 멈추고(새 청구서를 띄우지 않는다) 넣기가 끝나면(_on_sch_done) 같은 폴더로 첨부만 다시 올리기를 확인 창 없이 시작한다 — 할 일은 띠에 적혀 있다."""
         self._reattach_pending = self._erp_row
+        if 0 <= self._erp_row < len(self._actions):
+            self._actions[self._erp_row] = ACTION_REATTACH        # 다음부터 ③ 의 큰 단추도 첨부만 다시 올리기
+            if self._current == self._erp_row:
+                self._show_row_action(self._erp_row)
         self._set_state("첨부 다시 올리기로", "info", "넣기를 멈추고 그 청구서의 첨부만 다시 올립니다.")
         self._answer(False)
 
@@ -1995,7 +2065,7 @@ class ClaimPage(QWidget):
         summary = plan.summary_lines() if plan is not None else None
         if report.dry_run:
             self._set_state("미리 봄", "info", "줄마다 지우고 올릴 파일은 표와 [진행 기록] 에 있습니다. 실제로 하려면 '미리 보기만' 체크를 풀고 "
-                                             "[첨부만 다시 올리기] 를 누르세요.")
+                                             "③ 의 [첨부만 다시 올리기] 를 누르세요.")
             show_report(self, title="첨부만 다시 올리기 — 미리 보기", tone="info",
                         heading=f"ERP 에 넣지 않았습니다 — 이렇게 합니다 ({len(report.results)}줄)",
                         summary=summary, columns=REATTACH_COLUMNS, rows=reattach_rows(report), notes=plan.problems if plan else None,

@@ -394,7 +394,8 @@ def test_session_reattach_blocks_on_typed_sheet_and_runs_otherwise(monkeypatch, 
 
 # ── 화면 ─────────────────────────────────────────────────────────────
 def test_claim_page_button_previews_without_browser(tmp_path, monkeypatch):
-    """일반청구 ③ 의 [첨부만 다시 올리기] — 명단 폴더를 넣으면 보이고, '미리 보기만' 이면 브라우저 없이 표 창(줄마다 붙일 파일)을 띄운다."""
+    """② 오른쪽 칸 위 '할 일' 을 '첨부만 다시 올리기' 로 고르면(담당자 2026-10-23 "2단계에서 선택하게 하면 헷갈릴게 줄어들지 않을까") ③ 의 큰 단추가
+    그것이 되고 ③ 제목도 바뀐다. '미리 보기만' 이면 브라우저 없이 표 창(줄마다 붙일 파일). 따로 있던 ③ 단추는 없다."""
     from test_log_button import _close, _qt_app, _wait
     app = _qt_app()
     from claim_downloader.ui.pages import claim as claim_page
@@ -415,14 +416,29 @@ def test_claim_page_button_previews_without_browser(tmp_path, monkeypatch):
         assert page.add_folder(str(folder), kinds.SCHOLARSHIP)
         assert _wait(app, lambda: page._jobs and page._jobs[0] is not None, 10)
         page._sync_buttons()
-        assert page.reattach_button.isVisibleTo(page) and page.reattach_button.isEnabled() and page.dry_run.isChecked()
-        page._reattach()
+        assert not hasattr(page, "reattach_button")
+        assert page.row_action.isVisibleTo(page) and page.row_action.currentData() == claim_page.ACTION_FILL
+        assert page.fill_button.text().startswith("미리 보기") and "첨부" not in page.fill_button.text()
+        assert page.step_put.title.text().startswith("ERP 에 넣으세요")
+        page.row_action.setCurrentIndex(page.row_action.findData(claim_page.ACTION_REATTACH))
+        assert page._actions == [claim_page.ACTION_REATTACH]
+        assert page.fill_button.isEnabled() and page.fill_button.text().startswith("미리 보기 (첨부") and page.dry_run.isChecked()
+        assert page.step_put.title.text().startswith("첨부만 다시 올리세요") and "첨부만 다시 올리기" in page._guide
+        page.dry_run.setChecked(False)
+        assert page.fill_button.text().startswith("첨부만 다시 올리기 (") and not page.fill_button.isEnabled()      # 브라우저가 닫혀 있다
+        assert not page.save_button.isVisibleTo(page)
+        page.dry_run.setChecked(True)
+        page._fill()                                            # 큰 단추 — 할 일이 첨부만이면 그쪽으로
         assert _wait(app, lambda: bool(shown), 15)
         kw = shown[0]
         assert kw["columns"] == claim_page.REATTACH_COLUMNS and len(kw["rows"]) == 2
         assert kw["rows"][0].cells[1] == "가나다" and kw["rows"][0].cells[3] == "2개" and kw["rows"][1].cells[3] == "1개"
         assert "7월" in " ".join(kw["summary"]) and "미리 보기" in kw["title"]
         assert not page._erp_running
+        # 다시 '새 청구서에 넣기' 로 — 큰 단추도 돌아온다
+        page.row_action.setCurrentIndex(page.row_action.findData(claim_page.ACTION_FILL))
+        assert page._actions == [claim_page.ACTION_FILL] and "첨부" not in page.fill_button.text()
+        assert page.step_put.title.text().startswith("ERP 에 넣으세요")
     finally:
         _close(page)
         app.processEvents()
@@ -578,6 +594,7 @@ def test_claim_page_band_offers_reattach_and_starts_it_when_the_fill_stops(tmp_p
         assert page.ask_banner.isVisibleTo(page) and page.reattach_now_button.isVisibleTo(page)
         page._answer_reattach()
         assert answers == [False] and page._reattach_pending == 0 and not page.reattach_now_button.isVisibleTo(page)
+        assert page._actions == [claim_page.ACTION_REATTACH] and page.row_action.currentData() == claim_page.ACTION_REATTACH
         page._browser_busy = True                                   # 넣기가 막 멈춘 뒤 — 바쁨 표시가 아직 남아 있어도 보낸다
         assert page.dry_run.isChecked()                             # '미리 보기만' 이 켜져 있어도 실제로
         page._on_sch_done(sch.ScholarshipReport(dry_run=False, blocked="ERP 결의서내역에 대표적요가 같은 청구서가 있어 멈춤"))
