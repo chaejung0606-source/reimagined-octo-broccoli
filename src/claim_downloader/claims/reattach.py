@@ -29,6 +29,8 @@ from .payee import wait_until
 from .scholarship import MAX_ASKS, Ask, _read_sheet
 
 STATE_WORDS = ("임시저장", "보완")      # 결의서내역 진행구분 — 이 상태의 청구서만(담당자 2026-10-23: "임시저장이거나 보완요청이 온 상태")
+# 넣기 전 중복 확인 띠(session._duplicate_check)의 셋째 단추 글 — 물음에 이 글이 들어 있으면 일반청구 화면이 그 단추를 보인다(ui/pages/claim.py)
+REATTACH_CHOICE = "[첨부만 다시 올리기]"
 ROW_RADIO_NAME = "CUR_REQ"             # 청구내역 줄의 ○(실측 ⑤ — '다시 열어 고치기' 로 본 라디오)
 DELETE_TEXT = "삭제"                   # 첨부문서 목록(#fileList) 옆의 링크 글자(실측 14절 표: select + 링크 '첨부' '삭제' '순서변경')
 FILE_LIST_ID = "fileList"
@@ -132,7 +134,7 @@ class Plan:
     def summary_lines(self) -> list[str]:
         return [f"폴더: {self.name} ({self.kind_name})",
                 f"대표적요: {self.summary or '—'}",
-                f"ERP 과제: {self.project_no or '—'}",
+                f"ERP 과제: {self.project_no or '— (비어 있음: 마지막에 고른 과제부터, 오늘이 기간에 든 과제를 차례로 찾습니다)'}",
                 f"줄 {len(self.rows)}개 · 붙일 파일 {self.files_total()}개 — 줄마다 첨부문서를 모두 지우고 다시 올린 뒤 [저장]"]
 
 

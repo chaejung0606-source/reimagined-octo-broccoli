@@ -536,3 +536,124 @@ def test_open_saved_sheet_accepts_a_fresh_sheet_whose_hidden_number_differs(monk
     monkeypatch.setattr(navigate, "_sheet_state", lambda f: {"REQ_CNT": "323", "REQ_SEQ_NO": "TMP_1"})
     page, frame, row, why = navigate.open_saved_sheet(object(), "202408470003", "02_2026년도 9월 (나)형 근로장학금", lambda m: None, lambda s: None)
     assert frame is None and "누르기 전" not in why and "결의번호 323 의 것" in why and calls == ["줄:223", "상세조회"]
+
+
+def test_claim_page_band_offers_reattach_and_starts_it_when_the_fill_stops(tmp_path, monkeypatch):
+    """담당자 2026-10-23: 보완요청이 온 명단 폴더로 [ERP 에 넣기] 를 누르자 중복 확인 띠('이미 있습니다 — 결의번호 223(보완요청)')에 막혔다 —
+    "그냥 장학금 청구하는 것처럼 파일만 다시 올려달라고". 띠에 [첨부만 다시 올리기] 가 보이고, 누르면 넣기를 멈춘 뒤 같은 폴더로 첨부만 다시 올리기를
+    확인 창 없이 · '미리 보기만' 과 상관없이 · 브라우저 바쁨 표시가 남아 있어도 시작한다. 다른 물음(소득자 못 찾음)에는 그 단추가 없다."""
+    from test_log_button import _close, _qt_app, _wait
+    app = _qt_app()
+    from claim_downloader.ui.pages import claim as claim_page
+    from claim_downloader.ui.worker import SessionWorker
+    from claim_downloader.claims import scholarship as sch
+
+    folder = tmp_path / "9월"
+    folder.mkdir()
+    make_ga(folder / "2026학년도 (가)형 근로장학금 지급내역.xlsx")
+    (folder / "공통증빙").mkdir()
+    (folder / "공통증빙" / "공문.pdf").write_bytes(b"%PDF")
+    (folder / "개별증빙").mkdir()
+    (folder / "개별증빙" / "가나다.pdf").write_bytes(b"%PDF")
+    worker = SessionWorker()
+    page = claim_page.ClaimPage(worker=worker)
+    answers: list[bool] = []
+    started: list[tuple] = []
+    shown: list[dict] = []
+    monkeypatch.setattr(worker, "answer_relogin", lambda ok: answers.append(ok))
+    monkeypatch.setattr(worker, "reattach_files", lambda plan, dry_run=True: started.append((plan, dry_run)))
+    monkeypatch.setattr(claim_page, "show_report", lambda parent, **kw: shown.append(kw) or True)
+
+    def no_warning(*a, **k):
+        raise AssertionError("경고 창이 떠서는 안 된다")
+    monkeypatch.setattr(claim_page.QMessageBox, "warning", no_warning)
+    try:
+        assert page.add_folder(str(folder), kinds.SCHOLARSHIP)
+        assert _wait(app, lambda: page._jobs and page._jobs[0] is not None, 10)
+        page._erp_row = 0
+        page._erp_running = True
+        page._browser_open = True
+        page._on_sch_ask("ERP 결의서내역에 대표적요 '02_x' 청구서가 이미 있습니다 — 결의번호 223(보완요청 · 7,800,000원).\n"
+                         "첨부문서만 바꾸려는 것이면(보완요청 · 임시저장) " + reattach.REATTACH_CHOICE + " — …")
+        assert page.ask_banner.isVisibleTo(page) and page.reattach_now_button.isVisibleTo(page)
+        page._answer_reattach()
+        assert answers == [False] and page._reattach_pending == 0 and not page.reattach_now_button.isVisibleTo(page)
+        page._browser_busy = True                                   # 넣기가 막 멈춘 뒤 — 바쁨 표시가 아직 남아 있어도 보낸다
+        assert page.dry_run.isChecked()                             # '미리 보기만' 이 켜져 있어도 실제로
+        page._on_sch_done(sch.ScholarshipReport(dry_run=False, blocked="ERP 결의서내역에 대표적요가 같은 청구서가 있어 멈춤"))
+        assert len(started) == 1 and started[0][1] is False and shown == []     # 확인 창 없이 바로
+        assert started[0][0].rows and page._erp_running and page._reattach_pending == -1
+        # 중복 확인이 아닌 물음에는 그 단추가 없다
+        page._on_sch_ask("소득자를 찾지 못했습니다 — ERP 에서 고른 뒤 [계속]")
+        assert page.ask_banner.isVisibleTo(page) and not page.reattach_now_button.isVisibleTo(page)
+        page._answer(False)
+        # 띠에서 [여기서 멈추기] 를 눌렀으면 첨부 다시 올리기로 가지 않는다 — 전처럼 까닭 창
+        page._erp_running = True
+        monkeypatch.setattr(claim_page.QMessageBox, "warning", lambda *a, **k: shown.append({"warning": a[2]}))
+        page._on_sch_done(sch.ScholarshipReport(dry_run=False, blocked="멈춤"))
+        assert len(started) == 1 and shown and "warning" in shown[-1]
+    finally:
+        _close(page)
+        app.processEvents()
+
+
+def test_session_reattach_tries_the_other_running_projects_when_the_folder_has_none(monkeypatch, job):
+    """담당자 실제 2026-10-23 17:18: 폴더에 과제가 없어 마지막 과제 202409710003(대응자금)의 결의서내역에서 찾아 '없습니다' — 청구서 223 은
+    202408470003 에 있었다. 과제가 비어 있으면 오늘이 기간에 든 다른 과제도 차례로 본다. 폴더에 과제가 있으면 그 과제만."""
+    from claim_downloader import session as session_mod
+    from claim_downloader import settings as settings_mod
+    s = session_mod.ErpSession(lambda m: None, lambda m: True, should_stop=lambda: False, process=lambda *a: None,
+                               load_settings=lambda: settings_mod.Settings(project_no="202409710003"))
+    s.page = type("P", (), {"context": object()})()
+    monkeypatch.setattr(type(s), "browser_open", property(lambda self: True))
+    from claim_downloader.claims import form as form_mod
+    monkeypatch.setattr(form_mod, "wait_for_form", lambda ctx, tries=12, log=None, **kw: (None, None))
+    monkeypatch.setattr(s, "_typed_sheet", lambda f: [])
+    monkeypatch.setattr(navigate, "choices", lambda selected, **kw: [("202409710003", "대응자금"), ("202408470003", "사업비")])
+
+    class Page:
+        def on(self, name, fn):
+            pass
+
+        def remove_listener(self, name, fn):
+            pass
+
+        def wait_for_timeout(self, ms):
+            pass
+    page = Page()
+    tried: list[str] = []
+
+    def open_saved_sheet(ctx, project, summary, log, wait, states=()):
+        tried.append(project)
+        if project == "202408470003":
+            return page, "frame", {"seq": "223", "state": "보완요청"}, ""
+        return None, None, {}, f"과제 {project} 의 결의서내역(2건)에 대표적요 '{summary}' 청구서가 없습니다"
+    monkeypatch.setattr(navigate, "open_saved_sheet", open_saved_sheet)
+    seen = {}
+
+    def fake_run(pg, fr, pl, log, **kw):
+        seen.update(kw)
+        return reattach.ReattachReport(dry_run=False, plan=pl, req_cnt=kw["req_cnt"], state=kw["state"])
+    monkeypatch.setattr(reattach, "run", fake_run)
+    job.project_no = ""
+    plan = reattach.plan_for_job(job)
+    assert plan.project_no == "" and "비어 있음" in " ".join(plan.summary_lines())
+    report = s.reattach_files(plan, dry_run=False)
+    assert not report.blocked and seen["req_cnt"] == "223" and tried == ["202409710003", "202408470003"]
+    # 폴더에 과제가 있으면 그 과제만 본다 — 없으면 그대로 멈춤
+    tried.clear()
+    job.project_no = "202409710003"
+    report = s.reattach_files(reattach.plan_for_job(job), dry_run=False)
+    assert report.blocked and "청구서가 없습니다" in report.blocked and tried == ["202409710003"]
+    # 다른 과제에 둘 이상이면 그 까닭으로 멈춘다
+    tried.clear()
+    job.project_no = ""
+
+    def many(ctx, project, summary, log, wait, states=()):
+        tried.append(project)
+        if project == "202408470003":
+            return None, None, {}, "진행구분이 임시저장 · 보완 인 대표적요 '…' 청구서가 2개입니다"
+        return None, None, {}, f"과제 {project} 의 결의서내역(2건)에 대표적요 '{summary}' 청구서가 없습니다"
+    monkeypatch.setattr(navigate, "open_saved_sheet", many)
+    report = s.reattach_files(reattach.plan_for_job(job), dry_run=False)
+    assert report.blocked and "2개입니다" in report.blocked and "없습니다" in report.blocked and tried == ["202409710003", "202408470003"]

@@ -220,6 +220,7 @@ class ClaimPage(QWidget):
         self._erp_row = -1
         self._erp_sheet = 0                              # 카드: 넣는 중인 청구서(비목) 번호
         self._browser_busy = False
+        self._reattach_pending = -1     # 중복 확인 띠에서 [첨부만 다시 올리기] 를 누른 줄 — 넣기가 멈추면 그 폴더로 첨부만 다시 올린다
         self._browser_open = False
         self._available: bool | None = None
         self._backend_state = ""
@@ -340,11 +341,20 @@ class ClaimPage(QWidget):
         self.ask_text = WrapLabel("")
         self.ask_text.setObjectName("bannerText")
         row.addWidget(self.ask_text, 1)
+        # 넣기 전 중복 확인에서 보완요청 · 임시저장 청구서가 나왔을 때만 보이는 셋째 단추 — 새로 넣지 않고 그 청구서의 첨부만 다시 올린다
+        # (담당자 2026-10-23: 보완요청이 와서 첨부만 바꾸려는데 이 띠의 '지운 뒤 다시' 안내에 막혔다)
+        self.reattach_now_button = QPushButton("첨부만 다시 올리기")
+        self.reattach_now_button.setObjectName("primary")
+        self.reattach_now_button.setToolTip("ERP 에 이미 있는 그 청구서(보완요청 · 임시저장)의 청구내역 줄마다 첨부문서를 모두 지우고 폴더의 지금 파일을 다시 올려 "
+                                            "[저장] 합니다.\n값은 넣지 않습니다. [신청] 은 직접 합니다.")
+        self.reattach_now_button.clicked.connect(self._answer_reattach)
+        self.reattach_now_button.hide()
         self.continue_button = QPushButton("ERP 에서 했어요 · 계속")
         self.continue_button.setObjectName("primary")
         self.continue_button.clicked.connect(lambda: self._answer(True))
         self.halt_button = QPushButton("여기서 멈추기")
         self.halt_button.clicked.connect(lambda: self._answer(False))
+        row.addWidget(self.reattach_now_button)
         row.addWidget(self.continue_button)
         row.addWidget(self.halt_button)
         self.ask_banner.hide()
@@ -789,7 +799,7 @@ class ClaimPage(QWidget):
                                         "일반 줄은 미리 보기도 ERP 작성 화면을 봅니다 — 먼저 [브라우저 열기] 로 새 청구서 화면을 띄우세요.")
         self.sheet_button.setVisible(is_sch)
         # 첨부만 다시 올리기 — 카드 줄은 아직(결제 건마다 증빙 창이 다르다). 미리 보기는 브라우저 없이
-        can_reattach = 0 <= self._current < len(self._dirs) and self._kind(self._current) != kinds.CARD and self._ready(self._current)
+        can_reattach = self._reattach_possible(self._current)
         self.reattach_button.setVisible(can_reattach)
         self.reattach_button.setEnabled(can_reattach and not busy and not self._browser_busy and (dry or self._browser_open))
         filled = (not is_sch and self._kind(self._current) != kinds.TAXBILL and 0 <= self._current < len(self._dirs)
@@ -1793,13 +1803,27 @@ class ClaimPage(QWidget):
 
     def _answer(self, ok: bool) -> None:
         self.ask_banner.hide()
+        self.reattach_now_button.hide()
         self.browser.answer_relogin(ok)
         self._sync_buttons()
         if ok:
             self._set_state("넣는 중", "info", "이어서 넣습니다.")
 
+    def _answer_reattach(self) -> None:
+        """중복 확인 띠의 [첨부만 다시 올리기](담당자 2026-10-23 "보완요청 와서 첨부문서 수정해야 한다고 … 그냥 장학금 청구하는 것처럼 파일만 다시 올려달라고") —
+        넣기를 멈추고(새 청구서를 띄우지 않는다) 넣기가 끝나면(_on_sch_done) 같은 폴더로 첨부만 다시 올리기를 확인 창 없이 시작한다 — 할 일은 띠에 적혀 있다."""
+        self._reattach_pending = self._erp_row
+        self._set_state("첨부 다시 올리기로", "info", "넣기를 멈추고 그 청구서의 첨부만 다시 올립니다.")
+        self._answer(False)
+
+    def _reattach_possible(self, row: int) -> bool:
+        return 0 <= row < len(self._dirs) and self._kind(row) != kinds.CARD and self._ready(row)
+
     def _on_sch_ask(self, message: str) -> None:
         self.ask_text.setText(message)
+        # 명단 청구(장학금 · 혁신인재 · 개인 지급)의 중복 확인 띠에서만 — 일반 · 세금계산서의 넣기(_on_claim_filled)는 이 길을 잇지 않는다
+        self.reattach_now_button.setVisible(reattach_mod.REATTACH_CHOICE in message and self._reattach_possible(self._erp_row)
+                                            and 0 <= self._erp_row < len(self._jobs) and self._jobs[self._erp_row] is not None)
         self.ask_banner.show()
         self._sync_buttons()
         self._set_state("확인 필요", "warning", "위의 노란 띠를 따른 뒤 [계속] 을 누르세요.")
@@ -1815,7 +1839,9 @@ class ClaimPage(QWidget):
         text = "\n".join(report.lines())
         self._append_log(text)
         self.ask_banner.hide()
+        self.reattach_now_button.hide()
         row = self._erp_row
+        pending, self._reattach_pending = self._reattach_pending, -1
         was_running = self._erp_running
         self._erp_running = False
         self.scholarship_panel.set_locked(False)
@@ -1838,6 +1864,11 @@ class ClaimPage(QWidget):
         elif report.blocked:
             if 0 <= row < len(self._status):
                 self._set_status(row, "read")
+            if pending == row and self._reattach_possible(row):
+                # 중복 확인 띠에서 [첨부만 다시 올리기] — 멈춘 까닭 창을 띄우지 않고 바로 그 청구서의 첨부만 다시 올린다
+                self._append_log("노란 띠의 [첨부만 다시 올리기] — 새 청구서에 넣지 않고 ERP 에 있는 그 청구서의 첨부만 다시 올립니다")
+                self._reattach(row=row, force=True)
+                return
             self._set_state("화면 없음", "warning", report.blocked)
             QMessageBox.warning(self, "넣지 못했습니다", report.blocked)
         else:
@@ -1904,11 +1935,13 @@ class ClaimPage(QWidget):
         self._sync_buttons()
 
     # ── 첨부만 다시 올리기 ─────────────────────────────────────────────
-    def _reattach(self) -> None:
+    def _reattach(self, row: int | None = None, force: bool = False) -> None:
         """고른 폴더의 청구서가 ERP 에 이미 있을 때(임시저장 · 보완요청) — 청구내역 줄마다 첨부문서를 지우고 폴더의 지금 파일을 다시 올려 [저장].
-        담당자 요청 2026-10-23. 값은 넣지 않는다. 미리 보기는 표만(브라우저 없이)."""
-        row = self._current
-        if not (0 <= row < len(self._dirs)) or self._erp_running or self._browser_busy:
+        담당자 요청 2026-10-23. 값은 넣지 않는다. 미리 보기는 표만(브라우저 없이).
+        force 는 중복 확인 띠의 [첨부만 다시 올리기] 에서 — 그 줄(row)로, '미리 보기만' 과 상관없이 실제로, 확인 창 없이(띠에서 이미 골랐다). 넣기가 막 멈춘 뒤라
+        브라우저 바쁨 표시가 아직 남아 있어도 명령은 줄을 서므로 보낸다."""
+        row = self._current if row is None else row
+        if not (0 <= row < len(self._dirs)) or self._erp_running or (self._browser_busy and not force):
             return
         kind = self._kind(row)
         project = self._projects[row] if row < len(self._projects) else self._last_project()
@@ -1917,14 +1950,14 @@ class ClaimPage(QWidget):
             self.scholarship_panel.apply_options()
             job.project_no = project
         plan = reattach_mod.plan_for(kind, self._dirs[row], self._data[row] if row < len(self._data) else {}, job=job, project_no=project)
-        dry = self.dry_run.isChecked()
+        dry = self.dry_run.isChecked() and not force
         if plan.problems and (not dry or not plan.rows):
             QMessageBox.warning(self, "첨부를 다시 올리기 전에 고칠 것", "\n".join("· " + p for p in plan.problems))
             return
         if not dry:
             if not self._browser_open:
                 return
-            if not show_report(
+            if not force and not show_report(
                     self, title="첨부만 다시 올리기", tone="warning",
                     heading=f"청구내역 줄마다 첨부문서를 모두 지우고 다시 올려 [저장] 합니다 — {len(plan.rows)}줄 · [신청] 은 누르지 않습니다",
                     summary=plan.summary_lines(), columns=REATTACH_COLUMNS,

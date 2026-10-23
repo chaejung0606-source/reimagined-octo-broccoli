@@ -483,6 +483,14 @@ def test_duplicate_check_asks_when_erp_has_the_same_summary(isolated_home):
     stop = s._duplicate_check(SUMMARY, "202408470003", lambda m: asked.append(m) or False, False)
     assert stop and "같은 청구서" in stop
     assert "결의번호 324(임시저장 · 5,100,000원)" in asked[0] and "[시험]" in asked[0]
+    # 임시저장 · 보완요청이면 첨부만 다시 올리는 길을 띠에 적는다(화면이 그 글로 셋째 단추를 보인다) — 승인된 것뿐이면 적지 않는다
+    from claim_downloader.claims import reattach
+    assert reattach.REATTACH_CHOICE in asked[0]
+    screen.list_rows = [_row("300", SUMMARY, state="승인")]
+    asked.clear()
+    assert s._duplicate_check(SUMMARY, "202408470003", lambda m: asked.append(m) or False, False)
+    assert "결의번호 300(승인" in asked[0] and reattach.REATTACH_CHOICE not in asked[0]
+    screen.list_rows = [_row("324", SUMMARY, amt="5100000")]
     # [계속] 하면 이어 간다
     assert s._duplicate_check(SUMMARY, "202408470003", lambda m: True, False) == ""
     # 같은 것이 없으면 묻지 않는다 — 앱 기록에 넣은 이력이 있어도(ERP 에서 지웠으면 다시 넣는다)

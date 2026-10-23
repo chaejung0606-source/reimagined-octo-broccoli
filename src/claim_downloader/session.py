@@ -798,8 +798,13 @@ class ErpSession:
                                                 f" · {int(r['amt']):,}원" if str(r.get("amt", "")).lstrip("-").isdigit() else "")
                           for r in rows[:5]) + (" 외" if len(rows) > 5 else "")
         self.log("ERP 결의서내역에 대표적요가 같은 청구서가 있습니다: " + found)
-        if not ask(f"ERP 결의서내역에 대표적요 '{summary}' 청구서가 이미 있습니다 — {found}.\n"
-                   "또 넣으면 같은 지출이 두 번 청구됩니다. 다시 넣는 것이면 ERP 에서 그 청구서를 지운 뒤 다시 누르고, 이미 올린 폴더로 "
+        # 보완요청 · 임시저장 청구서가 있으면 첨부만 다시 올리는 길을 띠에서 바로 — 담당자 2026-10-23 "보완요청 와서 첨부문서 수정해야 한다고 … 그냥 장학금
+        # 청구하는 것처럼 파일만 다시 올려달라고"(이 띠에서 [ERP 에서 지운 뒤 다시] 를 읽고 막혔다). 글에 REATTACH_CHOICE 가 들면 화면이 그 단추를 보인다.
+        editable = any(any(w in str(r.get("state") or "") for w in claim_reattach.STATE_WORDS) for r in rows)
+        hint = (f"첨부문서만 바꾸려는 것이면(보완요청 · 임시저장) {claim_reattach.REATTACH_CHOICE} — 값은 넣지 않고 청구내역 줄마다 첨부를 모두 지운 뒤 "
+                "폴더의 지금 파일을 올려 [저장] 합니다.\n") if editable else ""
+        if not ask(f"ERP 결의서내역에 대표적요 '{summary}' 청구서가 이미 있습니다 — {found}.\n" + hint
+                   + "새 청구서로 또 넣으면 같은 지출이 두 번 청구됩니다. 다시 넣는 것이면 ERP 에서 그 청구서를 지운 뒤 다시 누르고, 이미 올린 폴더로 "
                    "시험하는 것이면 아래 [시험] 을 켜고 다시 누르세요.\n그래도 새 청구서에 넣으려면 [계속], 아니면 [멈추기]."):
             return "ERP 결의서내역에 대표적요가 같은 청구서가 있어 멈춤"
         return ""
@@ -1177,6 +1182,21 @@ class ErpSession:
             return report
         page, frame, row, why = navigate.open_saved_sheet(self.page.context, project, plan.summary, self.log, self._wait,
                                                           states=claim_reattach.STATE_WORDS)
+        if frame is None and not getattr(plan, "project_no", "") and "청구서가 없습니다" in why:
+            # 폴더에 과제가 없어 마지막에 고른 과제에서 찾았는데 없다 — 오늘이 과제기간에 든 다른 과제의 결의서내역도 차례로 본다
+            # (담당자 실제 2026-10-23 17:18: 마지막 과제 202409710003(대응자금)에서 '없습니다' 로 멈췄는데 청구서 223 은 202408470003 에 있었다)
+            for other, _label in navigate.choices(""):
+                if other == project:
+                    continue
+                self.log(f"과제 {project} 의 결의서내역에 없어 과제 {other} 도 봅니다 (폴더에 과제가 비어 있음 — ② 의 과제 칸에서 고르면 그 과제에서 바로 찾습니다)")
+                page, frame, row, why2 = navigate.open_saved_sheet(self.page.context, other, plan.summary, self.log, self._wait,
+                                                                   states=claim_reattach.STATE_WORDS)
+                if frame is not None:
+                    project = other
+                    break
+                why = why + "\n" + why2
+                if "청구서가 없습니다" not in why2:          # 둘 이상 · 못 띄움 — 그 까닭으로 멈춘다
+                    break
         if frame is None:
             report.blocked = why
             self.log("첨부만 다시 올리기 — " + why)
