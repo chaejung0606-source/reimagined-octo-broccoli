@@ -73,12 +73,14 @@ def minutes_stage(has_dirs: bool, finished: bool) -> str:
     return "result" if finished else "make"
 
 
-CLAIM_ORDER = ["add", "check", "put"]
+CLAIM_ORDER = ["kind", "add", "check", "put"]
 
 
-def claim_stage(has_dirs: bool, ready: bool) -> str:
-    """일반청구 — ① 지출 폴더 넣기(종류 · 과제) → ② 내용 확인(목록 · 청구 내용, 일반은 AI 로 읽기) → ③ ERP 에 넣기.
-    ③ 은 고른 줄을 넣을 수 있을 때(일반은 읽은 뒤, 명단 · 카드는 폴더를 읽어 두었으면) 떠오른다. ② 는 늘 펼친 채(표와 값을 보며 넣는다)."""
+def claim_stage(has_dirs: bool, ready: bool, kind_picked: bool = True) -> str:
+    """일반청구 — ① 청구 종류 → ② 지출 폴더 넣기(과제) → ③ 내용 확인(목록 · 청구 내용, 일반은 AI 로 읽기) → ④ ERP 에 넣기.
+    종류를 먼저 카드로 고른다(담당자 2026-10-26 "1단계에서 청구종류를 선택할 수 있도록" — 전에는 ① 의 작은 고르기 칸이라 눈에 안 띄었다).
+    폴더를 넣었으면 종류는 고른 것으로 본다(끌어다 놓으면 '자동'). ④ 는 고른 줄을 넣을 수 있을 때(일반은 읽은 뒤, 명단 · 카드는 폴더를 읽어
+    두었으면) 떠오른다. ③ 은 늘 펼친 채(표와 값을 보며 넣는다)."""
     if not has_dirs:
-        return "add"
+        return "add" if kind_picked else "kind"
     return "put" if ready else "check"

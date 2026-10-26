@@ -49,11 +49,14 @@ def test_minutes_goes_folders_make_result():
 
 
 def test_claim_goes_add_check_put():
+    assert claim_stage(has_dirs=False, ready=False, kind_picked=False) == "kind"   # 청구 종류부터(2026-10-26)
+    assert claim_stage(has_dirs=True, ready=False, kind_picked=False) == "check"  # 끌어다 놓으면 '자동' 으로 넣고 지나감
     assert claim_stage(has_dirs=False, ready=True) == "add"
     assert claim_stage(has_dirs=True, ready=False) == "check"          # 일반 폴더는 AI 로 읽기 전
     assert claim_stage(has_dirs=True, ready=True) == "put"
     # ② 는 표와 값을 보며 넣으므로 ③ 차례에도 펼친 채
-    assert flow_states(CLAIM_ORDER, "put", keep_open=("check",)) == {"add": DONE, "check": OPEN, "put": CURRENT}
+    assert flow_states(CLAIM_ORDER, "put", keep_open=("check",)) == {"kind": DONE, "add": DONE, "check": OPEN, "put": CURRENT}
+    assert flow_states(CLAIM_ORDER, "kind") == {"kind": CURRENT, "add": HIDDEN, "check": HIDDEN, "put": HIDDEN}
 
 
 def test_badges_take_only_their_text_width():
