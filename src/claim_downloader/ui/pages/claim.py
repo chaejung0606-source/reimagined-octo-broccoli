@@ -6,8 +6,9 @@
 미리 보기만 — ERP 에 넣기는 카드청구 화면 실측 뒤) · 출장비(준비 중, 고를 수 없음). '자동' 이면 폴더 모양으로 정한다.
 
 할 차례인 단계만 위에서 아래로 떠오른다(ui/flow.py, 담당자 요청 2026-10-21 — "클릭해야 하는 이동 순서대로 하나 둘 떠오르게"):
-    ① 지출 폴더 넣기(청구 종류 · 과제 · 끌어다 놓기) → ② 내용 확인(목록 | 고른 줄의 값 · 명단 · 결제 건, 일반은 [내용 읽기](AI))
-    → ③ ERP 에 넣기(브라우저 · [미리 보기]/[ERP 에 넣기] · 넣은 뒤 할 것) → ERP 에서 사람이 검토하고 [신청]
+    ① 청구 종류(카드 — 담당자 2026-10-26 "1단계에서 청구종류를 선택") → ② 지출 폴더 넣기(과제 · 끌어다 놓기)
+    → ③ 내용 확인(목록 | 고른 줄의 값 · 명단 · 결제 건, 일반은 [내용 읽기](AI))
+    → ④ ERP 에 넣기(브라우저 · [미리 보기]/[ERP 에 넣기] · 넣은 뒤 할 것) → ERP 에서 사람이 검토하고 [신청]
 
 담당자 결정(2026-10-13): 내역 작성 후 임시저장까지 앱이, 그 뒤는 사람이. 기본은 '미리 보기만'(dry-run) — 체크를
 풀어야 실제로 넣는다. 신청·삭제·초기화는 코드가 절대 누르지 않는다(claims/form.py). 넣기 전에 그 폴더의 과제(폴더마다 고름)의
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -57,7 +59,7 @@ from .. import ai_status, project_box
 from ..art import Art
 from ..log_button import LogSendButton, warn
 from ..claim_worker import ClaimExtractWorker
-from ..flow import HIDDEN, FlowArea, FlowStep
+from ..flow import HIDDEN, ChoiceCard, FlowArea, FlowStep
 from ..flowlogic import CLAIM_ORDER, claim_stage, flow_states
 from ..report_dialog import ReportRow, show_report
 from ..widgets import Card, Field, Pill, PillDelegate, WrapLabel, muted_label
@@ -83,7 +85,8 @@ ROW_STATUS = {
     "missing": ("세금계산서 없음", "warning"),     # 세금계산서 종류 — 조회 팝업에 안 떠서(본부 등록 전) 건너뜀
 }
 
-GUIDE_START = "청구 종류를 고르고 지출 폴더를 추가하세요. 일반은 [내용 읽기], 장학금 · 혁신인재지원금은 바로 오른쪽에 학생 명단이 나옵니다."
+GUIDE_START = "청구 종류를 고르세요. 그다음 지출 폴더를 넣으면 일반 · 세금계산서는 [내용 읽기], 장학금 · 혁신인재지원금은 바로 학생 명단이 나옵니다."
+GUIDE_ADD = "과제를 확인하고 지출 폴더를 넣으세요. 폴더 1개 = 청구 1건 — 넣은 뒤에도 ③ 의 오른쪽 칸 위에서 폴더마다 종류를 바꿀 수 있습니다."
 GUIDE_SCHOLARSHIP = ("학생 표를 확인한 뒤, 브라우저에서 결의서내역 → [일반청구] 로 새 청구서 화면을 띄우고 [ERP 에 넣기] 를 누르세요. "
                      "인건비 탭은 앱이 누릅니다.")
 # 새 청구서를 앱이 띄울 때(설정 auto_new_sheet, 기본) — 사람은 로그인만 하면 된다
@@ -97,11 +100,11 @@ GUIDE_READ = ("값을 확인한 뒤, 브라우저에서 결의서내역 → [일
               "실제로 넣으려면 '미리 보기만' 체크를 풀고 [ERP 에 채우기].")
 GUIDE_TAXBILL = ("세금계산서 폴더입니다 — 값(승인번호 · 사업자번호 · 금액)을 확인한 뒤 [ERP 에 넣기] 를 누르면 읽은 세금계산서 폴더를 하나씩 새 청구서에 "
                  "넣고 [저장] 합니다(조회 팝업에 안 뜨는 폴더는 건너뜀). 청구종류 · 증빙 창은 노란 띠가 뜨면 직접 작성하세요.")
-GUIDE_REATTACH = ("'할 일' 이 첨부만 다시 올리기입니다 — 위의 과제가 그 청구서가 있는 과제인지 확인한 뒤 ③ 의 [첨부만 다시 올리기] 를 누르세요. "
+GUIDE_REATTACH = ("'할 일' 이 첨부만 다시 올리기입니다 — 위의 과제가 그 청구서가 있는 과제인지 확인한 뒤 ④ 의 [첨부만 다시 올리기] 를 누르세요. "
                   "앱이 그 과제의 결의서내역에서 대표적요가 같은 임시저장 · 보완요청 청구서를 찾아 열고, 청구내역 줄마다 첨부문서를 지운 뒤 폴더의 지금 파일을 "
                   "올려 [저장] 합니다. 청구내역 값은 넣지 않고 [신청] 은 직접. '미리 보기만' 이면 표로만 봅니다.")
 GUIDE_UNREAD = ("일반 폴더는 [내용 읽기] 를 누르면 AI 가 서류를 읽어 오른쪽 칸을 채웁니다(ERP 에는 아직 넣지 않습니다). "
-                "읽은 값을 확인하면 ③ 에서 ERP 에 넣습니다.")
+                "읽은 값을 확인하면 ④ 에서 ERP 에 넣습니다.")
 NO_BACKEND = ("일반 폴더의 [내용 읽기] 는 Claude Code 가 필요합니다(장학금 · 혁신인재지원금은 AI 없이 됩니다). Claude Code 를 설치한 뒤 "
               "[다시 확인] 을 누르세요. 설치했는데도 이 안내가 보이면 컴퓨터를 다시 시작해 보세요.")
 
@@ -240,7 +243,9 @@ class ClaimPage(QWidget):
         self._guide = GUIDE_START
         self._guide_where = ""                           # 안내를 둘 단계 — 비면 지금 단계(읽기 안내는 ② 에)
         self._backend_note = ""                          # 일반 폴더를 읽을 AI 를 쓸 수 없을 때 ② 아래 한 줄
-        self._folders_open = False                       # 폴더를 넣은 뒤 ① 을 다시 편 것([폴더 더 넣기])
+        self._folders_open = False                       # 폴더를 넣은 뒤 ② 를 다시 편 것([폴더 더 넣기])
+        self._kind_picked = False                        # ① 에서 청구 종류를 골랐는지 — 화면은 ① 부터 연다(2026-10-26)
+        self._kind_open = False                          # 폴더를 넣은 뒤 ① 을 다시 편 것([바꾸기] — 다른 종류의 폴더를 더 넣으려고)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 18, 24, 26)
@@ -248,11 +253,13 @@ class ClaimPage(QWidget):
         layout.addLayout(self._build_head())
         layout.addWidget(self._build_ask_banner())       # 사람 차례 — 단계가 스크롤돼도 늘 보이게 단계 밖 위쪽에
         # 단계 — 할 차례인 것만 보인다(ui/flow.py, 담당자 요청 2026-10-21)
+        self.step_kind = self._build_kind()
         self.step_add = self._build_add()
         self.step_check = self._build_check()
         self.step_put = self._build_put()
-        self.steps = {"add": self.step_add, "check": self.step_check, "put": self.step_put}
+        self.steps = {"kind": self.step_kind, "add": self.step_add, "check": self.step_check, "put": self.step_put}
         self.area = FlowArea()
+        self.area.add(self.step_kind)
         self.area.add(self.step_add)
         self.area.add(self.step_check, 1)
         self.area.add(self.step_put)
@@ -435,22 +442,44 @@ class ClaimPage(QWidget):
             settings.update(project_no=no)
         self._refresh_row(row)
 
+    def _build_kind(self) -> FlowStep:
+        """① 청구 종류 — 카드를 누르면 접히고 ② 가 떠오른다(담당자 2026-10-26 "1단계에서 청구종류를 선택할 수 있도록").
+        전에는 ① 의 폴더 칸 옆 작은 고르기 칸이라 눈에 띄지 않아, 종류를 모른 채 폴더를 넣었다. 고른 값은 숨은 고르기 칸(add_kind)에 두어
+        폴더를 넣는 코드(add_folder)는 그대로 쓴다. 준비 중인 종류는 카드가 보이되 누를 수 없다."""
+        step = FlowStep("1", "청구 종류를 고르세요", "이번에 넣을 지출 폴더가 어떤 청구인지 고르세요. 모르면 '자동' — 폴더 모양과 이름으로 정합니다.")
+        step.edit.connect(self._open_kinds)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(10)
+        self.kind_cards: dict[str, ChoiceCard] = {}
+        options = [(kinds.AUTO, "자동", "폴더 모양 · 이름으로 정합니다(명단 엑셀 · 결제 기간 · 세금계산서 파일)", "archive", True, "")]
+        options += [(k.key, k.name, k.brief or k.hint, k.art, k.ready, k.hint) for k in kinds.KINDS]
+        columns = 4
+        for i, (key, name, brief, art, ready, hint) in enumerate(options):
+            card = ChoiceCard(key, name, brief, art, pill=not ready)
+            if hint:
+                card.setToolTip(hint)
+            if not ready:
+                card.state.set_status("준비 중", "neutral")
+                card.setEnabled(False)
+            card.chosen.connect(self._choose_kind)
+            self.kind_cards[key] = card
+            grid.addWidget(card, i // columns, i % columns)
+        for column in range(columns):
+            grid.setColumnStretch(column, 1)
+        step.add_layout(grid)
+        return step
+
     def _build_add(self) -> FlowStep:
-        """① 지출 폴더 넣기 — 청구 종류 · 과제를 고르고 폴더를 넣는다. 넣으면 '지출 N건' 으로 접히고 [폴더 더 넣기] 로 편다."""
-        step = FlowStep("1", "지출 폴더를 넣으세요", "청구 종류와 과제를 고른 뒤 폴더를 넣으세요. 폴더 1개 = 청구 1건 — "
-                        "넣은 뒤에도 ② 의 오른쪽 칸 위에서 폴더마다 바꿀 수 있습니다.", edit_text="폴더 더 넣기")
+        """② 지출 폴더 넣기 — 과제를 고르고 폴더를 넣는다. 넣으면 '지출 N건' 으로 접히고 [폴더 더 넣기] 로 편다."""
+        step = FlowStep("2", "지출 폴더를 넣으세요", edit_text="폴더 더 넣기")    # 안내는 아래 한 줄(GUIDE_ADD) — 같은 글을 두 번 보이지 않게
         step.edit.connect(self._open_folders)
         choose = QHBoxLayout()
         choose.setSpacing(10)
-        kind_label = QLabel("청구 종류")
-        kind_label.setObjectName("fieldLabel")
-        choose.addWidget(kind_label, 0, Qt.AlignVCenter)
+        # 청구 종류는 ① 의 카드로 고른다 — 이 칸은 보이지 않게 두고 고른 값만 담는다(add_folder · _sync_buttons 가 읽는다)
         self.add_kind = self._kind_box(with_auto=True)
-        self.add_kind.setToolTip("다음에 넣는 폴더의 청구 종류. '자동' 은 폴더 모양과 이름으로 정합니다 — 명단 엑셀 + 공통·개별증빙 폴더가 "
-                                 "있으면 장학금, 이름에 '혁신인재' 가 있으면 혁신인재지원금, 아니면 일반.")
-        kind_label.setBuddy(self.add_kind)
-        choose.addWidget(self.add_kind, 0, Qt.AlignVCenter)
-        choose.addSpacing(12)
+        self.add_kind.setParent(step)
+        self.add_kind.hide()
         # ERP 과제 — 폴더를 넣을 때 고른다(담당자 2026-10-19: 설정이 아니라 여기서). 보기는 메인화면 과제현황에서 읽은 과제 중
         # 과제기간에 오늘이 든 것만, 기본은 202408470003(navigate.choices). 마지막으로 고른 과제로 로그인 뒤 이동도 한다.
         project_label = QLabel("과제")
@@ -491,7 +520,7 @@ class ClaimPage(QWidget):
 
     def _build_check(self) -> FlowStep:
         """② 내용 확인 — 지출 목록(왼쪽)에서 한 줄을 고르면 오른쪽에 그 청구의 값 · 명단 · 결제 건. 일반 폴더는 [내용 읽기](AI) 먼저."""
-        step = FlowStep("2", "내용을 확인하세요", editable=False)
+        step = FlowStep("3", "내용을 확인하세요", editable=False)
         self.clear_button = QPushButton("목록 비우기")
         self.clear_button.setObjectName("ghost")
         self.clear_button.clicked.connect(self._clear)
@@ -604,7 +633,7 @@ class ClaimPage(QWidget):
         self.row_action.setItemData(0, "그 과제의 결의서내역에 같은 청구서가 없는지 보고 새 청구서 작성 화면에 넣어 [저장] 합니다.", Qt.ToolTipRole)
         self.row_action.setItemData(1, "ERP 에 이미 있는 이 폴더의 청구서(임시저장 · 보완요청)를 결의서내역에서 찾아 열고, 청구내역 줄마다 첨부문서를 모두 지운 뒤\n"
                                        "폴더의 지금 파일을 다시 올려 [저장] 합니다. 청구내역 값은 넣지 않습니다. [신청] 은 직접.", Qt.ToolTipRole)
-        self.row_action.setToolTip("이 폴더로 ③ 에서 할 일 — 보완요청 · 임시저장 청구서의 첨부문서만 바꾸려면 '첨부만 다시 올리기'")
+        self.row_action.setToolTip("이 폴더로 ④ 에서 할 일 — 보완요청 · 임시저장 청구서의 첨부문서만 바꾸려면 '첨부만 다시 올리기'")
         self.row_action.currentIndexChanged.connect(self._row_action_changed)
         action_label.setBuddy(self.row_action)
         action_row.addWidget(self.row_action, 0, Qt.AlignVCenter)
@@ -707,7 +736,7 @@ class ClaimPage(QWidget):
     def _build_put(self) -> FlowStep:
         """③ ERP 에 넣기 — 고른 지출 하나. 브라우저(로그인은 사람) · 미리 보기/시험 · [미리 보기]/[ERP 에 넣기] ·
         넣은 뒤 할 것([청구내역 대조] · [세금계산서 찾기] · [입금처 찾기] · [임시저장]). [신청] 은 끝까지 사람."""
-        step = FlowStep("3", "ERP 에 넣으세요", editable=False)
+        step = FlowStep("4", "ERP 에 넣으세요", editable=False)
         self.browser_state = Pill("브라우저 닫힘", "neutral")
         step.add_side(self.browser_state)
         # 한 줄 — 왼쪽은 누를 단추(브라우저 · 넣기 · 넣은 뒤 할 것), 오른쪽은 넣는 방법(미리 보기만 · 시험 · 팝업 자동 선택).
@@ -791,6 +820,8 @@ class ClaimPage(QWidget):
         can_edit = not busy
         for widget in (self.add_one_button, self.add_parent_button, self.add_kind, self.add_project):
             widget.setEnabled(can_edit)
+        for key, card in self.kind_cards.items():
+            card.setEnabled(can_edit and (key == kinds.AUTO or kinds.find(key).ready))
         self.platform.set_enabled_for_run(not running)
         self.clear_button.setEnabled(can_edit and bool(self._dirs))
         self.table.setEnabled(not self._erp_running)          # 넣는 중에는 다른 줄로 옮기지 않게
@@ -889,11 +920,12 @@ class ClaimPage(QWidget):
 
     def _sync_flow(self) -> None:
         """할 차례인 단계만 — 폴더가 없으면 ① 만, 넣으면 ② 가(① 은 '지출 N건' 으로 접힘), 고른 줄을 넣을 수 있으면 ③ 이 떠오른다."""
-        stage = claim_stage(bool(self._dirs), self._ready(self._current))
-        keep = ("check", "add") if self._folders_open else ("check",)
+        stage = claim_stage(bool(self._dirs), self._ready(self._current), self._kind_picked)
+        keep = ("check",) + (("add",) if self._folders_open or self._kind_open else ()) + (("kind",) if self._kind_open else ())
         states = flow_states(CLAIM_ORDER, stage, keep_open=keep)
         where = self._guide_where if self._guide_where and states.get(self._guide_where) != HIDDEN else stage
-        summaries = {"add": f"지출 {len(self._dirs)}건"}
+        chosen = self.add_kind.currentData() or kinds.AUTO
+        summaries = {"kind": "자동 (폴더 모양으로)" if chosen == kinds.AUTO else kinds.name_of(chosen), "add": f"지출 {len(self._dirs)}건"}
         for key, step in self.steps.items():
             step.set_state(states[key], summaries.get(key))
             note = self._guide if key == where else ""
@@ -907,6 +939,10 @@ class ClaimPage(QWidget):
             project = self._projects[self._current] if self._current < len(self._projects) else ""
             self.step_put.title.setToolTip(f"{name} · {kinds.name_of(self._kind(self._current))}" + (f" · 과제 {project}" if project else ""))
         self.step_add.edit_button.setEnabled(not self.is_running())
+        self.step_kind.edit_button.setEnabled(not self.is_running())
+        for key, card in self.kind_cards.items():
+            # [바꾸기] 로 다시 편 ① 에도 지금 고른 종류가 보이게 — 다시 고르지 않고 폴더를 넣으면 그 종류로 들어간다
+            card.set_selected(key == chosen and (self._kind_picked or chosen != kinds.AUTO))
         self.clear_button.setVisible(bool(self._dirs))       # 단계가 오른쪽 것을 다시 보이게 하므로 그 뒤에
         self.stop_button.setVisible(self.is_running())
         self.area.filler.setVisible(states["check"] == HIDDEN and not self.log_card.isVisible())
@@ -926,6 +962,30 @@ class ClaimPage(QWidget):
             return
         self._folders_open = True
         self._sync_flow()
+
+    def _open_kinds(self) -> None:
+        """① [바꾸기] — 폴더가 없으면 ① 로 돌아가고, 있으면 ① 을 펼쳐 다른 종류의 폴더를 더 넣게 한다(넣은 폴더의 종류는 ③ 오른쪽 칸에서)."""
+        if self.is_running():
+            return
+        if self._dirs:
+            self._kind_open = True
+        else:
+            self._kind_picked = False
+        self._sync_flow()
+
+    def _choose_kind(self, key: str) -> None:
+        """① 의 카드 — 다음에 넣는 폴더의 청구 종류. 고르면 ① 이 접히고 ② (폴더 넣기)가 떠오른다."""
+        if self.is_running():
+            return
+        index = self.add_kind.findData(key)
+        if index < 0:
+            return
+        self.add_kind.setCurrentIndex(index)
+        self._kind_picked = True
+        self._kind_open = False
+        if self._dirs:
+            self._folders_open = True          # 폴더가 있으면 ② 를 펼친 채 — 고른 종류로 폴더를 더 넣는다
+        self._set_guide(GUIDE_ADD)
 
     def _set_state(self, text: str, status: str, guide: str | None = None, where: str = "") -> None:
         """머리의 상태 배지 + 단계 아래 한 줄. where 가 비면 지금 단계에, 'check' 면 ② 에(AI 읽기 안내)."""
@@ -1003,6 +1063,8 @@ class ClaimPage(QWidget):
         except ValueError as error:
             QMessageBox.information(self, "청구 종류", str(error))
             return False
+        self._kind_picked = True
+        self._kind_open = False
         if chosen == kinds.GENERAL and kind == kinds.PERSONAL:
             self._append_log(f"'{os.path.basename(path)}' — 지급내역 엑셀이 있어 개인 지급(기타)으로 넣습니다(표 위에서 바꿀 수 있습니다)")
         self._dirs.append(path)
@@ -1057,6 +1119,7 @@ class ClaimPage(QWidget):
         self._current = -1
         self._done_count = 0
         self._folders_open = False
+        self._kind_open = False                # 고른 청구 종류는 남긴다 — 같은 종류의 폴더를 다시 넣는 일이 많다
         self.table.setRowCount(0)
         self._set_progress(0, 0)
         self._set_state("준비", "neutral", GUIDE_START)
@@ -2065,7 +2128,7 @@ class ClaimPage(QWidget):
         summary = plan.summary_lines() if plan is not None else None
         if report.dry_run:
             self._set_state("미리 봄", "info", "줄마다 지우고 올릴 파일은 표와 [진행 기록] 에 있습니다. 실제로 하려면 '미리 보기만' 체크를 풀고 "
-                                             "③ 의 [첨부만 다시 올리기] 를 누르세요.")
+                                             "④ 의 [첨부만 다시 올리기] 를 누르세요.")
             show_report(self, title="첨부만 다시 올리기 — 미리 보기", tone="info",
                         heading=f"ERP 에 넣지 않았습니다 — 이렇게 합니다 ({len(report.results)}줄)",
                         summary=summary, columns=REATTACH_COLUMNS, rows=reattach_rows(report), notes=plan.problems if plan else None,
