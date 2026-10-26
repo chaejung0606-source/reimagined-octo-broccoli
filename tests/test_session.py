@@ -43,7 +43,7 @@ def _session(process, answers=None, stop=lambda: False, monkeypatch=None):
     return s, logs, asked
 
 
-def _ok(page, row, out_root, name_date_first, wait_sec, log):
+def _ok(page, row, out_root, name_format, wait_sec, log):
     return "09", Path(out_root or ".") / f"{row['docNo']}.pdf"
 
 

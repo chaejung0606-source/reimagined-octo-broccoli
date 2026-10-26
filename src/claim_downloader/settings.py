@@ -48,9 +48,9 @@ class Settings:
     # 처음엔 구글 드라이브를 권했으나 무료 15GB 가 다 차 그 기능을 없애고 네이버 MYBOX 를 쓴다(담당자 2026-10-22). 23절
     purchase_root: str = ""
     excel_path: str = ""           # 누락 검토용 ERP 청구내역 엑셀. 비우면 건너뜀
-    # 기본은 비목 번호를 앞에 붙인다 '0N_(YYMMDD) …'. 담당자가 이 형식으로 받기를 원했다.
-    # True 면 '(YYMMDD) …' — 2026년도 기존 보관본 형식.
-    name_date_first: bool = False
+    # 파일 이름 꼴 — naming.NAME_FORMATS. 기본 '(YYMMDD) 0N_적요…'(담당자 2026-10-26). 'code_date' 는 '0N_(YYMMDD) 적요…'(10-12 ~ 10-26 기본),
+    # 'date' 는 '(YYMMDD) 적요…'(2026년도 옛 보관본). 옛 config.json 의 name_date_first 는 읽지 않는다 — 담당자가 새 꼴을 바랐다.
+    name_format: str = "date_code"
     wait_sec: float = 2.0          # 건당 여유(초)
     freeze_reload: bool = True     # 상세화면 멈춤 시 새로고침 후 이어받기
     # 받기 화면에서 브라우저를 연 뒤 결의서내역 목록이 보이면 [목록 읽기] 를 저절로 — 읽기만 한다(2026-10-15 추가 기능)

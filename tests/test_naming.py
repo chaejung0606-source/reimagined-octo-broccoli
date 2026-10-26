@@ -12,20 +12,43 @@ from conftest import make_row
 
 
 def test_readme_example():
-    """기본은 비목 번호로 시작한다 (담당자 요청)."""
+    """기본은 날짜 다음에 비목 번호(담당자 2026-10-26 — '(260923) 03_[교육연구프로그램개발운영비] 카드 결제 건(…)_강원대학교산학협력단_(754,102)')."""
     code, name = naming.build_name(make_row(), {"owners": ["코웨이(주)"]})
     assert code == "09"
+    assert name == "(261008) 09_2026년 사업단 정수기 임차료(9월)_코웨이(주)_(51,900).pdf"
+
+
+def test_card_claim_name_matches_the_requested_example():
+    row = make_row(cont="03_[교육연구프로그램개발운영비] 카드 결제 건(26.08.09.~26.09.08.)", amt=754102, expDt="2026-09-23")
+    code, name = naming.build_name(row, {"owners": ["강원대학교산학협력단"]})
+    assert code == "03"
+    assert name == "(260923) 03_[교육연구프로그램개발운영비] 카드 결제 건(26.08.09.~26.09.08.)_강원대학교산학협력단_(754,102).pdf"
+
+
+def test_other_formats_stay_available():
+    _, name = naming.build_name(make_row(), {"owners": ["코웨이(주)"]}, naming.NAME_CODE_DATE)
     assert name == "09_(261008) 2026년 사업단 정수기 임차료(9월)_코웨이(주)_(51,900).pdf"
-
-
-def test_date_first_format():
-    _, name = naming.build_name(make_row(), {"owners": ["코웨이(주)"]}, name_date_first=True)
+    _, name = naming.build_name(make_row(), {"owners": ["코웨이(주)"]}, naming.NAME_DATE)
     assert name == "(261008) 2026년 사업단 정수기 임차료(9월)_코웨이(주)_(51,900).pdf"
+    _, name = naming.build_name(make_row(), {"owners": ["코웨이(주)"]}, "모르는값")
+    assert name.startswith("(261008) 09_")
+
+
+def test_swap_code_changes_only_the_number():
+    assert naming.swap_code("(260923) 03_[교육] 카드_(1,000).pdf", "02") == "(260923) 02_[교육] 카드_(1,000).pdf"
+    assert naming.swap_code("03_(260923) [교육] 카드_(1,000).pdf", "02") == "02_(260923) [교육] 카드_(1,000).pdf"
+    assert naming.swap_code("(260923) 2026년 정수기_(1,000).pdf", "02") == "(260923) 2026년 정수기_(1,000).pdf"
+
+
+def test_long_name_keeps_date_and_number():
+    _, name = naming.build_name(make_row(cont="03_" + "가" * 140), {"owners": ["홍길동"]})
+    short = naming.fit_name(name, 80)
+    assert len(short) <= 80 and short.startswith("(261008) 03_가") and short.endswith("_홍길동_(51,900).pdf") and "…" in short
 
 
 def test_unsorted_gets_00():
     _, name = naming.build_name(make_row(cont="특강 강사료"), {})
-    assert name.startswith("00_(261008) ")
+    assert name.startswith("(261008) 00_")
 
 
 def test_two_or_more_owners():
@@ -46,7 +69,7 @@ def test_negative_amount_written_without_sign():
 
 def test_missing_date_keeps_placeholder():
     _, name = naming.build_name(make_row(expDt=""), {})
-    assert name.startswith("09_(------) ")
+    assert name.startswith("(------) 09_")
 
 
 def test_name_is_capped():
@@ -110,8 +133,8 @@ BUDGET = [["A10110002", "장학금"], ["A10110012", "연구시설/장비비"]]  
 ])
 def test_matching_fund_bimok_follows_budget_tab_order(cont, info, expected):
     code, name = naming.build_name(make_row(cont=cont, amt="1234000", budget=BUDGET), info)
-    assert code == expected and name.startswith(expected + "_(")
-    assert ") 02_" not in name                                               # 적요 앞 번호는 떼어 낸다
+    assert code == expected and name.startswith("(261008) " + expected + "_")
+    assert not name[len("(261008) 00_"):].startswith("02_")                 # 적요 앞의 사업비 번호(02_)는 떼어 내고 예산 탭 번호만
 
 
 def test_matching_fund_with_one_budget_line_needs_no_evidence():

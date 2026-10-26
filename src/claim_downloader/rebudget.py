@@ -25,7 +25,6 @@ from .project_folders import ProjectFolder, folders
 CHANGE, SAME, UNSURE, UPLOADED, OTHER = "바꿈", "맞음", "못 정함", "업로드됨", "건드리지 않음"
 PAGES = 3                     # 결의서(1~2쪽) · 지급명세서(3쪽) — 그 뒤는 첨부라 다른 비목 이름이 섞일 수 있다
 AMOUNT = re.compile(r"_\(([\d,]+)\)(?:_\d+)?\.pdf$", re.IGNORECASE)
-PREFIX = re.compile(r"^(\d{2})_")
 
 
 @dataclass
@@ -122,7 +121,7 @@ def plan_folder(folder: ProjectFolder, budget: list, reader: Callable[[Path], st
         if not code:
             move.why = "PDF 에서 비목을 정하지 못함 — 열어 보고 직접 옮기세요"
             continue
-        name = PREFIX.sub(code + "_", path.name, count=1) if PREFIX.match(path.name) else path.name   # 날짜로 시작하는 이름(번호 없음)은 그대로
+        name = naming.swap_code(path.name, code)   # '0N_(날짜) …' · '(날짜) 0N_…' 의 번호만 — 번호 없는 이름(날짜만)은 그대로
         target_dir = naming.budget_folder(folder.path, code, budget)
         target = target_dir / name
         if target == path:

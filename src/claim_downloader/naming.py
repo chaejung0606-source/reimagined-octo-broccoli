@@ -1,6 +1,6 @@
 """파일 이름 짓기 · 비목 판정 · 저장 위치.
 
-파일명:  0N_(YYMMDD) 적요_이체자_(금액).pdf   (설정에 따라 0N_ 없이도)
+파일명:  (YYMMDD) 0N_적요_이체자_(금액).pdf   (설정 name_format — 0N_(YYMMDD) 적요… · (YYMMDD) 적요… 도)
   0N     = 비목 번호. 못 정하면 00
   YYMMDD = 지출예정일. 이체일자가 아직 공란인 신규 건도 이 기준 — 기존 보관본과 같다.
   적요   = ERP 내용에서 선행 '0N_' 비목 접두어를 뗀 것
@@ -163,8 +163,27 @@ def fmt_owners(owners) -> str:
     return "%s 등 %d명" % (owners[0], len(owners))
 
 
-def build_name(row: dict, info: dict, name_date_first: bool = False) -> tuple[str, str]:
-    """(비목 코드, 파일명). 코드를 못 정하면 '00'."""
+# 파일 이름 꼴(설정 name_format). 담당자 2026-10-26: "(260923) 03_[교육연구프로그램개발운영비] 카드 결제 건(26.08.09.~26.09.08.)_강원대학교산학협력단_(754,102)
+# 이렇게 저장되도록" — 날짜를 앞에 두고 그 뒤에 비목 번호(ERP 대표적요의 '03_' 자리). 그 전(2026-10-12 ~ 10-26)의 기본은 번호가 맨 앞이었다.
+NAME_DATE_CODE = "date_code"   # (YYMMDD) 0N_적요_이체자_(금액).pdf — 기본
+NAME_CODE_DATE = "code_date"   # 0N_(YYMMDD) 적요_이체자_(금액).pdf — 2026-10-12 ~ 10-26 기본
+NAME_DATE = "date"             # (YYMMDD) 적요_이체자_(금액).pdf — 2026년도 옛 보관본(번호 없음)
+NAME_FORMATS = (NAME_DATE_CODE, NAME_CODE_DATE, NAME_DATE)
+
+# 이름 앞의 비목 번호 자리 — '0N_(날짜) …' 이나 '(날짜) 0N_…'. 날짜만 있는 이름은 번호가 없다
+CODE_AT = re.compile(r"^(\([\d-]{6}\) )?(\d{2})_")
+
+
+def swap_code(fname: str, code: str) -> str:
+    """파일 이름의 비목 번호만 바꾼다(대응자금 파일 정리). 꼴은 그대로 두고, 번호가 없는 이름(날짜로만 시작)은 그대로."""
+    m = CODE_AT.match(fname)
+    if not m:
+        return fname
+    return fname[:m.start(2)] + code + fname[m.end(2):]
+
+
+def build_name(row: dict, info: dict, name_format: str = NAME_DATE_CODE) -> tuple[str, str]:
+    """(비목 코드, 파일명). 코드를 못 정하면 '00'. name_format 은 NAME_FORMATS 중 하나(모르는 값이면 기본)."""
     remark = row.get("cont") or ""
     code = ""
     m = re.match(r"^\s*(0[1-9]|10)\s*[._,\-]\s*", remark)
@@ -195,8 +214,13 @@ def build_name(row: dict, info: dict, name_date_first: bool = False) -> tuple[st
             amt = ""
     owners = fmt_owners(info.get("owners"))
 
-    pre = "" if name_date_first else ((code or "00") + "_")
-    s = pre + "(" + ymd + ") " + safe_name(remark)
+    tag, date = (code or "00") + "_", "(" + ymd + ") "
+    if name_format == NAME_CODE_DATE:
+        s = tag + date + safe_name(remark)
+    elif name_format == NAME_DATE:
+        s = date + safe_name(remark)
+    else:
+        s = date + tag + safe_name(remark)
     if owners:
         s += "_" + safe_name(owners)
     if amt:
@@ -243,11 +267,12 @@ MAX_PATH = 240       # 윈도우 경로 한도(259)보다 여유 있게 — 넘�
 
 
 def fit_name(fname: str, room: int) -> str:
-    """파일 이름이 room 글자를 넘으면 적요 부분을 줄인다 — 앞의 '0N_(날짜) ' 와 뒤의 '_이체자_(금액)' 은 남긴다."""
+    """파일 이름이 room 글자를 넘으면 적요 부분을 줄인다 — 앞의 '(날짜) 0N_' · '0N_(날짜) ' 와 뒤의 '_이체자_(금액)' 은 남긴다."""
     if len(fname) <= room:
         return fname
     base, ext = fname[:-4], fname[-4:]
-    head_end = base.find(") ") + 2 if ") " in base else 0
+    head = re.match(r"^(?:\d{2}_)?\([\d-]{6}\) (?:\d{2}_)?", base)
+    head_end = head.end() if head else (base.find(") ") + 2 if ") " in base else 0)
     tail_at = base.rfind("_(")
     if tail_at > head_end:
         owner_at = base.rfind("_", head_end, tail_at)

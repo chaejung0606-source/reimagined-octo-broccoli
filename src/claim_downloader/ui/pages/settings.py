@@ -25,12 +25,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import ai, archive, project_folders, settings
+from ... import ai, archive, naming, project_folders, settings
 from .. import ai_status
 from ..widgets import Card, ElideLabel, Field, PageHeader, Pill, muted_label
 
-EXAMPLE_DATE = "(261008) 2026년 사업단 정수기 임차료(9월)_코웨이(주)_(51,900).pdf"
-EXAMPLE_CODE = "09_" + EXAMPLE_DATE
+# 파일 이름 꼴 — 고르는 칸의 글자와 미리 보기. 미리 보기는 받기와 같은 naming.build_name 으로 만든다(글자가 어긋나지 않게)
+NAME_CHOICES = (
+    (naming.NAME_DATE_CODE, "(날짜) 번호_적요 — 기본"),
+    (naming.NAME_CODE_DATE, "번호_(날짜) 적요"),
+    (naming.NAME_DATE, "(날짜) 적요 — 번호 없음"),
+)
+EXAMPLE_ROW = {"cont": "09_2026년 사업단 정수기 임차료(9월)", "amt": 51900, "expDt": "2026-10-08"}
+
+
+def name_example(name_format: str) -> str:
+    return naming.build_name(EXAMPLE_ROW, {"owners": ["코웨이(주)"]}, name_format)[1]
 
 # 긴 입력줄이 화면 끝까지 늘어나면 읽기 어렵다
 FORM_MAX_WIDTH = 920
@@ -99,10 +108,13 @@ class SettingsPage(QWidget):
 
         # 파일 이름
         name_card = Card("파일 이름")
-        self.name_old = QCheckBox("이름 앞에 비목 번호를 붙이기 (끄면 날짜로 시작)")
-        self.name_old.setChecked(not cfg.name_date_first)
-        self.name_old.toggled.connect(self._save_name)
-        name_card.add(self.name_old)
+        self.name_format = QComboBox()
+        for value, text in NAME_CHOICES:
+            self.name_format.addItem(text, value)
+        index = self.name_format.findData(cfg.name_format)
+        self.name_format.setCurrentIndex(index if index >= 0 else 0)
+        self.name_format.currentIndexChanged.connect(self._save_name)
+        name_card.add(Field("이름 꼴", self.name_format))
         self.name_example = QLineEdit()
         self.name_example.setReadOnly(True)
         self.name_example.setFocusPolicy(Qt.NoFocus)
@@ -399,8 +411,8 @@ class SettingsPage(QWidget):
         if value != settings.load().out_root:
             self._save(out_root=value)
 
-    def _save_name(self, old: bool) -> None:
-        self._save(name_date_first=not old)
+    def _save_name(self, _index: int = 0) -> None:
+        self._save(name_format=self.name_format.currentData() or naming.NAME_DATE_CODE)
 
     def _browse_out_root(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "저장 폴더", self.out_root.text())
@@ -491,7 +503,7 @@ class SettingsPage(QWidget):
     def _refresh(self) -> None:
         cfg = settings.load()
         self._show_purchase_space(cfg)
-        self.name_example.setText(EXAMPLE_DATE if cfg.name_date_first else EXAMPLE_CODE)
+        self.name_example.setText(name_example(cfg.name_format))
         self.excel_field.set_error(
             "이 파일이 없습니다. 경로를 확인하세요." if cfg.excel_path and not os.path.exists(cfg.excel_path) else "")
         part = getattr(cfg, "participants_file", "") or ""

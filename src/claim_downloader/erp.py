@@ -405,7 +405,7 @@ _CLICK_LIST_JS = """() => { const els=document.querySelectorAll('a,span');
   for(const e of els){ if((e.textContent||'').trim()==='목록'){ e.click(); return; } } }"""
 
 
-def process_one(page, row: dict, out_root: str, name_date_first: bool, wait_sec: float,
+def process_one(page, row: dict, out_root: str, name_format: str, wait_sec: float,
                 log: Callable[[str], None]) -> tuple[str, Path]:
     """한 건: 행 선택 → 상세조회 → 청구서출력 → PDF 저장 → 목록 복귀. (비목 코드, 저장 경로)."""
     gfr = grid_frame(page)
@@ -471,7 +471,7 @@ def process_one(page, row: dict, out_root: str, name_date_first: bool, wait_sec:
 
     page.wait_for_timeout(800)
     info = read_owners_and_bimok(dfr)
-    code, fname = naming.build_name(row, info, name_date_first)
+    code, fname = naming.build_name(row, info, name_format)
     dest = naming.destination(out_root, code, fname, row.get("budget"))
     log("      → %s / %s" % (dest.parent.name, dest.name))
 

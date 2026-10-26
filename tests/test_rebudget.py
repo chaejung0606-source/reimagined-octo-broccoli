@@ -46,6 +46,8 @@ def build(tmp_path):
         "문서번호 : 202409710003-20261005-6\n장학금 안내\n연구시설/장비비 안내")
     put("02. 장학금/(261006) 날짜 이름_가나_(30,000).pdf",          # 설정에서 번호를 끈 이름 — 이름은 그대로, 폴더만
         page1("202409710003-20261006-7", "장학금", "30,000"))
+    put("00. 미분류/(261007) 00_새 꼴 연구장비_가나_(40,000).pdf",       # 2026-10-26 기본 꼴 '(날짜) 번호_적요' — 번호만 바뀐다
+        page1("202409710003-20261007-8", "연구시설/장비비", "40,000"))
     (root / BIZ / "02. 장학금").mkdir(parents=True)
     (root / BIZ / "02. 장학금" / "02_(261001) 사업비 장학금_가나_(5,000).pdf").write_bytes(b"%PDF")
     return root, fund, (lambda path: texts.get(path.name) or "")
@@ -73,6 +75,8 @@ def test_plan_renames_only_fund_files_it_is_sure_of(tmp_path):
     assert by["00_(261005) 알 수 없음_가나_(20,000).pdf"].status == rebudget.UNSURE      # 두 비목이 다 나오면 추측하지 않는다
     dated = by["(261006) 날짜 이름_가나_(30,000).pdf"]
     assert dated.status == rebudget.CHANGE and dated.target == fund / "01. 장학금" / "(261006) 날짜 이름_가나_(30,000).pdf"
+    new = by["(261007) 00_새 꼴 연구장비_가나_(40,000).pdf"]
+    assert new.status == rebudget.CHANGE and new.target == fund / "02. 연구시설장비비" / "(261007) 02_새 꼴 연구장비_가나_(40,000).pdf"
     assert all(path.exists() for path in (m.source for m in plan.moves))                # 계획은 파일을 건드리지 않는다
 
 
@@ -80,7 +84,7 @@ def test_apply_moves_without_overwriting_and_keeps_upload_folder(tmp_path):
     root, fund, reader = build(tmp_path)
     plan = rebudget.plan(root, budgets, reader=reader)
     changes = plan.changes()
-    assert len(changes) == 3
+    assert len(changes) == 4
     # 표를 보는 사이 같은 이름의 파일이 생겼다 — 덮어쓰지 않고 못 옮김으로
     blocked = next(m for m in changes if m.source.name.startswith("(261006)"))
     blocked.target.parent.mkdir(parents=True, exist_ok=True)
@@ -89,9 +93,10 @@ def test_apply_moves_without_overwriting_and_keeps_upload_folder(tmp_path):
     first = next(m for m in changes if "근로장학금" in m.source.name)
     cache.write_text(json.dumps({str(first.source): "202409710003-20261001-1"}), encoding="utf-8")
     rebudget.apply(changes, cache)
-    assert sum(m.done for m in changes) == 2 and not blocked.done and "덮어쓰지" in blocked.why
+    assert sum(m.done for m in changes) == 3 and not blocked.done and "덮어쓰지" in blocked.why
     assert blocked.source.exists() and blocked.target.read_bytes() == b"other"
     assert (fund / "02. 연구시설장비비" / "02_(261002) 연구장비 구입_가나상사_(1,500,000).pdf").exists()
+    assert (fund / "02. 연구시설장비비" / "(261007) 02_새 꼴 연구장비_가나_(40,000).pdf").exists()
     assert not first.source.exists() and first.target.exists()
     assert json.loads(cache.read_text(encoding="utf-8")) == {str(first.target): "202409710003-20261001-1"}
     assert (fund / "02. 장학금" / "업로드" / "02_(260901) 올린 것_가나_(200,000).pdf").exists()      # 업로드 폴더는 그대로

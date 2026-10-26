@@ -691,7 +691,7 @@ def _folder_session(screen, out_root):
 
     logs, saved = [], []
 
-    def process(page, row, root, name_date_first, wait_sec, log):
+    def process(page, row, root, name_format, wait_sec, log):
         saved.append((row["docNo"], root))
         return "09", __import__("pathlib").Path(root) / "x.pdf"
 
@@ -762,11 +762,11 @@ def test_matching_fund_project_numbers_bimok_by_its_budget_tab(isolated_home, mo
     s, logs, _saved = _folder_session(screen, root)
     placed = []
 
-    def process(page, row, out, name_date_first, wait_sec, log):
+    def process(page, row, out, name_format, wait_sec, log):
         bimok = {"3": "연구시설/장비비", "4": "장학금"}.get(row["no"], "장학금")
         code, fname = naming.build_name(row, {"bimok": bimok, "owners": ["가나"]})
         dest = naming.destination(out, code, fname, row.get("budget"))
-        placed.append(f"{__import__('os').path.basename(out)}/{dest.parent.name}/{dest.name[:3]}")
+        placed.append(f"{__import__('os').path.basename(out)}/{dest.parent.name}/{dest.name[9:12]}")   # '(날짜) ' 다음의 번호
         return code, dest
 
     s._process = process
@@ -820,10 +820,10 @@ def test_session_renames_already_downloaded_matching_fund_files(isolated_home, m
     s, logs, _saved = _folder_session(screen, str(root))
     plan = s.plan_rebudget()
     assert screen.clicks.count("예산") == 1 and screen.sub == "claims"
-    assert len(plan.changes()) == 3 and all(m.source.exists() for m in plan.changes())     # 계획만 — 아직 옮기지 않음
+    assert len(plan.changes()) == 4 and all(m.source.exists() for m in plan.changes())     # 계획만 — 아직 옮기지 않음
     s.apply_rebudget(plan.changes())
     assert (fund / "01. 장학금" / "01_(261001) 9월 근로장학금_홍길동 등 3명_(900,000).pdf").exists()
-    assert any("옮김 3 · 못 옮김 0" in line for line in logs)
+    assert any("옮김 4 · 못 옮김 0" in line for line in logs)
 
 
 def test_read_list_leaves_out_documents_on_the_skip_list(isolated_home, monkeypatch, tmp_path):

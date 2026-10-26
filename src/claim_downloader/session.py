@@ -1804,7 +1804,7 @@ class ErpSession:
                 i + 1, len(targets), row.get("no"), row.get("seq"),
                 f" · {row.get('gubun')}" if row.get("gubun") else "", (row.get("cont") or "")[:30]))
             try:
-                _code, dest = self._process(self.page, row, str(root), cfg.name_date_first,
+                _code, dest = self._process(self.page, row, str(root), cfg.name_format,
                                             cfg.wait_sec, self.log)
             except erp.NoPrintScreen as error:
                 # 청구서가 아닌 결의서(잔액조정 · 대체 …) — 다시 해도 같으니 건너뛰고, 그 과제의 결의서 목록을 다시 앞에 둔 뒤 다음 건으로
