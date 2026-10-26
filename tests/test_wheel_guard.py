@@ -72,7 +72,8 @@ def test_main_installs_the_guard_once():
     """새 콤보를 만들 때 따로 할 일이 없도록 app.main() 이 앱 전체에 한 번 깐다."""
     from pathlib import Path
 
-    import claim_downloader.ui.app as app_module
+    import claim_downloader
 
-    source = Path(app_module.__file__).read_text(encoding="utf-8")
+    # ui/app.py 는 PySide6 를 import 하므로(CI 에는 없다) 모듈을 들이지 않고 파일로만 읽는다
+    source = (Path(claim_downloader.__file__).parent / "ui" / "app.py").read_text(encoding="utf-8")
     assert source.count("app.installEventFilter(WheelGuard(app))") == 1
