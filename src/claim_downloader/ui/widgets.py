@@ -5,9 +5,11 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QFontMetrics, QPainter
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QWheelEvent
 from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -363,3 +365,45 @@ class PillDelegate(QStyledItemDelegate):
         painter.setPen(QColor(fg))
         painter.drawText(rect, Qt.AlignCenter, text)
         painter.restore()
+
+
+class WheelGuard(QObject):
+    """드롭다운(QComboBox) 위에서 마우스 휠 · 터치패드를 굴려도 값이 바뀌지 않게 — 앱 전체 이벤트 필터.
+
+    담당자 2026-10-26: "드롭다운 옵션 박스 위에 마우스가 올라가 있을 때 드래그하면 옵션이 돌아가면서 바뀌는데 이거 불편함 …
+    드롭다운 박스를 클릭하고 옵션을 클릭해서 선택하는 기능만". 단계 흐름 화면은 스크롤 칸이라 아래로 내리다 콤보 위를
+    지나는 순간 종류 · 과제 · 할 일이 바뀌었다.
+
+    휠 이벤트가 콤보에 닿으면 콤보의 처리기 대신 **콤보를 감싼 위젯 차례로**(부모 → 그 부모 …) 같은 휠을 넘겨, 그 자리를
+    감싼 스크롤 칸은 전처럼 움직이게 한다. Qt 는 받지 않은 휠을 스스로 부모로 올리지만 **사람이 굴린 것(spontaneous)만** 그렇고
+    (Qt 6.12 `QApplication::notify`), 앱이 보낸 것은 올리지 않아 시험에서 보이지 않는다 — 그래서 가드가 직접 넘기고, 받는 곳이
+    있었으면 원래 이벤트를 받은 것으로 표시해 Qt 가 한 번 더 올리지 않게 한다. 펼친 목록 안의 휠 · 키보드 화살표 · 클릭은 그대로다.
+    콤보는 기본 초점 규칙이 WheelFocus 라 휠이 지나가기만 해도 초점(테두리)을 가져가므로, 만들어질 때(Polish) StrongFocus 로 둔다 —
+    클릭 · Tab 으로 받는 초점은 같다. `app.main()` 이 한 번 깐다 — 새 콤보를 만들 때 따로 할 일은 없다.
+    """
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        kind = event.type()
+        if kind == QEvent.Polish and isinstance(obj, QComboBox) and obj.focusPolicy() == Qt.WheelFocus:
+            obj.setFocusPolicy(Qt.StrongFocus)
+        elif kind == QEvent.Wheel and isinstance(obj, QComboBox):
+            event.setAccepted(self._pass_up(obj, event))
+            return True
+        return False
+
+    @staticmethod
+    def _pass_up(combo: QComboBox, event: QWheelEvent) -> bool:
+        """콤보를 감싼 위젯 차례로 같은 휠을 보낸다 — 받는 것(스크롤 칸)이 있으면 True. Qt 의 전파 규칙과 같은 자리에서 멈춘다."""
+        widget = combo.parentWidget()
+        while widget is not None:
+            pos = QPointF(widget.mapFromGlobal(event.globalPosition().toPoint()))
+            copy = QWheelEvent(pos, event.globalPosition(), event.pixelDelta(), event.angleDelta(), event.buttons(),
+                               event.modifiers(), event.phase(), event.inverted(), event.source(), event.pointingDevice())
+            copy.setTimestamp(event.timestamp())
+            QApplication.sendEvent(widget, copy)
+            if copy.isAccepted():
+                return True
+            if widget.isWindow() or widget.testAttribute(Qt.WA_NoMousePropagation):
+                return False
+            widget = widget.parentWidget()
+        return False

@@ -39,6 +39,7 @@ from .pages.home import HomePage
 from .shell import Dock, DockOverlay, TopBar, WorkTabs
 from .tasks import HOME_ICON, HOME_ID, TASKS, UTILITIES, Task, find
 from .theme import stylesheet
+from .widgets import WheelGuard
 
 APP_NAME = "COSS 업무데스크"
 WORKSPACE = ""     # 이름 아래 기관 문구는 두지 않는다(담당자 요청)
@@ -548,6 +549,7 @@ def main() -> int:
     logging.getLogger("pypdf").setLevel(logging.CRITICAL)
     _claim_taskbar_identity()
     app = QApplication(sys.argv)
+    app.installEventFilter(WheelGuard(app))     # 드롭다운 위 휠이 값을 바꾸지 않게(담당자 2026-10-26)
     app.setApplicationName(APP_NAME)
     app.setWindowIcon(_app_icon())
     family = load_fonts()
