@@ -33,7 +33,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QSizePolicy,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -48,7 +47,7 @@ from ..art import Art
 from ..log_button import LogSendButton, warn
 from ..sheet_sync import instance as sheet_sync
 from ..report_dialog import ReportRow, show_report
-from ..flow import CURRENT, FlowStep
+from ..flow import CURRENT, FlowArea, FlowStep
 from ..flowlogic import DOWNLOAD_ORDER, download_stage, flow_states
 from ..widgets import Card, EmptyState, Pill, PillDelegate, muted_label
 from ..worker import SessionWorker
@@ -152,14 +151,16 @@ class DownloadPage(QWidget):
         self.step_login = self._build_login()
         self.step_list = self._build_list()
         self.steps = {"docs": self.step_docs, "project": self.step_what, "login": self.step_login, "list": self.step_list}
-        layout.addWidget(self.step_docs)
-        layout.addWidget(self.step_what)
-        layout.addWidget(self.step_login)
-        layout.addWidget(self.step_list, 1)
-        self.filler = QWidget()                # ④ 가 아직 없을 때 남는 높이를 채운다 — 단계가 화면 위쪽에 모여 있게
-        self.filler.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        layout.addWidget(self.filler, 1)
-        layout.addWidget(self._build_log(), 1)    # 펼치면 남는 높이를 단계와 나눠 받는다(높이를 숫자로 박지 않는다)
+        # 단계는 다른 업무 화면과 같은 틀(ui/flow.FlowArea)에 — 마친 ① ② ③ 은 작은 네모로 한 줄에 나란히, 지금 단계가 자리를 다 받는다
+        # (담당자 2026-10-26 "이전에 진행 완료된 단계들을 … 네모박스로 줄여서 컴팩하게"). 창이 낮으면 겹치지 않고 스크롤된다.
+        self.area = FlowArea()
+        self.area.add(self.step_docs)
+        self.area.add(self.step_what)
+        self.area.add(self.step_login)
+        self.area.add(self.step_list, 1)
+        self.area.add(self._build_log(), 1)    # 펼치면 남는 높이를 단계와 나눠 받는다(높이를 숫자로 박지 않는다)
+        self.filler = self.area.filler         # ④ 가 아직 없을 때 남는 높이를 채운다 — 단계가 화면 위쪽에 모여 있게
+        layout.addWidget(self.area, 1)
 
         w = self.worker
         w.log.connect(self._append_log)

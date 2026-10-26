@@ -82,3 +82,58 @@ def test_badges_take_only_their_text_width():
     app.processEvents()
     assert step.number.width() == step.number.sizeHint().width()
     assert side.width() == side.sizeHint().width()
+
+
+def test_done_steps_shrink_to_boxes_on_one_row():
+    """담당자 2026-10-26(증빙 다운로드 그림): 마친 ① ② ③ 이 저마다 폭을 다 쓰는 줄이라 지금 단계 ④ 가 아래로 밀렸다 —
+    "이전에 진행 완료된 단계들을 굳이 저렇게 가로줄을 다 차지않고 네모박스로 줄여서 컴팩하게 … 같은 행에". 마친 단계는 작은 네모로 한 줄에
+    나란히(높이는 같게), 지금 단계는 폭을 다 쓴다. 줄 폭이 모자라면 다음 줄로 넘어가고, 다시 펼치면(바꾸기) 폭을 다 쓰는 줄로 돌아온다."""
+    pytest.importorskip("PySide6")
+    import time
+
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    from claim_downloader.ui.flow import FlowArea, FlowStep
+
+    app = QApplication.instance() or QApplication([])
+
+    def settle(sec: float = 0.3) -> None:
+        end = time.time() + sec
+        while time.time() < end:
+            app.processEvents()
+            time.sleep(0.01)
+
+    area = FlowArea()
+    s1, s2 = FlowStep("1", "무엇을 받을까요?"), FlowStep("2", "어느 과제의 서류를 받을까요?")
+    s3, s4 = FlowStep("3", "ERP 에 로그인", editable=False), FlowStep("4", "받을 서류를 확인하고 받으세요", editable=False)
+    s4.add(QLabel("표"), 1)
+    for step in (s1, s2, s3):
+        area.add(step)
+    area.add(s4, 1)
+    s1.set_state(DONE, "구매요청(계약) 서류")
+    s2.set_state(DONE, "폴더 만든 과제 13개 — " + " · ".join(f"20240847000{i} 2024년도 사업비" for i in range(1, 8)))
+    s3.set_state(DONE, "ERP 로그인됨")
+    s4.set_state(CURRENT)
+    area.resize(1200, 500)
+    area.show()
+    settle()
+    chips = [s1, s2, s3]
+    assert len({c.y() for c in chips}) == 1                                   # 같은 줄에
+    assert len({c.height() for c in chips}) == 1                              # 같은 높이로
+    assert s1.x() < s2.x() < s3.x() and all(c.width() < 1200 // 2 + 60 for c in chips)
+    assert s1.width() < s2.width()                                            # 고른 값이 긴 네모가 더 넓다
+    assert s4.y() > s1.y() + s1.height() and s4.width() == 1200 and s4.height() > 150     # 지금 단계는 폭을 다 쓰고 남는 높이를 받는다
+    assert s1.width() >= s1.sizeHint().width()                                # 번호 · 제목 · [바꾸기] 는 다 보인다
+    # 좁은 창 — 다 안 들어가면 다음 줄로
+    area.resize(640, 500)
+    settle()
+    assert len({c.y() for c in chips}) >= 2 and s4.y() > max(c.y() + c.height() for c in chips)
+    assert all(c.x() + c.width() <= 640 for c in chips) and s4.width() == 640
+    # 다시 펼치면(바꾸기) 폭을 다 쓰는 줄로
+    area.resize(1200, 500)
+    s2.set_state(CURRENT)
+    s4.set_state(HIDDEN)
+    settle()
+    assert s2.width() == 1200 and s1.width() < 1200 and s2.y() > s1.y()
+    area.deleteLater()
+    app.processEvents()

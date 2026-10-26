@@ -4,23 +4,28 @@
 떠올라서 순서대로 선택하게" · "모든 업무카드 — 사용자 입장 및 진행순서 생각해서 구조 다시 배치".
 
 - 단계는 위에서 아래로 쌓인다. 아직 차례가 아닌 단계는 **보이지 않는다**('hidden') — 앞 단계를 마치면 그 아래에 떠오른다(옅게 나타남).
-- 지금 할 단계는 라벤더 테두리('current'), 마친 단계는 한 줄로 접혀 고른 값을 보인다('done') — [바꾸기] 를 누르면 다시 펼친다(edit 신호).
+- 지금 할 단계는 라벤더 테두리('current'), 마친 단계는 **작은 네모로 줄어 한 줄에 나란히** 놓인다('done' — 번호 · 제목 · 고른 값 · [바꾸기],
+  담당자 2026-10-26 "이전에 진행 완료된 단계들을 굳이 저렇게 가로줄을 다 차지않고 네모박스로 줄여서 컴팩하게 … 같은 행에") — [바꾸기] 를 누르면 다시 펼친다(edit 신호).
+  줄 폭이 모자라면 다음 줄로 넘어간다(`_StepsLayout`). 전에는 마친 단계마다 폭을 다 쓰는 한 줄이라 지금 단계가 아래로 밀렸다.
 - 표처럼 계속 봐야 하는 단계는 펼친 채 둔다('open' — 테두리만 보통).
 상태는 화면이 정한다 — 이 틀은 모양만 맡는다(어느 단계가 끝났는지는 업무마다 다르다).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
+    QWidgetItem,
 )
 
 from .art import Art
@@ -123,8 +128,8 @@ class FlowStep(QFrame):
 
     def _apply(self) -> None:
         done = self.state == DONE
-        # 접힌 단계는 한 줄이라 위아래 여백을 줄인다 — 아래 단계(표 · 칸)에 자리를 준다
-        self._outer.setContentsMargins(18, 8 if done else 14, 18, 8 if done else 14)
+        # 접힌 단계는 작은 네모(한 줄)라 여백을 줄인다 — 아래 단계(표 · 칸)에 자리를 주고 한 줄에 여럿이 놓이게
+        self._outer.setContentsMargins(12 if done else 18, 6 if done else 14, 12 if done else 18, 6 if done else 14)
         self.setObjectName({CURRENT: "cardCurrent", DONE: "cardDone"}.get(self.state, "card"))
         self.number.setObjectName("stepNoDone" if done else "stepNo")
         self.summary.setVisible(done)
@@ -141,6 +146,7 @@ class FlowStep(QFrame):
             widget.style().unpolish(widget)
             widget.style().polish(widget)
         self.number.updateGeometry()
+        self.updateGeometry()             # 접히거나 펼쳐지면 단계 레이아웃(_StepsLayout)이 줄을 다시 짠다
 
     def _fade_in(self) -> None:
         """앞 단계를 마치면 다음 단계가 옅게 떠오른다(0.22초). 끝나면 효과를 떼어 표 · 입력 칸 그리기에 끼어들지 않게 한다."""
@@ -205,15 +211,236 @@ class ChoiceCard(QFrame):
         super().keyPressEvent(event)
 
 
-class _StepsLayout(QVBoxLayout):
-    """단계를 쌓는 레이아웃 — 높이를 폭에 맞춰 셈하지 않는다고 알린다.
+# 마친 단계(네모)의 고른 값 칸 — 줄 폭이 모자랄 때 이만큼은 남기고(글자가 더 길면) 나머지는 '…' 으로 줄인다
+CHIP_SUMMARY_LEAST = 80
 
-    줄바꿈 글자(WrapLabel)가 들어 있으면 스크롤 칸이 '그 폭에서 바라는 높이'(표 · 칸의 넉넉한 높이)로 안을 키워, 자리가
-    남는데도 ③ 이 화면 아래로 밀려 스크롤해야 보였다(일반청구, 2026-10-21). 이렇게 두면 최소 높이만 지키고 남는 높이는
-    stretch 를 준 단계(표)가 받는다 — 최소 높이도 안 들어갈 때만 스크롤된다."""
+
+class _StepsLayout(QLayout):
+    """단계를 쌓는 레이아웃 — 마친 단계(DONE 인 FlowStep)가 연달아 있으면 **작은 네모로 줄여 한 줄에 나란히**, 그 밖(지금 단계 · 펼친 단계 ·
+    기록 · 채움)은 폭을 다 쓰는 줄. 담당자 2026-10-26 "이전에 진행 완료된 단계들을 굳이 저렇게 가로줄을 다 차지않고 네모박스로 줄여서 컴팩하게 ·
+    같은 행에" — 전에는 QVBoxLayout 이라 마친 단계도 한 줄씩 폭을 다 써 지금 단계(표)가 아래로 밀렸다.
+
+    네모의 폭은 번호 · 제목 · [바꾸기] 에 고른 값 글자만큼(`want`) — 한 줄에 다 안 들어가면 글자가 긴 네모부터 줄여(`least` 까지, 요약은 '…')
+    맞추고, 그래도 안 되면 다음 줄로 넘긴다. 높이는 QVBoxLayout 처럼 — 줄마다 바라는 높이를 주고 남는 높이는 stretch 를 준 줄(표 · 기록 · 채움)이
+    나눠 받으며, 모자라면 바라는 높이와 최소 높이 사이에서 줄인다.
+
+    높이를 폭에 맞춰 셈하지 않는다고 알린다(`hasHeightForWidth` False) — 줄바꿈 글자(WrapLabel)가 들어 있으면 스크롤 칸이 '그 폭에서 바라는 높이'
+    (표 · 칸의 넉넉한 높이)로 안을 키워, 자리가 남는데도 ③ 이 화면 아래로 밀려 스크롤해야 보였다(일반청구, 2026-10-21). 최소 높이만 지키고 남는
+    높이는 stretch 를 준 단계(표)가 받는다 — 최소 높이도 안 들어갈 때만 스크롤된다. 네모 줄의 줄바꿈 수만은 마지막으로 자리를 잡은 폭으로 센다."""
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._items: list[tuple[QWidgetItem, int]] = []     # (항목, stretch)
+        self._width = 0                                      # 마지막으로 자리를 잡은 폭 — 네모 줄의 줄바꿈을 셈할 때
+        self._shape: tuple = ()                              # 마지막 네모 줄 모양(줄 수) — 바뀌면 바깥(스크롤 칸)에 최소 높이를 다시 알린다
+
+    # ── QLayout 규약 ──────────────────────────────────────────────────
+    def addItem(self, item) -> None:  # noqa: N802
+        self._items.append((item, 0))
+
+    def addWidget(self, widget: QWidget, stretch: int = 0) -> None:  # noqa: N802
+        self.insertWidget(len(self._items), widget, stretch)
+
+    def insertWidget(self, index: int, widget: QWidget, stretch: int = 0) -> None:  # noqa: N802
+        self.addChildWidget(widget)
+        if index < 0 or index > len(self._items):
+            index = len(self._items)
+        self._items.insert(index, (QWidgetItem(widget), stretch))
+        self.invalidate()
+
+    def setStretchFactor(self, widget: QWidget, stretch: int) -> bool:  # noqa: N802
+        for i, (item, _old) in enumerate(self._items):
+            if item.widget() is widget:
+                self._items[i] = (item, stretch)
+                self.invalidate()
+                return True
+        return False
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int):  # noqa: N802
+        return self._items[index][0] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int):  # noqa: N802
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)[0]
+        return None
 
     def hasHeightForWidth(self) -> bool:  # noqa: N802
         return False
+
+    # ── 줄 짜기 ──────────────────────────────────────────────────────
+    @staticmethod
+    def _is_chip(item) -> bool:
+        widget = item.widget()
+        return isinstance(widget, FlowStep) and widget.state == DONE
+
+    def _rows(self) -> list[tuple[str, list, int]]:
+        """보이는 항목을 줄로 묶는다 — 연달아 마친 단계는 한 묶음('chips'), 나머지는 저마다 한 줄('full')."""
+        rows: list[tuple[str, list, int]] = []
+        chips: list = []
+        for item, stretch in self._items:
+            if item.isEmpty():                # 숨은 단계
+                continue
+            if self._is_chip(item):
+                chips.append(item)
+                continue
+            if chips:
+                rows.append(("chips", chips, 0))
+                chips = []
+            rows.append(("full", [item], stretch))
+        if chips:
+            rows.append(("chips", chips, 0))
+        return rows
+
+    @staticmethod
+    def _chip_widths(item) -> tuple[int, int, int]:
+        """마친 단계 네모가 바라는 폭(고른 값 글자를 다 보이게) · 줄여도 되는 최소 폭 · 높이."""
+        step = item.widget()
+        hint = item.sizeHint()               # 고른 값 칸(ElideLabel, Ignored)은 최소 폭으로만 셈된다
+        text = step.summary.text()
+        # 고른 값 칸은 바라는 폭에 최소 폭(10)으로 들어 있다 — 글자 폭에서 그만큼을 빼고 여유 6px
+        text_w = max(0, QFontMetrics(step.summary.font()).horizontalAdvance(text) - 10 + 6) if text else 0
+        return hint.width() + text_w, hint.width() + min(text_w, CHIP_SUMMARY_LEAST), hint.height()
+
+    def _chip_lines(self, items: list, width: int, spacing: int) -> list[tuple[list[tuple], int]]:
+        """네모들을 줄에 앉힌다 — [(그 줄의 [(항목, 폭)], 줄 높이)]. 최소 폭으로 줄을 나누고, 줄마다 남는 폭은 글자가 더 긴 네모부터 나눠 준다."""
+        sizes = [(item, *self._chip_widths(item)) for item in items]
+        lines: list[list[tuple]] = []
+        line: list[tuple] = []
+        used = 0
+        for size in sizes:
+            least = min(size[2], width)
+            if line and used + spacing + least > width:
+                lines.append(line)
+                line, used = [], 0
+            line.append(size)
+            used += (spacing if len(line) > 1 else 0) + least
+        if line:
+            lines.append(line)
+        placed: list[tuple[list[tuple], int]] = []
+        line_h = max(size[3] for size in sizes)      # 네모 높이는 묶음 안에서 같게 — [바꾸기] 가 없는 네모가 혼자 남아도 낮아지지 않게
+        for line in lines:
+            widths = [min(size[2], width) for size in line]
+            extra = [max(0, min(size[1], width) - w) for size, w in zip(line, widths)]
+            spare = width - sum(widths) - spacing * (len(line) - 1)
+            # 남는 폭은 공평하게 — 바라는 만큼만 받고 남은 것은 아직 모자란 네모가 다시 나눈다
+            pending = [i for i, e in enumerate(extra) if e > 0]
+            while spare > 0 and pending:
+                share = spare // len(pending)
+                if share <= 0:
+                    break
+                still = []
+                for i in pending:
+                    give = min(share, extra[i])
+                    widths[i] += give
+                    extra[i] -= give
+                    spare -= give
+                    if extra[i] > 0:
+                        still.append(i)
+                pending = still
+            placed.append(([(size[0], w) for size, w in zip(line, widths)], line_h))
+        return placed
+
+    def _measure(self, width: int):
+        """줄마다 (종류, 내용, 바라는 높이, 최소 높이, stretch)."""
+        spacing = max(0, self.spacing())
+        rows = []
+        for kind, items, stretch in self._rows():
+            if kind == "chips":
+                lines = self._chip_lines(items, width, spacing)
+                height = sum(h for _l, h in lines) + spacing * (len(lines) - 1)
+                rows.append((kind, lines, height, height, 0))
+            else:
+                item = items[0]
+                if item.hasHeightForWidth():
+                    hint_h, min_h = item.heightForWidth(width), item.minimumHeightForWidth(width)
+                else:
+                    hint_h, min_h = item.sizeHint().height(), item.minimumSize().height()
+                rows.append((kind, items, max(hint_h, min_h), min_h, stretch))
+        return rows
+
+    def setGeometry(self, rect: QRect) -> None:  # noqa: N802
+        super().setGeometry(rect)
+        area = rect.marginsRemoved(self.contentsMargins())
+        width = max(0, area.width())
+        spacing = max(0, self.spacing())
+        self._width = width
+        rows = self._measure(width)
+        if not rows:
+            return
+        heights = [row[2] for row in rows]
+        total = sum(heights) + spacing * (len(rows) - 1)
+        if area.height() >= total:
+            extra = area.height() - total
+            stretched = [i for i, row in enumerate(rows) if row[4] > 0]
+            weight = sum(rows[i][4] for i in stretched)
+            given = 0
+            for n, i in enumerate(stretched):
+                share = extra - given if n == len(stretched) - 1 else extra * rows[i][4] // weight
+                heights[i] += share
+                given += share
+        else:
+            deficit = total - area.height()
+            room = [row[2] - row[3] for row in rows]
+            total_room = sum(room)
+            if total_room > 0:
+                cut = min(deficit, total_room)
+                for i, r in enumerate(room):
+                    if r > 0:
+                        heights[i] -= min(r, cut * r // total_room)
+        y = area.top()
+        shape = []
+        for row, height in zip(rows, heights):
+            if row[0] == "chips":
+                shape.append(len(row[1]))
+                for line, line_h in row[1]:
+                    x = area.left()
+                    for item, w in line:
+                        item.setGeometry(QRect(x, y, w, line_h))
+                        x += w + spacing
+                    y += line_h + spacing
+                y -= spacing
+            else:
+                row[1][0].setGeometry(QRect(area.left(), y, width, height))
+                y += height
+            y += spacing
+        shape_now = (width, tuple(shape))
+        if shape_now != self._shape:
+            # 네모 줄의 줄 수가 바뀌면 최소 높이도 바뀐다 — 스크롤 칸이 다시 묻게(한 번 더 자리를 잡으면 모양이 같아 멈춘다)
+            self._shape = shape_now
+            parent = self.parentWidget()
+            if parent is not None:
+                parent.updateGeometry()
+
+    def _size(self, want_hint: bool) -> QSize:
+        spacing = max(0, self.spacing())
+        margins = self.contentsMargins()
+        width = self._width or 0
+        w = h = 0
+        rows = self._rows()
+        for n, (kind, items, _stretch) in enumerate(rows):
+            if kind == "chips":
+                if width > 0:
+                    lines = self._chip_lines(items, width, spacing)
+                    h += sum(lh for _l, lh in lines) + spacing * (len(lines) - 1)
+                else:
+                    h += max(self._chip_widths(item)[2] for item in items)
+                w = max(w, max(self._chip_widths(item)[1] for item in items))
+            else:
+                size = items[0].sizeHint() if want_hint else items[0].minimumSize()
+                w = max(w, size.width())
+                h += size.height()
+            if n:
+                h += spacing
+        return QSize(w + margins.left() + margins.right(), h + margins.top() + margins.bottom())
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return self._size(True)
+
+    def minimumSize(self) -> QSize:  # noqa: N802
+        return self._size(False)
 
 
 class FlowArea(QScrollArea):
