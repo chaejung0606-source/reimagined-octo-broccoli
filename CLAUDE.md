@@ -25,6 +25,7 @@ ERP(https://knu-icf.kangwon.ac.kr) 의 '청구서(지출요구 및 결의서)' P
   '다운로드 현황' 탭 하나에 쓰고 받기 화면의 [다운로드 현황] 으로 연다. 25절.
 - 2026-10-23 **첨부만 다시 올리기** — 일반청구 ② 오른쪽 칸 위 '할 일' 로 고르면 ③ 의 큰 단추가 그것을 한다. ERP 에 이미 있는 청구서(임시저장 · 보완요청)를 결의서내역에서 찾아 열고, 청구내역 줄마다 첨부문서를
   모두 지운 뒤 폴더의 지금 파일을 다시 붙여 [저장]. 청구내역 값은 넣지 않는다. 26절. **줄 다시 열기(○) · 첨부문서 '삭제' 는 실측 전**(안 되면 노란 띠로 사람에게).
+- 2026-10-26 **다른 플랫폼(K-Cloud)으로 옮길 노하우 묶음** — `docs/handover-kit/`. 이 앱에 넣지 않고 다른 저장소로 복사해 쓴다. 27절.
 - 다음 목표는 [`docs/roadmap.md`](docs/roadmap.md) — 일반청구·카드청구 *작성* 자동화(제출은 사람).
 
 ## 2. 사용자 업무 흐름 (반드시 보존)
@@ -2031,3 +2032,17 @@ ERP 를 새로 누르거나 미실측 화면이 필요한 것(출장비 · 기�
   청구내역에 없는 사람 건너뜀 · 일반 한 줄 · 결의서내역에서 열기(임시저장 · 보완요청 · 승인뿐 · 둘 이상 · 안 뜸 · 이미 떠 있음) · session · 오프스크린 화면) + 모의 ERP(결의서 목록 + 임시저장 청구서
   작성 화면(숨은 탭의 같은 id · 줄마다 `btn_del_N` '[삭제]' · '신청' · '초기화') + 파일등록 창)에서 실제 Chromium 으로 두 줄 끝까지 — 줄 [삭제] · [신청] 은 눌리지 않았다.
   **실제 ERP 는 담당자가 임시저장 청구서 하나로**(docs/실제-ERP-확인.md 19절).
+
+## 27. 다른 플랫폼(K-Cloud)으로 옮길 노하우 묶음 — `docs/handover-kit/` (2026-10-26)
+
+담당자: "erp 화면구조저장해서 대신 클릭해가지고 업무를 진행해주잖아 그걸 다른 플랫폼에서 사용하고 싶은데 erp 가 아닌 kcloud 라는 다른 플랫폼" →
+주소 `https://kcloud.kangwon.ac.kr/websquare/websquare.jsp?w2xPath=/cm/main/index_tabControl.xml&…`(WebSquare 틀) → **"아니 다른 레포에 노하우를 전달하고 싶습니다"**.
+그래서 K-Cloud 는 **이 앱에 넣지 않는다** — 같은 날 화면 구조 저장 업무에 넣었던 셋째 카드(5c09023)는 바로 되돌렸다(8f81d5e). 이 앱은 ERP · 주차등록 사이트만 다룬다.
+
+- 묶음(`docs/handover-kit/`, 통째로 새 저장소에 복사): `README.md`(원칙 · 절차 · ERP 에서 배운 함정 목록 · WebSquare 예상 · Claude 와 일하는 법 · 새 저장소 만들기) ·
+  `structure_capture.py`(diagnose.py 의 읽기 JS 를 그대로 떼어 낸 **독립 실행** 화면 구조 저장 도구 — Playwright 로 브라우저를 띄우고 로그인은 사람, 터미널에서 화면 이름 + Enter 마다
+  `~/화면구조/화면구조_YYYYMMDD_HHMM.txt` + 모음, `--cdp` 로 이미 띄운 크롬에 붙기, 확인 창이 떠 있으면 8초 뒤 포기(`wait_for_function` 시간 제한 — evaluate 는 멈춘다),
+  WebSquare 틀 한 줄 · `w2xPath` 를 프레임 표식으로 · role=grid 표 읽기까지) · `CLAUDE.md.template` · `test_safety_template.py` · `gitignore.template` · `ci.yml.template`.
+- `tests/test_handover_kit.py` 가 파일이 다 있는지 · 도구가 읽기만 하는지(진단 모드와 같은 금지어) · **도구의 `_PROBE_JS` · `_GRID_JS` 가 diagnose.py 와 같은지** 본다 —
+  diagnose.py 의 읽기 JS 를 고치면 묶음의 도구에도 옮긴다. 도구는 모의 WebSquare 화면(iframe · role=grid · 비밀번호 · authKey · 떠 있는 alert)에서 실제 Chromium 으로 확인했다.
+- K-Cloud 의 실측 · 설계 · 구현은 **그 저장소에서** 한다. 이 문서에는 K-Cloud 화면 구조를 쓰지 않는다.
