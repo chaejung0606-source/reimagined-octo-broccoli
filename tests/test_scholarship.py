@@ -1483,6 +1483,29 @@ def test_sheet_check_truncated_ta_rows_pick_by_amount(tmp_path):
     assert any("2. 사아자 — 줄 1" in line for line in check.lines)
 
 
+def test_sheet_check_truncated_ta_rows_follow_the_visible_course(tmp_path):
+    """담당자 실제(2026-10-26, 첨부만 다시 올리기): 한 학생의 교과목 세 줄이 같은 금액이고 적요가 교과목 중간에서 잘려 보일 때 —
+    차례 · 금액으로 고르지 않고 잘린 글자에 보이는 교과목 앞부분이 맞는 사람 줄로. 청구내역 차례가 명단과 달라도 어긋나지 않는다."""
+    from claim_downloader.claims import sheet_check
+    people = [roster.Person("진규정", "202630756", course="데이터보안활용혁신융합진로설계", amount=300000),
+              roster.Person("진규정", "202630756", course="컴퓨터아키텍처", amount=300000),
+              roster.Person("진규정", "202630756", course="첨단ICT 기술이해", amount=300000),
+              roster.Person("지영빈", "202630001", course="데이터보안개론", amount=300000)]
+    job = scholarship.Job(folder=str(tmp_path), roster=roster.Roster(path="", people=people), selected=[True] * 4,
+                          main_summary="02_2026년도 9월 (나)형 근로장학금")
+    main = job.main_summary
+    rows = [f"1 기타 장학금 진규정 진규정 300,000 300,000 0 {main}(진규정_첨단ICT 기술이 ...",      # 명단 셋째 사람
+            f"2 기타 장학금 진규정 진규정 300,000 300,000 0 {main}(진규정_컴퓨터아키텍처)",          # 통째로 보임
+            f"3 기타 장학금 진규정 진규정 300,000 300,000 0 {main}(진규정_데이터보안활용 ...",       # 명단 첫 사람
+            f"4 기타 장학금 지영빈 지영빈 300,000 300,000 0 {main}(지영빈_ ..."]                     # 교과목이 하나도 안 보여도 이름이 하나
+    hits, strangers, named = sheet_check.match_rows(job, rows)
+    assert hits == {0: [2], 1: [1], 2: [0], 3: [3]} and strangers == []
+    # 교과목이 보이기 전에 잘리면 전처럼 금액 · 차례로(두 줄이 같은 글자라 가릴 수 없다 — 이때는 신청 전 대조에 맡긴다)
+    blind = [f"1 진규정 300,000 {main}(진규정_ ...", f"2 진규정 300,000 {main}(진규정_ ...", f"3 진규정 300,000 {main}(진규정_ ..."]
+    hits, _s, _n = sheet_check.match_rows(job, blind)
+    assert sorted(r for rows_ in hits.values() for r in rows_) == [0, 1, 2]
+
+
 # ── 중복 임시저장 알림 (record.py 이력) ───────────────────────────────────
 
 def test_record_warning_names_people_already_saved_and_kind_change(isolated_home, job):

@@ -80,6 +80,14 @@ def match_rows(job, sheet_rows: list[str]) -> tuple[dict[int, list[int]], list[i
             continue
         seen = visible_prefix(flat, main)
         if main and (seen == len(main) or seen >= PREFIX_MIN):
+            # 잘린 적요라도 대표적요 뒤에 더 보이는 글자(TA 의 '(진규정_데이터보안활용 ...' 같은 교과목 앞부분)가 한 사람의 적요와만 맞으면 그 사람 —
+            # 담당자 실제(2026-10-26, 첨부만 다시 올리기): 한 학생의 교과목 세 줄이 모두 잘려 이름 · 금액(같음)으로만 고르다 다른 교과목 줄에 붙었다
+            shown = [(visible_prefix(flat, s), i) for i, s in wanted if s]
+            best = max((k for k, _ in shown), default=0)
+            picked = [i for k, i in shown if k == best]
+            if best > seen and len(picked) == 1:
+                hits.setdefault(picked[0], []).append(r)
+                continue
             found = [(len(n), i) for i, n in names if len(n) >= 2 and n in flat]
             if found:
                 longest = max(found)[0]                    # '김민' 과 '김민수' — 긴 이름

@@ -910,7 +910,7 @@ SHEET_ROWS_JS = """() => Array.from(document.querySelectorAll('input[name=CUR_RE
   const tr = r.closest('tr'); if (!tr) return '';
   const text = (tr.innerText || tr.textContent || '').replace(/\\s+/g, ' ').trim();
   if (!/[가-힣A-Za-z]/.test(text) || /조회된.*없|내역이 없|데이터가 없/.test(text)) return '';
-  const titles = Array.from(tr.querySelectorAll('[title]')).map(e => (e.getAttribute('title') || '').replace(/\\s+/g, ' ').trim())
+  const titles = [tr, ...Array.from(tr.querySelectorAll('[title]'))].map(e => (e.getAttribute('title') || '').replace(/\\s+/g, ' ').trim())
     .filter(t => t && !text.includes(t));
   return titles.length ? text + ' ' + titles.join(' ') : text; }).filter(t => t)"""
 

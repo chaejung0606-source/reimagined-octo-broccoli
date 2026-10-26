@@ -274,7 +274,11 @@ def row_loaded(frame, summary: str, sheet_text: str) -> tuple[bool, str]:
         return False, "입력 칸의 적요가 비어 있음"
     want = _squash(summary)
     same = bool(want) and (want in ptcl or ptcl in want)
-    if not same and ptcl[:PREFIX_MIN] not in _squash(sheet_text):
+    # 계획의 적요와 다르면 그 줄의 글자와 이어지는지 — 통째로 있거나 '앞부분 + …' 으로 잘린 채라도 있어야 한다(sheet_check.visible_prefix).
+    # 앞 글자 몇 개만 견주면 같은 청구서의 모든 줄이 대표적요를 나눠 가져 어느 줄을 열었어도 통과했다(담당자 실제 2026-10-26: TA 교과목 줄이 섞임)
+    from .sheet_check import visible_prefix
+    shown = visible_prefix(_squash(sheet_text), ptcl)
+    if not same and not (shown == len(ptcl) or shown >= PREFIX_MIN):
         return False, f"입력 칸의 적요 '{st['REQ_PTCL'][:40]}' 가 이 줄과 다름"
     if not _squash(st["REQ_AMT"]).strip("0,"):
         return False, "입력 칸의 청구액이 비어 있음"

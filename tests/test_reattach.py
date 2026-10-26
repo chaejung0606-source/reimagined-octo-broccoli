@@ -275,6 +275,33 @@ def test_row_loaded_compares_summary_or_row_text():
     assert reattach.row_loaded(frame, "02_2026년도 7월 (가)형 근로장학금_가나다", frame.rows[0]) == (False, "입력 칸의 청구액이 비어 있음")
 
 
+def test_row_loaded_rejects_another_course_row_of_the_same_claim():
+    """담당자 실제(2026-10-26): TA 학생의 교과목 줄 셋은 적요 앞 글자가 같다 — 연 줄의 입력 칸 적요가 그 줄의 (잘린) 글자와 이어져야 열린 것."""
+    main = "02_2026년도 9월 (나)형 근로장학금"
+    frame = FakeSheet(rows=[f"1 장학금 {main}(진규정_데이터보안활용혁신융합진로설계) 300,000",
+                            f"2 장학금 {main}(진규정_첨단ICT 기술이해) 300,000"])
+    frame.load(1)                                                   # 입력 칸에는 첨단ICT 줄이 들어왔다
+    sheet_text = f"2 장학금 진규정 300,000 {main}(진규정_첨단ICT 기술이 ..."
+    assert reattach.row_loaded(frame, f"{main}(진규정_첨단ICT 기술이해)", sheet_text)[0]
+    # 계획은 데이터보안 줄인데 열린 것은 첨단ICT 줄 — 앞 20자가 같아도 '다름'
+    wrong_sheet = f"1 장학금 진규정 300,000 {main}(진규정_데이터보안활용 ..."
+    ok, why = reattach.row_loaded(frame, f"{main}(진규정_데이터보안활용혁신융합진로설계)", wrong_sheet)
+    assert not ok and "다름" in why
+
+
+def test_match_rows_for_ta_plan_uses_visible_course(tmp_path):
+    """계획(사람마다 줄) ↔ 청구내역 — 잘린 적요의 교과목 앞부분으로 맞춘다(sheet_check 와 같은 규칙)."""
+    from claim_downloader.claims import roster
+    people = [roster.Person("진규정", "202630756", course="데이터보안활용혁신융합진로설계", amount=300000),
+              roster.Person("진규정", "202630756", course="첨단ICT 기술이해", amount=300000)]
+    j = scholarship.Job(folder=str(tmp_path), roster=roster.Roster(path="", people=people), selected=[True, True],
+                        main_summary="02_2026년도 9월 (나)형 근로장학금", common_files=[str(tmp_path / "공문.pdf")])
+    plan = reattach.plan_for_job(j)
+    main = j.main_summary
+    rows = [f"1 진규정 300,000 {main}(진규정_첨단ICT 기술이 ...", f"2 진규정 300,000 {main}(진규정_데이터보안활용 ..."]
+    assert reattach.match_rows(plan, rows) == {0: [1], 1: [0]}
+
+
 # ── 결의서내역에서 그 청구서 열기 ─────────────────────────────────────
 class _Grid:
     def __init__(self):
