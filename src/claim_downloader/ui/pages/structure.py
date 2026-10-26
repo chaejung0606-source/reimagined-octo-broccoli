@@ -6,8 +6,7 @@
 
 할 차례인 단계만 위에서 아래로 떠오른다(ui/flow.py, 같은 날 담당자 — "클릭해야 하는 이동 순서대로 하나 둘 떠오르게"):
     ① 어느 사이트의 화면인가요? → ② 그 사이트 열기 → ③ 실측할 화면을 띄우고 저장 → ④ 저장한 파일 보내기
-- 사이트는 셋 — ERP · 주차등록 사이트 · K-Cloud(강원대 통합정보시스템, 담당자 2026-10-26 — 실측 전). 고른 사이트의 창(팝업 포함)만 읽는다(session.capture_structure(site)).
-  K-Cloud 는 ERP 처럼 사람이 로그인한다(자동 로그인 · 자동 이동 없음).
+- 사이트는 둘 — ERP · 주차등록 사이트. 고른 사이트의 창(팝업 포함)만 읽는다(session.capture_structure(site)).
 - 브라우저는 다른 업무와 같은 것(브라우저 스레드 하나)이다. 고른 사이트가 이미 열려 있으면 ② 는 저절로 지나가고, [열린 창 앞으로] 는 그 창을
   앞으로 가져오기만 하고 다시 불러오지 않는다 — 로그인과 띄워 둔 화면이 그대로다. 열려 있는지는 브라우저 스레드가 2초마다 알린다(worker.sites).
 - 장학금 노란 띠 · 재로그인 띠에서 기다리는 중에도 바로 읽힌다(worker._wait_resume) — 그때 열어 둔 팝업을 실측한다.
@@ -31,9 +30,7 @@ from ..worker import SessionWorker
 SITES = (
     ("erp", "ERP", "산학협력단 연구비 시스템 — 청구서 받기 · 일반청구가 쓰는 곳", "claim"),
     ("parking", "주차등록 사이트", "교내 주차 사이트 — 주차등록 업무가 쓰는 곳", "parking"),
-    ("kcloud", "K-Cloud", "강원대 통합정보시스템 — 실측 전 · 로그인은 직접", "overview"),
 )
-HUMAN_LOGIN = ("erp", "kcloud")      # 사람이 로그인하는 사이트(주차 사이트만 설정의 로그인 정보로 자동 로그인)
 NAMES = {site: name for site, name, _desc, _art in SITES}
 FILES = (("모음 파일 열기", settings.structure_book_path), ("마지막 화면 열기", settings.structure_path), ("폴더 열기", settings.data_dir))
 
@@ -82,7 +79,7 @@ class StructurePage(QWidget):
         title = QLabel("화면 구조 저장")
         title.setObjectName("pageTitle")
         texts.addWidget(title)
-        texts.addWidget(muted_label("ERP · 주차등록 사이트 · K-Cloud 에 띄운 화면의 창 · 칸 · 단추를 읽기만 해서 파일로 남깁니다. "
+        texts.addWidget(muted_label("ERP · 주차등록 사이트에 띄운 화면의 창 · 칸 · 단추를 읽기만 해서 파일로 남깁니다. "
                                     "새 화면을 자동화하기 전에 이 파일을 보내 주세요."))
         head.addLayout(texts, 1)
         self.state = Pill("준비", "neutral")
@@ -183,8 +180,7 @@ class StructurePage(QWidget):
             erp.set_status("열림 · 로그인됨", "success")
         else:
             erp.set_status("열림 · 로그인 전", "warning")
-        for key in ("parking", "kcloud"):
-            self.options[key].state.set_status(*(("열림", "success") if sites.get(key) else ("닫힘", "neutral")))
+        self.options["parking"].state.set_status(*(("열림", "success") if sites.get("parking") else ("닫힘", "neutral")))
         for key, option in self.options.items():
             option.set_selected(key == self._site)
 
@@ -200,7 +196,7 @@ class StructurePage(QWidget):
         self.open_state.set_status(open_text, "success" if opened else "neutral")
         self.open_button.setText(f"{name} 열기")
         self.open_button.setToolTip(f"앱 브라우저에 {name} 를 엽니다(다른 업무와 같은 브라우저)"
-                                    + (" — 로그인은 직접 하세요" if self._site in HUMAN_LOGIN else " — 설정의 로그인 정보로 한 번 자동 로그인"))
+                                    + (" — 로그인은 직접 하세요" if self._site == "erp" else " — 설정의 로그인 정보로 한 번 자동 로그인"))
         self.open_button.setEnabled(not self._busy)
         self.front_button.setEnabled(not self._busy)
         self.save_button.setEnabled(opened and (not self._busy or waiting))
@@ -210,7 +206,7 @@ class StructurePage(QWidget):
         if self._site == "parking" and self._open_note and not self._busy:
             save_note = self._open_note          # 자동 로그인 결과가 더 새 소식이다(ERP 는 로그인 여부가 바뀌므로 늘 지금 상태로)
         notes = {"open": self._open_note or (f"{name} 가 열려 있지 않습니다. [{name} 열기] 로 여세요"
-                                             + (" — 로그인은 열린 창에서 직접 합니다." if self._site in HUMAN_LOGIN else ".")),
+                                             + (" — 로그인은 열린 창에서 직접 합니다." if self._site == "erp" else ".")),
                  "save": save_note}
         busy_note = "다른 업무가 브라우저를 쓰는 중입니다 — 그 일이 끝나면 저장할 수 있습니다." if self._busy and not waiting else ""
         summaries = {"site": name, "open": open_text}

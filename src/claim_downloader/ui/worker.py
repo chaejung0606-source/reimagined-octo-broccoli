@@ -76,9 +76,9 @@ class SessionWorker(QObject):
         self._capture_owner = "download"
         self._idle_stopped = False              # 띠에서 기다리다 오래 비워 멈춤 — 끝난 일을 활동으로 세지 않는다(곧 로그아웃)
         self._session: ErpSession | None = None
-        self._capture_site = ""                 # [화면 구조 저장] 으로 읽을 사이트('erp' · 'parking' · 'kcloud', 빈 값은 모두)
+        self._capture_site = ""                 # [화면 구조 저장] 으로 읽을 사이트('erp' · 'parking', 빈 값은 모두)
         # 브라우저에 열린 사이트(화면 구조 저장 업무가 읽는다). 이 스레드가 통째로 바꿔 끼우기만 하므로 화면 스레드가 읽어도 된다
-        self.sites: dict = {"browser": False, "erp": False, "erp_login": False, "parking": False, "kcloud": False}
+        self.sites: dict = {"browser": False, "erp": False, "erp_login": False, "parking": False}
         self._thread = threading.Thread(target=self._loop, name="erp-browser", daemon=True)
         self._thread.start()
 
@@ -470,10 +470,6 @@ class SessionWorker(QObject):
                                    if report.opened else "주차등록 사이트를 열지 못했습니다")
             self.site_opened.emit(site, note)
             return
-        if site == "kcloud":
-            self.busy.emit(True, "K-Cloud 를 여는 중…")
-            self.site_opened.emit(site, session.show_kcloud())
-            return
         self.busy.emit(True, "ERP 를 여는 중…")
         self.site_opened.emit(site, session.show_erp())
 
@@ -481,7 +477,7 @@ class SessionWorker(QObject):
         try:
             now = session.open_sites()
         except Exception:  # noqa: BLE001 — 닫히는 중
-            now = {"browser": False, "erp": False, "erp_login": False, "parking": False, "kcloud": False}
+            now = {"browser": False, "erp": False, "erp_login": False, "parking": False}
         if now != getattr(self, "sites", None):
             self.sites = now
             self.sites_changed.emit(now)
