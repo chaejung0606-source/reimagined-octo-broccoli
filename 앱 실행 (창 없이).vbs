@@ -16,7 +16,7 @@ shell.CurrentDirectory = here
 venvw = here & "\.venv\Scripts\pythonw.exe"
 bat = here & "\¾Û ½ÇÇà.bat"
 
-If fso.FileExists(here & "\.venv\setup-claim-v1.txt") And fso.FileExists(venvw) Then
+If fso.FileExists(here & "\.venv\setup-claim-v2.txt") And fso.FileExists(venvw) Then
     shell.Run """" & venvw & """ -m claim_downloader.ui.app", 0, False
 Else
     shell.Run """" & bat & """", 1, False

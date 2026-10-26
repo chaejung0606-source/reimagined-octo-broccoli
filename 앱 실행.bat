@@ -12,7 +12,7 @@ rem 준비 표시 파일 이름에 판을 붙인다. 지출 서류 검토 앱에서 업데이트로 넘어온
 rem PC 는 setup-done.txt 만 있으므로, 새 의존성(Playwright·브라우저)을 받으러
 rem 준비 단계로 한 번 더 들어간다.
 
-if not exist ".venv\setup-claim-v1.txt" goto setup
+if not exist ".venv\setup-claim-v2.txt" goto setup
 if not exist ".venv\Scripts\pythonw.exe" goto setup
 
 start "" ".venv\Scripts\pythonw.exe" -m claim_downloader.ui.app
@@ -74,7 +74,7 @@ rem 준비 직후 한 번만 확인한다. 창이 이미 떠 있으므로 여기서는 시간이 들어도 된�
 ".venv\Scripts\python.exe" -c "import claim_downloader.ui.app" 2>"%TEMP%\claim-downloader-error.txt"
 if errorlevel 1 goto broken
 
-echo done > ".venv\setup-claim-v1.txt"
+echo done > ".venv\setup-claim-v2.txt"
 
 rem 앞으로 검은 창 없이 쓰실 수 있도록 바탕화면 바로가기를 만들어 둔다.
 rem 처음 설치할 때 한 번만 만든다. 업데이트로 준비 단계를 다시 돌 때는 만들지 않는다
