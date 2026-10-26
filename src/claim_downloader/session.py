@@ -454,14 +454,26 @@ class ErpSession:
 
     # ── 진단 ─────────────────────────────────────────────────────────────
     # 화면 구조 저장 업무(담당자 2026-10-21)가 고르는 사이트 — 이름 · 그 사이트의 창인지
-    SITES = {"erp": "ERP", "parking": "주차등록 사이트"}
+    SITES = {"erp": "ERP", "parking": "주차등록 사이트", "kcloud": "K-Cloud"}
 
     def _site_finder(self):
-        """창 주소 → 'erp' · 'parking' · ''. 주차 사이트 주소는 설정에서 한 번만 읽는다."""
+        """창 주소 → 'erp' · 'parking' · 'kcloud' · ''. 주차 · K-Cloud 주소는 설정에서 한 번만 읽는다."""
         from . import parking
-        parking_url = getattr(self._load_settings(), "parking_url", "") or parking.DEFAULT_URL
+        cfg = self._load_settings()
+        parking_url = getattr(cfg, "parking_url", "") or parking.DEFAULT_URL
         erp_host = _host(settings_mod.ERP_URL)
-        return lambda url: "erp" if _host(url) == erp_host else ("parking" if parking.is_site(url, parking_url) else "")
+        kcloud_host = _host(getattr(cfg, "kcloud_url", "") or settings_mod.KCLOUD_URL)
+
+        def site_of(url: str) -> str:
+            host = _host(url)
+            if host and host == erp_host:
+                return "erp"
+            if parking.is_site(url, parking_url):
+                return "parking"
+            if host and host == kcloud_host:
+                return "kcloud"
+            return ""
+        return site_of
 
     def open_sites(self) -> dict:
         """지금 앱 브라우저에 열린 사이트 — 화면 구조 저장 업무가 '이미 열려 있음 · 로그인됨' 을 보인다. 브라우저 스레드에서만 부른다.
@@ -470,7 +482,8 @@ class ErpSession:
         site_of = self._site_finder()
         sites = {site_of(p.url) for p in pages}
         erp_open = "erp" in sites
-        return {"browser": bool(pages), "erp": erp_open, "erp_login": erp_open and self.erp_logged_in, "parking": "parking" in sites}
+        return {"browser": bool(pages), "erp": erp_open, "erp_login": erp_open and self.erp_logged_in, "parking": "parking" in sites,
+                "kcloud": "kcloud" in sites}
 
     def show_erp(self) -> str:
         """화면 구조 저장 업무의 [ERP 열기] — 열린 ERP 창이 있으면 앞으로 가져오기만 한다(다시 불러오지 않아 로그인 · 띄운 화면이 그대로).
@@ -488,9 +501,27 @@ class ErpSession:
         self.log("화면 구조 저장: ERP 를 열었습니다 — 로그인하고 실측할 화면을 띄운 뒤 저장하세요")
         return "ERP 를 열었습니다 — 로그인하고 실측할 화면을 띄운 뒤 [화면 구조 저장] 을 누르세요"
 
+    def show_kcloud(self) -> str:
+        """화면 구조 저장 업무의 [K-Cloud 열기] — ERP 와 같다: 열린 K-Cloud 창이 있으면 앞으로 가져오기만(다시 불러오지 않아 로그인 · 띄운 화면 그대로),
+        없으면 연다(브라우저가 닫혀 있으면 새로, 다른 사이트만 있으면 새 탭). 로그인은 사람이 그 창에서 직접(27절, 실측 전) — 아이디 · 비밀번호는 어디에도 두지 않는다.
+        ERP 작업 창(self.page)은 바꾸지 않는다."""
+        url = getattr(self._load_settings(), "kcloud_url", "") or settings_mod.KCLOUD_URL
+        site_of = self._site_finder()
+        page = next((p for p in self._pages() if site_of(p.url) == "kcloud"), None) if self.browser_open else None
+        if page is not None:
+            page.bring_to_front()
+            return "이미 열린 K-Cloud 창을 앞으로 가져왔습니다 — 다시 로그인하지 않아도 됩니다"
+        if self.browser_open:
+            page = self._live_page().context.new_page()
+            page.goto(url, wait_until="domcontentloaded")
+        else:
+            self.open_browser(start_url=url)
+        self.log("화면 구조 저장: K-Cloud 를 열었습니다 — 로그인하고 실측할 화면을 띄운 뒤 저장하세요")
+        return "K-Cloud 를 열었습니다 — 로그인하고 실측할 화면을 띄운 뒤 [화면 구조 저장] 을 누르세요"
+
     def capture_structure(self, site: str = "") -> Path:
         """지금 열린 화면의 창·프레임·입력 요소를 _화면구조.txt 로. 읽기만 한다(diagnose.py).
-        site 를 주면('erp' · 'parking') 그 사이트의 창만 — 다른 업무가 연 창이어도 그대로 읽는다(누르거나 다시 불러오지 않는다)."""
+        site 를 주면('erp' · 'parking' · 'kcloud') 그 사이트의 창만 — 다른 업무가 연 창이어도 그대로 읽는다(누르거나 다시 불러오지 않는다)."""
         if not self.browser_open:
             raise BrowserClosed("브라우저가 닫혀 있습니다. 브라우저를 다시 여세요.")
         site_of = self._site_finder()

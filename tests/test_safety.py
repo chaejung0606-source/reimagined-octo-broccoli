@@ -384,7 +384,7 @@ def test_structure_card_only_reads_and_does_not_reload_open_sites():
     (이미 열린 창은 다시 불러오지 않아 로그인 · 띄운 화면이 그대로), 화면을 누르거나 값을 넣지 않는다. 화면 코드는 브라우저를 직접 만지지 않는다."""
     import inspect
     from claim_downloader import session
-    for name in ("show_erp", "open_sites", "_site_finder", "capture_structure"):
+    for name in ("show_erp", "show_kcloud", "open_sites", "_site_finder", "capture_structure"):
         code = inspect.getsource(getattr(session.ErpSession, name))
         for word in ("evaluate", ".click", "fill(", "press(", "type(", "set_input_files", "reload"):
             assert word not in code, (name, word)

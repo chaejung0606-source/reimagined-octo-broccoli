@@ -37,6 +37,8 @@ APP_USER_MODEL_ID = "Kangwon.COSS.WorkDesk"
 # 옛 그림이 떴다. 그래서 디자인을 바꿀 때마다 이 이름을 바꾼다(tools/make_icon.py 가 icon.ico 와 같은 그림으로 이 파일도 만든다).
 SHORTCUT_ICON = "icon-20261014.ico"
 ERP_URL = "https://knu-icf.kangwon.ac.kr/rderp_layoutMain.act"
+# 강원대 통합정보시스템 K-Cloud — 담당자가 보낸 주소(2026-10-26). 화면 구조 저장 업무의 셋째 사이트, 실측 전(27절). 로그인은 사람이.
+KCLOUD_URL = "https://kcloud.kangwon.ac.kr/websquare/websquare.jsp?w2xPath=/cm/main/index_tabControl.xml&mainClickMenuCode=1261001002"
 # 로그인 뒤 앱이 여는 과제 — 담당자 지정(2026-10-19). 다른 과제는 설정에서 고른다(과제기간에 오늘이 든 과제만 보인다, navigate.choices).
 DEFAULT_PROJECT_NO = "202408470003"
 
@@ -96,6 +98,8 @@ class Settings:
     parking_free_rule: str = ""            # 적용금액 0 인 사용이 차감되는지 — "all"(차감됨) · "paid"(차감 안 됨) · ""(아직 모름). parking_ledger.drain_study
     parking_free_rule_at: str = ""         # 그렇게 정한 때(MM-DD HH:MM)
     parking_free_note: str = ""            # 그 분석의 지금 상태 한 줄(관리대장 잔여 상자에 보임)
+    # K-Cloud(강원대 통합정보시스템) — 화면 구조 저장 업무가 여는 셋째 사이트(담당자 2026-10-26, 27절). 로그인 정보는 두지 않는다(사람이 로그인)
+    kcloud_url: str = KCLOUD_URL
 
 
 def data_dir() -> Path:

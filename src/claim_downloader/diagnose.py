@@ -290,6 +290,23 @@ SAFE_VALUE_TYPES = {"", "text", "number", "tel", "search", "email", "url", "date
 PER_FRAME_LIMIT = 400   # 프레임 하나에 이보다 많으면 '… 외 N개'
 
 
+# 화면 틀 알아보기 — K-Cloud(강원대 통합정보시스템, 27절)는 주소가 websquare.jsp 라 WebSquare(인스웨이브) 로 보인다. ERP 의 JGM · IBSheet 처럼
+# 틀마다 목록 · 칸을 읽는 법이 다르므로, 어느 틀인지와 w2 요소(w2input · w2grid …)가 몇 개인지만 한 줄로 적는다. 읽기만 한다 — 실측이 오면 그 틀의 읽기를 더한다.
+_FRAMEWORK_JS = r"""() => {
+  try {
+    const ws = window.WebSquare;
+    const w2 = document.querySelectorAll('[class*="w2"]');
+    if (!ws && !w2.length) return '';
+    let ver = '';
+    try { ver = typeof ws.version === 'function' ? ws.version() : (ws.version || ''); } catch (err) { ver = ''; }
+    const kinds = {};
+    w2.forEach(e => { const m = String(e.className || '').match(/\bw2[A-Za-z]+/); if (m) kinds[m[0]] = (kinds[m[0]] || 0) + 1; });
+    const top = Object.entries(kinds).sort((a, b) => b[1] - a[1]).slice(0, 14).map(([k, v]) => k + ' ' + v).join(' · ');
+    return 'WebSquare' + (ver ? ' ' + String(ver).slice(0, 24) : '') + (ws ? '' : '(전역 객체 없음)') + ' · w2 요소 ' + w2.length + (top ? ' · ' + top : '');
+  } catch (err) { return ''; }
+}"""
+
+
 def _frame_report(fr) -> dict:
     """프레임 하나를 읽는다. 로딩 중이라 evaluate 가 실패하면 그 사실만 적는다."""
     try:
@@ -300,6 +317,10 @@ def _frame_report(fr) -> dict:
         data["grids"] = fr.evaluate(_GRID_JS) if not data.get("error") else []
     except Exception:  # noqa: BLE001 — 목록은 못 읽어도 요소 목록은 남긴다
         data["grids"] = []
+    try:
+        data["framework"] = fr.evaluate(_FRAMEWORK_JS) if not data.get("error") else ""
+    except Exception:  # noqa: BLE001
+        data["framework"] = ""
     try:
         url = fr.url or ""
     except Exception:  # noqa: BLE001
@@ -486,6 +507,8 @@ def format_report(windows: list[dict], when: str | None = None, target: str = ""
             if fr.get("error"):
                 out.append(f"    (읽지 못함: {fr['error']})")
                 continue
+            if fr.get("framework"):
+                out.append(f"    틀: {fr['framework']}")
             elements = fr.get("elements", [])
             shown = [e for e in elements if e.get("visible")]
             hidden = [e for e in elements if not e.get("visible")]

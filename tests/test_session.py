@@ -358,11 +358,12 @@ def test_structure_card_sees_open_sites_and_shows_erp_without_reloading(monkeypa
             return None
 
     erp_page, parking_page = Page(settings.ERP_URL), Page("https://traffic.kangwon.ac.kr/discount-links")
+    kcloud_page = Page(settings.KCLOUD_URL)           # K-Cloud(27절) — 셋째 사이트, 2026-10-26
 
     class Context:
-        pages = [erp_page, parking_page]
+        pages = [erp_page, parking_page, kcloud_page]
 
-    erp_page.context = parking_page.context = Context()
+    erp_page.context = parking_page.context = kcloud_page.context = Context()
 
     class Browser:
         contexts = [erp_page.context]
@@ -373,8 +374,9 @@ def test_structure_card_sees_open_sites_and_shows_erp_without_reloading(monkeypa
     s, logs, _asked = _session(_ok, monkeypatch=monkeypatch)
     s.browser, s.page = Browser(), parking_page
     s.erp_logged_in = True
-    assert s.open_sites() == {"browser": True, "erp": True, "erp_login": True, "parking": True}
+    assert s.open_sites() == {"browser": True, "erp": True, "erp_login": True, "parking": True, "kcloud": True}
     assert "이미 열린" in s.show_erp() and erp_page.fronted == 1 and erp_page.gotos == []
+    assert "이미 열린" in s.show_kcloud() and kcloud_page.fronted == 1 and kcloud_page.gotos == [] and s.page is parking_page
     seen = []
     monkeypatch.setattr(session_mod.diagnose, "capture",
                         lambda context, frame_kind=None, keep=None: seen.append([p.url for p in context.pages if keep(p.url)]) or [])
