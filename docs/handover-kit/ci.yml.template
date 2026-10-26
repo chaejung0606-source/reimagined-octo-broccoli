@@ -1,0 +1,45 @@
+# 배포본이 깨진 채로 사용자에게 내려가는 것을 막는다. 앱이 이 브랜치에서 git pull 로 업데이트를 받으면
+# 여기 올라간 커밋은 곧바로 담당자 컴퓨터에서 도는 코드다. 푸시마다 검사한다.
+name: 검사
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # GUI 와 Playwright 브라우저는 넣지 않는다 — 테스트는 화면 없이 돈다(브라우저 테스트는 로컬에서).
+      - name: 설치
+        run: pip install -e ".[dev]"
+
+      - name: 테스트
+        run: python -m pytest -q
+
+      - name: 문법 검사
+        run: python -m compileall -q src tools
+
+      # 문법 검사는 없는 이름을 못 잡는다 — 단추를 눌러야 터지는 NameError 가 배포된 적이 있다.
+      - name: 이름 오류 검사
+        run: ruff check --select F821,F822,F823,F811,F632,F701,F702,F704,F706,F707,E9 src tools tests
+
+      # .gitignore 를 믿지 않고 실제로 올라간 파일을 본다. 한 번 올라가면 이력에서 지우기 어렵다.
+      - name: 개인정보 파일 혼입 검사
+        run: |
+          found=$(git ls-files '*.pdf' '*.hwp' '*.hwpx' '*.jpg' '*.jpeg' '*.xls' '*.xlsx' 'samples/*' '서류/*' '화면구조/*' '*화면구조_*.txt' '*_실행로그.txt' '*_공유용로그.txt' '*_*기록.json' 'config.json' '.env')
+          if [ -n "$found" ]; then
+            echo "중단: 서류 · 기록 파일이 저장소에 올라가 있습니다."
+            echo "$found"
+            exit 1
+          fi
+          echo "혼입 없음"

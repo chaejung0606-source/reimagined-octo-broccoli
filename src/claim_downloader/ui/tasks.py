@@ -37,7 +37,7 @@ TASKS: tuple[Task, ...] = (
     Task("parking", "주차등록", "교내 주차 등록 사이트를 앱 브라우저로 열고 자동으로 로그인합니다.",
          "parking", "car", "sky", "parking:ParkingPage", ready=True),
     # 담당자 요청 2026-10-21 — 업무마다 있던 [화면 구조 저장] 을 한 업무로(ERP · 주차등록 사이트를 골라 실측, diagnose.py)
-    Task("structure", "화면 구조 저장", "ERP · 주차등록 사이트 · K-Cloud 에 띄운 화면의 칸 · 단추를 읽어 파일로 남깁니다(새 화면 자동화 전 실측).",
+    Task("structure", "화면 구조 저장", "ERP · 주차등록 사이트에 띄운 화면의 칸 · 단추를 읽어 파일로 남깁니다(새 화면 자동화 전 실측).",
          "structure", "layout", "cyan", "structure:StructurePage", ready=True),
 )
 
