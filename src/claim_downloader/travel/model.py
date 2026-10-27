@@ -41,6 +41,7 @@ class Evidence:
     mode: str = ""          # 대중교통 이동편(열차 · 고속버스 …)
     nights: int = 1         # 숙박 영수증 하나가 덮는 박 수
     place: str = ""         # 출장지가 여러 곳일 때 어느 곳의 체류 · 숙박인지
+    part: int | None = None # 영수증 여러 장이 든 PDF(하이패스 '총 N 건') 중 몇 번째 상자인지 — 없으면 파일 전체
 
 
 @dataclass
@@ -216,11 +217,11 @@ def guess_amount(text: str) -> int | None:
     return max(values) if values else None
 
 
-def pdf_text(path: Path) -> str:
+def pdf_text(path: Path, pages: int = 2) -> str:
     try:
         from pypdf import PdfReader
         reader = PdfReader(str(path))
-        return "\n".join((page.extract_text() or "") for page in reader.pages[:2])
+        return "\n".join((page.extract_text() or "") for page in reader.pages[:pages])
     except Exception:
         return ""
 
@@ -236,6 +237,18 @@ def guess(path: Path, year: int) -> Evidence:
     return Evidence(path=path, day=day, amount=amount)
 
 
+# 하이패스 홈페이지 영수증 인쇄(담당자 2026-10-27 견본): 상자마다 '2026년10월23일 13시02분' · '9,600 원(카드)'
+_HIPASS_DAY = re.compile(r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일\s*\d{1,2}\s*시")
+_HIPASS_AMOUNT = re.compile(r"(\d{1,3}(?:,\d{3})+|\d+)\s*원\s*\((?:카드|현금|선불|후불)[^)]*\)")
+
+
+def hipass_receipts(text: str) -> list[tuple[date | None, int]]:
+    """하이패스 영수증 인쇄 글에서 영수증마다 (이용일자, 금액) — 일자 · 금액 수가 같을 때만(아니면 빈 목록)."""
+    days = [_make(*(int(g) for g in m.groups())) for m in _HIPASS_DAY.finditer(text)]
+    amounts = [int(m.group(1).replace(",", "")) for m in _HIPASS_AMOUNT.finditer(text)]
+    return list(zip(days, amounts)) if days and len(days) == len(amounts) else []
+
+
 # ── 쪽 짜임 ─────────────────────────────────────────────────────────────
 @dataclass
 class Block:
@@ -244,6 +257,7 @@ class Block:
     title: list[str] = field(default_factory=list)      # 그림 묶음 위의 줄(자차의 일자 · 금액, 이동경로)
     cols: int = 3
     fill: bool = False      # 남은 높이를 다 쓴다(체류 한 쪽 · 지도)
+    parts: list = field(default_factory=list)            # 그림마다 PDF 의 몇 번째 영수증 상자인지(Evidence.part) — 없으면 파일 전체
 
 
 @dataclass
@@ -331,7 +345,8 @@ def car_pages(trip: Trip) -> list[Page]:
     blocks = []
     for day, group in _group(tolls, lambda e: e.day):
         subtotal = sum(e.amount or 0 for e in group)
-        blocks.append(Block([e.path for e in group], title=[korean_date(day) if day else "일자 없음", f"하이패스 {won(subtotal)}"],
+        blocks.append(Block([e.path for e in group], parts=[e.part for e in group],
+                            title=[korean_date(day) if day else "일자 없음", f"하이패스 {won(subtotal)}"],
                             cols=grid_cols(len(group))))
     if route:
         legs = trip.route_legs()

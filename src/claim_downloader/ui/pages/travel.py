@@ -79,6 +79,7 @@ class EvidenceTable(QTableWidget):
         super().__init__(0, len(COLUMNS[kind]), parent)
         self.kind = kind
         self.paths: list[Path] = []
+        self.parts: list[int | None] = []          # 줄마다 PDF 의 몇 번째 영수증인지(하이패스 '총 N 건' 인쇄를 영수증마다 한 줄로)
         self.year = lambda: date.today().year      # 화면이 출장 시작일의 해로 바꿔 끼운다 — '0528' 같은 이름의 해
         self.places = lambda: []                   # 화면이 출장지 목록으로 바꿔 끼운다 — 파일 경로로 출장지를 짐작
         self.setHorizontalHeaderLabels(COLUMNS[kind])
@@ -96,25 +97,40 @@ class EvidenceTable(QTableWidget):
         for path in paths:
             if path in self.paths or path.suffix.lower() not in model.FILE_SUFFIXES:
                 continue
-            ev = model.guess(path, year)
-            self.paths.append(path)
-            row = self.rowCount()
-            self.insertRow(row)
-            name = QTableWidgetItem(path.name)
-            name.setFlags(name.flags() & ~Qt.ItemIsEditable)
-            name.setToolTip(str(path))
-            self.setItem(row, 0, name)
-            self.setItem(row, 1, QTableWidgetItem(ev.day.isoformat() if ev.day else ""))
-            if self.kind != model.STAY:
-                self.setItem(row, 2, QTableWidgetItem(f"{ev.amount:,}" if ev.amount is not None else ""))
-            if self.kind in PLACE_COL:
-                self.setItem(row, PLACE_COL[self.kind], QTableWidgetItem(model.match_place(str(path), self.places())))
-            if self.kind == model.PUBLIC:
-                self.setItem(row, 3, QTableWidgetItem(model.mode_of(str(path))))
-            elif self.kind == model.LODGING:
-                self.setItem(row, 3, QTableWidgetItem("1"))
+            for ev in self._receipts(path, year):
+                self._add_row(ev)
         self.blockSignals(False)
         self.changed.emit()
+
+    def _receipts(self, path: Path, year: int) -> list[model.Evidence]:
+        """하이패스 인쇄 PDF 에 영수증이 여럿이면(일자 · 금액 수와 영수증 상자 수가 같을 때만) 영수증마다 한 줄 — 이용일자별로 묶이게."""
+        if self.kind == model.TOLL and path.suffix.lower() == ".pdf":
+            found = model.hipass_receipts(model.pdf_text(path, pages=50))
+            if len(found) > 1:
+                from ...travel import render
+                if len(render.load_images(path)) == len(found):
+                    return [model.Evidence(path=path, day=day, amount=amount, part=i) for i, (day, amount) in enumerate(found)]
+        return [model.guess(path, year)]
+
+    def _add_row(self, ev: model.Evidence) -> None:
+        path = ev.path
+        self.paths.append(path)
+        self.parts.append(ev.part)
+        row = self.rowCount()
+        self.insertRow(row)
+        name = QTableWidgetItem(path.name + (f" ({ev.part + 1}번째 영수증)" if ev.part is not None else ""))
+        name.setFlags(name.flags() & ~Qt.ItemIsEditable)
+        name.setToolTip(str(path))
+        self.setItem(row, 0, name)
+        self.setItem(row, 1, QTableWidgetItem(ev.day.isoformat() if ev.day else ""))
+        if self.kind != model.STAY:
+            self.setItem(row, 2, QTableWidgetItem(f"{ev.amount:,}" if ev.amount is not None else ""))
+        if self.kind in PLACE_COL:
+            self.setItem(row, PLACE_COL[self.kind], QTableWidgetItem(model.match_place(str(path), self.places())))
+        if self.kind == model.PUBLIC:
+            self.setItem(row, 3, QTableWidgetItem(model.mode_of(str(path))))
+        elif self.kind == model.LODGING:
+            self.setItem(row, 3, QTableWidgetItem("1"))
 
     def show_places(self, places: list[str]) -> None:
         """출장지가 여러 곳이면 출장지 칸을 보이고, 비어 있는 줄은 파일 경로로 다시 짐작한다."""
@@ -133,18 +149,20 @@ class EvidenceTable(QTableWidget):
         for row in sorted({i.row() for i in self.selectedIndexes()}, reverse=True):
             self.removeRow(row)
             del self.paths[row]
+            del self.parts[row]
         self.changed.emit()
 
     def clear_all(self) -> None:
         self.setRowCount(0)
         self.paths.clear()
+        self.parts.clear()
         self.changed.emit()
 
     def evidence(self, year: int) -> list[model.Evidence]:
         out = []
         for row, path in enumerate(self.paths):
             cell = lambda col, row=row: (self.item(row, col).text() if self.item(row, col) else "")  # noqa: E731
-            ev = model.Evidence(path=path, day=_parse_day(cell(1), year))
+            ev = model.Evidence(path=path, day=_parse_day(cell(1), year), part=self.parts[row])
             if self.kind != model.STAY:
                 ev.amount = _parse_int(cell(2))
             if self.kind in PLACE_COL:

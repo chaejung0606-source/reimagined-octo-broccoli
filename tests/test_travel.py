@@ -247,3 +247,45 @@ def test_toll_receipts_widen_when_few():
     """담당자 2026-10-27 "하이패스 내역도 동일하게" — 그날 영수증이 하나면 한 칸을 다 써서 크게."""
     trip = Trip(tolls=[ev("1.png", date(2026, 5, 28), 2170), ev("2.png", date(2026, 5, 29), 1800), ev("3.png", date(2026, 5, 29), 900)])
     assert [b.cols for b in model.car_pages(trip)[0].blocks] == [1, 2]
+
+
+def _hipass_print(path: Path, receipts) -> Path:
+    """하이패스 홈페이지 영수증 인쇄 모양(담당자 2026-10-27 견본) — 쪽 위 인쇄 날짜 · 테두리 친 영수증 상자 · 아래 '총 N 건' · 주소."""
+    from PySide6.QtGui import QColor, QFont, QPainter, QPdfWriter, QPen
+    writer = QPdfWriter(str(path))
+    writer.setResolution(150)
+    painter = QPainter(writer)
+    painter.setFont(QFont("Pretendard", 9))
+    painter.drawText(40, 40, "26. 10. 26. 오전 10:29     영수증 | 하이패스 홈페이지")
+    for i, (when, amount) in enumerate(receipts):
+        x, y = 60 + (i % 3) * 380, 120 + (i // 3) * 560
+        painter.setPen(QPen(QColor("#555555"), 3))          # 견본 테두리처럼 진한 회색 선
+        painter.drawRect(x, y, 340, 500)
+        painter.setPen(QColor("black"))
+        painter.drawText(x + 40, y + 80, "영수증  한국도로공사")
+        painter.drawText(x + 40, y + 160, when)
+        painter.drawText(x + 40, y + 240, f"{amount:,} 원(카드)")
+    painter.drawText(500, 1650, f"총 {len(receipts)} 건 / {sum(a for _, a in receipts)} 원")
+    painter.drawText(40, 1720, "https://www.hipass.co.kr/usepculr/UsePculrReceiptPrint.do 1/1")
+    painter.end()
+    return path
+
+
+def test_hipass_print_is_cut_into_receipts(qapp, tmp_path):
+    """담당자 2026-10-27 "보통 이렇게 주는데 첫번째 이미지처럼 정리해서" — 인쇄 PDF 에서 영수증 상자만 오려 내고, 여럿이면 영수증마다 한 줄."""
+    from claim_downloader.travel import render
+    from claim_downloader.ui.pages.travel import EvidenceTable
+    one = _hipass_print(tmp_path / "하이패스 1.pdf", [("2026년10월23일 13시02분", 9600)])
+    images = render.load_images(one)
+    assert len(images) == 1 and images[0].width() < 400          # 쪽(1240) 이 아니라 상자만
+    many = _hipass_print(tmp_path / "하이패스 3.pdf", [("2026년10월23일 13시02분", 9600), ("2026년10월23일 18시10분", 1200),
+                                                       ("2026년10월24일 09시00분", 9600)])
+    assert model.hipass_receipts(model.pdf_text(many)) == [(date(2026, 10, 23), 9600), (date(2026, 10, 23), 1200), (date(2026, 10, 24), 9600)]
+    table = EvidenceTable(model.TOLL)
+    table.add_files([many], 2026)
+    tolls = table.evidence(2026)
+    assert [(e.day, e.amount, e.part) for e in tolls] == [(date(2026, 10, 23), 9600, 0), (date(2026, 10, 23), 1200, 1), (date(2026, 10, 24), 9600, 2)]
+    page = model.car_pages(Trip(tolls=tolls))[0]
+    assert [(b.title[1], b.parts) for b in page.blocks] == [("하이패스 10,800원", [0, 1]), ("하이패스 9,600원", [2])]
+    out = tmp_path / "out.pdf"
+    assert render.render([page], out) == 1

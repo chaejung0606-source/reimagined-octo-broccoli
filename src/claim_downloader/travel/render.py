@@ -81,9 +81,81 @@ def trim(image: QImage) -> QImage:
     return image.copy(left, top, right - left, bottom - top)
 
 
+FRAME_SCAN = 500     # 영수증 테두리를 찾을 때 줄여 볼 폭
+FRAME_INK = 235      # 테두리 선으로 볼 어두움 — 줄이면 1점 선이 옅은 회색이 되므로 넉넉히
+FRAME_MIN_W = 0.12   # 테두리 상자로 볼 최소 크기(쪽 폭 · 높이 비율)
+FRAME_MIN_H = 0.08
+
+
+def frames(image: QImage) -> list[tuple[int, int, int, int]]:
+    """쪽 안의 영수증 테두리 상자들(원본 좌표 x, y, w, h) — 위에서 아래, 왼쪽에서 오른쪽 차례.
+    하이패스 홈페이지에서 인쇄한 PDF(담당자 2026-10-27 견본 둘)는 테두리 친 영수증 상자가 있고 둘레에 인쇄 날짜 · 주소 · '총 N 건' 글이 있어
+    여백 자르기로는 안 줄어든다. 여러 장이면 상자들이 테두리를 나눠 쓰는 격자다 — 그래서 선이 아니라 **선에 갇힌 흰 곳**을 찾는다:
+    쪽 가장자리에서 이어지는 흰 곳(바깥)을 지우고 남은 흰 곳 중 큰 것 하나가 상자 하나의 안쪽. 글자 속 구멍은 작아서 빠진다.
+    다른 상자 안에 든 상자(영수증 안의 표)는 뺀다."""
+    small = image.scaledToWidth(min(FRAME_SCAN, image.width()), Qt.SmoothTransformation)
+    flat = QImage(small.size(), QImage.Format_RGB32)
+    flat.fill(QColor("white"))
+    painter = QPainter(flat)
+    painter.drawImage(0, 0, small)
+    painter.end()
+    w, h = flat.width(), flat.height()
+    table = bytes(0 if b < FRAME_INK else 1 for b in range(256))      # 1 = 흰 곳
+    open_ = bytearray(b"".join(line.translate(table) for line in _rows(flat)))
+
+    def fill(start: int) -> tuple[int, int, int, int]:
+        """start 에서 이어진 흰 곳(상하좌우)을 지우고 그 둘레 상자를 돌려준다."""
+        open_[start] = 0
+        stack = [start]
+        x0 = x1 = start % w
+        y0 = y1 = start // w
+        while stack:
+            i = stack.pop()
+            x, y = i % w, i // w
+            x0, x1, y0, y1 = min(x0, x), max(x1, x), min(y0, y), max(y1, y)
+            for j in (i - w if y else -1, i + w if y < h - 1 else -1, i - 1 if x else -1, i + 1 if x < w - 1 else -1):
+                if j >= 0 and open_[j]:
+                    open_[j] = 0
+                    stack.append(j)
+        return x0, y0, x1 - x0 + 1, y1 - y0 + 1
+
+    for i in list(range(w)) + list(range((h - 1) * w, h * w)) + list(range(0, h * w, w)) + list(range(w - 1, h * w, w)):
+        if open_[i]:
+            fill(i)                                                    # 바깥
+    found = []
+    for i in range(w * h):
+        if open_[i]:
+            box = fill(i)
+            if box[2] >= FRAME_MIN_W * w and box[3] >= FRAME_MIN_H * h:
+                found.append(box)
+    found = [f for f in found if not any(o is not f and o[0] <= f[0] and o[1] <= f[1]
+                                         and o[0] + o[2] >= f[0] + f[2] and o[1] + o[3] >= f[1] + f[3] for o in found)]
+    found.sort(key=lambda f: (round(f[1] / (0.05 * h)), f[0]))
+    sx, sy = image.width() / w, image.height() / h
+    # 상자 안쪽만 — 테두리까지 넣으면 격자에서 이웃 상자의 선 끄트머리가 귀퉁이에 묻어 나온다(테두리는 _boxed 가 새로 그린다)
+    return [(int(x * sx), int(y * sy), int(bw * sx), int(bh * sy)) for x, y, bw, bh in found]
+
+
+def _boxed(image: QImage) -> QImage:
+    """오려 낸 영수증 둘레에 견본처럼 얇은 테두리."""
+    out = QImage(image.size(), QImage.Format_RGB32)
+    out.fill(QColor("white"))
+    painter = QPainter(out)
+    painter.drawImage(0, 0, image)
+    painter.setPen(QPen(QColor("#555555"), 3))
+    painter.drawRect(QRectF(1.5, 1.5, image.width() - 3, image.height() - 3))
+    painter.end()
+    return out
+
+
 def load_images(path: Path) -> list[QImage]:
-    """그림 파일은 그대로, PDF 는 쪽마다 그림 하나 — 둘 다 둘레 여백을 잘라 낸다."""
-    return [trim(image) for image in _load(path)]
+    """그림 파일은 둘레 여백만 잘라 내고, PDF 는 쪽마다 영수증 테두리 상자가 있으면 상자마다 하나씩 오려 낸다(없으면 쪽을 여백만 잘라).
+    상자 찾기는 PDF 만 — 휴대폰 캡처의 카드 모양 칸을 영수증으로 잘못 오리지 않게."""
+    out = []
+    for image in _load(path):
+        boxes = frames(image) if path.suffix.lower() == ".pdf" else []
+        out += [_boxed(image.copy(*box)) for box in boxes] if boxes else [trim(image)]
+    return out
 
 
 def _load(path: Path) -> list[QImage]:
@@ -114,6 +186,9 @@ class _Cells:
         for i, path in enumerate(block.images):
             caption = block.captions[i] if i < len(block.captions) else ""
             images = cache.setdefault(path, load_images(path))
+            part = block.parts[i] if i < len(block.parts) else None
+            if part is not None and part < len(images):
+                images = [images[part]]
             if not images:
                 self.items.append((None, caption or path.name))
             for j, image in enumerate(images):
