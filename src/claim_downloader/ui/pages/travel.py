@@ -1,7 +1,8 @@
-"""출장증빙자료 만들기 — 지원 항목별 증빙을 넣고 출장 정보 · 경로를 적으면 '<이름> 출장증빙.pdf' 를 만든다. 담당자 2026-10-27, CLAUDE.md 28절.
+"""출장증빙자료 만들기 — 지원 항목별 증빙을 넣고 출장 정보 · 경로를 적으면 '<이름> 출장증빙_yy.mm.dd.pdf' 를 만든다. 담당자 2026-10-27, CLAUDE.md 28절.
 
 담당자: "지원항목별로 증빙 자료를 넣고 출장지 등 경로를 입력했을 때 출장증빙 파일이 나왔으면 좋겠습니다".
-    ① 출장 정보(출장자 · 기간 · 출발지 · 출장지 · 저장할 폴더) → ② 항목별 증빙(체류 · 대중교통 · 자차 하이패스 · 숙박 — 파일마다 일자 · 금액) ·
+    ① 출장 정보(출장자 · 기간 · 출발지 · 출장지(여러 곳이면 쉼표로) · 저장할 폴더) → ② 항목별 증빙(체류 · 대중교통 · 자차 하이패스 · 숙박 — 파일마다 일자 · 금액,
+    교통비 · 숙박은 있을 때만 — 숙박 상한 칸은 숙박 영수증을 넣었을 때만 보인다) ·
     이동경로(자차) → ③ 만들기.
 쪽 짜임 · 숙박 지원금액은 travel/model.py(Qt 없음), 그리기는 travel/render.py. ERP · 브라우저는 쓰지 않는다 — 폴더의 파일만 읽고 새 PDF 하나를 쓴다(덮어쓰지 않음).
 자차 이동경로의 거리 · 지도는 지금은 담당자가 넣는다(네이버 지도 캡처 · km). 앱이 찾아오는 것은 실측 뒤(28절).
@@ -44,12 +45,14 @@ FILE_FILTER = "증빙 파일 (*.pdf *.jpg *.jpeg *.png *.bmp *.gif *.webp)"
 REGIONS = ("자동(출장지로)",) + tuple(model.LODGING_CAPS)
 
 # 항목마다 표의 칸 — 마지막 칸은 항목마다 뜻이 다르다(대중교통 이동편 · 숙박 박 수)
+# 체류 · 숙박의 '출장지' 칸은 출장지가 여러 곳일 때만 보인다(담당자 2026-10-27 "출장지가 한군데가 아닌 경우도 있습니다")
 COLUMNS = {
-    model.STAY: ("파일", "일자"),
+    model.STAY: ("파일", "일자", "출장지"),
     model.PUBLIC: ("파일", "일자", "금액(원)", "이동편"),
     model.TOLL: ("파일", "이용일자", "금액(원)"),
-    model.LODGING: ("파일", "입실일", "결제금액(원)", "박 수"),
+    model.LODGING: ("파일", "입실일", "결제금액(원)", "박 수", "출장지"),
 }
+PLACE_COL = {model.STAY: 2, model.LODGING: 4}
 HINTS = {
     model.STAY: "일자별 체류 영수증 — 출장이 7일 이하면 한 쪽을 칸으로 나눠 담고, 8일 이상이면 일자마다 한 쪽입니다.",
     model.PUBLIC: "승차권 · 영수증 — 일자와 이동편(열차 · 고속버스 …)마다 한 쪽입니다. 같은 날이라도 이동편이 바뀌면 다른 쪽.",
@@ -77,6 +80,7 @@ class EvidenceTable(QTableWidget):
         self.kind = kind
         self.paths: list[Path] = []
         self.year = lambda: date.today().year      # 화면이 출장 시작일의 해로 바꿔 끼운다 — '0528' 같은 이름의 해
+        self.places = lambda: []                   # 화면이 출장지 목록으로 바꿔 끼운다 — 파일 경로로 출장지를 짐작
         self.setHorizontalHeaderLabels(COLUMNS[kind])
         self.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         for col in range(1, self.columnCount()):
@@ -101,14 +105,29 @@ class EvidenceTable(QTableWidget):
             name.setToolTip(str(path))
             self.setItem(row, 0, name)
             self.setItem(row, 1, QTableWidgetItem(ev.day.isoformat() if ev.day else ""))
-            if self.columnCount() > 2:
+            if self.kind != model.STAY:
                 self.setItem(row, 2, QTableWidgetItem(f"{ev.amount:,}" if ev.amount is not None else ""))
+            if self.kind in PLACE_COL:
+                self.setItem(row, PLACE_COL[self.kind], QTableWidgetItem(model.match_place(str(path), self.places())))
             if self.kind == model.PUBLIC:
                 self.setItem(row, 3, QTableWidgetItem(model.mode_of(str(path))))
             elif self.kind == model.LODGING:
                 self.setItem(row, 3, QTableWidgetItem("1"))
         self.blockSignals(False)
         self.changed.emit()
+
+    def show_places(self, places: list[str]) -> None:
+        """출장지가 여러 곳이면 출장지 칸을 보이고, 비어 있는 줄은 파일 경로로 다시 짐작한다."""
+        if self.kind not in PLACE_COL:
+            return
+        col = PLACE_COL[self.kind]
+        self.setColumnHidden(col, len(places) < 2)
+        self.blockSignals(True)
+        for row, path in enumerate(self.paths):
+            item = self.item(row, col)
+            if item is None or not item.text().strip():
+                self.setItem(row, col, QTableWidgetItem(model.match_place(str(path), places)))
+        self.blockSignals(False)
 
     def remove_selected(self) -> None:
         for row in sorted({i.row() for i in self.selectedIndexes()}, reverse=True):
@@ -126,8 +145,10 @@ class EvidenceTable(QTableWidget):
         for row, path in enumerate(self.paths):
             cell = lambda col, row=row: (self.item(row, col).text() if self.item(row, col) else "")  # noqa: E731
             ev = model.Evidence(path=path, day=_parse_day(cell(1), year))
-            if self.columnCount() > 2:
+            if self.kind != model.STAY:
                 ev.amount = _parse_int(cell(2))
+            if self.kind in PLACE_COL:
+                ev.place = cell(PLACE_COL[self.kind]).strip()
             if self.kind == model.PUBLIC:
                 ev.mode = cell(3).strip()
             elif self.kind == model.LODGING:
@@ -188,7 +209,7 @@ class TravelPage(QWidget):
         title = QLabel("출장증빙자료 만들기")
         title.setObjectName("pageTitle")
         texts.addWidget(title)
-        texts.addWidget(muted_label("지원 항목별 증빙을 넣고 출장 정보를 적으면 '<이름> 출장증빙.pdf' 를 만듭니다 (체류 → 교통비 → 숙박)."))
+        texts.addWidget(muted_label("지원 항목별 증빙을 넣고 출장 정보를 적으면 '<이름> 출장증빙_yy.mm.dd.pdf' 를 만듭니다 (체류 → 교통비 → 숙박)."))
         head.addLayout(texts, 1)
         self.state_pill = Pill("준비", "neutral")
         head.addWidget(self.state_pill, 0, Qt.AlignVCenter)
@@ -213,8 +234,8 @@ class TravelPage(QWidget):
         self.origin_edit = QLineEdit(settings.load().travel_origin)
         self.origin_edit.setPlaceholderText("예: 강원대학교 춘천캠퍼스")
         self.dest_edit = QLineEdit()
-        self.dest_edit.setPlaceholderText("예: 강원 평창군 알펜시아리조트")
-        self.dest_edit.textChanged.connect(self._on_region)
+        self.dest_edit.setPlaceholderText("예: 삼척 — 여러 곳이면 다닌 차례대로 쉼표로: 삼척, 강릉")
+        self.dest_edit.textChanged.connect(self._on_places)
         self.region_box = QComboBox()
         self.region_box.addItems(REGIONS)
         self.region_box.currentIndexChanged.connect(self._on_region)
@@ -233,15 +254,12 @@ class TravelPage(QWidget):
         rows = (
             ("출장자", self.name_edit), ("출장기간", self._pair(self.start_edit, "~", self.end_edit)),
             ("출발지", self.origin_edit), ("출장지", self.dest_edit),
-            ("숙박 상한 지역", self._pair(self.region_box, "1박 상한", self.cap_spin, "공동숙박", self.people_spin)),
             ("저장할 폴더", self._pair(self.folder_edit, folder_button)),
         )
         for i, (label, widget) in enumerate(rows):
             grid.addWidget(QLabel(label), i, 0)
             grid.addWidget(widget, i, 1)
         step.add_layout(grid)
-        self.cap_note = muted_label("")
-        step.add(self.cap_note)
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         self.info_next = QPushButton("다음")
@@ -252,7 +270,6 @@ class TravelPage(QWidget):
         step.edit.connect(self._edit_info)
         for edit in (self.name_edit, self.folder_edit):
             edit.textChanged.connect(self._sync)
-        self._on_region()
         return step
 
     @staticmethod
@@ -279,9 +296,11 @@ class TravelPage(QWidget):
             table = EvidenceTable(kind)
             table.changed.connect(self._sync)
             table.year = self._year
+            table.places = self._places
             self.tables[kind] = table
             head = QHBoxLayout()
-            name = QLabel(model.KIND_NAMES[kind])
+            # 체류만 늘 있고 교통비 · 숙박은 출장마다 있을 수도 없을 수도 있다(담당자 2026-10-27 "숙박은 있을 수도 있고 없을 수도")
+            name = QLabel(model.KIND_NAMES[kind] + ("" if kind == model.STAY else " (있을 때만)"))
             name.setObjectName("cardTitle")
             head.addWidget(name, 0, Qt.AlignVCenter)
             head.addWidget(muted_label(HINTS[kind]), 1, Qt.AlignVCenter)
@@ -296,7 +315,21 @@ class TravelPage(QWidget):
             step.add(table)
             if kind == model.TOLL:
                 step.add(self._build_route())
+        step.add(self._build_lodging())
+        self._on_places()
         return step
+
+    def _build_lodging(self) -> QWidget:
+        """숙박 상한 칸 — 숙박 영수증을 넣었을 때만 보인다. 전에는 ① 출장 정보에 있어 숙박이 늘 있어야 하는 것처럼 보였다(담당자 2026-10-27)."""
+        self.lodging_box = QWidget()
+        rows = QVBoxLayout(self.lodging_box)
+        rows.setContentsMargins(0, 0, 0, 6)
+        rows.setSpacing(4)
+        rows.addWidget(self._pair("숙박 상한 지역", self.region_box, "1박 상한", self.cap_spin, "공동숙박", self.people_spin))
+        self.cap_note = muted_label("")
+        rows.addWidget(self.cap_note)
+        self.lodging_box.hide()
+        return self.lodging_box
 
     def _build_route(self) -> QWidget:
         box = QWidget()
@@ -307,17 +340,16 @@ class TravelPage(QWidget):
         self.map_edit.textChanged.connect(self._sync)
         map_button = QPushButton("지도 그림 고르기")
         map_button.clicked.connect(self._pick_map)
-        self.go_spin, self.back_spin = QDoubleSpinBox(), QDoubleSpinBox()
-        for spin in (self.go_spin, self.back_spin):
-            spin.setRange(0, 3000)
-            spin.setDecimals(1)
-            spin.setSuffix(" km")
-            spin.valueChanged.connect(self._sync)
-        self.back_spin.setSpecialValueText("가는 길과 같음")      # 0 이면 오는 길 = 가는 길(왕복 같은 경로)
+        # 구간마다 km 칸 — 출장지가 하나면 가는 길 · 오는 길, 여러 곳이면 출발지 → 출장지들 → 출발지 구간마다(_on_places 가 다시 만든다)
+        self.leg_spins: list[QDoubleSpinBox] = []
+        self.legs_box = QWidget()
+        self.legs_row = QHBoxLayout(self.legs_box)
+        self.legs_row.setContentsMargins(0, 0, 0, 0)
+        self.legs_row.setSpacing(8)
         self.total_label = QLabel("총 이동경로 0km")
         grid.addWidget(QLabel("이동경로(자차)"), 0, 0)
         grid.addWidget(self._pair(self.map_edit, map_button), 0, 1)
-        grid.addWidget(self._pair("출발지→도착지", self.go_spin, "도착지→출발지", self.back_spin, self.total_label), 1, 1)
+        grid.addWidget(self.legs_box, 1, 1)
         grid.addWidget(muted_label("거리 · 지도는 지금은 직접 넣습니다 — 앱이 네이버 지도에서 찾아오는 것은 준비 중입니다."), 2, 1)
         return box
 
@@ -354,9 +386,59 @@ class TravelPage(QWidget):
             self.end_edit.setDate(self.start_edit.date())
         self._sync()
 
+    def _places(self) -> list[str]:
+        return model.split_places(self.dest_edit.text())
+
+    def _on_places(self) -> None:
+        places = self._places()
+        for table in self.tables.values():
+            table.show_places(places)
+        self._build_legs(places)
+        self._on_region()
+
+    def _build_legs(self, places: list[str]) -> None:
+        if len(places) <= 1:
+            names = ["출발지→도착지", "도착지→출발지"]
+        else:
+            stops = ["출발지", *places, "출발지"]
+            names = [f"{a}→{b}" for a, b in zip(stops, stops[1:])]
+        old = [spin.value() for spin in self.leg_spins]
+        if len(old) == len(names) and [self.legs_row.itemAt(i * 2).widget().text() for i in range(len(names))] == names:
+            return
+        while self.legs_row.count():
+            item = self.legs_row.takeAt(0)
+            if item.widget() is not None and item.widget() is not self.total_label:
+                item.widget().deleteLater()
+        self.leg_spins = []
+        for i, name in enumerate(names):
+            spin = QDoubleSpinBox()
+            spin.setRange(0, 3000)
+            spin.setDecimals(1)
+            spin.setSuffix(" km")
+            if i < len(old):
+                spin.setValue(old[i])
+            spin.valueChanged.connect(self._sync)
+            self.legs_row.addWidget(QLabel(name))
+            self.legs_row.addWidget(spin)
+            self.leg_spins.append(spin)
+        if len(places) <= 1:
+            self.leg_spins[1].setSpecialValueText("가는 길과 같음")      # 0 이면 오는 길 = 가는 길(왕복 같은 경로)
+        self.legs_row.addWidget(self.total_label)
+        self.legs_row.addStretch(1)
+
     def _on_region(self) -> None:
-        chosen = self.region_box.currentText()
-        region = model.lodging_region(self.dest_edit.text()) if self.region_box.currentIndex() == 0 else chosen
+        places = self._places()
+        auto = self.region_box.currentIndex() == 0
+        # 출장지가 여러 곳이고 지역을 고르지 않았으면 숙박 영수증마다 그 출장지로 상한을 정한다 — 1박 상한 칸 하나로는 못 적는다
+        per_place = auto and len(places) > 1
+        self.cap_spin.setEnabled(not per_place)
+        if per_place:
+            caps = " · ".join(f"{p} {model.won(model.LODGING_CAPS[model.lodging_region(p)])}" for p in places)
+            self.cap_note.setText(f"숙박 상한(1박, 공무원 여비 규정 별표 2)은 영수증마다 그 출장지로 정합니다: {caps}. "
+                                  "결제액이 넘으면 지원금액은 상한금액입니다. 한 기준으로 하려면 지역을 고르세요.")
+            self._sync()
+            return
+        region = model.lodging_region(places[0] if places else "") if auto else self.region_box.currentText()
         cap = model.LODGING_CAPS[region]
         self.cap_spin.setValue(cap)
         self.cap_note.setText(f"숙박 상한: {region} 1박 {model.won(cap)}(공무원 여비 규정 별표 2) — 결제액이 넘으면 지원금액은 상한금액입니다. "
@@ -421,18 +503,20 @@ class TravelPage(QWidget):
             name=self.name_edit.text().strip(),
             start=self.start_edit.date().toPython(), end=self.end_edit.date().toPython(),
             origin=self.origin_edit.text().strip(), destination=self.dest_edit.text().strip(),
-            region=region, lodging_cap=self.cap_spin.value() or None, people=self.people_spin.value(),
+            region=region, lodging_cap=(self.cap_spin.value() or None) if self.cap_spin.isEnabled() else None,
+            people=self.people_spin.value(),
             stay=self.tables[model.STAY].evidence(year), public=self.tables[model.PUBLIC].evidence(year),
             tolls=self.tables[model.TOLL].evidence(year), lodging=self.tables[model.LODGING].evidence(year),
             route_map=Path(map_text) if map_text else None,
-            km_go=self.go_spin.value() or None, km_back=self.back_spin.value() or None,
+            legs=[spin.value() or None for spin in self.leg_spins],
         )
 
     def _sync(self) -> None:
         if not hasattr(self, "make_button"):
             return
-        go, back = self.go_spin.value(), self.back_spin.value()
-        self.total_label.setText(f"총 이동경로 {model.km(go + (back or go))}")
+        self.lodging_box.setVisible(bool(self.tables[model.LODGING].paths))
+        legs = [v for _, v in self.trip().route_legs() if v] if self.leg_spins else []
+        self.total_label.setText(f"총 이동경로 {model.km(sum(legs))}")
         info_ready = bool(self.name_edit.text().strip() and self.folder_edit.text().strip())
         self.info_next.setEnabled(info_ready)
         done = self._info_done and info_ready
@@ -467,14 +551,14 @@ class TravelPage(QWidget):
             if answer != QMessageBox.Yes:
                 return
         from ...travel import render
-        out = model.output_path(folder, trip.name)
+        out = model.output_path(folder, trip.name, trip.start)
         try:
             count = render.render(model.pages(trip), out)
         except Exception as exc:  # 그림 파일 · 폴더 권한 등
             QMessageBox.warning(self, "출장증빙 만들기", f"만들지 못했습니다: {exc}")
             return
         self._made = out
-        support = sum(model.lodging_support(e, trip.cap(), trip.people)[0] for e in trip.lodging)
+        support = sum(model.lodging_support(e, trip.cap(e), trip.people)[0] for e in trip.lodging)
         lines = [f"✓ {out.name} — {count}쪽", f"저장한 곳: {out.parent}"]
         if trip.lodging:
             lines.append(f"숙박 지원금액 합계 {model.won(support)}")

@@ -1,14 +1,16 @@
 """출장증빙 쪽 짜임(model.Page) → A4 PDF. PySide6(QPdfWriter · QPainter · QPdfDocument) — 새 의존성 없이 앱에 있는 것으로 그린다.
 
 모양은 담당자가 만들던 것(2026-10-27 그림): 쪽 둘레 테두리 · 머리 줄(왼쪽 '* … 증빙', 오른쪽 일자 · 금액 칸, 굵게) · 아래에 영수증 그림.
-PDF 영수증은 쪽마다 그림으로 바꿔 넣는다. QGuiApplication 이 떠 있어야 한다(앱 안에서 부른다).
+PDF 영수증은 쪽마다 그림으로 바꿔 넣는다. 영수증은 둘레의 빈 여백을 잘라 내고 칸에 꽉 차게 키워 가운데에 둔다
+(담당자 2026-10-27 "증빙내용이 잘보이도록 확대 및 여백부분 자르기, 가운데 정렬" — A4 PDF 영수증은 내용이 쪽 위 한 귀퉁이뿐이라 작게 보였다).
+QGuiApplication 이 떠 있어야 한다(앱 안에서 부른다).
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 from PySide6.QtCore import QMarginsF, QRectF, QSizeF, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen, QTransform
 
 from .model import Block, Page, grid_cols, rows_for
 
@@ -20,6 +22,10 @@ CAPTION_H = 30       # 칸 위 일자 글
 GAP = 10
 ROW_MAX = 520        # 흘려 담는 묶음(자차 하이패스)의 한 줄 최대 높이
 PDF_WIDTH = 1400     # PDF 영수증을 그림으로 바꿀 폭(점)
+TRIM_SCAN = 600      # 여백을 찾을 때 줄여 볼 크기(긴 변) — 원본을 다 훑으면 느리다
+TRIM_INK = 232       # 이보다 어두운(0~255) 점이 내용
+TRIM_MIN_DOTS = 2    # 한 줄에 내용 점이 이만큼 있어야 내용 줄 — 먼지 한 점으로 여백을 남기지 않게
+TRIM_PAD = 0.015     # 잘라 낸 둘레에 남길 여백(긴 변 비율)
 
 INK = QColor("#111111")
 LINE = QColor("#222222")
@@ -34,8 +40,53 @@ def _font(px: int, bold: bool = False) -> QFont:
     return font
 
 
+def _content_span(lines: list[bytes]) -> tuple[int, int] | None:
+    table = bytes(1 if b < TRIM_INK else 0 for b in range(256))
+    marks = [line.translate(table).count(1) >= TRIM_MIN_DOTS for line in lines]
+    if not any(marks):
+        return None
+    return marks.index(True), len(marks) - 1 - marks[::-1].index(True)
+
+
+def _rows(image: QImage) -> list[bytes]:
+    gray = image.convertToFormat(QImage.Format_Grayscale8)
+    data = bytes(gray.constBits())
+    stride = gray.bytesPerLine()
+    return [data[y * stride: y * stride + gray.width()] for y in range(gray.height())]
+
+
+def trim(image: QImage) -> QImage:
+    """둘레의 흰(옅은) 여백을 잘라 낸다. 내용을 못 찾거나 거의 그대로면 원본."""
+    if image.isNull() or image.width() < 8 or image.height() < 8:
+        return image
+    small = image.scaled(TRIM_SCAN, TRIM_SCAN, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    # 투명한 곳은 흰 바탕으로 본다
+    flat = QImage(small.size(), QImage.Format_RGB32)
+    flat.fill(QColor("white"))
+    painter = QPainter(flat)
+    painter.drawImage(0, 0, small)
+    painter.end()
+    rows = _content_span(_rows(flat))
+    cols = _content_span(_rows(flat.transformed(QTransform().rotate(90))))
+    if rows is None or cols is None:
+        return image
+    sx, sy = image.width() / flat.width(), image.height() / flat.height()
+    pad = TRIM_PAD * max(image.width(), image.height())
+    left = max(0, int(cols[0] * sx - pad))
+    top = max(0, int(rows[0] * sy - pad))
+    right = min(image.width(), int((cols[1] + 1) * sx + pad))
+    bottom = min(image.height(), int((rows[1] + 1) * sy + pad))
+    if (right - left) * (bottom - top) > 0.97 * image.width() * image.height():
+        return image
+    return image.copy(left, top, right - left, bottom - top)
+
+
 def load_images(path: Path) -> list[QImage]:
-    """그림 파일은 그대로, PDF 는 쪽마다 그림 하나."""
+    """그림 파일은 그대로, PDF 는 쪽마다 그림 하나 — 둘 다 둘레 여백을 잘라 낸다."""
+    return [trim(image) for image in _load(path)]
+
+
+def _load(path: Path) -> list[QImage]:
     if path.suffix.lower() == ".pdf":
         from PySide6.QtPdf import QPdfDocument
         doc = QPdfDocument()
@@ -72,10 +123,19 @@ class _Cells:
 
 
 def _draw_bar(p: QPainter, rect: QRectF, cells: list[str], px: int, fill: QColor | None = None) -> None:
-    """칸 나뉜 한 줄 — 첫 칸이 남는 폭을 받고 나머지 칸은 글자만큼."""
+    """칸 나뉜 한 줄 — 첫 칸이 남는 폭을 받고 나머지 칸은 글자만큼. 칸이 많아(출장지 여러 곳의 이동경로) 넘치면 글자를 줄인다.
+    칸이 하나뿐인 줄(출장지 줄 '삼척 출장 증빙')은 가운데."""
+    first_need = QFontMetrics(_font(px, True)).horizontalAdvance(cells[0]) + 28
+    while px > 11:
+        fm = QFontMetrics(_font(px, True))
+        widths = [fm.horizontalAdvance(c) + 28 for c in cells[1:]]
+        if sum(widths) + min(first_need, rect.width() * 0.25) <= rect.width():
+            break
+        px -= 1
+        first_need = fm.horizontalAdvance(cells[0]) + 28
     fm = QFontMetrics(_font(px, True))
     widths = [fm.horizontalAdvance(c) + 28 for c in cells[1:]]
-    first = max(rect.width() - sum(widths), rect.width() * 0.25)
+    first = max(rect.width() - sum(widths), min(first_need, rect.width() * 0.25))
     p.setFont(_font(px, True))
     x = rect.left()
     for i, text in enumerate(cells):
@@ -86,7 +146,7 @@ def _draw_bar(p: QPainter, rect: QRectF, cells: list[str], px: int, fill: QColor
         p.setPen(QPen(LINE, 2))
         p.drawRect(cell)
         p.setPen(INK)
-        align = (Qt.AlignLeft if i == 0 else Qt.AlignCenter) | Qt.AlignVCenter
+        align = (Qt.AlignLeft if i == 0 and len(cells) > 1 else Qt.AlignCenter) | Qt.AlignVCenter
         p.drawText(cell.adjusted(10, 0, -10, 0), align, fm.elidedText(text, Qt.ElideRight, int(cell.width() - 20)))
         x += w
 
@@ -111,7 +171,7 @@ def _draw_cell(p: QPainter, rect: QRectF, image: QImage | None, caption: str) ->
         return
     scale = min(box.width() / image.width(), box.height() / image.height())
     w, h = image.width() * scale, image.height() * scale
-    target = QRectF(box.center().x() - w / 2, box.top(), w, h)      # 위에 붙인다 — 칸 위 일자 글 바로 아래에 영수증이 오게
+    target = QRectF(box.center().x() - w / 2, box.center().y() - h / 2, w, h)      # 가운데(담당자 2026-10-27)
     p.drawImage(target, image)
 
 
@@ -163,20 +223,25 @@ def render(pages: list[Page], out: Path) -> int:
     bottom = frame.bottom() - 12
     for page in pages:
         y = new_page(page, False)
-        for block in page.blocks:
-            cells = _Cells(block, cache)
+        all_cells = [_Cells(block, cache) for block in page.blocks]
+        for index, block in enumerate(page.blocks):
+            cells = all_cells[index]
             title_h = TITLE_H + GAP if block.title else 0
             if block.fill:
-                # 남은 높이를 다 쓴다 — 너무 좁으면(위 묶음이 많이 차지) 새 쪽에서
-                if bottom - y - title_h < 260:
+                # 남은 높이를 이 묶음과 뒤의 남은 높이 묶음(출장지 여러 곳의 체류)이 줄 수만큼 나눠 쓴다 — 너무 좁으면 새 쪽에서
+                rest = [i for i in range(index, len(page.blocks)) if page.blocks[i].fill]
+                titles = sum(TITLE_H + GAP for i in rest if page.blocks[i].title)
+                weights = [rows_for(len(all_cells[i].items), all_cells[i].cols) if all_cells[i].items else 0 for i in rest]
+                if (bottom - y - titles) / max(1, sum(1 for w in weights if w)) < 220:
                     y = new_page(page, True)
+                share = (bottom - y - titles - GAP * (len(rest) - 1)) * (weights[0] / sum(weights)) if sum(weights) else 0
                 if block.title:
                     _draw_bar(painter, QRectF(inner_left, y, inner_w, TITLE_H), block.title, 17, SOFT)
                     y += title_h
                 if cells.items:
                     rows = rows_for(len(cells.items), cells.cols)
-                    _draw_grid(painter, QRectF(inner_left, y, inner_w, bottom - y), cells, 0, len(cells.items), (bottom - y) / rows)
-                y = bottom
+                    _draw_grid(painter, QRectF(inner_left, y, inner_w, share), cells, 0, len(cells.items), share / rows)
+                y += share + (GAP if len(rest) > 1 else 0)
                 continue
             row_h = min(ROW_MAX, inner_w / cells.cols * 1.35)
             start = 0

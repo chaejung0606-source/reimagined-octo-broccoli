@@ -13,14 +13,14 @@ from claim_downloader.travel import model
 from claim_downloader.travel.model import Evidence, Trip
 
 
-def ev(name, day=None, amount=None, mode="", nights=1):
-    return Evidence(Path(name), day, amount, mode, nights)
+def ev(name, day=None, amount=None, mode="", nights=1, place=""):
+    return Evidence(Path(name), day, amount, mode, nights, place)
 
 
 def test_page_order_is_stay_transport_lodging():
     trip = Trip(name="가", start=date(2026, 5, 28), end=date(2026, 5, 29),
                 stay=[ev("s.png", date(2026, 5, 28))], public=[ev("t.png", date(2026, 5, 28), 8000, "열차")],
-                tolls=[ev("h.png", date(2026, 5, 28), 2170)], lodging=[ev("l.png", date(2026, 5, 28), 90000)], km_go=142)
+                tolls=[ev("h.png", date(2026, 5, 28), 2170)], lodging=[ev("l.png", date(2026, 5, 28), 90000)], legs=[142])
     heads = [p.head[0] for p in model.pages(trip)]
     assert heads == ["* 체류 증빙", "* 교통비 증빙 (열차)", "* 교통비 증빙 (자차)", "* 숙박비 증빙"]
 
@@ -33,7 +33,38 @@ def test_stay_one_page_up_to_seven_days_then_page_per_day():
     assert pages[0].blocks[0].captions[0] == "2026년 5월 1일 금요일"
     trip.end = date(2026, 5, 8)
     trip.stay.append(ev("8.png", date(2026, 5, 8)))
-    assert len(model.stay_pages(trip)) == 8
+    pages = model.stay_pages(trip)
+    assert len(pages) == 8 and pages[0].blocks[0].captions == ["2026년 5월 1일 금요일"]
+
+
+def test_stay_head_has_no_amount_and_place_bar():
+    """담당자 2026-10-27 그림 — 체류 증빙 머리 줄 오른쪽 칸은 비우고, 아래에 '삼척 출장 증빙' 줄."""
+    trip = Trip(destination="삼척", start=date(2026, 5, 28), end=date(2026, 5, 29),
+                stay=[ev("a.png", date(2026, 5, 28)), ev("b.png", date(2026, 5, 29))])
+    page = model.stay_pages(trip)[0]
+    assert page.head == ["* 체류 증빙", ""]
+    assert [b.title for b in page.blocks] == [["삼척 출장 증빙"]]
+
+
+def test_several_destinations():
+    """담당자 2026-10-27 "출장지가 한군데가 아닌 경우도 있습니다" — 체류는 출장지마다 줄, 이동경로는 구간마다, 숙박 상한은 그 출장지로."""
+    assert model.split_places("삼척, 강릉 → 부산광역시") == ["삼척", "강릉", "부산광역시"]
+    places = ["강원 삼척시", "강원 강릉시"]
+    assert model.match_place("체류/삼척/0528.png", places) == "강원 삼척시"
+    assert model.match_place("체류/강원/0528.png", places) == ""          # 두 곳에 다 든 낱말로는 못 가린다
+    trip = Trip(destination="삼척, 부산", start=date(2026, 5, 28), end=date(2026, 5, 30),
+                stay=[ev("a.png", date(2026, 5, 28), place="삼척"), ev("c.png", date(2026, 5, 30), place="부산"),
+                      ev("b.png", date(2026, 5, 29), place="삼척")],
+                lodging=[ev("h1.png", date(2026, 5, 28), 90000, place="삼척"), ev("h2.png", date(2026, 5, 29), 90000, place="부산")],
+                tolls=[ev("t.png", date(2026, 5, 28), 2000)], legs=[120, 300, 330])
+    page = model.stay_pages(trip)[0]
+    assert [(b.title, [p.name for p in b.images]) for b in page.blocks] == [(["삼척 출장 증빙"], ["a.png", "b.png"]),
+                                                                          (["부산 출장 증빙"], ["c.png"])]
+    route = model.car_pages(trip)[0].blocks[-1].title
+    assert route == ["* 이동경로", "출발지→삼척 120km", "삼척→부산 300km", "부산→출발지 330km", "총 이동경로 750km"]
+    assert [p.head[2] for p in model.lodging_pages(trip)] == ["지원금액 70,000원", "지원금액 80,000원"]   # 그 밖의 지역 · 광역시
+    trip.stay.append(ev("d.png", date(2026, 5, 30)))
+    assert any("어느 출장지인지" in p for p in model.problems(trip))
 
 
 def test_public_splits_by_day_and_mode_in_travel_order():
@@ -48,7 +79,7 @@ def test_public_splits_by_day_and_mode_in_travel_order():
 
 def test_toll_amounts_by_use_date_and_route():
     trip = Trip(tolls=[ev("1.png", date(2026, 5, 28), 2170), ev("2.png", date(2026, 5, 28), 2800), ev("3.png", date(2026, 5, 29), 1820)],
-                route_map=Path("map.png"), km_go=142)
+                route_map=Path("map.png"), legs=[142])
     page = model.car_pages(trip)[0]
     assert page.head == ["* 교통비 증빙 (자차)", "6,790원"]
     assert [b.title for b in page.blocks] == [["2026년 5월 28일 목요일", "하이패스 4,970원"], ["2026년 5월 29일 금요일", "하이패스 1,820원"],
@@ -98,11 +129,12 @@ def test_scan_folder_sorts_by_item_and_skips_others(tmp_path):
     assert [p.name for p in scan.unsorted] == ["기타.png"]
 
 
-def test_output_path_never_overwrites(tmp_path):
-    first = model.output_path(tmp_path, "홍길동")
-    assert first.name == "홍길동 출장증빙.pdf"
+def test_output_path_has_trip_date_and_never_overwrites(tmp_path):
+    """담당자 2026-10-27 — 파일명은 '이름 출장증빙_yy.mm.dd'(출장 시작일)."""
+    first = model.output_path(tmp_path, "홍길동", date(2026, 5, 28))
+    assert first.name == "홍길동 출장증빙_26.05.28.pdf"
     first.write_bytes(b"x")
-    assert model.output_path(tmp_path, "홍길동").name == "홍길동 출장증빙_2.pdf"
+    assert model.output_path(tmp_path, "홍길동", date(2026, 5, 28)).name == "홍길동 출장증빙_26.05.28_2.pdf"
 
 
 @pytest.fixture
@@ -142,9 +174,9 @@ def test_render_makes_pdf_and_continues_long_toll_pages(qapp, tmp_path):
     tolls = [ev(str(_image(tmp_path / f"h{i}.png", 400, 520)), date(2026, 5, 28 + i % 3), 2000) for i in range(14)]
     trip = Trip(name="홍길동", start=date(2026, 5, 28), end=date(2026, 5, 30),
                 stay=[ev(str(_image(tmp_path / f"s{i}.png", 600, 900)), date(2026, 5, 28 + i)) for i in range(3)],
-                tolls=tolls, route_map=_image(tmp_path / "map.png", 1600, 900), km_go=142,
+                tolls=tolls, route_map=_image(tmp_path / "map.png", 1600, 900), legs=[142],
                 lodging=[ev(str(_pdf(tmp_path / "hotel.pdf", 2)), date(2026, 5, 28), 150000, nights=2)])
-    out = model.output_path(tmp_path, trip.name)
+    out = model.output_path(tmp_path, trip.name, trip.start)
     count = render.render(model.pages(trip), out)
     assert count == len(PdfReader(str(out)).pages)
     assert count > len(model.pages(trip))          # 하이패스 14장은 한 쪽에 안 들어가 이어진다
@@ -159,3 +191,53 @@ def test_page_fills_origin_with_the_campus(qapp):
     from claim_downloader.ui.pages.travel import TravelPage
     assert settings.Settings().travel_origin == "강원대학교 춘천캠퍼스"
     assert TravelPage().origin_edit.text() == "강원대학교 춘천캠퍼스"
+
+
+def test_lodging_is_optional(qapp, tmp_path):
+    """담당자 2026-10-27 — 숙박은 있을 수도 없을 수도 있다. 숙박 없이 만들 수 있고, 숙박 상한 칸은 숙박 영수증을 넣었을 때만 보인다."""
+    from claim_downloader.ui.pages.travel import TravelPage
+    trip = Trip(name="가", start=date(2026, 5, 28), end=date(2026, 5, 28), stay=[ev("s.png", date(2026, 5, 28))])
+    assert model.blocking(trip) == [] and model.problems(trip) == []
+    assert [p.head[0] for p in model.pages(trip)] == ["* 체류 증빙"]
+    page = TravelPage()
+    page.show()
+    assert page.lodging_box.isHidden()
+    receipt = _image(tmp_path / "hotel.png", 300, 400)
+    page.tables["lodging"].add_files([receipt], 2026)
+    assert not page.lodging_box.isHidden()
+    page.tables["lodging"].clear_all()
+    assert page.lodging_box.isHidden()
+
+
+def test_trim_cuts_white_margins(qapp):
+    """담당자 2026-10-27 — 증빙이 잘 보이게 여백을 잘라 키운다(가운데 정렬은 render._draw_cell)."""
+    from PySide6.QtGui import QColor, QImage, QPainter
+
+    from claim_downloader.travel import render
+    image = QImage(1240, 1754, QImage.Format_RGB32)       # A4 쪽 위 귀퉁이에만 영수증이 있는 모양
+    image.fill(QColor("white"))
+    painter = QPainter(image)
+    painter.fillRect(100, 120, 400, 600, QColor("#333333"))
+    painter.end()
+    cut = render.trim(image)
+    assert 400 <= cut.width() < 500 and 600 <= cut.height() < 700
+    blank = QImage(300, 300, QImage.Format_RGB32)
+    blank.fill(QColor("white"))
+    assert render.trim(blank).size() == blank.size()        # 내용이 없으면 그대로
+
+
+def test_page_shows_place_column_and_legs_for_several_destinations(qapp, tmp_path):
+    from claim_downloader.ui.pages.travel import TravelPage
+    page = TravelPage()
+    page.show()
+    stay = page.tables["stay"]
+    assert stay.isColumnHidden(2) and len(page.leg_spins) == 2
+    page.dest_edit.setText("삼척, 강릉")
+    assert not stay.isColumnHidden(2) and len(page.leg_spins) == 3
+    (tmp_path / "삼척").mkdir()
+    stay.add_files([_image(tmp_path / "삼척" / "0528.png", 300, 400)], 2026)
+    assert page.trip().stay[0].place == "삼척"
+    page.leg_spins[0].setValue(100)
+    page.leg_spins[1].setValue(50)
+    page.leg_spins[2].setValue(120)
+    assert page.total_label.text() == "총 이동경로 270km"
