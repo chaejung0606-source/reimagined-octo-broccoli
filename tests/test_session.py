@@ -358,11 +358,12 @@ def test_structure_card_sees_open_sites_and_shows_erp_without_reloading(monkeypa
             return None
 
     erp_page, parking_page = Page(settings.ERP_URL), Page("https://traffic.kangwon.ac.kr/discount-links")
+    map_page = Page("https://map.naver.com/p/directions/-/-/-/car")       # 네이버 지도(2026-10-27, 출장증빙 이동경로 실측)
 
     class Context:
-        pages = [erp_page, parking_page]
+        pages = [erp_page, parking_page, map_page]
 
-    erp_page.context = parking_page.context = Context()
+    erp_page.context = parking_page.context = map_page.context = Context()
 
     class Browser:
         contexts = [erp_page.context]
@@ -373,14 +374,19 @@ def test_structure_card_sees_open_sites_and_shows_erp_without_reloading(monkeypa
     s, logs, _asked = _session(_ok, monkeypatch=monkeypatch)
     s.browser, s.page = Browser(), parking_page
     s.erp_logged_in = True
-    assert s.open_sites() == {"browser": True, "erp": True, "erp_login": True, "parking": True}
+    assert s.open_sites() == {"browser": True, "erp": True, "erp_login": True, "parking": True, "navermap": True}
     assert "이미 열린" in s.show_erp() and erp_page.fronted == 1 and erp_page.gotos == []
+    assert "이미 열린" in s.show_navermap() and map_page.fronted == 1 and map_page.gotos == []
     seen = []
     monkeypatch.setattr(session_mod.diagnose, "capture",
                         lambda context, frame_kind=None, keep=None: seen.append([p.url for p in context.pages if keep(p.url)]) or [])
     with pytest.raises(session_mod.BrowserClosed):        # 고른 사이트의 창을 못 읽었으면(가짜라 빈 결과) 빈 파일을 남기지 않는다
         s.capture_structure("parking")
     assert seen == [[parking_page.url]]
+    seen.clear()
+    with pytest.raises(session_mod.BrowserClosed):
+        s.capture_structure("navermap")
+    assert seen == [[map_page.url]]
 
 
 # ── 세금계산서 청구 이어 넣기 (2026-10-22) ──────────────────────────────

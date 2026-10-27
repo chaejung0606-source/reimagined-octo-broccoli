@@ -61,7 +61,7 @@ class SessionWorker(QObject):
     parking_applied = Signal(object)    # 주차등록: parking_screens.ApplyReport — 창 없이 할인을 적용했는지
     parking_history = Signal(object)    # 주차등록: parking_screens.HistoryReport — 할인 내역 표(읽기만)
     rebudget_planned = Signal(object)   # 대응자금 파일 정리: rebudget.Plan — 옮기기 전 표
-    sites_changed = Signal(object)      # 화면 구조 저장: 앱 브라우저에 열린 사이트 {browser, erp, erp_login, parking}(session.open_sites)
+    sites_changed = Signal(object)      # 화면 구조 저장: 앱 브라우저에 열린 사이트 {browser, erp, erp_login, parking, navermap}(session.open_sites)
     site_opened = Signal(str, str)      # 화면 구조 저장: 사이트를 열었거나 앞으로 가져왔다 — (사이트, 한 줄 안내)
     rebudget_applied = Signal(object)   # 대응자금 파일 정리: 옮긴 결과(rebudget.Move 목록)
 
@@ -78,7 +78,7 @@ class SessionWorker(QObject):
         self._session: ErpSession | None = None
         self._capture_site = ""                 # [화면 구조 저장] 으로 읽을 사이트('erp' · 'parking', 빈 값은 모두)
         # 브라우저에 열린 사이트(화면 구조 저장 업무가 읽는다). 이 스레드가 통째로 바꿔 끼우기만 하므로 화면 스레드가 읽어도 된다
-        self.sites: dict = {"browser": False, "erp": False, "erp_login": False, "parking": False}
+        self.sites: dict = {"browser": False, "erp": False, "erp_login": False, "parking": False, "navermap": False}
         self._thread = threading.Thread(target=self._loop, name="erp-browser", daemon=True)
         self._thread.start()
 
@@ -470,6 +470,10 @@ class SessionWorker(QObject):
                                    if report.opened else "주차등록 사이트를 열지 못했습니다")
             self.site_opened.emit(site, note)
             return
+        if site == "navermap":
+            self.busy.emit(True, "네이버 지도를 여는 중…")
+            self.site_opened.emit(site, session.show_navermap())
+            return
         self.busy.emit(True, "ERP 를 여는 중…")
         self.site_opened.emit(site, session.show_erp())
 
@@ -477,7 +481,7 @@ class SessionWorker(QObject):
         try:
             now = session.open_sites()
         except Exception:  # noqa: BLE001 — 닫히는 중
-            now = {"browser": False, "erp": False, "erp_login": False, "parking": False}
+            now = {"browser": False, "erp": False, "erp_login": False, "parking": False, "navermap": False}
         if now != getattr(self, "sites", None):
             self.sites = now
             self.sites_changed.emit(now)

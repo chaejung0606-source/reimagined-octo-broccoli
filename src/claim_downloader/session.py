@@ -52,6 +52,11 @@ def _host(url: str) -> str:
     return str(url or "").split("://", 1)[-1].split("/", 1)[0].lower()
 
 
+# 네이버 지도 길찾기 — 출장증빙(28절)의 자차 이동경로를 앱이 찾아오기 전에 그 화면을 실측한다(담당자 2026-10-27, 화면 구조 저장 셋째 사이트).
+NAVER_MAP_URL = "https://map.naver.com/p/directions"
+NAVER_MAP_HOSTS = ("map.naver.com", "m.map.naver.com")
+
+
 def _is_erp(page) -> bool:
     """ERP 주소(settings.ERP_URL)와 같은 곳의 창인지 — 주차등록 사이트 창과 가른다."""
     try:
@@ -454,14 +459,22 @@ class ErpSession:
 
     # ── 진단 ─────────────────────────────────────────────────────────────
     # 화면 구조 저장 업무(담당자 2026-10-21)가 고르는 사이트 — 이름 · 그 사이트의 창인지
-    SITES = {"erp": "ERP", "parking": "주차등록 사이트"}
+    SITES = {"erp": "ERP", "parking": "주차등록 사이트", "navermap": "네이버 지도"}
 
     def _site_finder(self):
-        """창 주소 → 'erp' · 'parking' · ''. 주차 사이트 주소는 설정에서 한 번만 읽는다."""
+        """창 주소 → 'erp' · 'parking' · 'navermap' · ''. 주차 사이트 주소는 설정에서 한 번만 읽는다."""
         from . import parking
         parking_url = getattr(self._load_settings(), "parking_url", "") or parking.DEFAULT_URL
         erp_host = _host(settings_mod.ERP_URL)
-        return lambda url: "erp" if _host(url) == erp_host else ("parking" if parking.is_site(url, parking_url) else "")
+
+        def site_of(url: str) -> str:
+            host = _host(url)
+            if host == erp_host:
+                return "erp"
+            if parking.is_site(url, parking_url):
+                return "parking"
+            return "navermap" if host in NAVER_MAP_HOSTS else ""
+        return site_of
 
     def open_sites(self) -> dict:
         """지금 앱 브라우저에 열린 사이트 — 화면 구조 저장 업무가 '이미 열려 있음 · 로그인됨' 을 보인다. 브라우저 스레드에서만 부른다.
@@ -470,7 +483,8 @@ class ErpSession:
         site_of = self._site_finder()
         sites = {site_of(p.url) for p in pages}
         erp_open = "erp" in sites
-        return {"browser": bool(pages), "erp": erp_open, "erp_login": erp_open and self.erp_logged_in, "parking": "parking" in sites}
+        return {"browser": bool(pages), "erp": erp_open, "erp_login": erp_open and self.erp_logged_in, "parking": "parking" in sites,
+                "navermap": "navermap" in sites}
 
     def show_erp(self) -> str:
         """화면 구조 저장 업무의 [ERP 열기] — 열린 ERP 창이 있으면 앞으로 가져오기만 한다(다시 불러오지 않아 로그인 · 띄운 화면이 그대로).
@@ -487,6 +501,23 @@ class ErpSession:
             self.open_browser(start_url=settings_mod.ERP_URL)
         self.log("화면 구조 저장: ERP 를 열었습니다 — 로그인하고 실측할 화면을 띄운 뒤 저장하세요")
         return "ERP 를 열었습니다 — 로그인하고 실측할 화면을 띄운 뒤 [화면 구조 저장] 을 누르세요"
+
+    def show_navermap(self) -> str:
+        """화면 구조 저장 업무의 [네이버 지도 열기] — 열린 지도 창이 있으면 앞으로 가져오기만, 없으면 길찾기 화면을 새 탭(브라우저가 닫혀 있으면 첫 창)으로.
+        로그인은 필요 없다. 출발지 · 도착지 · 경로 고르기는 사람이 한다 — 앱은 열기만 하고 누르거나 값을 넣지 않는다."""
+        page = next((p for p in self._pages() if _host(p.url) in NAVER_MAP_HOSTS), None) if self.browser_open else None
+        if page is not None:
+            page.bring_to_front()
+            return "이미 열린 네이버 지도 창을 앞으로 가져왔습니다"
+        if self.browser_open:
+            page = self._live_page().context.new_page()
+            page.goto(NAVER_MAP_URL, wait_until="domcontentloaded")
+            page.bring_to_front()
+        else:
+            self.open_browser(start_url=NAVER_MAP_URL)
+        self.log("화면 구조 저장: 네이버 지도 길찾기를 열었습니다")
+        return ("네이버 지도 길찾기를 열었습니다 — 자동차 길찾기로 출발지 · 도착지를 넣고 경로 목록이 뜬 화면에서 "
+                "[화면 구조 저장] 을 누르세요")
 
     def capture_structure(self, site: str = "") -> Path:
         """지금 열린 화면의 창·프레임·입력 요소를 _화면구조.txt 로. 읽기만 한다(diagnose.py).
