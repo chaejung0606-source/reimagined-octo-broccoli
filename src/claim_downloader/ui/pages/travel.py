@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ... import settings
 from ...travel import model
 from ..art import Art
 from ..flow import CURRENT, DONE, HIDDEN, OPEN, FlowArea, FlowStep
@@ -208,7 +209,8 @@ class TravelPage(QWidget):
             edit.setCalendarPopup(True)
             edit.setDisplayFormat("yyyy-MM-dd")
             edit.dateChanged.connect(self._on_dates)
-        self.origin_edit = QLineEdit()
+        # 출발지는 늘 사업단 자리로 채워 둔다(담당자 2026-10-27) — 다른 곳에서 떠나는 출장만 고친다
+        self.origin_edit = QLineEdit(settings.load().travel_origin)
         self.origin_edit.setPlaceholderText("예: 강원대학교 춘천캠퍼스")
         self.dest_edit = QLineEdit()
         self.dest_edit.setPlaceholderText("예: 강원 평창군 알펜시아리조트")

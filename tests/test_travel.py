@@ -151,3 +151,11 @@ def test_render_makes_pdf_and_continues_long_toll_pages(qapp, tmp_path):
     text = "".join(page.extract_text() for page in PdfReader(str(out)).pages)
     for words in ("체류 증빙", "교통비 증빙 (자차)", "(계속)", "총 이동경로 284", "지원금액 140,000원"):
         assert words in text.replace("\n", " ")
+
+
+def test_page_fills_origin_with_the_campus(qapp):
+    """담당자 2026-10-27 — 출발지는 늘 강원대학교 춘천캠퍼스로 채워져 있다(설정 travel_origin)."""
+    from claim_downloader import settings
+    from claim_downloader.ui.pages.travel import TravelPage
+    assert settings.Settings().travel_origin == "강원대학교 춘천캠퍼스"
+    assert TravelPage().origin_edit.text() == "강원대학교 춘천캠퍼스"

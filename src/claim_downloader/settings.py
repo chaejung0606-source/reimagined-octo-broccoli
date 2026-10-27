@@ -86,6 +86,9 @@ class Settings:
     # 카드청구 회의비의 참석자를 참여인력 · 내부참석자로 가를 ERP '참여연구원 현황표'(엑셀 · PDF). 실명 · 직번이 든 사용자 파일이라
     # 위치만 둔다. 비우면 카드 폴더 · 그 위 폴더에서 이름에 '참여연구원' 이 든 파일을 찾는다(claims/participants.find_file)
     participants_file: str = ""
+    # 출장증빙자료 만들기(travel/, 28절) — 출발지는 늘 이 장소로 미리 채운다(담당자 2026-10-27 "출발지는 기본적으로 강원대학교 춘천캠퍼스").
+    # 출장마다 화면에서 고칠 수 있고, 기본값을 바꾸려면 config.json 의 이 값을 고친다
+    travel_origin: str = "강원대학교 춘천캠퍼스"
     # 주차등록 사이트(parking.py) — 담당자 요청 2026-10-21. 로그인 정보는 여기가 아니라 _주차로그인.json(비밀번호는 윈도우 DPAPI 로 감쌈)에
     parking_url: str = "https://traffic.kangwon.ac.kr/login"
     parking_auto_login: bool = True        # 로그인 정보가 있으면 사이트를 열 때 한 번 자동 로그인(담당자 허락 2026-10-21)
