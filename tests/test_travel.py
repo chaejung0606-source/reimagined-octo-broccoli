@@ -241,3 +241,9 @@ def test_page_shows_place_column_and_legs_for_several_destinations(qapp, tmp_pat
     page.leg_spins[1].setValue(50)
     page.leg_spins[2].setValue(120)
     assert page.total_label.text() == "총 이동경로 270km"
+
+
+def test_toll_receipts_widen_when_few():
+    """담당자 2026-10-27 "하이패스 내역도 동일하게" — 그날 영수증이 하나면 한 칸을 다 써서 크게."""
+    trip = Trip(tolls=[ev("1.png", date(2026, 5, 28), 2170), ev("2.png", date(2026, 5, 29), 1800), ev("3.png", date(2026, 5, 29), 900)])
+    assert [b.cols for b in model.car_pages(trip)[0].blocks] == [1, 2]

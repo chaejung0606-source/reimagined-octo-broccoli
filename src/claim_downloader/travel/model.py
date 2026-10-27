@@ -332,7 +332,7 @@ def car_pages(trip: Trip) -> list[Page]:
     for day, group in _group(tolls, lambda e: e.day):
         subtotal = sum(e.amount or 0 for e in group)
         blocks.append(Block([e.path for e in group], title=[korean_date(day) if day else "일자 없음", f"하이패스 {won(subtotal)}"],
-                            cols=3))
+                            cols=grid_cols(len(group))))
     if route:
         legs = trip.route_legs()
         known = [v for _, v in legs if v]

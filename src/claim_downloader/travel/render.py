@@ -118,8 +118,8 @@ class _Cells:
                 self.items.append((None, caption or path.name))
             for j, image in enumerate(images):
                 self.items.append((image, caption if j == 0 else ""))
-        # PDF 영수증이 여러 쪽이면 칸 수가 늘어난다 — 한 쪽을 다 쓰는 묶음은 늘어난 칸 수로 다시 나눈다
-        self.cols = grid_cols(len(self.items)) if block.fill else block.cols
+        # 칸 수는 실제 그림 수로 — PDF 영수증이 여러 쪽이면 늘어난다. 하이패스도 그날 영수증이 적으면 칸을 넓혀 크게(담당자 2026-10-27 "하이패스 내역도 동일하게")
+        self.cols = grid_cols(len(self.items)) if self.items else block.cols
 
 
 def _draw_bar(p: QPainter, rect: QRectF, cells: list[str], px: int, fill: QColor | None = None) -> None:
@@ -184,7 +184,10 @@ def _draw_grid(p: QPainter, rect: QRectF, cells: _Cells, start: int, count: int,
     for k in range(count):
         image, caption = cells.items[start + k]
         r, c = divmod(k, cells.cols)
-        _draw_cell(p, QRectF(rect.left() + c * col_w, rect.top() + r * row_h, col_w, row_h), image, caption)
+        # 마지막 줄이 덜 차면 그 줄을 가운데로
+        in_row = min(cells.cols, count - r * cells.cols)
+        left = rect.left() + (cells.cols - in_row) * col_w / 2
+        _draw_cell(p, QRectF(left + c * col_w, rect.top() + r * row_h, col_w, row_h), image, caption)
 
 
 def render(pages: list[Page], out: Path) -> int:
