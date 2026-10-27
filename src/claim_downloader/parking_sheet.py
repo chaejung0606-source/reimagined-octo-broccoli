@@ -5,6 +5,9 @@
 길: 담당자가 자기 구글 계정에 시트를 하나 만들고, 앱이 만들어 준 Apps Script(SCRIPT)를 그 시트에 붙여 '웹 앱' 으로 배포한 뒤 그 주소를
 설정에 넣는다. 앱은 그 주소로 JSON 을 주고받는다(urllib — 새 의존성 없음 · 구글 클라우드 설정 없음).
 - '할인내역' 탭: 사이트 '운영 → 할인 내역' 에서 읽은 줄을 쌓는다(같은 할인일시 · 차량번호는 한 번만). 사이트는 처음 쪽만 보여 주지만 시트에는 계속 쌓인다.
+- 두 탭의 서식(담당자 2026-10-27 "보기좋게"): 머리글은 1행 그대로 라벤더 바탕 · 고정 · 거르기, 칸 너비 · 숨길 칸은 처음 한 번만(머리글 바탕색으로 안다 —
+  담당자가 바꾼 너비를 되돌리지 않게), 줄 색 · 선 · 정렬은 쓸 때마다. 관리대장은 구입 줄 초록 · 처음 수량 보라 · 수량 없는 기록 회색 글자 · 0 아래 잔여 빨강,
+  할인내역은 새것이 위로(할인일시) · 공무확인증이 아닌 줄 회색. 서식이 실패해도 자료 쓰기 · 읽기는 그대로(tryStyle — 까닭은 styleError 로 앱 기록에 한 번).
 - '관리대장' 탭: 앱의 공무확인증 관리대장과 같은 것(parking_ledger.SHEET_HEAD). 앱은 시트를 읽어 이 PC 의 사본과 줄 id 로 맞추고(parking_ledger.merge)
   맞춘 대장을 시트에 다시 쓴다 — 시트에서 고친 줄은 스크립트가 '수정시각' 을 찍어 앱보다 늦으면 시트 것이 이긴다.
 - '로그' 탭: 업무 화면의 [로그 보내기] 가 개인정보를 가린 실행 기록을 보낸다(log_send.py, 담당자 2026-10-22 — 깃허브 대신 구글 시트).
@@ -51,6 +54,15 @@ const LOG_HEAD = ['id', '보낸 때', '업무', '오류', '앱', '조각', '내�
 const LOG_KEEP = 30;                  // 최근 30번 보낸 것만 남긴다
 const STATUS = '다운로드 현황';        // 증빙 다운로드 — 건마다 청구서 · 구매요청 · 검사처리 O/X (앱이 통째로 다시 쓴다)
 const MARK_STYLE = {'O': ['#1E7F37', '#D9EAD3'], 'X': ['#B3261E', '#F4CCCC'], '△': ['#8A6D00', '#FFF2CC'], '': ['#9E9E9E', '#E3E3E3']};
+// 관리대장 · 할인내역 서식(담당자 2026-10-27 "보기좋게 서식") — 머리글은 1행 그대로(앱이 2행부터 읽는다)
+const HEAD_BG = '#EEEAFB', HEAD_FG = '#3B3366', GRID = '#DDDDDD', INK = '#202124', DIM = '#8A8A8A';
+const LEDGER_SHOW = 9;                                  // 보이는 칸 — 뒤 셋(id · 수정시각 · 적은 때)은 숨긴다
+const LEDGER_WIDTHS = [96, 56, 56, 64, 240, 96, 104, 280, 104];
+const LEDGER_CENTER = [1, 2, 3, 4, 6, 7, 9];
+const LEDGER_ROW_BG = {buy: '#E6F4EA', carry: '#F3F0FD', none: '#FFFFFF'};
+const HISTORY_WIDTHS = {'저장한 때': 120, '할인일시': 150, '차량번호': 104, '입차시각': 150, '할인명': 150, '바코드': 120, '할인유형': 80,
+  '적용방식': 80, '입주사': 110, '구분': 64, '할인시간': 76, '할인율': 64, '할인금액': 84, '적용금액': 84, '절사금액': 84, '결제금액': 84};
+const HISTORY_CENTER = ['저장한 때', '할인일시', '차량번호', '입차시각', '할인유형', '적용방식', '구분', '할인시간', '할인율'];
 
 function doGet(e) {
   const p = (e && e.parameter) || {};
@@ -67,11 +79,16 @@ function doPost(e) {
   try {
     const ss = SpreadsheetApp.getActive();
     const info = {name: ss.getName(), url: ss.getUrl()};
-    if (body.action === 'ping') { ledgerSheet(); return out(Object.assign({ok: true, logs: true, status: true}, info)); }
+    if (body.action === 'ping') {
+      // 연결 확인 — 이미 있는 두 탭에 서식을 입힌다(옛 스크립트로 만든 탭도 바로 보기 좋게)
+      const sh = ledgerSheet();
+      const styleError = tryStyle(() => { styleLedger(sh); const h = ss.getSheetByName(HISTORY); if (h) styleHistory(h); });
+      return out(Object.assign({ok: true, logs: true, status: true, styled: true, styleError}, info));
+    }
     if (body.action === 'log_add') return out(Object.assign({ok: true, id: addLog(body)}, info));
     if (body.action === 'status_put') return out(Object.assign({ok: true, count: writeStatus(body)}, info));
     if (body.action === 'ledger_get') return out(Object.assign({ok: true, rows: readLedger()}, info));
-    if (body.action === 'ledger_put') { writeLedger(body.rows || []); return out(Object.assign({ok: true, count: (body.rows || []).length}, info)); }
+    if (body.action === 'ledger_put') { const styleError = writeLedger(body.rows || []); return out(Object.assign({ok: true, count: (body.rows || []).length, styleError}, info)); }
     if (body.action === 'history_add') return out(Object.assign({ok: true, added: addHistory(body.headers || [], body.rows || [], body.keys || [])}, info));
     return out({ok: false, error: '모르는 요청: ' + body.action});
   } finally {
@@ -95,6 +112,114 @@ function ledgerSheet() {
   return sh;
 }
 
+// ── 서식 — 실패해도 자료 쓰기 · 읽기는 그대로 되게(서식은 보기만 좋게 하는 것) ──
+function tryStyle(fn) {
+  try { fn(); return ''; } catch (err) { return String(err && err.message || err).slice(0, 200); }
+}
+
+function ensureRows(sh, need) {
+  if (sh.getMaxRows() < need) sh.insertRowsAfter(sh.getMaxRows(), need - sh.getMaxRows());
+}
+
+// 머리글 · 칸 너비 · 숨길 칸은 처음 한 번만(머리글 바탕색으로 안다) — 담당자가 시트에서 너비를 바꿔도 다음에 맞출 때 되돌리지 않게
+function styledOnce(sh) {
+  return String(sh.getRange(1, 1).getBackground() || '').toLowerCase() === HEAD_BG.toLowerCase();
+}
+
+function styleHead(sh, width) {
+  sh.getRange(1, 1, 1, width).setFontWeight('bold').setBackground(HEAD_BG).setFontColor(HEAD_FG)
+    .setHorizontalAlignment('center').setVerticalAlignment('middle').setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP);
+  sh.setRowHeight(1, 30);
+  sh.setFrozenRows(1);
+}
+
+// 거르기(머리글의 ▼) — 이미 있고 줄을 다 덮으면 그대로 둔다(담당자가 걸어 둔 거르기 조건이 맞출 때마다 풀리지 않게)
+function keepFilter(sh, rows, width) {
+  const need = Math.max(rows + 1, 2);
+  const now = sh.getFilter();
+  if (now) {
+    const g = now.getRange();
+    if (g.getRow() === 1 && g.getColumn() === 1 && g.getNumColumns() === width && g.getLastRow() >= need) return;
+    now.remove();
+  }
+  ensureRows(sh, need);
+  sh.getRange(1, 1, Math.max(need, sh.getMaxRows()), width).createFilter();
+}
+
+function paintBody(sh, rows, width) {
+  if (!rows) return;
+  sh.getRange(2, 1, rows, width).setVerticalAlignment('middle').setWrapStrategy(SpreadsheetApp.WrapStrategy.CLIP)
+    .setBorder(true, true, true, true, true, true, GRID, SpreadsheetApp.BorderStyle.SOLID);
+}
+
+function styleLedger(sh) {
+  const width = LEDGER_SHOW;
+  if (!styledOnce(sh)) {
+    sh.setFrozenColumns(1);
+    LEDGER_WIDTHS.forEach((w, i) => sh.setColumnWidth(i + 1, w));
+    sh.hideColumns(10, 3);
+    sh.setTabColor('#7058E8');
+    sh.getRange(1, 4).setNote('잔여는 앱이 일자 차례로 다시 셉니다 — 여기서 고쳐도 다음에 맞출 때 바뀝니다.');
+    sh.getRange(1, 9).setNote('줄 색: 초록 = 구입 · 보라 = 처음 수량 · 회색 글자 = 수량 없는 기록(할인 링크 만듦 등) · 빨간 잔여 = 0 아래');
+    styleHead(sh, width);      // 머리글 바탕색이 '다 했다' 는 표시 — 맨 끝에(앞에서 멈추면 다음에 처음부터 다시)
+  }
+  const rows = Math.max(sh.getLastRow() - 1, 0);
+  if (rows) {
+    const vals = sh.getRange(2, 1, rows, width).getDisplayValues();
+    const num = (v) => parseInt(String(v).replace(/,/g, ''), 10) || 0;
+    const kinds = vals.map(r => r[8] === '처음 수량' ? 'carry' : num(r[1]) > 0 ? 'buy' : 'none');
+    paintBody(sh, rows, width);
+    sh.getRange(2, 1, rows, width).setBackgrounds(kinds.map(k => Array(width).fill(LEDGER_ROW_BG[k])))
+      .setFontColors(vals.map(r => {
+        const ink = !num(r[1]) && !num(r[2]) && r[8] !== '처음 수량' ? DIM : INK;
+        return r.map((_, j) => j === 3 && num(r[3]) < 0 ? '#B3261E' : ink);
+      }));
+    LEDGER_CENTER.forEach(c => sh.getRange(2, c, rows, 1).setHorizontalAlignment('center'));
+    sh.getRange(2, 4, rows, 1).setFontWeight('bold');
+  }
+  keepFilter(sh, rows, width);
+}
+
+function styleHistory(sh) {
+  const width = sh.getLastColumn();
+  if (!width) return;
+  const head = sh.getRange(1, 1, 1, width).getDisplayValues()[0];
+  const col = (name) => head.indexOf(name) + 1;
+  if (!styledOnce(sh)) {
+    const car = col('차량번호');
+    sh.setFrozenColumns(car > 0 && car <= 4 ? car : 0);
+    head.forEach((h, i) => sh.setColumnWidth(i + 1, HISTORY_WIDTHS[h] || 90));
+    if (col('키') > 0) sh.hideColumns(col('키'), 1);       // 같은 줄을 두 번 쌓지 않는 데 쓰는 칸
+    sh.setTabColor('#2BB59A');
+    if (col('할인명') > 0) sh.getRange(1, col('할인명')).setNote('회색 줄은 공무확인증이 아닌 할인입니다 — 관리대장에 넣지 않습니다.');
+    styleHead(sh, width);
+  }
+  const rows = Math.max(sh.getLastRow() - 1, 0);
+  let unsorted = '';
+  if (rows) {
+    // 새것이 위로 — 할인일시가 'YYYY-MM-DD HH:MM:SS' 글자라 글자 차례가 곧 시각 차례. 거르기가 걸려 있으면 그 범위와 겹친 정렬은 거절되므로
+    // 거르기로 정렬한다(빈 줄은 아래로 간다). 못 해도 색은 칠한다
+    const at = col('할인일시');
+    if (at > 0 && rows > 1) unsorted = tryStyle(() => {
+      const filter = sh.getFilter();
+      if (filter) filter.sort(at, false); else sh.getRange(2, 1, rows, width).sort({column: at, ascending: false});
+    });
+    const vals = sh.getRange(2, 1, rows, width).getDisplayValues();
+    const name = col('할인명') - 1, saved = col('저장한 때') - 1;
+    paintBody(sh, rows, width);
+    sh.getRange(2, 1, rows, width).setBackground('#FFFFFF').setFontColors(vals.map(r => {
+      const ink = name >= 0 && r[name] && r[name].indexOf('공무확인증') < 0 ? DIM : INK;
+      return r.map((_, j) => j === saved ? DIM : ink);
+    }));
+    head.forEach((h, i) => {
+      const align = h.indexOf('금액') >= 0 ? 'right' : HISTORY_CENTER.indexOf(h) >= 0 ? 'center' : '';
+      if (align) sh.getRange(2, i + 1, rows, 1).setHorizontalAlignment(align);
+    });
+  }
+  keepFilter(sh, rows, width);
+  if (unsorted) throw new Error('할인내역을 새것부터 정렬하지 못함 — ' + unsorted);
+}
+
 function readLedger() {
   const sh = ledgerSheet();
   const n = sh.getLastRow();
@@ -105,10 +230,13 @@ function readLedger() {
 function writeLedger(rows) {
   const sh = ledgerSheet();
   const n = sh.getLastRow();
-  if (n > 1) sh.getRange(2, 1, n - 1, LEDGER_HEAD.length).clearContent();
-  if (!rows.length) return;
-  TEXT_COLS.forEach(c => sh.getRange(2, c, rows.length, 1).setNumberFormat('@'));
-  sh.getRange(2, 1, rows.length, LEDGER_HEAD.length).setValues(rows.map(r => LEDGER_HEAD.map((h, i) => r[i] === undefined || r[i] === null ? '' : r[i])));
+  if (n > 1) sh.getRange(2, 1, n - 1, LEDGER_HEAD.length).clearContent().clearFormat();   // 줄이 줄면 남은 줄의 색 · 선도 지운다
+  if (rows.length) {
+    ensureRows(sh, rows.length + 1);
+    TEXT_COLS.forEach(c => sh.getRange(2, c, rows.length, 1).setNumberFormat('@'));
+    sh.getRange(2, 1, rows.length, LEDGER_HEAD.length).setValues(rows.map(r => LEDGER_HEAD.map((h, i) => r[i] === undefined || r[i] === null ? '' : r[i])));
+  }
+  return tryStyle(() => styleLedger(sh));
 }
 
 // 사람이 시트에서 고친 줄 — 수정시각을 찍어 앱과 맞출 때 이 줄이 이기게, 새로 적은 줄에는 id 를 준다
@@ -150,8 +278,10 @@ function addHistory(headers, rows, keys) {
     add.push(line);
   });
   if (add.length) {
+    ensureRows(sh, n + add.length);
     sh.getRange(n + 1, 1, add.length, width).setNumberFormat('@').setValues(add);
   }
+  tryStyle(() => styleHistory(sh));
   return add.length;
 }
 
@@ -430,6 +560,7 @@ class Result:
     added: int = 0           # 할인내역 탭에 더한 줄
     logs: bool = False       # 붙여 넣은 스크립트가 [로그 보내기] 를 받는 판인지(ping)
     status: bool = False     # 붙여 넣은 스크립트가 [다운로드 현황] 을 받는 판인지(ping)
+    styled: bool = False     # 붙여 넣은 스크립트가 관리대장 · 할인내역 탭에 서식을 입히는 판인지(ping, 2026-10-27)
     when: str = field(default_factory=lambda: time.strftime("%H:%M"))
 
 
@@ -526,8 +657,20 @@ def check(config: Config | None = None, opener=None) -> Result:
     except SheetError as error:
         return Result(note=str(error))
     _remember(config, data)
+    _note_style(data)
     return Result(ok=True, note=f"연결됐습니다 — 시트 '{data.get('name', '')}'", sheet_url=config.sheet_url, sheet_name=config.sheet_name,
-                  logs=bool(data.get("logs")), status=bool(data.get("status")))
+                  logs=bool(data.get("logs")), status=bool(data.get("status")), styled=bool(data.get("styled")))
+
+
+_STYLE_NOTED: set[str] = set()
+
+
+def _note_style(data: dict) -> None:
+    """스크립트가 서식을 입히다 실패했으면(자료는 그대로 썼다) 그 글을 기록에 한 번만 — 10분마다 맞출 때 같은 줄이 쌓이지 않게."""
+    error = str(data.get("styleError") or "")
+    if error and error not in _STYLE_NOTED:
+        _STYLE_NOTED.add(error)
+        log(f"⚠ 구글 시트 서식을 입히지 못했습니다(자료는 그대로 썼습니다) — {error}")
 
 
 def sync_ledger(config: Config | None = None, opener=None) -> Result:
@@ -551,7 +694,7 @@ def sync_ledger(config: Config | None = None, opener=None) -> Result:
             changed = before != [(e.id, e.updated) for e in merged]
             if changed:
                 ledger.save(merged)
-        call(config, "ledger_put", opener=opener, rows=ledger.to_sheet(merged))
+        _note_style(call(config, "ledger_put", opener=opener, rows=ledger.to_sheet(merged)))
         ledger.mark_synced({e.id for e in merged}, deleted)
     except SheetError as error:
         return Result(note=str(error), sheet_url=config.sheet_url, sheet_name=config.sheet_name)

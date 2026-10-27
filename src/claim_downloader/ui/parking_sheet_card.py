@@ -111,9 +111,10 @@ class ParkingSheetCard(Card):
         self.save_button.setEnabled(True)
         if result.ok:
             self.state.set_status("연결됨", "success")
-            missing = [name for name, ok in (("[로그 보내기]", result.logs), ("[다운로드 현황]", result.status)) if not ok]
+            missing = [name for name, ok in (("[로그 보내기]", result.logs), ("[다운로드 현황]", result.status),
+                                             ("관리대장 · 할인내역 서식", result.styled)) if not ok]
             self.note.setText(result.note + " — 주차등록 → 관리대장에서 시트와 맞춥니다."
-                              + (" [로그 보내기] · [다운로드 현황] 도 됩니다." if not missing else
+                              + (" [로그 보내기] · [다운로드 현황] 도 되고, 관리대장 · 할인내역 탭에 서식을 입혔습니다." if not missing else
                                  f"\n스크립트가 옛 판이라 {' · '.join(missing)} 은 아직 안 됩니다 — [스크립트 복사] 로 새 글을 붙여 넣고 "
                                  "배포 → 배포 관리 → (연필) 수정 → 버전 '새 버전' → 배포."))
             self.open_button.show()

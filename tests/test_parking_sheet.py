@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import http.server
 import json
+import shutil
 import socket
+import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -28,6 +30,8 @@ class FakeWebApp:
         self.history_keys: set[str] = set()
         self.answers: dict[str, dict] = {}
         self.calls: list[str] = []
+        self.ping = {"logs": True, "status": True, "styled": True}     # 붙여 넣은 스크립트의 판(ping 이 알리는 것)
+        self.style_error = ""                                          # 스크립트가 서식을 입히다 실패했을 때의 글
         app = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -61,12 +65,12 @@ class FakeWebApp:
             return {"ok": False, "error": "토큰이 다릅니다"}
         info = {"name": "공무확인증 관리대장", "url": "https://docs.google.com/spreadsheets/d/x"}
         if body["action"] == "ping":
-            return dict(ok=True, **info)
+            return dict(ok=True, **self.ping, **info)
         if body["action"] == "ledger_get":
             return dict(ok=True, rows=[list(r) for r in self.ledger], **info)
         if body["action"] == "ledger_put":
             self.ledger = [["" if c is None else str(c) for c in r] for r in body["rows"]]
-            return dict(ok=True, count=len(self.ledger), **info)
+            return dict(ok=True, count=len(self.ledger), styleError=self.style_error, **info)
         if body["action"] == "status_put":
             self.status = body
             return dict(ok=True, count=len(body.get("rows") or []), **info)
@@ -370,3 +374,188 @@ def test_new_empty_sheet_does_not_wipe_the_local_ledger(app):
     sheet.forget()
     assert ledger.sync_state()[0] == set() and not sheet.load_config().connected and len(ledger.load()) == 1
     assert old_url == app.url
+
+
+# ── 관리대장 · 할인내역 서식 — 스크립트를 node 로(가짜 SpreadsheetApp) ─────────────
+# 담당자 2026-10-27: "구글시트 관리대장이랑 할인내역은 보기좋게 서식을 만들어주세요". 가짜 시트는 칸 값 · 바탕 · 글자색 · 정렬 · 거르기 ·
+# 숨김 · 너비 · 메모를 적어 두고, 시트 크기를 넘는 getRange 는 진짜처럼 오류를 낸다.
+STYLE_HARNESS = r"""
+const sheets = {};
+let BREAK = '';
+function makeSheet(name) {
+  const sh = {name, rows: [], maxRows: 3, maxCols: 30, frozenRows: 0, frozenCols: 0, widths: {}, hidden: [], notes: {}, tab: '', heights: {},
+    bg: {}, ink: {}, align: {}, bold: {}, filters: 0, filter: null, cleared: [], sorts: []};
+  const at = (r, c) => r + ',' + c;
+  function range(r, c, nr, nc) {
+    nr = nr || 1; nc = nc || 1;
+    if (r + nr - 1 > sh.maxRows) throw new Error('범위가 시트 크기를 넘음: ' + r + '+' + nr + ' > ' + sh.maxRows);
+    const each = (fn) => { for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) fn(r + i, c + j, i, j); };
+    const g = {
+      getRow: () => r, getColumn: () => c, getNumColumns: () => nc, getLastRow: () => r + nr - 1,
+      setValues: (vals) => { vals.forEach((v, i) => { while (sh.rows.length < r + i) sh.rows.push([]); const row = sh.rows[r + i - 1];
+        v.forEach((cell, j) => { row[c + j - 1] = cell; }); }); return px; },
+      getDisplayValues: () => Array.from({length: nr}, (_, i) => Array.from({length: nc}, (_, j) => {
+        const v = (sh.rows[r + i - 1] || [])[c + j - 1]; return v === undefined || v === null ? '' : String(v); })),
+      clearContent: () => { each((y, x) => { if (sh.rows[y - 1]) sh.rows[y - 1][x - 1] = ''; });
+        while (sh.rows.length > 1 && sh.rows[sh.rows.length - 1].every(v => v === '' || v === undefined)) sh.rows.pop(); return px; },
+      clearFormat: () => { sh.cleared.push([r, nr]); each((y, x) => { delete sh.bg[at(y, x)]; delete sh.ink[at(y, x)]; delete sh.align[at(y, x)]; }); return px; },
+      getBackground: () => sh.bg[at(r, c)] || '#ffffff',
+      setBackground: (v) => { each((y, x) => { sh.bg[at(y, x)] = v.toLowerCase(); }); return px; },
+      setBackgrounds: (vs) => { each((y, x, i, j) => { sh.bg[at(y, x)] = vs[i][j].toLowerCase(); }); return px; },
+      setFontColor: (v) => { each((y, x) => { sh.ink[at(y, x)] = v; }); return px; },
+      setFontColors: (vs) => { each((y, x, i, j) => { sh.ink[at(y, x)] = vs[i][j]; }); return px; },
+      setHorizontalAlignment: (v) => { each((y, x) => { sh.align[at(y, x)] = v; }); return px; },
+      setFontWeight: (v) => { each((y, x) => { sh.bold[at(y, x)] = v; }); return px; },
+      setNote: (t) => { sh.notes[at(r, c)] = t; return px; },
+      sort: (spec) => { if (sh.filter) throw new Error('거르기 범위와 겹친 정렬'); sh.sorts.push(spec); const body = sh.rows.slice(r - 1, r - 1 + nr); const k = spec.column - 1;
+        body.sort((a, b) => (String(a[k]) < String(b[k]) ? -1 : String(a[k]) > String(b[k]) ? 1 : 0) * (spec.ascending ? 1 : -1));
+        sh.rows.splice(r - 1, nr, ...body); return px; },
+      createFilter: () => { if (sh.filter) throw new Error('거르기가 이미 있음'); sh.filters += 1;
+        sh.filter = {getRange: () => range(r, c, nr, nc), remove: () => { sh.filter = null; },
+          // 거르기 정렬 — 머리글 줄은 빼고, 빈 줄은 늘 아래로(구글 시트처럼)
+          sort: (at, asc) => { sh.sorts.push({filter: at, ascending: asc}); const body = sh.rows.slice(r, r - 1 + nr); const k = at - 1;
+            const blank = (row) => row.every(v => v === '' || v === undefined);
+            body.sort((a, b) => blank(a) - blank(b) || (String(a[k]) < String(b[k]) ? -1 : String(a[k]) > String(b[k]) ? 1 : 0) * (asc ? 1 : -1));
+            sh.rows.splice(r, body.length, ...body); }};
+        return sh.filter; },
+    };
+    // 그 밖의 서식(세로 정렬 · 줄바꿈 · 테두리 · 숫자 서식 …)은 받기만
+    const px = new Proxy(g, {get: (t, p) => (p in t ? t[p] : () => px)});
+    return px;
+  }
+  Object.assign(sh, {
+    getName: () => name, getLastRow: () => sh.rows.length, getLastColumn: () => sh.rows.reduce((m, row) => Math.max(m, row.length), 0),
+    getMaxRows: () => sh.maxRows, getMaxColumns: () => sh.maxCols, insertRowsAfter: (a, n) => { sh.maxRows += n; },
+    setFrozenRows: (n) => { sh.frozenRows = n; }, setFrozenColumns: (n) => { sh.frozenCols = n; },
+    setColumnWidth: (i, w) => { sh.widths[i] = w; }, setRowHeight: (i, h) => { sh.heights[i] = h; },
+    hideColumns: (i, n) => { sh.hidden.push([i, n || 1]); },
+    setTabColor: (v) => { if (BREAK) throw new Error(BREAK); sh.tab = v; },
+    getFilter: () => sh.filter, getRange: (r, c, nr, nc) => range(r, c, nr, nc),
+  });
+  return sh;
+}
+const ss = {getSheetByName: (n) => sheets[n] || null, insertSheet: (n) => (sheets[n] = makeSheet(n)), getName: () => '시트', getUrl: () => 'https://docs.google.com/x'};
+var SpreadsheetApp = {getActive: () => ss, WrapStrategy: {CLIP: 'CLIP'}, BorderStyle: {SOLID: 'SOLID'}};
+var LockService = {getScriptLock: () => ({waitLock: () => {}, releaseLock: () => {}})};
+var Session = {getScriptTimeZone: () => 'Asia/Seoul'};
+var Utilities = {formatDate: () => '2026-10-27 09:00', getUuid: () => 'u-x'};
+var ContentService = {MimeType: {JSON: 'json'}, createTextOutput: (t) => ({text: t, setMimeType() { return this; }})};
+const post = (body) => JSON.parse(doPost({postData: {contents: JSON.stringify(Object.assign({token: 'tok'}, body))}}).text);
+const snap = (sh) => JSON.parse(JSON.stringify({rows: sh.rows, frozen: [sh.frozenRows, sh.frozenCols], widths: sh.widths, hidden: sh.hidden,
+  notes: sh.notes, tab: sh.tab, bg: sh.bg, ink: sh.ink, align: sh.align, bold: sh.bold, filters: sh.filters, cleared: sh.cleared, sorts: sh.sorts, maxRows: sh.maxRows,
+  filter: sh.filter && [sh.filter.getRange().getRow(), sh.filter.getRange().getLastRow(), sh.filter.getRange().getNumColumns()]}));
+"""
+
+
+def _run_style(tmp_path, driver: str) -> dict:
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node 없음")
+    script = sheet.SCRIPT.replace("__TOKEN__", "tok").replace("__LOGKEY__", "KEY")
+    path = tmp_path / "run.js"
+    path.write_text(STYLE_HARNESS + script + driver, encoding="utf-8")
+    done = subprocess.run([node, str(path)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def _ledger_rows() -> tuple[list[list], list[list]]:
+    carry = ledger.Entry(date="2026-09-30", content="처음 수량", source="carry", created="2026-09-30 08:00:00")
+    give = ledger.Entry(date="2026-10-01", given=1, user="가나다", car="12가3456", source="apply", created="2026-10-01 09:00:00")
+    buy = ledger.Entry(date="2026-10-02", bought=10, content="구입", source="manual", created="2026-10-02 09:00:00")
+    link = ledger.Entry(date="2026-10-03", content="할인 링크 만듦", note="행사 링크", source="link", created="2026-10-03 09:00:00")
+    full = ledger.to_sheet([carry, give, buy, link])
+    return full, ledger.to_sheet([give, buy])
+
+
+def test_script_styles_the_ledger_tab_in_node(tmp_path):
+    full, short = _ledger_rows()
+    out = _run_style(tmp_path, r"""
+const res = {};
+res.ping = post({action: 'ping'});
+res.put = post({action: 'ledger_put', rows: __FULL__});
+res.first = snap(sheets['관리대장']);
+sheets['관리대장'].widths[5] = 999;                     // 담당자가 시트에서 '내용' 칸을 넓힘
+res.again = post({action: 'ledger_put', rows: __SHORT__});
+res.second = snap(sheets['관리대장']);
+res.get = post({action: 'ledger_get'});
+console.log(JSON.stringify(res));
+""".replace("__FULL__", json.dumps(full, ensure_ascii=False)).replace("__SHORT__", json.dumps(short, ensure_ascii=False)))
+    assert out["ping"]["ok"] and out["ping"]["styled"] is True and out["ping"]["styleError"] == ""
+    assert out["put"]["ok"] and out["put"]["styleError"] == ""
+    first = out["first"]
+    # 머리글은 1행 그대로(앱이 2행부터 읽는다) — 라벤더 바탕 · 굵게 · 고정 · 거르기
+    assert first["rows"][0][:9] == list(ledger.SHEET_HEAD[:9]) and first["bg"]["1,1"] == "#eeeafb" and first["bold"]["1,9"] == "bold"
+    assert first["frozen"] == [1, 1] and first["widths"]["5"] == 240 and [10, 3] in first["hidden"] and first["tab"] == "#7058E8"
+    assert first["filter"][0] == 1 and first["filter"][1] >= 5 and first["filter"][2] == 9 and first["maxRows"] >= 5
+    assert "잔여는 앱이" in first["notes"]["1,4"]
+    # 줄 색: 처음 수량 보라 · 배부 흰 · 구입 초록 · 수량 없는 기록(링크) 흰 바탕에 회색 글자, 0 아래 잔여는 빨강
+    assert [first["bg"][f"{r},1"] for r in (2, 3, 4, 5)] == ["#f3f0fd", "#ffffff", "#e6f4ea", "#ffffff"]
+    assert first["ink"]["3,4"] == "#B3261E" and first["ink"]["3,1"] == "#202124"       # 잔여 −1
+    assert first["ink"]["5,5"] == "#8A8A8A" and first["ink"]["2,1"] == "#202124"
+    assert first["align"]["2,1"] == "center" and first["align"]["2,4"] == "center" and "2,5" not in first["align"] and first["bold"]["3,4"] == "bold"
+    # 두 번째 쓰기(줄 둘): 남은 줄의 서식을 지우고, 너비는 되돌리지 않고, 거르기는 새로 만들지 않는다
+    second = out["second"]
+    assert len(second["rows"]) == 3 and second["cleared"] == [[2, 4]] and "5,1" not in second["bg"]
+    assert second["widths"]["5"] == 999 and second["filters"] == first["filters"]
+    assert [second["bg"][f"{r},1"] for r in (2, 3)] == ["#ffffff", "#e6f4ea"]
+    # 읽기는 그대로 — 앱이 읽는 줄은 쓴 줄과 같다
+    assert [r[9] for r in out["get"]["rows"]] == [r[9] for r in short]
+
+
+def test_script_styles_the_history_tab_in_node(tmp_path):
+    headers = ["할인일시", "차량번호", "할인명", "적용방식", "적용금액"]
+    rows = [["2026-10-20 17:37:04", "09주5782", "공무확인증4시간", "수동", "1,000"],
+            ["2026-10-22 11:33:12", "38어3853", "공무확인증4시간", "자동", "0"],
+            ["2026-10-21 09:00:00", "12가3456", "주말 무료", "자동", "3,700"]]
+    out = _run_style(tmp_path, r"""
+const res = {};
+res.add = post({action: 'history_add', headers: __H__, rows: __R__, keys: ['a', 'b', 'c']});
+res.more = post({action: 'history_add', headers: __H__, rows: [['2026-10-23 08:00:00', '45나6789', '공무확인증4시간', '수동', '2,000']], keys: ['d']});
+res.dup = post({action: 'history_add', headers: __H__, rows: __R__, keys: ['a', 'b', 'c']});
+res.sheet = snap(sheets['할인내역']);
+res.ping = post({action: 'ping'});
+console.log(JSON.stringify(res));
+""".replace("__H__", json.dumps(headers, ensure_ascii=False)).replace("__R__", json.dumps(rows, ensure_ascii=False)))
+    assert out["add"]["added"] == 3 and out["more"]["added"] == 1 and out["dup"]["added"] == 0     # 같은 줄은 한 번만(줄 차례가 바뀌어도)
+    sh = out["sheet"]
+    head = sh["rows"][0]
+    assert head == ["저장한 때"] + headers + ["키"] and sh["bg"]["1,1"] == "#eeeafb"
+    # 새것이 위로 · 시트 크기(처음 3줄)를 넘어도 늘려서 쓴다
+    assert [r[1] for r in sh["rows"][1:]] == ["2026-10-23 08:00:00", "2026-10-22 11:33:12", "2026-10-21 09:00:00", "2026-10-20 17:37:04"]
+    assert sh["maxRows"] >= 5 and sh["sorts"][0] == {"column": 2, "ascending": False} and sh["sorts"][-1] == {"filter": 2, "ascending": False}
+    # 차량번호까지 고정 · 키 칸 숨김 · 너비 · 거르기
+    assert sh["frozen"] == [1, 3] and [7, 1] in sh["hidden"] and sh["widths"]["2"] == 150 and sh["widths"]["6"] == 84 and sh["filters"] == 2   # 시트를 늘릴 때만 다시 건다
+    # 공무확인증이 아닌 줄은 회색 글자 · 저장한 때는 늘 회색 · 금액은 오른쪽 · 일시는 가운데
+    third = [i for i, r in enumerate(sh["rows"]) if r[3] == "주말 무료"][0] + 1
+    assert sh["ink"][f"{third},2"] == "#8A8A8A" and sh["ink"]["2,2"] == "#202124" and sh["ink"]["2,1"] == "#8A8A8A"
+    assert sh["align"]["2,6"] == "right" and sh["align"]["2,2"] == "center" and "2,4" not in sh["align"]
+    assert out["ping"]["styleError"] == ""
+
+
+def test_style_failure_does_not_stop_writing_in_node(tmp_path):
+    full, _short = _ledger_rows()
+    out = _run_style(tmp_path, r"""
+BREAK = '탭 색을 못 바꿈';
+const res = {};
+res.ping = post({action: 'ping'});
+res.put = post({action: 'ledger_put', rows: __FULL__});
+res.get = post({action: 'ledger_get'});
+res.add = post({action: 'history_add', headers: ['할인일시', '차량번호'], rows: [['2026-10-22 11:33:12', '38어3853']], keys: ['a']});
+console.log(JSON.stringify(res));
+""".replace("__FULL__", json.dumps(full, ensure_ascii=False)))
+    assert out["ping"]["ok"] and "탭 색을 못 바꿈" in out["ping"]["styleError"]
+    assert out["put"]["ok"] and "탭 색을 못 바꿈" in out["put"]["styleError"] and len(out["get"]["rows"]) == 4
+    assert out["add"]["ok"] and out["add"]["added"] == 1
+
+
+def test_check_tells_whether_the_script_styles_the_tabs(app, monkeypatch):
+    assert sheet.check().styled is True
+    app.ping = {"logs": True, "status": True}                       # 서식이 없던 판(2026-10-23 ~ 10-26)
+    assert sheet.check().styled is False
+    noted: list[str] = []
+    monkeypatch.setattr(sheet, "log", noted.append)
+    monkeypatch.setattr(sheet, "_STYLE_NOTED", set())
+    app.style_error = "setTabColor 를 못 함"
+    assert sheet.sync_ledger().ok and sheet.sync_ledger().ok             # 자료는 맞춘다
+    assert [n for n in noted if "서식" in n] == ["⚠ 구글 시트 서식을 입히지 못했습니다(자료는 그대로 썼습니다) — setTabColor 를 못 함"]
