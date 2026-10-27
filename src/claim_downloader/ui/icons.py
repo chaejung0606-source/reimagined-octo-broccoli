@@ -144,6 +144,18 @@ def _layout(painter: QPainter) -> None:
     painter.drawLine(QPointF(12.5, 13.5), QPointF(17.5, 13.5))
 
 
+def _plane(painter: QPainter) -> None:
+    """출장증빙자료 만들기 — 종이비행기."""
+    wing = QPainterPath()
+    wing.moveTo(20.5, 3.5)
+    wing.lineTo(3.5, 10.5)
+    wing.lineTo(10, 13.5)
+    wing.lineTo(13.5, 20.5)
+    wing.closeSubpath()
+    painter.drawPath(wing)
+    painter.drawLine(QPointF(10, 13.5), QPointF(20.5, 3.5))
+
+
 def _home(painter: QPainter) -> None:
     """홈 — 지붕 있는 집."""
     path = QPainterPath()
@@ -233,4 +245,5 @@ _ICONS = {
     "download": _download,
     "car": _car,
     "layout": _layout,
+    "plane": _plane,
 }

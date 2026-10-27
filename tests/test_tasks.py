@@ -52,8 +52,9 @@ def test_dock_holds_only_tasks_not_utilities():
 def test_tasks_in_requested_order():
     """장학금 · 카드 · 출장비는 홈 타일이 아니라 일반청구 화면의 '청구 종류'(담당자 제안 2026-10-14)."""
     assert [t.name for t in tasks.TASKS] == ["증빙 다운로드", "회의록 생성", "일반청구", "주차등록",    # 주차등록 — 담당자 요청 2026-10-21
-                                             "화면 구조 저장"]                                     # 업무마다 있던 단추를 한 업무로(같은 날)
-    assert all(t.ready for t in tasks.TASKS)
+                                             "화면 구조 저장",                                     # 업무마다 있던 단추를 한 업무로(같은 날)
+                                             "출장증빙자료 만들기"]                                 # 담당자 요청 2026-10-27 — 양식을 받기 전이라 준비 중
+    assert [t.id for t in tasks.TASKS if not t.ready] == ["travel"]
 
 
 def test_dock_overlay_is_raised_whenever_the_page_changes():

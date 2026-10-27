@@ -39,6 +39,9 @@ TASKS: tuple[Task, ...] = (
     # 담당자 요청 2026-10-21 — 업무마다 있던 [화면 구조 저장] 을 한 업무로(ERP · 주차등록 사이트를 골라 실측, diagnose.py)
     Task("structure", "화면 구조 저장", "ERP · 주차등록 사이트에 띄운 화면의 칸 · 단추를 읽어 파일로 남깁니다(새 화면 자동화 전 실측).",
          "structure", "layout", "cyan", "structure:StructurePage", ready=True),
+    # 담당자 요청 2026-10-27 — 출장비 청구에 붙일 교통비 · 체류 증빙(출장 증빙 양식). 양식 · 차례를 받기 전이라 준비 중(pages/travel.py)
+    Task("travel", "출장증빙자료 만들기", "출장 폴더의 자료로 출장비 청구에 붙일 교통비 · 체류 증빙을 만듭니다.",
+         "travel", "plane", "mint", "travel:TravelPage", ready=False),
 )
 
 # 상단 메뉴에서 여는 화면. 독·홈 카드·[+] 메뉴에는 두지 않는다.
