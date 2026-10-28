@@ -167,16 +167,8 @@ class SettingsPage(QWidget):
         buy_card.add(self.purchase_space)
         column.addWidget(buy_card)
 
-        # 일반청구 — 세금계산서 조회 팝업에는 산학협력단 전체 계산서가 다 떠서, 내 계산서수신메일로 걸러야 내 건만 보인다
-        # (담당자 설명 2026-10-13). 사람마다 다른 값이라 코드에 두지 않고 여기서 받는다.
-        claim_card = Card("일반청구", "세금계산서 · 카드 회의비 건을 ERP 에 채울 때 씁니다")
-        self.taxbill_email = QLineEdit(getattr(cfg, "taxbill_email", "") or "")
-        self.taxbill_email.setPlaceholderText("예: 홍길동@kangwon.ac.kr")
-        self.taxbill_email.editingFinished.connect(
-            lambda: self._save(taxbill_email=self.taxbill_email.text().strip()))
-        claim_card.add(Field(
-            "계산서수신메일", self.taxbill_email,
-            "세금계산서 조회 팝업의 '계산서수신메일' 에 넣을 내 메일. 비우면 메일 없이 거래처 사업자번호로만 조회합니다."))
+        # 일반청구 — 카드 회의비 건을 ERP 에 넣을 때 쓰는 명단. 세금계산서 종류의 '계산서수신메일' 칸은 그 종류와 함께 걷어냈다(2026-10-28)
+        claim_card = Card("일반청구", "카드 회의비 건을 ERP 에 넣을 때 씁니다")
         # 카드청구 회의비 — 회의록 참석자 중 학교 안 사람을 참여인력 · 내부참석자로 가르는 명단(담당자 2026-10-20). 실명이 든 파일이라 위치만 둔다
         self.participants = QLineEdit(getattr(cfg, "participants_file", "") or "")
         self.participants.setPlaceholderText("ERP '참여연구원 현황표' 엑셀 또는 PDF (Prn_PrjPartInfo)")
@@ -281,15 +273,14 @@ class SettingsPage(QWidget):
 
     # ── AI 플랫폼 ────────────────────────────────────────────────────
     def _build_ai_card(self, cfg: settings.Settings) -> Card:
-        """회의록 생성 · 일반청구에 쓸 AI 를 여기서 정한다(담당자 요청 2026-10-14). 로그인 상태도 여기서 본다.
+        """회의록 생성에 쓸 AI 를 여기서 정한다(담당자 요청 2026-10-14). 로그인 상태도 여기서 본다. 일반청구의 AI 읽기는 2026-10-28 걷어냈다.
 
         로그인은 그 플랫폼의 로그인 창에서 사람이 한다 — 앱은 창을 열어 주기만 하고 비밀번호는 어디에도 두지 않는다.
         """
-        self.ai_card = Card("AI 플랫폼", "회의록 생성 · 일반청구가 자료를 읽힐 AI", art="login")
+        self.ai_card = Card("AI 플랫폼", "회의록 생성이 자료를 읽힐 AI", art="login")
         self.ai_boxes: dict[str, QComboBox] = {}
         helps = {
             "minutes": "회의 자료를 읽고 회의록을 씁니다.",
-            "claim": "일반 지출 폴더의 [내용 읽기] 에 씁니다. 장학금은 명단 엑셀을 바로 읽어 AI 를 쓰지 않습니다.",
         }
         row = QHBoxLayout()
         row.setSpacing(16)

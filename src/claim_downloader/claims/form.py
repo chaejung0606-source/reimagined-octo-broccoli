@@ -1,18 +1,15 @@
-"""ERP 일반청구 작성 화면에 값을 채우고, 사람이 입금처·첨부를 넣은 뒤 [임시저장](저장 단추)까지 — 신청은 사람.
+"""ERP 일반청구 작성 화면 — 작성 프레임 찾기 · 칸 읽기 · 값 넣는 JS · [저장](임시저장). 신청은 사람.
 
-실측(CLAUDE.md 14절, 2026-10-13)한 요소 id 만 만진다(FIELDS). 값은 JS 로 넣고 input·change 이벤트를
-일으켜 화면의 처리기(비목 → 세목 불러오기 등)가 돌게 한다. 비목을 바꾸면 세목 보기가 채워질 때까지 기다린다.
+장학금 · 혁신인재지원금(scholarship.py) · 카드청구(card_erp.py) · 첨부만 다시 올리기(reattach.py)가 같이 쓴다. 실측(CLAUDE.md 14절,
+2026-10-13)한 요소 id 만 만진다. 값은 JS 로 넣고 input·change 이벤트를 일으켜 화면의 처리기가 돌게 한다.
+일반 종류(AI 가 읽은 값을 채우던 fill · FIELDS)는 2026-10-28 담당자 요청으로 걷어냈다 — 코드는 git 이력에만 있다.
 
 이 모듈은 Playwright 를 들여오지 않는다 — session.py 가 넘겨준 프레임의 evaluate 만 쓴다. 받기 코드(erp.py)에는
-값 넣기가 끝까지 없어야 하므로 값 넣기는 여기에만 둔다(tests/test_safety.py 가 본다).
+값 넣기가 끝까지 없어야 하므로 값 넣는 JS 는 claims/ 에만 둔다(tests/test_safety.py 가 본다).
 
 담당자 결정(2026-10-13): 내역 작성 후 **임시저장까지** 앱이 하고, 그 뒤 사람이 검토해 [신청] 을 누른다.
-그래서 누르는 단추는 '저장' 하나뿐이다(SAVE_TEXT · save_draft). '신청' 을 비롯한 FORBIDDEN_TEXTS 를
-누르는 코드가 들어오면 안전 테스트가 깨진다. 사람이 하는 것: 입금처 팝업에서 고르기 · [예금주조회] · 첨부 · [신청].
-입금처 팝업을 열어 검색까지 하는 것은 payee.py(session.fill_claim 이 채운 뒤 이어서 부른다).
-
-세목(DTL_EXP_CD)은 과제에 따라 없다 — 실측(2026-10-13)에서 비목을 골라도 세목 select 가 숨은 채 보기가 비어 있었다.
-그래서 세목 보기가 안 오면(숨어 있거나 1초 안에 비어 있으면) 그 칸은 건너뛰고 나머지를 계속 넣는다.
+그래서 이 모듈이 누르는 단추는 '저장' 하나뿐이다(SAVE_TEXT · save_draft). '신청' 을 비롯한 FORBIDDEN_TEXTS 를
+누르는 코드가 들어오면 안전 테스트가 깨진다.
 """
 from __future__ import annotations
 
@@ -21,36 +18,14 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from .schema import summary_lines
-
 # 절대 누르지 않는 단추의 글자 (id 가 없어 글자로 둔다). '신청' 이 돈이 나가는 단추다.
 FORBIDDEN_TEXTS = ("신청", "삭제", "초기화", "새 청구서", "일괄예금주조회", "[예금주조회]", "청구서복사")
 # 앱이 누르는 유일한 단추 — 임시저장. 글자가 정확히 같은 단추가 하나일 때만 누른다(CLICK_SAVE_JS).
 SAVE_TEXT = "저장"
 
-# 채우는 순서. (데이터 키, 요소 id, 종류, 화면 이름). 비목 다음에 세목 — 세목 보기는 비목을 고른 뒤 채워진다.
-FIELDS = (
-    ("expCategory", "PAY_EXP_CD", "select", "비목"),
-    ("expDetail", "DTL_EXP_CD", "select", "세목"),
-    ("evidence", "EVDI_DIV_CD", "select", "증빙구분"),
-    ("expenseDate", "EXP_DT", "text", "지출일자"),
-    ("settleMethod", "SETTLE_METH_CD", "select", "결제방법"),
-    ("bank", "BNK_CD", "select", "은행"),
-    ("accountNo", "ACCT_NO", "text", "계좌번호"),
-    ("owner", "OWNR", "text", "예금주"),
-    ("amount", "REQ_AMT", "text", "청구액"),
-    ("supplyAmount", "SUPPLY_AMT", "text", "공급가액"),
-    ("taxAmount", "TAX_AMT", "text", "부가세"),
-    ("summary", "REQ_PTCL", "text", "적요"),
-)
-ALLOWED_IDS = frozenset(f[1] for f in FIELDS) | {"PROC_TYP_CD", "MOD_YN", "REQ_SEQ_NO", "REQ_CNT", "RCV_NM", "RCV_CD", "BAL_AMT"}
-MANUAL_STEPS = (
-    "세금계산서 건은 앱이 증빙 [선택] 팝업을 열고 사업자번호로 조회해, 금액이 맞는 계산서가 하나뿐이면 골라 [확인] 까지 누릅니다. 애매하면 직접 고르세요",
-    "입금처 — 앱이 돋보기 팝업을 열고 거래처를 검색해, 사업자번호·상호가 맞는 행이 하나뿐이면 골라 [확인] 까지 누릅니다. 애매하면 직접 고르세요",
-    "[예금주조회] 를 눌러 계좌를 확인해 주세요",
-    "첨부 — 세금계산서·품의서 등을 '첨부' 로 올려 주세요",
-    "그다음 앱의 [임시저장] 을 누르면 앱이 ERP 의 [저장] 을 누릅니다. [신청] 은 검토 후 직접 누르세요",
-)
+# read_state 가 ids 를 안 받았을 때 읽는 칸 — 실측 id(14절)
+ALLOWED_IDS = frozenset({"PAY_EXP_CD", "DTL_EXP_CD", "EVDI_DIV_CD", "EXP_DT", "SETTLE_METH_CD", "BNK_CD", "ACCT_NO", "OWNR", "REQ_AMT",
+                         "SUPPLY_AMT", "TAX_AMT", "REQ_PTCL", "PROC_TYP_CD", "MOD_YN", "REQ_SEQ_NO", "REQ_CNT", "RCV_NM", "RCV_CD", "BAL_AMT"})
 AFTER_SAVE_STEPS = (
     "ERP 에서 임시저장된 청구서를 검토하세요",
     "[신청] 은 직접 누르세요 — 앱은 누르지 않습니다",
@@ -148,18 +123,6 @@ SET_SELECT_JS = """([id, wanted]) => {
 }"""
 
 # 세목 select 의 상태 — 보기 수와 보이는지. 숨은 채 비어 있으면 이 과제는 세목을 쓰지 않는 것이다.
-SELECT_STATE_JS = """(id) => {
-  """ + PICK_EL_JS + """
-  const el = pickEl(id);
-  if (!el) return {count: -1, visible: false};
-  const r = el.getBoundingClientRect(), s = getComputedStyle(el);
-  return {count: el.options.length, visible: r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden'};
-}"""
-
-# 글자가 정확히 같은 단추가 **화면에 보이는 것으로** 딱 하나일 때만 누른다 — '청구서출력' · '신청' 같은 다른 단추와 섞이지 않게.
-# 숨은 단추는 세지 않는다: 작성 화면은 일반청구 탭 · 인건비 탭이 각자 [저장] 을 가지고 있고 안 쓰는 탭 것은 숨어 있다(14절 ① 같은 id 함정과
-# 같은 꼴). 담당자 실제 시험(2026-10-14 17:49)에서 화면에는 [저장] 이 하나뿐인데 숨은 것까지 세어 '여럿' 으로 멈췄다.
-# 단추 안에 같은 글자의 요소가 겹쳐 있으면(a 안의 span[onclick]) 가장 안쪽 하나로 센다 — 안쪽을 누르면 바깥 처리기까지 올라간다.
 CLICK_SAVE_JS = """(text) => {
   const norm = s => (s || '').replace(/\\s+/g, '');
   const vis = e => { const r = e.getBoundingClientRect(), s = getComputedStyle(e);
@@ -198,51 +161,6 @@ class SaveReport:
         out.append("사람이 할 것:")
         out.extend("  · " + m for m in AFTER_SAVE_STEPS)
         return out
-
-
-@dataclass
-class Step:
-    label: str
-    value: str
-    ok: bool
-    note: str = ""
-
-
-@dataclass
-class FillReport:
-    dry_run: bool
-    steps: list[Step] = field(default_factory=list)
-    manual: tuple[str, ...] = MANUAL_STEPS
-    blocked: str = ""                  # 채우지 못한 이유 (작성 화면이 아님 등)
-    taxbill: object | None = None      # taxbill.TaxbillReport — 세금계산서 조회 팝업 결과 (채운 뒤 session 이 붙인다)
-    payee: object | None = None        # payee.PayeeReport — 입금처 팝업 검색 결과
-
-    @property
-    def ok(self) -> bool:
-        return not self.blocked and all(s.ok for s in self.steps)
-
-    def lines(self) -> list[str]:
-        head = "미리 보기 (ERP 에 넣지 않음)" if self.dry_run else "ERP 에 채움"
-        out = [head]
-        if self.blocked:
-            out.append("✗ " + self.blocked)
-        for s in self.steps:
-            mark = "✓" if s.ok else "✗"
-            out.append(f"{mark} {s.label}: {s.value}" + (f"  — {s.note}" if s.note else ""))
-        if self.taxbill is not None:
-            out.extend(self.taxbill.lines())
-        if self.payee is not None:
-            out.extend(self.payee.lines())
-        out.append("사람이 할 것:")
-        out.extend("  · " + m for m in self.manual)
-        return out
-
-
-def _value_for(key: str, data: dict) -> str:
-    value = data.get(key)
-    if value is None:
-        return ""
-    return str(value)
 
 
 def frame_matches(frame) -> bool:
@@ -326,98 +244,6 @@ def describe_frames(context) -> str:
 
 def read_state(frame, ids=None) -> dict:
     return frame.evaluate(STATE_JS, list(ids or ALLOWED_IDS))
-
-
-def plan(data: dict) -> list[Step]:
-    """프레임 없이 — 무엇을 어디에 넣을지. 미리 보기와 확인 창이 쓴다."""
-    steps = []
-    for key, _id, _kind, label in FIELDS:
-        value = _value_for(key, data)
-        if value:
-            steps.append(Step(label, value, True))
-    return steps
-
-
-def fill(frame, data: dict, log: Callable[[str], None], dry_run: bool = True,
-         wait: Callable[[float], None] = time.sleep, keys: tuple[str, ...] | None = None) -> FillReport:
-    """작성 화면에 값을 넣는다. dry_run 이면 화면 상태만 읽고 계획을 보여 준다.
-    keys 를 주면 그 칸만(FIELDS 차례 그대로) — 세금계산서 이어 넣기가 비목 · 증빙구분을 먼저 넣고 계산서를 고른 뒤 나머지를 넣는다."""
-    report = FillReport(dry_run=dry_run)
-    state = read_state(frame, ["PROC_TYP_CD", "MOD_YN", "REQ_SEQ_NO", "REQ_CNT", "APPR_DIV_CD"])
-    mod = (state.get("MOD_YN") or {}).get("value", "")
-    if mod and mod != "N":
-        # 기존 청구서를 변경하는 화면 — 거기에 덮어쓰면 남의 값을 지운다
-        report.blocked = f"새 청구서 화면이 아닙니다(MOD_YN={mod}). 결의서내역에서 [일반청구] 로 새 화면을 여세요."
-        return report
-    saved_no = saved_sheet(state)
-    if saved_no and not dry_run:
-        # 이미 [저장] 된 청구서 — MOD_YN 은 저장 뒤에도 N 이라(실측 ⑤) 그것만으로는 못 막았다. 장학금 폴더를 넣은 화면에 일반 건을
-        # 채우면 그 청구서에 줄이 더해진다(2026-10-14 점검). 일반 1건은 새 청구서에.
-        report.blocked = (f"이미 임시저장된 청구서 화면입니다(결의번호 {saved_no}). 이 건은 새 청구서에 넣으세요 — "
-                          "ERP 에서 [새 청구서] 또는 결의서내역 → [일반청구] 로 새 화면을 띄운 뒤 다시 누르세요.")
-        return report
-    log("일반청구 채우기 %s — %s" % ("미리 보기" if dry_run else "시작", (state.get("REQ_SEQ_NO") or {}).get("value", "")))
-    for line in summary_lines(data):
-        log("  " + line)
-    if dry_run:
-        report.steps = plan(data)
-        return report
-
-    detail_ready = True
-    for key, element_id, kind, label in FIELDS:
-        value = _value_for(key, data)
-        if not value or (keys is not None and key not in keys):
-            continue
-        if key == "expDetail" and not detail_ready:
-            # 이 과제는 세목이 없다 — 틀린 게 아니므로 ✓ 로 두고 넘어간다
-            report.steps.append(Step(label, value, True, "이 과제는 세목이 없음 — 건너뜀"))
-            log("  - %s: %s — 세목 보기가 없어 건너뜀" % (label, value))
-            continue
-        try:
-            if kind == "select":
-                result = frame.evaluate(SET_SELECT_JS, [element_id, value])
-            else:
-                result = frame.evaluate(SET_TEXT_JS, [element_id, value])
-        except Exception as error:  # noqa: BLE001 — 한 칸이 막혀도 나머지는 넣고 보고한다
-            result = {"ok": False, "why": str(error).splitlines()[0][:80] if str(error) else "오류"}
-        ok = bool(result.get("ok"))
-        note = "" if ok else result.get("why", "")
-        if not ok and key == "expenseDate" and note == "읽기전용" and _is_taxbill(data):
-            # 실측(2026-10-13): 증빙구분이 세금계산서면 지출일자 칸이 잠기고, [선택] 팝업에서 고른 계산서의 날짜가 들어간다
-            ok, note = True, "세금계산서를 고르면 채워짐 — 건너뜀"
-        if not ok and result.get("options"):
-            note += " (보기: " + " | ".join(result["options"][:8]) + ")"
-        report.steps.append(Step(label, value, ok, note))
-        log("  %s %s: %s%s" % ("✓" if ok else "✗", label, value, (" — " + note) if note else ""))
-        if key == "expCategory" and ok:
-            detail_ready = _wait_for_options(frame, "DTL_EXP_CD", wait)
-    log("채우기 끝 — 입금처 고르기·첨부·예금주조회·저장·신청은 사람이 합니다")
-    return report
-
-
-def _is_taxbill(data: dict) -> bool:
-    return "세금계산서" in str(data.get("evidence") or "").replace(" ", "")
-
-
-def _wait_for_options(frame, element_id: str, wait: Callable[[float], None], tries: int = 20,
-                      hidden_tries: int = 4) -> bool:
-    """비목을 고르면 세목 보기가 서버에서 온다. 2개 이상(선택 + 실제 보기)이 되면 True.
-
-    최대 ~5초 기다리되, select 가 숨은 채 비어 있는 상태가 ~1초 이어지면 이 과제는 세목이 없는 것으로 보고 False.
-    """
-    hidden_seen = 0
-    for _ in range(tries):
-        try:
-            state = frame.evaluate(SELECT_STATE_JS, element_id)
-            if int(state.get("count", -1)) >= 2:
-                return True
-            hidden_seen = hidden_seen + 1 if not state.get("visible") else 0
-            if hidden_seen >= hidden_tries:
-                return False
-        except Exception:  # noqa: BLE001
-            pass
-        wait(0.25)
-    return False
 
 
 _STATUS_IDS = ("REQ_SEQ_NO", "MOD_YN", "APPR_DIV_CD", "REQ_CNT", "RCV_NM", "REQ_PTCL", "REQ_AMT")

@@ -1,6 +1,7 @@
-"""AI 플랫폼 — 회의록 생성 · 일반청구가 쓰는 AI 를 한 곳에서 고르고, 로그인됐는지 보고, 로그인 창을 연다.
+"""AI 플랫폼 — 회의록 생성이 쓰는 AI 를 한 곳에서 고르고, 로그인됐는지 보고, 로그인 창을 연다.
 
-담당자 요청(2026-10-14): 쓸 AI 플랫폼은 설정에서 정하고(회의록 생성 `minutes_backend` · 일반청구 `claim_backend`),
+담당자 요청(2026-10-14): 쓸 AI 플랫폼은 설정에서 정하고(회의록 생성 `minutes_backend` — 일반청구의 AI 읽기 `claim_backend` 는
+일반 종류와 함께 2026-10-28 걷어냈다),
 앱을 켜면 홈에서 바로 로그인 상태를 보고, 로그아웃돼 있으면 거기서 로그인한다. 그래서 확인 · 로그인은 화면마다 따로 하지 않고
 여기 하나로 모은다(화면 쪽은 ui/ai_status.py 가 이것을 뒤에서 부른다).
 
@@ -14,7 +15,6 @@ import time
 from dataclasses import dataclass
 
 from . import settings as settings_mod
-from .claims import extract
 from .minutes import backends as minutes_backends
 from .minutes.backends import claude_cli
 
@@ -37,7 +37,6 @@ STATE_TONE = {CHECKING: "neutral", OK: "success", NO_LOGIN: "warning", MISSING: 
 # 업무 → 그 업무에 쓸 플랫폼이 적힌 설정 이름
 USES = {
     "minutes": ("회의록 생성", "minutes_backend"),
-    "claim": ("일반청구", "claim_backend"),
 }
 
 
@@ -67,14 +66,12 @@ class Status:
 
 
 def platforms(use: str = "minutes") -> list[tuple[str, str]]:
-    """(key, 화면 이름) — 그 업무에 고를 수 있는 플랫폼. 일반청구는 일반청구 추출기가 있는 플랫폼만."""
-    if use == "claim":
-        return extract.labels()
+    """(key, 화면 이름) — 그 업무에 고를 수 있는 플랫폼."""
     return minutes_backends.labels()
 
 
 def label_of(key: str) -> str:
-    for k, label in minutes_backends.labels() + extract.labels():
+    for k, label in minutes_backends.labels():
         if k == key:
             return label
     return key
@@ -109,8 +106,7 @@ def probe(key: str) -> Status:
     """그 플랫폼을 이 PC 에서 쓸 수 있는지 · 로그인됐는지. 몇 초 걸린다 — 화면 스레드에서 부르지 않는다."""
     status = Status(key=key, checked_at=time.time())
     try:
-        # 회의록 · 일반청구가 같은 key 를 쓰면 같은 프로그램이다 — 일반청구에만 있는 플랫폼이면 그쪽 것으로 본다
-        backend = minutes_backends.get(key) if key in minutes_backends.keys() else extract.get(key)
+        backend = minutes_backends.get(key)
         ok, note = backend.available()
         state = getattr(backend, "last_state", "") or ("ok" if ok else "")
     except Exception as error:  # noqa: BLE001 — 확인이 터져도 앱은 떠 있어야 한다

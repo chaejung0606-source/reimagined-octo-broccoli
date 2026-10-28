@@ -214,17 +214,13 @@ def test_unknown_period_is_a_problem_but_items_still_show(tmp_path):
     assert any("결제 기간을 읽지 못함" in p for p in job.problems())
 
 
-def test_auto_kind_finds_card_period_folders(tmp_path):
+def test_card_period_folder_shape(tmp_path):
     base, _read = build_period(tmp_path)
     assert card.looks_like_card_folder(str(base))
-    assert kinds.guess(str(base)) == kinds.CARD
-    assert kinds.resolve(kinds.CARD, str(base)) == kinds.CARD and kinds.find(kinds.CARD).ready
+    assert kinds.resolve(kinds.CARD, str(base)) == kinds.CARD
     plain = tmp_path / "26-10(10.09. ~ 11.08.)"
     plain.mkdir()
     assert not card.looks_like_card_folder(str(plain))                  # 결제 건 폴더가 없으면 아님
-    meeting = tmp_path / "2026-09-15 월 운영회의"
-    touch(meeting / "a.pdf")
-    assert kinds.guess(str(meeting)) == kinds.GENERAL
 
 
 # ── ERP 목록에서 결제 건 고르기 ──────────────────────────────────────

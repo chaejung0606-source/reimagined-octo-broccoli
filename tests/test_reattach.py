@@ -121,20 +121,14 @@ def test_plan_for_roster_job_uses_common_and_person_files(job):
     assert [r.label for r in reattach.plan_for_job(job).rows] == ["가나다"]
 
 
-def test_plan_for_general_folder_takes_ai_attachments_or_all_files(tmp_path):
+def test_plan_for_takes_only_roster_jobs(tmp_path, job):
+    """일반 · 세금계산서 종류는 2026-10-28 걷어냈다 — 명단 청구만 계획을 만들고, 카드 · 명단을 못 읽은 폴더는 까닭만."""
     folder = tmp_path / "정수기"
     folder.mkdir()
-    for name in ("세금계산서.pdf", "견적서.pdf", "메모.zip"):
-        (folder / name).write_bytes(b"x")
-    data = {"summary": "09_정수기 임차료(9월)", "attachments": ["세금계산서.pdf", "없는파일.pdf"]}
-    plan = reattach.plan_for(kinds.GENERAL, str(folder), data, project_no="202408470003")
-    assert plan.rows[0].names == ["세금계산서.pdf"] and plan.rows[0].summary == "09_정수기 임차료(9월)" and not plan.problems
-    plan = reattach.plan_for(kinds.TAXBILL, str(folder), {"summary": "09_정수기"})
-    assert plan.rows[0].names == ["견적서.pdf", "세금계산서.pdf"]        # 압축 파일은 빼고 폴더 바로 아래 전부
-    plan = reattach.plan_for(kinds.GENERAL, str(folder), {})
-    assert any("적요" in p for p in plan.problems)
     assert reattach.plan_for(kinds.CARD, str(folder)).problems and not reattach.plan_for(kinds.CARD, str(folder)).rows
     assert reattach.plan_for(kinds.SCHOLARSHIP, str(folder), job=None).problems
+    plan = reattach.plan_for(kinds.SCHOLARSHIP, job.folder, job=job, project_no="202408470003")
+    assert [r.label for r in plan.rows] == ["가나다", "라마바"] and not plan.problems
 
 
 def test_dry_run_touches_nothing(job):
@@ -246,21 +240,6 @@ def test_save_failure_and_missing_rows_are_reported(job, monkeypatch):
     frame = FakeSheet(rows=[])
     report = reattach.run(object(), frame, reattach.plan_for_job(job), lambda m: None, wait=lambda s: None, dry_run=False)
     assert report.blocked and "저장된 줄이 없습니다" in report.blocked and frame.clicks == []
-
-
-def test_general_claim_matches_the_only_row(tmp_path, monkeypatch):
-    folder = tmp_path / "정수기"
-    folder.mkdir()
-    (folder / "세금계산서.pdf").write_bytes(b"x")
-    plan = reattach.plan_for(kinds.GENERAL, str(folder), {"summary": "09_정수기 임차료(9월)"})
-    frame = FakeSheet(rows=["1 일반 09_정수기 임차료(9월) 51,900"], files=[["옛.pdf"]])
-    frame.amounts = ["51,900"]
-    monkeypatch.setattr(attach, "upload", _upload_fake(frame, []))
-    report = reattach.run(object(), frame, plan, lambda m: None, wait=lambda s: None, dry_run=False)
-    assert report.saved == 1 and frame.files[0] == ["세금계산서.pdf"]
-    # 줄이 여럿이면 적요가 든 줄만
-    assert reattach.match_rows(plan, ["1 일반 09_다른 것 1,000", "2 일반 09_정수기 임차료(9월) 51,900"]) == {0: [1]}
-    assert reattach.match_rows(plan, ["1 일반 09_다른 것 1,000", "2 일반 09_또 다른 것 2,000"]) == {0: []}
 
 
 def test_row_loaded_compares_summary_or_row_text():
@@ -453,7 +432,7 @@ def test_claim_page_button_previews_without_browser(tmp_path, monkeypatch):
         assert page.step_put.title.text().startswith("첨부만 다시 올리세요") and "첨부만 다시 올리기" in page._guide
         page.dry_run.setChecked(False)
         assert page.fill_button.text().startswith("첨부만 다시 올리기 (") and not page.fill_button.isEnabled()      # 브라우저가 닫혀 있다
-        assert not page.save_button.isVisibleTo(page)
+        assert not hasattr(page, "save_button")                 # 일반 종류의 [임시저장] 단추는 2026-10-28 걷어냈다
         page.dry_run.setChecked(True)
         page._fill()                                            # 큰 단추 — 할 일이 첨부만이면 그쪽으로
         assert _wait(app, lambda: bool(shown), 15)
@@ -509,11 +488,11 @@ def test_open_saved_sheet_accepts_the_visible_request_info_cell(monkeypatch):
     assert frame is None and "결의번호 224 의 것" in why
 
 
-def test_reattach_asks_when_file_delete_empties_the_amount(monkeypatch):
+def test_reattach_asks_when_file_delete_empties_the_amount(monkeypatch, job):
     """담당자 그림 2026-10-23: 첨부문서를 '삭제' 한 뒤 청구액 칸이 비어 보였다 — 앱은 값을 넣지 않고(청구내역은 사람 몫) 사람에게 묻는다."""
-    plan = reattach.plan_for(kinds.GENERAL, ".", {"summary": "09_정수기 임차료(9월)", "attachments": ["a.pdf"]})
-    frame = FakeSheet(rows=["1 일반 09_정수기 임차료(9월) 51,900"], files=[["옛.pdf"]])
-    frame.amounts = ["51,900"]
+    job.selected[1] = False
+    plan = reattach.plan_for_job(job)
+    frame = FakeSheet(files=[["옛.pdf"], []])
     orig_clear = reattach.clear_files
 
     def clearing(fr, wait, log):
@@ -526,15 +505,14 @@ def test_reattach_asks_when_file_delete_empties_the_amount(monkeypatch):
 
     def person(msg):
         asked.append(msg)
-        frame.v["REQ_AMT"] = "51,900"   # 사람이 넣고 [계속]
+        frame.v["REQ_AMT"] = "300,000"  # 사람이 넣고 [계속]
         return True
     report = reattach.run(object(), frame, plan, lambda m: None, ask=person, wait=lambda s: None, dry_run=False)
-    assert report.saved == 1 and len(asked) == 1 and "51,900" in asked[0]
+    assert report.saved == 1 and len(asked) == 1 and "300,000" in asked[0]
     assert any("청구액 확인" in r for r in report.results[0].review)
     assert not any(c.startswith("넣기:") for c in frame.clicks)
     # [멈추기] 면 그 줄은 실패
-    frame = FakeSheet(rows=["1 일반 09_정수기 임차료(9월) 51,900"], files=[["옛.pdf"]])
-    frame.amounts = ["51,900"]
+    frame = FakeSheet(files=[["옛.pdf"], []])
     monkeypatch.setattr(attach, "upload", _upload_fake(frame, []))
     report = reattach.run(object(), frame, plan, lambda m: None, ask=lambda m: False, wait=lambda s: None, dry_run=False)
     assert report.saved == 0 and "청구액" in (report.results[0].note or "")

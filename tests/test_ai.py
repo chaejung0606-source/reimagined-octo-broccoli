@@ -31,23 +31,22 @@ def claude(monkeypatch):
     return result
 
 
-def test_both_uses_default_to_claude_code():
+def test_minutes_defaults_to_claude_code():
+    """일반청구의 AI 읽기는 2026-10-28 걷어냈다 — AI 를 쓰는 업무는 회의록 생성 하나."""
     cfg = settings.load()
     assert ai.chosen("minutes", cfg) == claude_cli.ClaudeCliBackend.key
-    assert ai.chosen("claim", cfg) == claude_cli.ClaudeCliBackend.key
+    assert list(ai.USES) == ["minutes"]
     # 같은 플랫폼이면 한 번만 확인한다
     assert ai.used_keys(cfg) == [claude_cli.ClaudeCliBackend.key]
 
 
 def test_unknown_platform_in_settings_falls_back_to_first():
-    settings.update(minutes_backend="없는-플랫폼", claim_backend="")
+    settings.update(minutes_backend="없는-플랫폼")
     assert ai.chosen("minutes") == claude_cli.ClaudeCliBackend.key
-    assert ai.chosen("claim") == claude_cli.ClaudeCliBackend.key
 
 
 def test_each_use_has_its_own_setting():
     assert ai.USES["minutes"][1] == "minutes_backend"
-    assert ai.USES["claim"][1] == "claim_backend"
     cfg = settings.load()
     for _use, (_title, field) in ai.USES.items():
         assert hasattr(cfg, field)
@@ -129,9 +128,10 @@ def test_no_password_is_kept_for_ai_login():
 
 
 def test_pages_no_longer_pick_platform_or_open_login_themselves():
-    """회의록 생성 · 일반청구는 설정의 플랫폼을 쓰고, 로그인은 위쪽 단추(ai_status)로 한다(2026-10-14)."""
-    for name in ("minutes.py", "claim.py"):
-        text = (SRC / "ui" / "pages" / name).read_text(encoding="utf-8")
-        assert "backend_box" not in text
-        assert "claude_cli.open_login" not in text
-        assert "PlatformRow" in text
+    """회의록 생성은 설정의 플랫폼을 쓰고, 로그인은 위쪽 단추(ai_status)로 한다(2026-10-14). 일반청구는 AI 를 쓰지 않는다(2026-10-28)."""
+    text = (SRC / "ui" / "pages" / "minutes.py").read_text(encoding="utf-8")
+    assert "backend_box" not in text
+    assert "claude_cli.open_login" not in text
+    assert "PlatformRow" in text
+    claim = (SRC / "ui" / "pages" / "claim.py").read_text(encoding="utf-8")
+    assert "PlatformRow" not in claim and "claude_cli" not in claim

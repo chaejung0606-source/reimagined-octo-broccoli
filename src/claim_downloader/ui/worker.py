@@ -39,10 +39,6 @@ class SessionWorker(QObject):
     failed = Signal(str, str)           # 명령을 넣은 화면("download" · "claim"), 오류 — 화면마다 제 명령의 오류만 받는다
     browser_state = Signal(bool)        # 명령을 마칠 때마다 브라우저가 살아 있는지
     structure_saved = Signal(str)       # 진단: 화면 구조를 저장한 파일 경로 (못 했으면 "")
-    claim_filled = Signal(object)       # 일반청구: claims.form.FillReport
-    claim_saved = Signal(object)        # 일반청구: claims.form.SaveReport (임시저장)
-    payee_searched = Signal(object)     # 일반청구: claims.payee.PayeeReport (입금처 팝업 검색)
-    taxbill_searched = Signal(object)   # 일반청구: claims.taxbill.TaxbillReport (세금계산서 조회 팝업)
     claim_form_state = Signal(bool)     # 일반청구 작성 화면이 브라우저에 떠 있는지
     scholarship_person = Signal(int, str, str)   # 장학금: 명단 번호, 상태, 설명
     scholarship_ask = Signal(str)       # 장학금: 앱이 확신 못 하는 단계 — 사람이 [계속]/[멈추기]
@@ -50,8 +46,6 @@ class SessionWorker(QObject):
     sheet_checked = Signal(object)      # 신청 전 대조: claims.sheet_check.SheetCheck
     card_item = Signal(int, str, str)   # 카드: 결제 건 번호, 상태, 설명
     card_done = Signal(object)          # 카드: claims.card_erp.CardReport
-    taxbill_item = Signal(int, str, str)   # 세금계산서 이어 넣기: 화면 줄 번호, 상태, 설명
-    taxbill_run_done = Signal(object)      # 세금계산서 이어 넣기: claims.taxbill_run.TaxbillRunReport
     reattach_row = Signal(int, str, str)   # 첨부만 다시 올리기: 줄(명단 번호), 상태, 설명
     reattach_done = Signal(object)         # 첨부만 다시 올리기: claims.reattach.ReattachReport
     list_ready = Signal()               # 받기: 브라우저를 연 뒤 결의서내역 목록이 보인다 — 화면이 [목록 읽기] 를 저절로
@@ -94,25 +88,11 @@ class SessionWorker(QObject):
         로그인을 기다렸다가 고른 과제의 청구서 탭까지 간다(navigate.py)."""
         self._put("open", (scan, watch), owner)
 
-    def fill_claim(self, data: dict, dry_run: bool = True, project_no: str = "", folder: str = "", test_mode: bool = False) -> None:
-        """project_no 는 그 폴더에 고른 과제(일반청구 화면), test_mode 면 적요 앞에 [시험] 을 붙이고 ERP 중복 확인을 건너뛴다."""
-        self._stop.clear()
-        self._put("fill_claim", (data, dry_run, project_no, folder, test_mode), "claim")
-
     def check_sheet(self, job) -> None:
         self._put("check_sheet", (job,), "claim")
 
     def check_claim_form(self, owner: str = "claim") -> None:
         self._put("check_claim_form", (), owner)
-
-    def save_claim_draft(self) -> None:
-        self._put("save_claim_draft", (), "claim")
-
-    def search_payee(self, data: dict) -> None:
-        self._put("search_payee", (data,), "claim")
-
-    def search_taxbill(self, data: dict) -> None:
-        self._put("search_taxbill", (data,), "claim")
 
     def fill_scholarship(self, job, dry_run: bool = True) -> None:
         self._stop.clear()
@@ -121,11 +101,6 @@ class SessionWorker(QObject):
     def fill_card(self, job, sheet_index: int, dry_run: bool = True, project_no: str = "", test_mode: bool = False) -> None:
         self._stop.clear()
         self._put("fill_card", (job, sheet_index, dry_run, project_no, test_mode), "claim")
-
-    def fill_taxbill_claims(self, items: list, dry_run: bool = True, test_mode: bool = False) -> None:
-        """청구 종류 '세금계산서' 폴더들을 하나씩 일반청구 탭에 넣고 [저장] — 조회에 안 뜨면 건너뛰고 다음 폴더(session.fill_taxbill_claims)."""
-        self._stop.clear()
-        self._put("fill_taxbill_claims", (list(items), dry_run, test_mode), "claim")
 
     def reattach_files(self, plan, dry_run: bool = True) -> None:
         """이미 있는 청구서(임시저장 · 보완요청)의 줄마다 첨부문서를 지우고 폴더 파일로 다시 붙여 [저장](session.reattach_files)."""
@@ -395,27 +370,8 @@ class SessionWorker(QObject):
                     % (len(projects), len(now), ", ".join(p.no for p in now) or "없음"))
         self.projects_read.emit()
 
-    def _do_fill_claim(self, session: ErpSession, data: dict, dry_run: bool, project_no: str = "", folder: str = "",
-                       test_mode: bool = False) -> None:
-        self.busy.emit(True, "일반청구 화면을 확인하는 중…" if dry_run
-                       else "ERP 결의서내역을 확인하고 일반청구 화면에 채우는 중… (팝업이 뜨면 고르고 [확인] 을 누르세요)")
-        self.claim_filled.emit(session.fill_claim(data, dry_run, project_no=project_no, folder=folder, test_mode=test_mode,
-                                                  ask=self._ask_person))
-
-    def _do_save_claim_draft(self, session: ErpSession) -> None:
-        self.busy.emit(True, "ERP 에 임시저장하는 중…")
-        self.claim_saved.emit(session.save_claim_draft())
-
-    def _do_search_taxbill(self, session: ErpSession, data: dict) -> None:
-        self.busy.emit(True, "세금계산서 조회 팝업에서 조회하는 중…")
-        self.taxbill_searched.emit(session.search_taxbill(data))
-
-    def _do_search_payee(self, session: ErpSession, data: dict) -> None:
-        self.busy.emit(True, "입금처 팝업에서 거래처를 검색하는 중…")
-        self.payee_searched.emit(session.search_payee(data))
-
     def _ask_person(self, message: str) -> bool:
-        """앱이 확신하지 못하는 단계(장학금 · 넣기 전 ERP 중복 확인). 재로그인 띠와 같은 방식으로 이 스레드가 [계속]/[멈추기] 를 기다린다."""
+        """앱이 확신하지 못하는 단계(명단 · 카드 청구 · 넣기 전 ERP 중복 확인). 재로그인 띠와 같은 방식으로 이 스레드가 [계속]/[멈추기] 를 기다린다."""
         if self._stop.is_set():
             return False
         self._resume.clear()
@@ -430,13 +386,6 @@ class SessionWorker(QObject):
         self.busy.emit(True, f"{name} 계획을 만드는 중…" if dry_run else f"{name} 청구를 넣는 중… (멈추면 안내를 따라 주세요)")
         report = session.fill_scholarship(job, dry_run=dry_run, ask=self._ask_person, on_person=self.scholarship_person.emit)
         self.scholarship_done.emit(report)
-
-    def _do_fill_taxbill_claims(self, session: ErpSession, items: list, dry_run: bool, test_mode: bool) -> None:
-        self.busy.emit(True, "세금계산서 청구 계획을 만드는 중…" if dry_run
-                       else "세금계산서 청구를 폴더마다 넣는 중… (팝업 · 증빙 창이 필요하면 노란 띠로 묻습니다)")
-        report = session.fill_taxbill_claims(items, dry_run=dry_run, test_mode=test_mode, ask=self._ask_person,
-                                             on_item=self.taxbill_item.emit)
-        self.taxbill_run_done.emit(report)
 
     def _do_reattach(self, session: ErpSession, plan, dry_run: bool) -> None:
         self.busy.emit(True, "첨부만 다시 올리기 계획을 만드는 중…" if dry_run

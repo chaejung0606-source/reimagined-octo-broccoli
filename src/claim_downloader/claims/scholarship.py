@@ -26,8 +26,8 @@ from dataclasses import dataclass, field
 from .. import settings
 from ..minutes.logbook import log as file_log
 from ..minutes.textfile import _read_text
-from . import attach, kinds, nation as nation_mod, notice as notice_mod, person, roster as roster_mod
-from .schema import CATEGORY_CODES, category_code
+from . import attach, kinds, nation as nation_mod, person, roster as roster_mod
+from .schema import CATEGORY_CODES
 from .nation import same_country  # noqa: F401 — 테스트 · 화면이 scholarship.same_country 로 부른다
 from .form import PROBE_JS, SET_SELECT_JS, SET_TEXT_JS, read_state, save_draft
 from .payee import CLICK_ID_JS, wait_until
@@ -96,40 +96,18 @@ SUMMARY_JS = """() => {
 }"""
 
 
-# 개인 지급(일반청구 탭 · 증빙 기타) — 대표적요의 바탕은 지급 공문 제목, 비목 번호는 공문의 비목에서(담당자 2026-10-19)
-# '지원내역' 은 지우지 않는다 — 담당자 실제(2026-10-20): 재직자 지원 10월 대표적요를 '… 교육 지원내역(10월)' 으로 고쳤고, 9월 실제 청구서도
-# '07_재직자 역량 강화 프로그램_AI 바이브 코딩 교육 지원내역(9월)' 이었다. 고치지 않은 규칙 파일은 다음에 읽을 때 이 값으로 바뀐다(기본값 쌍).
-PERSONAL_RULES_DEFAULT = """대표적요: {비목번호}_{제목}
-제목에서 뺄 말: 지급내역, 지급 내역
-행적요: {대표적요}_{이름}
-행적요(강좌): {대표적요}({이름}_{강좌명})"""
-GENERAL_TAB_ID = "10"                 # 작성 화면 서브탭 '일반청구' — <a id="10">, 숨은 #TAB_GB 도 10(실측 ① · ⑤)
-EVIDENCE_OTHER = "기타"               # 증빙구분(#EVDI_DIV_CD) 보기 글자 — 개인 계좌이체는 기타(담당자 2026-10-19 3번)
-REQ_DIV_OTHER = "90"                  # 청구구분 라디오(name=REQ_DIV_CD) (90) 기타 — 새 청구서의 기본값. 앱은 누르지 않고 보기만 한다
-# 보이는 청구구분 라디오 중 켜진 것의 값 — 일반청구 탭에만 있다(14절 '숨어 있다가 …'). 없으면 ''
-REQ_DIV_JS = """() => {
-  const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-  const on = Array.from(document.querySelectorAll('input[name=REQ_DIV_CD]')).filter(r => r.checked);
-  const shown = on.filter(vis);
-  return String((shown[0] || on[0] || {}).value || '');
-}"""
-
-
 @dataclass(frozen=True)
 class Spec:
     """명단으로 사람마다 넣는 청구 종류마다 다른 것 — 담당자(2026-10-14): 혁신인재지원금은 장학금과 ERP 쓰는 법이 같고 비목만 다르다.
     (청구서 PDF 로도 확인: 혁신인재지원금도 인건비 탭 · 소득구분 장학금 · 공제 0 — CLAUDE.md 14절 '장학금 밖의 청구')
-    개인 지급(2026-10-19)은 같은 흐름을 **일반청구 탭**에서 한다 — 소득구분 · 지급예정년월 · 국적 칸이 없고 증빙구분(기타)이 있다."""
+    일반청구 탭에서 넣던 개인 지급(2026-10-19)은 2026-10-28 담당자 요청으로 걷어냈다("일반청구에서는 장학금, 혁신인재지원금, 카드만")."""
     kind: str
     name: str                    # 화면 · 로그에 보이는 이름
-    category: str                # ERP 비목(#PAY_EXP_CD) 보기 글자 — 실측 그대로. 비면 폴더마다(Job.category — 지급 공문에서)
+    category: str                # ERP 비목(#PAY_EXP_CD) 보기 글자 — 실측 그대로
     code: str                    # 대표적요 앞의 비목 번호(8절)
     rules_path: Callable[[], object]
     rules_base_path: Callable[[], object]
-    tab_id: str = TAB_ID         # 작성 화면 서브탭 — 인건비(소득성 경비) 20 · 일반청구 10
-    income: str = INCOME_KIND    # 소득구분(#INCM_DIV_CD) — 일반청구 탭에는 없다
-    evidence: str = ""           # 증빙구분(#EVDI_DIV_CD) — 인건비 탭에는 없다
-    rules_text: str = ""         # 규칙 파일 기본값(비우면 장학금 규칙의 비목 번호만 바꾼 것)
+    income: str = INCOME_KIND    # 소득구분(#INCM_DIV_CD)
 
     @property
     def rules_file(self) -> str:
@@ -137,16 +115,7 @@ class Spec:
 
     @property
     def rules_default(self) -> str:
-        return self.rules_text or RULES_DEFAULT.replace("02_", f"{self.code}_", 1)
-
-    @property
-    def payroll(self) -> bool:
-        """인건비(소득성 경비) 탭 — 소득구분 · 지급예정년월 · 국적 · 소득자."""
-        return self.tab_id == TAB_ID
-
-    @property
-    def who(self) -> str:
-        return "소득자" if self.payroll else "입금처"
+        return RULES_DEFAULT.replace("02_", f"{self.code}_", 1)
 
 
 SPECS = {
@@ -154,8 +123,6 @@ SPECS = {
                             settings.scholarship_rules_path, settings.scholarship_rules_base_path),
     kinds.INNOVATION: Spec(kinds.INNOVATION, "혁신인재지원금", "교육·연구프로그램개발·운영비", "03",
                            settings.innovation_rules_path, settings.innovation_rules_base_path),
-    kinds.PERSONAL: Spec(kinds.PERSONAL, "개인 지급", "", "", settings.personal_rules_path, settings.personal_rules_base_path,
-                         tab_id=GENERAL_TAB_ID, income="", evidence=EVIDENCE_OTHER, rules_text=PERSONAL_RULES_DEFAULT),
 }
 
 
@@ -244,10 +211,9 @@ def marked(job: "Job"):
         job.main_summary = original
 
 
-def main_summary(title: str, rules: dict[str, str] | None = None, code: str = "") -> str:
-    """{비목번호} 는 개인 지급의 대표적요 규칙에 쓰인다 — 비목을 못 정했으면 '00'(8절: 못 정하면 00)."""
+def main_summary(title: str, rules: dict[str, str] | None = None) -> str:
     rules = rules or parse_rules(RULES_DEFAULT)
-    return _render(rules.get("대표적요", "02_{제목}"), {"제목": clean_title(title, rules), "비목번호": code or "00"})
+    return _render(rules.get("대표적요", "02_{제목}"), {"제목": clean_title(title, rules)})
 
 
 def row_summary(main: str, p: roster_mod.Person, kind: str, rules: dict[str, str] | None = None) -> str:
@@ -280,10 +246,7 @@ class Job:
     project_no: str = ""                    # 이 폴더를 넣을 ERP 과제 — 일반청구 화면에서 폴더를 넣을 때 고른다(담당자 2026-10-19)
     test_mode: bool = False                 # 시험 — 이미 올린 폴더로 시험할 때(중복 확인 건너뜀 · 대표적요 앞 [시험] · 기록 안 남김)
     test_req_cnt: str = ""                  # 시험으로 넣은 청구서의 결의번호 — 진짜 것(req_cnt)과 섞지 않는다(marked)
-    category: str = ""                      # 개인 지급의 비목(ERP 보기 글자) — 지급 공문에서, 화면에서 고친다. 비면 spec.category
-    notice: object = None                   # 개인 지급의 지급 공문(notice.Notice) — 비목 · 제목 · 금액을 어디서 찾았는지
-    default_summary: str = ""               # 읽을 때 앱이 만든 대표적요 · 비목 — 다시 읽을 때 사람이 고친 값인지 가려 남긴다(keep_edits)
-    default_category: str = ""
+    default_summary: str = ""               # 읽을 때 앱이 만든 대표적요 — 다시 읽을 때 사람이 고친 값인지 가려 남긴다(keep_edits)
 
     @property
     def spec(self) -> Spec:
@@ -295,18 +258,8 @@ class Job:
 
     @property
     def pay_category(self) -> str:
-        """ERP 에 고를 비목 — 종류에 정해진 것(장학금 · 혁신인재지원금) 또는 폴더마다 고른 것(개인 지급)."""
-        return self.spec.category or self.category
-
-    def set_category(self, name: str) -> None:
-        """개인 지급의 비목을 바꾼다 — 대표적요가 앞 비목 번호로 시작하면 번호도 바꾼다(사람이 고친 대표적요는 그 앞부분만)."""
-        old = category_code(self.category)
-        self.category = name
-        new = category_code(name)
-        if old and new and self.main_summary.startswith(old + "_"):
-            self.main_summary = new + self.main_summary[len(old):]
-        elif new and self.main_summary.startswith("00_"):
-            self.main_summary = new + self.main_summary[2:]
+        """ERP 에 고를 비목 — 종류에 정해진 것(장학금 · 혁신인재지원금)."""
+        return self.spec.category
 
     def chosen(self) -> list[int]:
         return [i for i, on in enumerate(self.selected) if on]
@@ -336,15 +289,10 @@ class Job:
         out = list(self.warnings) + self.roster.problems()
         if not self.main_summary:
             out.append("대표적요가 비어 있습니다")
-        if self.spec.payroll and not re.fullmatch(r"\d{4}-\d{2}", self.pay_ym or ""):
+        if not re.fullmatch(r"\d{4}-\d{2}", self.pay_ym or ""):
             out.append("지급예정년월은 YYYY-MM 꼴이어야 합니다")
-        if not self.pay_category:
-            why = self.notice.notes[0].split(" — ")[0] if self.notice is not None and self.notice.notes else ""
-            out.append("비목이 없습니다 — " + (why + ". " if why and self.notice.path else "") + "위에서 고르세요")
-        elif self.pay_category not in CATEGORY_CODES.values():
-            out.append(f"비목 '{self.pay_category}' 은 ERP 보기에 없습니다 — 위에서 고르세요")
-        if self.notice is not None and self.notice.amount and self.people and self.notice.amount != self.roster.total:
-            out.append(f"지급 공문의 금액({self.notice.amount:,}원)과 명단 합계({self.roster.total:,}원)가 다릅니다 — 확인하세요")
+        if self.pay_category not in CATEGORY_CODES.values():
+            out.append(f"비목 '{self.pay_category}' 은 ERP 보기에 없습니다")
         if self.unmatched:
             out.append("어느 학생 것인지 모르는 개별증빙 %d개 — 붙이지 않습니다. 파일 이름에 학생 이름(또는 명단의 소학회명)이 있어야 합니다: %s"
                        % (len(self.unmatched), " · ".join(os.path.basename(f) for f in self.unmatched[:5])))
@@ -365,17 +313,10 @@ class Job:
         chosen = self.chosen()
         total = sum(self.people[i].amount or 0 for i in chosen)
         spec = self.spec
-        where = (f"지급예정년월: {self.pay_ym} · 소득자 구분: {self.tab}" if spec.payroll else
-                 f"일반청구 탭 · 증빙구분 {spec.evidence} · 청구구분 (90) 기타 · 입금처 구분: {self.tab}")
-        notice = self.notice
-        found = ([f"지급 공문: {os.path.basename(notice.path)} — 제목 '{notice.title or '못 찾음'}' · 비목 {notice.category or '못 찾음'}"
-                  + (f" · 금액 {notice.amount:,}원" if notice.amount else "")]
-                 if notice is not None and notice.path else ["지급 공문: 찾지 못함 — 비목 · 대표적요를 확인하세요"]
-                 if notice is not None else [])
+        where = f"지급예정년월: {self.pay_ym} · 소득자 구분: {self.tab}"
         return [f"종류: {spec.name} (비목 {self.pay_category or '—'})" + (" · 시험(대표적요 앞에 [시험])" if self.test_mode else ""),
                 f"ERP 과제: {self._project_text()}",
                 f"폴더: {self.folder}", f"명단: {os.path.basename(self.roster.path)} — {self.roster.title or '제목 없음'}",
-                *found,
                 f"대표적요: {self.main_summary}", where,
                 f"넣을 사람 {self.count_text(chosen)} / 명단 {self.count_text(list(range(len(self.people))))} · 합계 {total:,}원",
                 f"공통증빙 {len(self.common_files)}개 · 개별증빙 {sum(len(v) for v in self.person_files.values())}개"]
@@ -516,10 +457,6 @@ def load_job(folder: str, excel: str | None = None, rules: dict[str, str] | None
         entries = []
     candidates = [os.path.join(folder, n) for n in entries
                   if n.lower().endswith(EXCEL_SUFFIXES) and not n.startswith(("~$", "."))]
-    if not spec.payroll:
-        # 개인 지급 — 지급내역 · 지원내역 엑셀을 먼저(폴더 바로 아래에 없으면 공통증빙 안에서). 다른 엑셀(견적 등)은 뒤로
-        named = kinds._excels_under(folder, kinds.PERSONAL_EXCEL_WORDS)
-        candidates = named + [c for c in candidates if c not in named]
     chosen = excel if excel and os.path.isfile(excel) else (candidates[0] if candidates else "")
     roster = roster_mod.read(chosen) if chosen else roster_mod.Roster(path="", warnings=["폴더 바로 아래에 명단 엑셀(.xlsx)이 없습니다"])
     job = Job(folder=folder, roster=roster, excel_candidates=candidates, rules=rules, kind=spec_for(kind).kind)
@@ -533,56 +470,31 @@ def load_job(folder: str, excel: str | None = None, rules: dict[str, str] | None
         job.person_files, job.unmatched = assign_person_files(files, person_dirs[0] if len(person_dirs) == 1 else folder, roster.people)
     if not job.common_files and not files:
         job.warnings.append("공통증빙\\ · 개별증빙\\ 폴더가 비어 있거나 없습니다 — 첨부 없이 넣습니다")
-    if spec.payroll:
-        job.main_summary = main_summary(roster.title, rules) if roster.title else ""
-    else:
-        _read_notice(job, entries, rules)
+    named = kinds.named_kind(folder)
+    if named and named != spec.kind:
+        job.warnings.append(f"폴더 · 명단 이름으로는 {kinds.name_of(named)} 인데 {spec.name} 으로 넣습니다(비목 {spec.code}) — "
+                            "맞지 않으면 오른쪽 칸 위의 '종류' 를 바꾸세요")
+    job.main_summary = main_summary(roster.title, rules) if roster.title else ""
     job.pay_ym = time.strftime("%Y-%m")
     job.selected = [bool(p.name) and p.amount is not None and p.amount > 0 for p in roster.people]
-    job.default_summary, job.default_category = job.main_summary, job.category
+    job.default_summary = job.main_summary
     return job
 
 
 def keep_edits(job: Job, old: Job) -> None:
     """같은 폴더를 다시 읽을 때([다시 읽기] · 엑셀 바꾸기 · 종류 바꾸기) 사람이 고친 것을 남긴다.
     담당자 실제(2026-10-20 13:40 → 13:42): 고친 대표적요가 다시 읽기로 공문 제목으로 돌아갔고, (2026-10-21) 임시저장해 체크가 풀린
-    학생들이 다시 체크돼 같은 청구서에 또 넣으려 했다. 대표적요 · 비목은 종류가 같을 때만(장학금 02_ ↔ 혁신인재지원금 03_)."""
+    학생들이 다시 체크돼 같은 청구서에 또 넣으려 했다. 대표적요는 종류가 같을 때만(장학금 02_ ↔ 혁신인재지원금 03_)."""
     if old.pay_ym and re.fullmatch(r"\d{4}-\d{2}", old.pay_ym):
         job.pay_ym = old.pay_ym
     job.tab = old.tab
-    if old.kind == job.kind:
-        if old.category and old.category != old.default_category:
-            job.category = old.category
-        if old.main_summary and old.main_summary != old.default_summary:
-            job.main_summary = old.main_summary
+    if old.kind == job.kind and old.main_summary and old.main_summary != old.default_summary:
+        job.main_summary = old.main_summary
     unchecked = {(_squash(p.name), p.student_no, _squash(p.course))
                  for p, on in zip(old.people, old.selected) if not on}
     for i, p in enumerate(job.people):
         if (_squash(p.name), p.student_no, _squash(p.course)) in unchecked:
             job.selected[i] = False
-
-
-def _read_notice(job: Job, entries: list[str], rules: dict[str, str]) -> None:
-    """개인 지급 — 공통증빙 · 폴더 바로 아래 PDF 중 지급 공문을 찾아 비목 · 대표적요를 정한다(담당자 2026-10-19:
-    "지급 공문의 비목이랑 적요 찾고"). 제목을 못 찾으면 명단 제목 → 폴더 이름. 비목을 못 찾으면 비워 두고 화면에서 고른다."""
-    root_files = [os.path.join(job.folder, n) for n in entries if os.path.isfile(os.path.join(job.folder, n))]
-    found = notice_mod.find(list(job.common_files) + attach.attachable(root_files))
-    job.notice = found
-    job.category = found.category
-    # 공문 제목은 '지급' 공문일 때만 대표적요로 — 담당자 실제(2026-10-20): 10월 재직자 지원 폴더의 공문이 '… 지도교수 추가'(계획 변경)여서
-    # 대표적요가 그 제목이 됐고, 담당자가 명단 제목으로 고쳤다(9월 실제 청구서도 명단 제목 '… 지원내역(9월)'). 지급 공문이 아니면 명단 제목.
-    paid = "지급" in (found.title or "")
-    title = ((found.clean_title if paid else "") or job.roster.title or found.clean_title
-             or os.path.basename(os.path.normpath(job.folder)))
-    job.main_summary = main_summary(title, rules, found.code)
-    if found.clean_title:
-        # 명단 위 제목이 없다는 알림은 공문 제목이 있으면 필요 없다
-        job.roster.warnings = [w for w in job.roster.warnings if not w.startswith("표 위에 제목")]
-    if not found.path:
-        job.warnings.append("지급 공문(공통증빙의 PDF)을 찾지 못했습니다 — 대표적요는 "
-                            + ("명단 제목" if job.roster.title else "폴더 이름") + "으로 만들었습니다. 비목 · 대표적요를 확인하세요")
-    elif not found.clean_title:
-        job.warnings.append(f"지급 공문({os.path.basename(found.path)})에서 제목을 찾지 못했습니다 — 대표적요를 확인하세요")
 
 
 # ── ERP 흐름 ──────────────────────────────────────────────────────────────
@@ -789,7 +701,7 @@ def plan_person(job: Job, index: int) -> PersonResult:
     result.lines = [f"학번 {p.student_no or '—'} · 청구액 {p.amount:,}원" if p.amount else f"학번 {p.student_no or '—'} · 청구액 —",
                     f"적요: {job.row_summary(index)}",
                     f"첨부 {len(files)}개" + (": " + " · ".join(os.path.basename(f) for f in files[:6]) if files else "")]
-    if p.foreign_nation and job.spec.payroll:
+    if p.foreign_nation:
         result.lines.append(f"국적 {p.nation}(명단) — 넣을 때 앱이 ERP 국적조회에서 고릅니다(못 고르면 노란 띠로 묻습니다)")
     notes = [p.note] if p.note else []
     if (job.person_files or job.unmatched) and not job.person_files.get(index):
@@ -799,7 +711,7 @@ def plan_person(job: Job, index: int) -> PersonResult:
         # TA 교과목 여럿인 학생 — 교과목 이름이 없는 파일은 개인 서류로 보고 모든 교과목 줄에 붙인다. 다른 과목 증빙이면 파일 이름에 교과목을 넣어야 한다
         notes.append("교과목 이름이 없는 개별증빙 %d개는 이 학생의 교과목 줄 모두에 붙습니다(다른 과목 서류면 파일 이름에 교과목을 넣으세요): %s"
                      % (len(shared), " · ".join(os.path.basename(f) for f in shared[:4])))
-    if p.foreign_nation and job.spec.payroll:
+    if p.foreign_nation:
         notes.append(f"외국인({p.nation}) — 국적은 앱이 고름")
     if notes:
         result.note = " · ".join(notes)
@@ -1010,43 +922,26 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         return False, "작성 화면이 다시 뜨지 않음"
 
     spec = job.spec
-    who = spec.who
+    who = "소득자"
 
-    # 1. 탭 — 장학금 · 혁신인재지원금은 인건비(소득성 경비) 탭(저장 뒤 일반청구 탭으로 돌아가므로 사람마다 누른다, 실측 ⑤).
-    #    개인 지급은 일반청구 탭 — 새 청구서 · 저장 뒤의 기본 탭이라 다른 탭일 때만 누른다.
-    tab_name = "인건비(소득성 경비)" if spec.payroll else "일반청구"
-    if spec.payroll or _state(frame, ["TAB_GB"])["TAB_GB"] != spec.tab_id:
-        clicked = frame.evaluate(CLICK_ID_JS, spec.tab_id)
-        if not clicked.get("ok"):
-            return False, f"{tab_name} 탭을 누르지 못함: " + str(clicked.get("why", ""))
-        if not wait_until(lambda: _state(frame, ["TAB_GB"])["TAB_GB"] == spec.tab_id, wait, tries=20):
-            return False, f"{tab_name} 탭으로 바뀌지 않음"
-        wait(0.3)
+    # 1. 탭 — 장학금 · 혁신인재지원금은 인건비(소득성 경비) 탭(저장 뒤 일반청구 탭으로 돌아가므로 사람마다 누른다, 실측 ⑤)
+    clicked = frame.evaluate(CLICK_ID_JS, TAB_ID)
+    if not clicked.get("ok"):
+        return False, "인건비(소득성 경비) 탭을 누르지 못함: " + str(clicked.get("why", ""))
+    if not wait_until(lambda: _state(frame, ["TAB_GB"])["TAB_GB"] == TAB_VALUE, wait, tries=20):
+        return False, "인건비(소득성 경비) 탭으로 바뀌지 않음"
+    wait(0.3)
 
-    # 2. 비목 → 소득구분 (인건비구분 라디오는 건드리지 않는다) / 개인 지급: 비목 → 증빙구분 기타 (청구구분 라디오는 (90) 기타 그대로)
+    # 2. 비목 → 소득구분 (인건비구분 라디오는 건드리지 않는다)
     category = job.pay_category
-    if not category:
-        return False, "비목이 없습니다 — 화면에서 비목을 고른 뒤 다시 누르세요"
     r = _set(frame, "select", "PAY_EXP_CD", category)
     if not r.get("ok"):
         return False, f"비목을 '{category}' 으로 고르지 못함: " + str(r.get("why", ""))
     wait(0.6)                                                   # 비목을 고르면 잔액·인건비구분이 다시 그려진다
-    if spec.income:
-        r = _set(frame, "select", "INCM_DIV_CD", spec.income)
-        if not r.get("ok"):
-            return False, f"소득구분을 '{spec.income}' 으로 고르지 못함: " + str(r.get("why", ""))
-        result.lines.append(f"✓ 비목 {category} · 소득구분 {spec.income}")
-    if spec.evidence:
-        r = _set(frame, "select", "EVDI_DIV_CD", spec.evidence)
-        if not r.get("ok"):
-            return False, f"증빙구분을 '{spec.evidence}' 로 고르지 못함: " + str(r.get("why", ""))
-        wait(0.4)                                               # 증빙구분에 따라 일자 · 증빙 칸이 다시 그려진다(14절 팝업 ②)
-        result.lines.append(f"✓ 비목 {category} · 증빙구분 {spec.evidence}")
-        ok, why = _ask_until(lambda: _req_div_ok(frame), ask,
-                             lambda w: ("%d. %s — 청구구분이 (90) 기타가 아닙니다(%s). 앱은 청구구분을 누르지 않습니다 — ERP 에서 (90) 기타로 "
-                                        "고른 뒤 [계속]." % (index + 1, p.name, w)), wait)
-        if not ok:
-            return False, "청구구분이 (90) 기타가 아님 — " + why
+    r = _set(frame, "select", "INCM_DIV_CD", spec.income)
+    if not r.get("ok"):
+        return False, f"소득구분을 '{spec.income}' 으로 고르지 못함: " + str(r.get("why", ""))
+    result.lines.append(f"✓ 비목 {category} · 소득구분 {spec.income}")
 
     # 3. 소득자 — 학번이 맞는 행 하나면 앱이, 아니면 사람
     want = {"no": p.student_no}                  # 개별증빙의 학번으로 고르면 그 학번(_recheck_student_no)
@@ -1060,7 +955,7 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         return False, f"작성 화면의 {who}가 {p.name}({want['no'] or '학번 없음'}) 이 아님 (지금: {s['RCV_NM'] or '—'} {s['RCV_CD'] or ''})"
 
     found = person.search(page, frame, p.name, p.student_no, log, wait=wait, messages=messages, tab=job.tab, auto_pick=auto_pick)
-    result.lines.extend(line.replace("소득자", who) for line in found.lines())      # 일반청구 탭에서는 같은 팝업이 '입금처'
+    result.lines.extend(found.lines())
     if auto_pick and not found.picked and _not_found(found.pick_note) and not person_ok()[0]:
         found = _recheck_student_no(page, frame, job, index, log, wait, messages, result, want) or found
     ok, why = _ask_until(person_ok, ask, lambda w: ("%d. %s — %s 팝업에서 %s 을(를) 고르고 [확인] 을 누른 뒤 [계속] 을 누르세요. "
@@ -1070,12 +965,11 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         return False, f"{who}를 고르지 못함"
     wait(0.5)
 
-    if spec.income:
-        _ensure_income(frame, wait, log, result, "소득자를 고른 뒤")      # 안 바뀌어도 여기서는 넘어간다 — 저장 직전에 다시 본다
+    _ensure_income(frame, wait, log, result, "소득자를 고른 뒤")      # 안 바뀌어도 여기서는 넘어간다 — 저장 직전에 다시 본다
 
-    # 3-1. 외국인 학생이면 국적 — 국적 칸은 인건비 탭에만 있다(일반청구 탭에는 없음, 14절 표)
+    # 3-1. 외국인 학생이면 국적 — 국적 칸은 인건비 탭에만 있다(14절 표)
     s = _state(frame, ["VW_SSN", "OWNR", "OWNR_INQ_RSLT"])
-    foreign = foreign_reason(s["VW_SSN"], [s["OWNR"], s["OWNR_INQ_RSLT"]], p.foreign_nation) if spec.payroll else ""
+    foreign = foreign_reason(s["VW_SSN"], [s["OWNR"], s["OWNR_INQ_RSLT"]], p.foreign_nation)
     if foreign:
         log("외국인 학생으로 봄: %d. %s (%s)" % (index + 1, p.name, foreign))
         ok, why = _ensure_nation(page, frame, ask, wait, index, p, foreign, "소득자를 고른 뒤", result, log, messages, auto_pick)
@@ -1138,24 +1032,18 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         result.review.append(item)
         log("신청 전 확인: %d. %s — %s" % (index + 1, p.name, item))
 
-    # 5. 청구액 · 지급예정년월(인건비 탭) · 적요 (· 첫 사람이면 대표적요)
-    fields = [("REQ_AMT", str(p.amount or ""), "청구액")]
-    if spec.payroll:
-        fields.append(("PAY_PLAN_YM", job.pay_ym, "지급예정년월"))
-    fields.append(("REQ_PTCL", summary, "적요"))
+    # 5. 청구액 · 지급예정년월 · 적요 (· 첫 사람이면 대표적요)
+    fields = [("REQ_AMT", str(p.amount or ""), "청구액"), ("PAY_PLAN_YM", job.pay_ym, "지급예정년월"), ("REQ_PTCL", summary, "적요")]
     for element_id, value, label in fields:
         r = _set(frame, "text", element_id, value)
         if not r.get("ok"):
             return False, f"{label} 을(를) 넣지 못함: " + str(r.get("why", ""))
-    if spec.evidence:
-        _supply_and_tax(frame, p, log, wait, result)
     appl = read_state(frame, ["APPL_CONT"]).get("APPL_CONT") or {}
     if appl and not appl.get("readonly") and not appl.get("disabled") and not (appl.get("value") or "").strip():
         r = _set(frame, "text", "APPL_CONT", job.main_summary)
         if r.get("ok"):
             result.lines.append("✓ 대표적요 " + job.main_summary)
-    result.lines.append("✓ 청구액 %s · %s적요 %s" % (f"{p.amount:,}" if p.amount else "—",
-                                                    f"지급예정년월 {job.pay_ym} · " if spec.payroll else "", summary))
+    result.lines.append("✓ 청구액 %s · 지급예정년월 %s · 적요 %s" % (f"{p.amount:,}" if p.amount else "—", job.pay_ym, summary))
 
     # 6. 첨부
     files = job.files_for(index)
@@ -1182,28 +1070,22 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
 
     # 7. 저장 전 검사 — 소득구분은 첨부 뒤에도 한 번 더 보고 고친다(위 _ensure_income). 그래도 안 바뀌면 멈추지 않고
     #    그대로 임시저장한 뒤 '신청 전 확인할 것' 으로 남긴다(담당자 결정 2026-10-14) — [신청] 은 어차피 사람이 검토하고 누른다.
-    income_ok = True
-    if spec.income:
-        income_ok, income_why = _ensure_income(frame, wait, log, result, "저장 직전")
-        if not income_ok:
-            item = f"{income_why} — 앱이 '장학금' 으로 바꾸지 못한 채 임시저장함. ERP 에서 이 줄의 소득구분을 '장학금' 으로 고친 뒤 [신청]"
-            result.review.append(item)
-            log("신청 전 확인: %d. %s — %s" % (index + 1, p.name, item))
+    income_ok, income_why = _ensure_income(frame, wait, log, result, "저장 직전")
+    if not income_ok:
+        item = f"{income_why} — 앱이 '장학금' 으로 바꾸지 못한 채 임시저장함. ERP 에서 이 줄의 소득구분을 '장학금' 으로 고친 뒤 [신청]"
+        result.review.append(item)
+        log("신청 전 확인: %d. %s — %s" % (index + 1, p.name, item))
     if foreign:
         ok, why = _ensure_nation(page, frame, ask, wait, index, p, foreign, "저장 직전", result, log, messages, auto_pick)
         if not ok:
             return False, why
-    s = read_state(frame, ["PAY_EXP_CD", "INCM_DIV_CD", "EVDI_DIV_CD", "REQ_AMT", "REQ_PTCL", "RCV_NM"])
+    s = read_state(frame, ["PAY_EXP_CD", "INCM_DIV_CD", "REQ_AMT", "REQ_PTCL", "RCV_NM"])
     pay = (s.get("PAY_EXP_CD") or {}).get("text", "")
     income = (s.get("INCM_DIV_CD") or {}).get("text", "")
-    evidence = (s.get("EVDI_DIV_CD") or {}).get("text", "")
     amount = (s.get("REQ_AMT") or {}).get("value", "")
-    checks = {f"비목(지금: {pay or '비어 있음'})": _same(pay, category)}
-    if spec.income:
-        checks[f"소득구분(지금: {income or '비어 있음'})"] = _same(income, spec.income) or not income_ok   # 못 바꾼 것은 위에서 확인 목록으로
-    if spec.evidence:
-        checks[f"증빙구분(지금: {evidence or '비어 있음'})"] = _same(evidence, spec.evidence)
-        checks["청구구분(90 기타 아님)"] = _req_div_ok(frame)[0]
+    checks = {f"비목(지금: {pay or '비어 있음'})": _same(pay, category),
+              # 못 바꾼 소득구분은 위에서 확인 목록으로
+              f"소득구분(지금: {income or '비어 있음'})": _same(income, spec.income) or not income_ok}
     checks.update({
         f"청구액(지금: {amount or '비어 있음'})": _digits(amount) == str(p.amount or ""),
         "적요(비어 있음)": bool((s.get("REQ_PTCL") or {}).get("value", "").strip()),
@@ -1242,8 +1124,7 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
     # 소득구분 문제와 같은 뿌리라 멈추지 않고 신청 전 확인 목록으로 남긴다(담당자 결정 2026-10-14).
     added = (totals[2] - (before_totals[2] if len(before_totals) >= 3 else 0)) if len(totals) >= 3 else 0
     if added:
-        item = (f"공제 {added:,}원이 잡힘(장학금이면 0) — ERP 에서 이 줄의 소득구분을 확인한 뒤 [신청]" if spec.payroll else
-                f"공제 {added:,}원이 잡힘({spec.name}(기타)이면 0) — ERP 에서 이 줄을 확인한 뒤 [신청]")
+        item = f"공제 {added:,}원이 잡힘(장학금이면 0) — ERP 에서 이 줄의 소득구분을 확인한 뒤 [신청]"
         result.review.append(item)
         log("신청 전 확인: %d. %s — %s" % (index + 1, p.name, item))
     result.lines.append("✓ 청구내역 %d줄" % rows_after + (f" · 공제합계 {totals[2]:,}" if len(totals) >= 3 else ""))
@@ -1251,45 +1132,6 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         result.lines.extend("! " + item for item in result.review)
         return True, "임시저장 — 신청 전 확인: " + " / ".join(result.review)
     return True, "임시저장"
-
-
-def _req_div_ok(frame) -> tuple[bool, str]:
-    """일반청구 탭의 청구구분 라디오가 (90) 기타인지 — 앱은 라디오를 누르지 않고 보기만 한다(새 청구서의 기본값이 90, 14절)."""
-    try:
-        value = str(frame.evaluate(REQ_DIV_JS) or "")
-    except Exception:  # noqa: BLE001 — 다시 그리는 중
-        value = ""
-    if not value or value == REQ_DIV_OTHER:
-        return True, value or "청구구분 칸을 못 읽음"          # 못 읽으면 막지 않는다 — 저장 뒤 ERP 가 알린다
-    return False, f"지금 ({value})"
-
-
-def _supply_and_tax(frame, p, log, wait, result: PersonResult) -> None:
-    """개인 지급(증빙 기타) — 공급가액 · 부가세. 청구액을 넣고 ERP 가 나눠 채우면 그대로 두고(부가세가 잡히면 확인 목록), 비어 있으면
-    공급가액 = 청구액 · 부가세 0 을 넣는다. 개인 계좌이체에는 부가세가 없다. 이 칸들이 기타 증빙에서 어떻게 움직이는지는 미실측 —
-    무엇을 보고 했는지 로그에 남긴다. 화면에 안 보이는 칸은 건드리지 않는다."""
-    wait(0.3)
-    now = _state(frame, ["SUPPLY_AMT", "TAX_AMT"])
-    supply, tax = _digits(now["SUPPLY_AMT"]), _digits(now["TAX_AMT"])
-    log("청구액을 넣은 뒤 공급가액 %s · 부가세 %s" % (now["SUPPLY_AMT"] or "(비어 있음)", now["TAX_AMT"] or "(비어 있음)"))
-    if int(tax or 0) > 0:
-        result.review.append(f"부가세 {int(tax):,}원이 잡힘 — 개인 지급(기타)이면 공급가액 = 청구액 · 부가세 0 인지 ERP 에서 확인한 뒤 [신청]")
-        return
-    if int(supply or 0) == (p.amount or 0):
-        return
-    try:
-        shown = frame.evaluate(VISIBLE_ID_JS, "SUPPLY_AMT")
-    except Exception:  # noqa: BLE001
-        shown = False
-    if not shown:
-        log("공급가액 칸이 화면에 없어 넣지 않음")
-        return
-    a = _set(frame, "text", "SUPPLY_AMT", str(p.amount or ""))
-    b = _set(frame, "text", "TAX_AMT", "0")
-    if a.get("ok") and b.get("ok"):
-        result.lines.append(f"✓ 공급가액 {p.amount:,} · 부가세 0" if p.amount else "✓ 부가세 0")
-    else:
-        log("공급가액 · 부가세를 넣지 못함: %s %s" % (a.get("why", ""), b.get("why", "")))
 
 
 def _check_main_summary(frame, job: Job, log, result: PersonResult) -> None:

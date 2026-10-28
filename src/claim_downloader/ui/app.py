@@ -218,10 +218,11 @@ class MainWindow(QMainWindow):
             page.need_settings.connect(lambda: self.open("settings"))
             page.busy_changed.connect(lambda busy: self._on_busy(task.id, busy))
             page.counts_changed.connect(self._sync_home)
-        elif task.id in ("meeting", "claim"):
+        elif task.id == "meeting":
             page.busy_changed.connect(lambda busy: self._on_busy(task.id, busy))
-            use = "claim" if task.id == "claim" else "minutes"
-            page.need_settings.connect(lambda use=use: self.open_ai_settings(use))
+            page.need_settings.connect(lambda: self.open_ai_settings("minutes"))
+        elif task.id == "claim":
+            page.busy_changed.connect(lambda busy: self._on_busy(task.id, busy))
         # 브라우저 스레드가 띠([계속]/[멈추기])에서 기다리기 시작하면 그 화면으로 — 다른 탭에 있으면 띠가 안 보여
         # 작업이 끝없이 멈춰 있는 것처럼 보였다(2026-10-14 점검)
         if hasattr(page, "attention"):

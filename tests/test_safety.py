@@ -245,39 +245,17 @@ def _click_lines(text: str) -> list[str]:
     return [line for line in text.splitlines() if "CLICK_ID_JS" in line and "evaluate(" in line]
 
 
-def test_payee_popup_presses_only_search_pick_and_confirm():
-    """입금처 팝업(claims/payee.py)은 돋보기 · 구분 라디오 · [검색] · 고른 행 · [확인] 만 누른다.
-
-    계좌등록 · 거래처등록 같은 기준 정보 단추를 누르는 코드가 들어오면 깨진다. [확인] 은 match 가 하나로 확정한 뒤에만(2026-10-13 담당자 결정).
-    """
+def test_payee_helpers_press_only_the_buttons_their_callers_name():
+    """claims/payee.py 는 소득자 · 국적 · 첨부 팝업이 같이 쓰는 도구만 남았다 — 일반 종류의 입금처 검색 · 세금계산서 조회 팝업은 2026-10-28 걷어냈다.
+    누르는 것은 부르는 쪽이 준 id(open_popup 의 button_id) · 구분 라디오 · 고른 행뿐. 계좌등록 · 거래처등록 같은 기준 정보 단추는 없다."""
     text = (SRC / "claims" / "payee.py").read_text(encoding="utf-8")
     assert text.count(".click(") == 4                                   # 단추 id · 구분 라디오 · 행의 선택 칸 · 행
-    assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", text)) == {"button_id", "SEARCH_BUTTON_ID", "CONFIRM_BUTTON_ID"}
-    assert re.findall(r"open_popup\(page, frame, ([A-Z_]+),", text) == ["OPEN_BUTTON_ID"]
-    assert 'OPEN_BUTTON_ID = "btnRcvCd"' in text and 'SEARCH_BUTTON_ID = "btn_search"' in text and 'CONFIRM_BUTTON_ID = "btn_s_confirm1"' in text
+    assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", text)) == {"button_id"}
+    assert "def pick(" not in text and "CONFIRM_BUTTON_ID" not in text
     for line in _click_lines(text):
         for word in ("btnReg", "btnUpd", "rbaseRegg", "rbaseUpt", "계좌등록", "거래처등록"):
             assert word not in line, line
-    # [확인] 은 match() 가 index 를 돌려준 뒤에만 — pick() 안에서 index is None 이면 먼저 돌아간다
-    body = text.split("def pick(", 1)[1]
-    assert body.index("if index is None:") < body.index("CONFIRM_BUTTON_ID")
-
-
-def test_taxbill_popup_presses_only_select_inquiry_pick_and_confirm():
-    """세금계산서 조회 팝업(claims/taxbill.py)은 [선택] · [조회] · 고른 행 · [확인] 만 누른다 — [등록] · XML 등록은 아니다."""
-    text = (SRC / "claims" / "taxbill.py").read_text(encoding="utf-8")
-    # 누르는 JS 는 payee 의 것을 빌려 쓴다. 이 파일의 .click( 은 '계산서수신메일' 체크 하나뿐(CHECK_BOX_JS) 이고 EMAIL_CHECK_ID 로만 부른다
-    assert text.count(".click(") == 1 and ".click(" in text.split("CHECK_BOX_JS = ", 1)[1].split('"""', 2)[1]
-    assert set(re.findall(r"evaluate\(CHECK_BOX_JS,\s*([A-Za-z_]+)\)", text)) == {"EMAIL_CHECK_ID"}
-    assert 'EMAIL_CHECK_ID = "self_enter"' in text
-    assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", text)) == {"INQUIRY_BUTTON_ID", "CONFIRM_BUTTON_ID"}
-    assert re.findall(r"open_popup\(page, frame, ([A-Z_]+),", text) == ["SELECT_LINK_ID"]
-    assert 'SELECT_LINK_ID = "onlyEvdiDivList"' in text and 'INQUIRY_BUTTON_ID = "btn_inquiry"' in text and 'CONFIRM_BUTTON_ID = "btn_out"' in text
-    for line in _click_lines(text):
-        for word in ("btn_insert", "btn_reg_xml", "btnSupOrgCd", "btn_detail"):
-            assert word not in line, line
-    body = text.split("def pick(", 1)[1]
-    assert body.index("if index is None:") < body.index("CONFIRM_BUTTON_ID")
+    assert not (SRC / "claims" / "taxbill.py").exists()
 
 
 def test_scholarship_presses_only_tab_save_person_and_attach_buttons():
@@ -290,10 +268,9 @@ def test_scholarship_presses_only_tab_save_person_and_attach_buttons():
     claims = SRC / "claims"
     sch = (claims / "scholarship.py").read_text(encoding="utf-8")
     assert ".click(" not in sch
-    # 탭은 서브탭 둘뿐 — 인건비(소득성 경비) #20, 개인 지급(2026-10-19)은 일반청구 #10. 청구구분 라디오(REQ_DIV_CD)는 읽기만 한다
-    assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_.]+)\)", sch)) == {"spec.tab_id", "OWNER_CHECK_ID"}
-    assert 'TAB_ID = "20"' in sch and 'GENERAL_TAB_ID = "10"' in sch
-    assert set(re.findall(r"tab_id=([A-Z_]+)", sch)) <= {"TAB_ID", "GENERAL_TAB_ID"}
+    # 탭은 인건비(소득성 경비) #20 하나 — 개인 지급(일반청구 탭 #10)은 2026-10-28 걷어냈다. 청구구분 라디오(REQ_DIV_CD)는 누르지 않는다
+    assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_.]+)\)", sch)) == {"TAB_ID", "OWNER_CHECK_ID"}
+    assert 'TAB_ID = "20"' in sch and "GENERAL_TAB_ID" not in sch
     assert "REQ_DIV_CD" not in "".join(_click_lines(sch))
     assert 'OWNER_CHECK_ID = "btn_ownrInq"' in sch and all("일괄" not in line for line in _click_lines(sch))
     press = sch.split("def _press_owner_check(", 1)[1]

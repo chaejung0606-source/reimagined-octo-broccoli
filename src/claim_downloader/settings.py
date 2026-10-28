@@ -12,7 +12,7 @@
       회의록규칙.txt    회의록 작성 규칙 (minutes/rules.py). 기본값 파일과 쌍으로.
       _과제목록.json    로그인 뒤 과제현황에서 읽은 과제(설정의 과제 고르기)
       _화면구조.txt     진단 모드 결과 — 열린 ERP 화면의 입력 요소 (새 화면 실측용) · _화면구조_모음.txt 저장할 때마다 쌓은 것
-      일반청구규칙.txt  일반청구 추출 규칙 (claims/rules.py) · _청구입력기록.json 채운 폴더 기록
+      _청구입력기록.json  ERP 에 넣은 명단 · 카드 폴더 기록 (claims/record.py)
       장학금규칙.txt    장학금 청구 대표적요·행 적요 규칙 (claims/scholarship.py)
       혁신인재지원금규칙.txt  혁신인재지원금 청구 규칙 (같은 모양, 대표적요 03_)
       _주차로그인.json  주차등록 사이트 자동 로그인(아이디 · 윈도우 DPAPI 로 감싼 비밀번호) — parking.py. ERP 로그인은 어디에도 두지 않는다
@@ -76,13 +76,9 @@ class Settings:
     # 회의록 생성 (minutes/). 이메일은 Claude 로그인 화면에 미리 채워 넣는 용도 — 비밀번호는 없다.
     claude_email: str = ""
     minutes_backend: str = "claude-cli"   # 회의록 생성에 쓸 AI 플랫폼 — minutes/backends 의 key (설정 → AI 플랫폼)
-    claim_backend: str = "claude-cli"     # 일반청구 [내용 읽기] 에 쓸 AI 플랫폼 — claims/extract 의 key (ai.py)
     minutes_model: str = ""               # 비우면 백엔드의 기본 모델
-    # 일반청구 팝업(입금처·세금계산서)에서 결과가 하나로 확실하면 앱이 골라 [확인]까지 누른다. 애매하면 사람(담당자 결정 2026-10-13).
+    # 일반청구 팝업(소득자 · 국적)에서 결과가 하나로 확실하면 앱이 골라 [확인]까지 누른다. 애매하면 사람(담당자 결정 2026-10-13).
     claim_auto_pick: bool = True
-    # 세금계산서 조회 팝업의 '계산서수신메일' — 목록에 산학협력단 전체 계산서가 다 떠서 내 메일로 걸러야 내 건만 보인다
-    # (담당자 설명 2026-10-13). 사용자별 값이라 코드에 두지 않는다. 비우면 메일 없이 사업자번호로만 조회한다.
-    taxbill_email: str = ""
     # 카드청구 회의비의 참석자를 참여인력 · 내부참석자로 가를 ERP '참여연구원 현황표'(엑셀 · PDF). 실명 · 직번이 든 사용자 파일이라
     # 위치만 둔다. 비우면 카드 폴더 · 그 위 폴더에서 이름에 '참여연구원' 이 든 파일을 찾는다(claims/participants.find_file)
     participants_file: str = ""
@@ -165,17 +161,8 @@ def structure_book_path() -> Path:
     return data_dir() / "_화면구조_모음.txt"
 
 
-def claims_rules_path() -> Path:
-    """일반청구 추출 규칙 (claims/rules.py). 회의록 규칙과 같은 방식의 쌍."""
-    return data_dir() / "일반청구규칙.txt"
-
-
-def claims_rules_base_path() -> Path:
-    return data_dir() / "일반청구규칙.기본값.txt"
-
-
 def scholarship_rules_path() -> Path:
-    """장학금 청구 적요 규칙 (claims/scholarship.py). 일반청구 규칙과 같은 방식의 쌍."""
+    """장학금 청구 적요 규칙 (claims/scholarship.py). 회의록 규칙과 같은 방식의 쌍(담당자 파일 · 기본값 파일)."""
     return data_dir() / "장학금규칙.txt"
 
 
@@ -190,15 +177,6 @@ def innovation_rules_path() -> Path:
 
 def innovation_rules_base_path() -> Path:
     return data_dir() / "혁신인재지원금규칙.기본값.txt"
-
-
-def personal_rules_path() -> Path:
-    """개인 지급(일반청구 탭 · 증빙 기타) 적요 규칙 — 장학금과 같은 모양, 대표적요의 바탕이 지급 공문 제목."""
-    return data_dir() / "개인지급규칙.txt"
-
-
-def personal_rules_base_path() -> Path:
-    return data_dir() / "개인지급규칙.기본값.txt"
 
 
 def claim_record_path() -> Path:

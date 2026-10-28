@@ -139,7 +139,7 @@ class Plan:
 
 
 def plan_for_job(job) -> Plan:
-    """명단 청구(장학금 · 혁신인재지원금 · 개인 지급) — 체크한 사람마다 공통 + 개별 파일(Job.files_for)."""
+    """명단 청구(장학금 · 혁신인재지원금) — 체크한 사람마다 공통 + 개별 파일(Job.files_for)."""
     rows = []
     for i in job.chosen():
         p = job.people[i]
@@ -156,30 +156,13 @@ def plan_for_job(job) -> Plan:
     return Plan(job.folder, job.kind, job.main_summary, getattr(job, "project_no", ""), rows, problems, job=job)
 
 
-def plan_for_data(folder: str, data: dict, kind: str, project_no: str = "") -> Plan:
-    """일반 · 세금계산서 — 청구내역 한 줄. 파일은 AI 가 고른 첨부 후보(attachments), 없으면 폴더 바로 아래 파일 전부."""
-    names = [str(n) for n in (data.get("attachments") or [])]
-    files = attach.attachable([os.path.join(folder, n) for n in names])
-    if not files and os.path.isdir(folder):
-        files = attach.attachable(sorted(os.path.join(folder, n) for n in os.listdir(folder)))
-    summary = str(data.get("summary") or "").strip()
-    rows = [RowPlan(0, os.path.basename(os.path.normpath(folder)), summary, files, "" if files else "올릴 파일 없음")]
-    problems = []
-    if not summary:
-        problems.append("적요가 비어 있습니다 — [내용 읽기] 로 읽거나 오른쪽 칸에 ERP 청구서와 같은 적요를 넣으세요")
-    if not files:
-        problems.append("올릴 파일이 없습니다(폴더 바로 아래)")
-    return Plan(folder, kind, summary, project_no, rows, problems)
-
-
-def plan_for(kind: str, folder: str, data: dict | None = None, job=None, project_no: str = "") -> Plan:
+def plan_for(kind: str, folder: str, job=None, project_no: str = "") -> Plan:
+    """명단 청구만 — 카드 청구서는 결제 건마다 증빙 창이 달라 아직 없다. 일반 · 세금계산서 종류는 2026-10-28 걷어냈다."""
     if kind == kinds.CARD:
         return Plan(folder, kind, "", project_no, [], ["카드 청구서는 아직 — 결제 건마다 증빙 창이 달라 다음에 만듭니다"])
-    if kinds.uses_roster(kind):
-        if job is None:
-            return Plan(folder, kind, "", project_no, [], ["명단을 읽지 못한 폴더입니다"])
-        return plan_for_job(job)
-    return plan_for_data(folder, dict(data or {}), kind, project_no)
+    if not kinds.uses_roster(kind) or job is None:
+        return Plan(folder, kind, "", project_no, [], ["명단을 읽지 못한 폴더입니다"])
+    return plan_for_job(job)
 
 
 # ── 결과 ───────────────────────────────────────────────────────────────
@@ -245,20 +228,13 @@ class ReattachReport:
 
 # ── 실행 ───────────────────────────────────────────────────────────────
 def match_rows(plan: Plan, sheet_rows: list[str]) -> dict[int, list[int]]:
-    """계획의 줄(index 가 아니라 rows 의 차례 k)마다 청구내역 줄 번호들. 명단 청구는 sheet_check 의 맞추기(개별 적요 · 잘렸으면 이름),
-    일반은 적요가 든 줄 — 청구내역이 한 줄뿐이고 계획도 한 줄이면 그 줄(대표적요로 이미 이 청구서를 찾았다)."""
-    if plan.job is not None and kinds.uses_roster(plan.kind):
-        from . import sheet_check
-        hits, _strangers, _named = sheet_check.match_rows(plan.job, sheet_rows)
-        return {k: list(hits.get(rp.index, [])) for k, rp in enumerate(plan.rows)}
-    out: dict[int, list[int]] = {}
-    for k, rp in enumerate(plan.rows):
-        want = _squash(rp.summary)
-        found = [r for r, text in enumerate(sheet_rows) if want and want in _squash(text)]
-        if not found and len(sheet_rows) == 1 and len(plan.rows) == 1:
-            found = [0]
-        out[k] = found
-    return out
+    """계획의 줄(index 가 아니라 rows 의 차례 k)마다 청구내역 줄 번호들 — sheet_check 의 맞추기(개별 적요 · 잘렸으면 이름).
+    계획은 명단 청구뿐이다(일반 · 세금계산서 한 줄 계획은 2026-10-28 그 종류와 함께 걷어냈다)."""
+    if plan.job is None:
+        return {k: [] for k in range(len(plan.rows))}
+    from . import sheet_check
+    hits, _strangers, _named = sheet_check.match_rows(plan.job, sheet_rows)
+    return {k: list(hits.get(rp.index, [])) for k, rp in enumerate(plan.rows)}
 
 
 def _state(frame, ids) -> dict:

@@ -436,7 +436,7 @@ class FakeForm:
             return True
         if js is payee.CLICK_ID_JS:
             self.clicks.append(arg)
-            if arg in (scholarship.TAB_ID, scholarship.GENERAL_TAB_ID):
+            if arg == scholarship.TAB_ID:
                 self.v["TAB_GB"] = arg
             # 은행 · 계좌가 비어 있으면 ERP 는 '예금주조회시 은행/계좌번호는 필수입력입니다.' 알림만 띄우고 결과를 안 바꾼다
             if arg == scholarship.OWNER_CHECK_ID and self.owner_check is not None and self.v.get("ACCT_NO"):
@@ -444,8 +444,6 @@ class FakeForm:
             return {"ok": True}
         if js is scholarship.VISIBLE_ID_JS:
             return True
-        if js is scholarship.REQ_DIV_JS:
-            return self.v.get("REQ_DIV", "90")      # 청구구분 라디오 — 새 청구서는 (90) 기타
         if js is form.STATE_JS:
             out = {}
             for i in arg:
@@ -1227,64 +1225,19 @@ def test_previous_students_save_message_does_not_count_for_the_next(monkeypatch,
 
 
 # ── 청구 종류 (일반청구 화면에서 폴더마다 고른다) ─────────────────────────
-def test_kind_guess_recognizes_scholarship_folder_shape(tmp_path):
-    from claim_downloader.claims import kinds
-
-    general = tmp_path / "정수기 9월"
-    general.mkdir()
-    (general / "고지서.pdf").write_bytes(b"%PDF")
-    assert kinds.guess(str(general)) == kinds.GENERAL
-    (general / "전자세금계산서.pdf").write_bytes(b"%PDF")
-    assert kinds.guess(str(general)) == kinds.TAXBILL           # 파일 이름에 '세금계산서' — 증빙구분을 세금계산서로 두고 이어 넣는 종류(2026-10-22)
-    assert kinds.resolve(kinds.GENERAL, str(general)) == kinds.GENERAL   # 담당자가 일반을 고르면 그대로
-
-    sch_dir = tmp_path / "7월 (가)형"
-    sch_dir.mkdir()
-    make_ga(sch_dir / "명단.xlsx")
-    assert kinds.guess(str(sch_dir)) == kinds.GENERAL           # 엑셀만 있고 증빙 폴더가 없으면 아직 일반
-    (sch_dir / "개별증빙").mkdir()
-    assert kinds.guess(str(sch_dir)) == kinds.SCHOLARSHIP
-    (sch_dir / "~$명단.xlsx").write_bytes(b"x")                  # 엑셀이 열려 있을 때 생기는 임시 파일은 엑셀로 치지 않는다
-    assert kinds.looks_like_scholarship(str(sch_dir))
-
-
-def test_kind_guess_reads_payment_excel_without_evidence_folders(tmp_path):
-    """공통/개별 폴더가 없어도 '지급내역' 엑셀 + 장학금 · 혁신인재지원금 이름이면 명단 청구 — AI 가 PDF 를 읽지 않게(2026-10-19)."""
-    from claim_downloader.claims import kinds
-
-    def folder(name, excel):
-        d = tmp_path / name
-        d.mkdir(parents=True)
-        (d / excel).write_bytes(b"x")
-        (d / (excel.rsplit(".", 1)[0] + ".pdf")).write_bytes(b"%PDF")
-        return str(d)
-
-    assert kinds.guess(folder("9월", "2026학년도 (나)형 근로장학금 지급내역.xlsx")) == kinds.SCHOLARSHIP
-    assert kinds.guess(folder("소학회/9월", "진행요원비(소학회 회장) 혁신인재지원금 지급내역.xlsx")) == kinds.INNOVATION
-    # 자문료 지급내역은 자문료 증빙 창이 따로 있어 아직 일반 그대로. '지원내역'(프로그램참여지원비)은 개인 지급(일반청구 탭 · 증빙 기타,
-    # 담당자 2026-10-19 "개인 계좌이체의 경우는 지급내역 서류가 있습니다")
-    assert kinds.guess(folder("전문가/자문", "자문료 지급내역.xlsx")) == kinds.GENERAL
-    assert kinds.guess(folder("학회", "(양식) 프로그램참여지원비 지원내역.xlsx")) == kinds.PERSONAL
-    assert kinds.roster_excels(str(tmp_path / "9월")) == ["2026학년도 (나)형 근로장학금 지급내역.xlsx"]
-
-
-def test_kind_resolve_honors_choice_and_refuses_unready(tmp_path):
+def test_kinds_are_only_scholarship_innovation_and_card(tmp_path):
+    """담당자 2026-10-28 "일반청구에서는 장학금, 혁신인재지원금, 카드만 사용할게요 그외 기능은 삭제해주세요" — 그 밖의 종류는 받지 않는다."""
     from claim_downloader.claims import kinds
 
     folder = tmp_path / "건"
     folder.mkdir()
-    assert kinds.resolve(kinds.AUTO, str(folder)) == kinds.GENERAL
+    assert [k.name for k in kinds.KINDS] == ["장학금", "혁신인재지원금", "카드"]
     assert kinds.resolve(kinds.SCHOLARSHIP, str(folder)) == kinds.SCHOLARSHIP     # 담당자가 고르면 모양과 상관없이 그 종류
-    for key in (kinds.TRAVEL,):
-        assert not kinds.find(key).ready
+    assert kinds.resolve(kinds.INNOVATION, str(folder)) == kinds.INNOVATION and kinds.uses_roster(kinds.INNOVATION)
+    assert kinds.resolve(kinds.CARD, str(folder)) == kinds.CARD and not kinds.uses_roster(kinds.CARD)
+    for key in ("auto", "general", "taxbill", "personal", "travel", ""):
         with pytest.raises(ValueError):
             kinds.resolve(key, str(folder))
-    assert [k.name for k in kinds.KINDS] == ["일반", "세금계산서", "장학금", "혁신인재지원금", "개인 지급(기타)", "출장비", "카드"]
-    assert kinds.resolve(kinds.INNOVATION, str(folder)) == kinds.INNOVATION and kinds.uses_roster(kinds.INNOVATION)
-    # 세금계산서는 일반처럼 AI 로 읽는 종류 — 증빙구분은 종류가 정한다(담당자 2026-10-22)
-    assert kinds.resolve(kinds.TAXBILL, str(folder)) == kinds.TAXBILL and kinds.uses_ai(kinds.TAXBILL) and kinds.uses_ai(kinds.GENERAL)
-    assert not kinds.uses_roster(kinds.TAXBILL) and not kinds.uses_ai(kinds.SCHOLARSHIP)
-    assert kinds.fixed_values(kinds.TAXBILL) == {"evidence": "세금계산서"} and kinds.fixed_values(kinds.GENERAL) == {}
 
 
 def _roster_folder(base, *parts, excel="명단.xlsx"):
@@ -1294,8 +1247,8 @@ def _roster_folder(base, *parts, excel="명단.xlsx"):
     return folder
 
 
-def test_auto_kind_tells_innovation_from_scholarship_by_names(tmp_path):
-    """담당자 2026-10-14: 혁신인재지원금은 장학금과 같은 폴더 모양 · 같은 흐름이고 비목만 다르다. '자동' 은 이름으로 가른다 —
+def test_named_kind_tells_innovation_from_scholarship_and_load_job_warns(tmp_path):
+    """담당자 2026-10-14: 혁신인재지원금은 장학금과 같은 폴더 모양 · 같은 흐름이고 비목만 다르다. 이름으로 보아 고른 종류와 다르면 알린다 —
     둘을 함께 담은 묶음 폴더('4. 장학금 및 혁신인재지원금')는 건너뛴다."""
     from claim_downloader.claims import kinds
 
@@ -1304,10 +1257,13 @@ def test_auto_kind_tells_innovation_from_scholarship_by_names(tmp_path):
     inn_dir = _roster_folder(tmp_path, top, "혁신인재지원금", "진행요원비", "9월")
     inn_named = _roster_folder(tmp_path, "a", "b", "c", "9월", excel="2026년도 9월 진행요원비 혁신인재지원금.xlsx")
     plain = _roster_folder(tmp_path, "x", "y", "z", "9월")
-    assert kinds.guess(str(sch_dir)) == kinds.SCHOLARSHIP
-    assert kinds.guess(str(inn_dir)) == kinds.INNOVATION          # 위 폴더 이름에서
-    assert kinds.guess(str(inn_named)) == kinds.INNOVATION        # 명단 엑셀 이름에서
-    assert kinds.guess(str(plain)) == kinds.SCHOLARSHIP           # 못 정하면 장학금
+    assert kinds.named_kind(str(sch_dir)) == kinds.SCHOLARSHIP
+    assert kinds.named_kind(str(inn_dir)) == kinds.INNOVATION          # 위 폴더 이름에서
+    assert kinds.named_kind(str(inn_named)) == kinds.INNOVATION        # 명단 엑셀 이름에서
+    assert kinds.named_kind(str(plain)) == ""                          # 못 정하면 알리지 않는다
+    warned = scholarship.load_job(str(inn_dir), kind=kinds.SCHOLARSHIP)
+    assert any("혁신인재지원금 인데 장학금 으로" in w for w in warned.warnings)
+    assert not any("인데" in w for w in scholarship.load_job(str(inn_dir), kind=kinds.INNOVATION).warnings)
 
 
 def test_innovation_job_uses_its_own_category_and_rules(monkeypatch, tmp_path):
