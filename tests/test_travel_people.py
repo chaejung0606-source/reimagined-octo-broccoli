@@ -1001,12 +1001,16 @@ def test_stay_receipt_must_be_in_the_destination_city(tmp_path):
     """담당자 2026-11-10 "체류증빙은 영수증 가맹점의 주소지와 출장 목적지가 같아야" · "강원도 원주시 인터불고호텔이 출장지이면
     체류증빙은 강원도 원주시 내 영수증이면 됩니다" — 시 · 군까지만 견준다."""
     day = date(2026, 10, 20)
+
+    def stub(path: Path) -> Path:          # 그림 내용은 보지 않는다 — CI 에는 PySide6 가 없다
+        path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        return path
     assert model.region_of("강원도 원주시 인터불고호텔") == "원주" and model.region_of("가나다라정보활용지원센터 (원주)") == "원주"
     assert model.region_of("연세대학교 원주캠퍼스") == "원주" and model.region_of("강원 춘천시 강원대학길 1") == "춘천"
     assert model.shop_region_of("상호: 원주식당\n주소: 강원 원주시 혁신로 19\n합계 9,000원") == "원주"
-    same = model.Evidence(_image(tmp_path / "홍길동_체류증빙_원주.png"), day)
-    other = model.Evidence(_image(tmp_path / "홍길동_체류증빙 강릉.png"), day)
-    unread = model.Evidence(_image(tmp_path / "홍길동_체류증빙.png"), day)
+    same = model.Evidence(stub(tmp_path / "홍길동_체류증빙_원주.png"), day)
+    other = model.Evidence(stub(tmp_path / "홍길동_체류증빙 강릉.png"), day)
+    unread = model.Evidence(stub(tmp_path / "홍길동_체류증빙.png"), day)
     for ev in (same, other, unread):
         ev.shop_region = model.guess(ev.path, 2026, stay=True).shop_region
     assert (same.shop_region, other.shop_region, unread.shop_region) == ("원주", "강릉", "")
