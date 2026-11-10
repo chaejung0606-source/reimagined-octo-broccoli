@@ -41,7 +41,7 @@ TASKS: tuple[Task, ...] = (
     Task("structure", "화면 구조 저장", "ERP · 주차등록 사이트에 띄운 화면의 칸 · 단추를 읽어 파일로 남깁니다(새 화면 자동화 전 실측).",
          "structure", "layout", "cyan", "structure:StructurePage", ready=True),
     # 담당자 요청 2026-10-27 — 지원 항목별 증빙(체류 · 대중교통 · 하이패스 · 숙박) + 출장 정보 → '<이름> 출장증빙.pdf'(pages/travel.py, CLAUDE.md 28절)
-    Task("travel", "출장증빙자료 만들기", "지원 항목별 증빙을 넣고 출장 정보를 적으면 출장자마다 출장증빙 PDF 를 만듭니다.",
+    Task("travel", "출장증빙자료 만들기", "폴더를 고르면 출장신청서로 출장자를 정리하고 출장자별 증빙을 확인해 출장자마다 출장증빙 PDF 를 만듭니다.",
          "travel", "plane", "mint", "travel:TravelPage", ready=True),
 )
 

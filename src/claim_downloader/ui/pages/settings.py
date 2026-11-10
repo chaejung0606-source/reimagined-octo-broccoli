@@ -187,6 +187,12 @@ class SettingsPage(QWidget):
         claim_card.add(self.participants_field)
         column.addWidget(claim_card)
 
+        # 출장증빙 — 출장자 이름마다 차량 연료(담당자 2026-11-10 "설정에서 연료 종류 설정할 수 있도록 기능추가")
+        from ..travel_fuel_card import TravelFuelCard
+        self.fuel_card = TravelFuelCard()
+        self.fuel_card.changed.connect(self.changed.emit)
+        column.addWidget(self.fuel_card)
+
         # 주차등록 로그인 정보 — 담당자 요청 2026-10-21: "주차등록 로그인 정보는 설정에서 입력하고 저장하는걸로"
         from ..parking_login import ParkingLoginCard
         self.parking_card = ParkingLoginCard()

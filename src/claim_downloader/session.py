@@ -124,6 +124,7 @@ class ErpSession:
         self.archive_report: archive.ScanReport | None = None
         self._pw = None
         self._hidden = None                   # 주차 사이트 일(할인 적용 · 링크 · 내역)을 하는 보이지 않는 브라우저 — (browser, page)
+        self._map_hidden = None               # 출장증빙의 네이버 지도 최단거리 찾기를 하는 보이지 않는 브라우저 — (browser, page)
         self.browser = None
         self.page = None
         # 사람이 브라우저를 쓰는 중인지(앱이 쉬거나 노란 띠 · 재로그인 띠에서 기다릴 때) — 앱의 브라우저 스레드가 바꾼다(ui/worker.py).
@@ -438,6 +439,7 @@ class ErpSession:
 
     def close(self) -> None:
         self._close_hidden()
+        self._close_map()
         try:
             if self.browser is not None:
                 self.browser.close()
@@ -730,6 +732,69 @@ class ErpSession:
                 break
             self.log("주차 사이트 접속이 끝나 다시 로그인합니다")
             self._close_hidden()
+        for line in result.lines():
+            self.log(line)
+        return result
+
+    # ── 출장증빙 — 네이버 지도 최단거리(보이지 않는 브라우저) ───────────────────
+    # 담당자 2026-11-10: "네이버지도 경로검색은 백그라운드에서 자동으로 돌아가기". 주차 사이트의 보이지 않는 브라우저와 따로 둔다(쿠키 · 창이 섞이지 않게).
+    # 로그인이 없는 공개 지도라 넣는 값은 없다 — 길찾기 주소로 열고 '거리우선' 하나만 누른다(travel/navermap.py).
+    def _close_map(self) -> None:
+        hidden, self._map_hidden = self._map_hidden, None
+        if hidden is not None:
+            try:
+                hidden[0].close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _map_page(self):
+        try:
+            if self._map_hidden is not None and self._map_hidden[0].is_connected() and not self._map_hidden[1].is_closed():
+                return self._map_hidden[1]
+        except Exception:  # noqa: BLE001
+            pass
+        self._close_map()
+        from playwright.sync_api import sync_playwright
+
+        from .travel import navermap
+        if self._pw is None:
+            self._pw = sync_playwright().start()
+        try:
+            browser = self._pw.chromium.launch(headless=True)
+        except Exception as error:   # noqa: BLE001 — 크로미움을 못 받은 PC
+            self.log("크로미움을 띄우지 못해 Edge 로 엽니다 (%s)" % str(error).splitlines()[0][:120])
+            browser = self._pw.chromium.launch(headless=True, channel="msedge")
+        page = browser.new_context(viewport=navermap.VIEWPORT, locale="ko-KR").new_page()
+        page.goto(navermap.DIRECTIONS_URL, wait_until="domcontentloaded")
+        self._map_hidden = (browser, page)
+        return page
+
+    def find_routes(self, legs: list, folder: Path) -> list:
+        """legs = [(출발지, 목적지, 이름표)] — 구간마다 네이버 지도 거리우선 경로를 보이지 않는 브라우저에서 찾아 folder 에 그림을 남긴다.
+        못 하면 그 구간의 RouteResult.note(목적지를 못 찾으면 need_place). 사람에게 묻지 않는다 — 화면이 묻는다."""
+        from .travel import navermap
+        out = []
+        for origin, goal, label in legs:
+            try:
+                page = self._map_page()
+                result = navermap.find_route(page, origin, goal, navermap.shot_path(Path(folder), label), self.log,
+                                             wait=lambda s, page=page: page.wait_for_timeout(int(s * 1000)), label=label)
+            except Exception as error:  # noqa: BLE001 — 네이버에 닿지 못함 등
+                self._close_map()
+                result = navermap.RouteResult(origin=origin, goal=goal, label=label,
+                                              note="네이버 지도에 닿지 못했습니다: " + (str(error).splitlines()[0][:120] if str(error) else type(error).__name__))
+            for line in result.lines():
+                self.log(line)
+            out.append(result)
+        return out
+
+    def capture_route(self, folder: Path, label: str):
+        """사람이 보이는 브라우저에 띄운 네이버 지도 길찾기 화면을 찍는다 — 자동 찾기가 안 될 때. 열린 지도 창이 없으면 note 만."""
+        from .travel import navermap
+        page = next((p for p in self._pages() if _host(p.url) in NAVER_MAP_HOSTS), None) if self.browser_open else None
+        if page is None:
+            return navermap.RouteResult(label=label, note="네이버 지도 창이 없습니다 — [브라우저에서 직접] 으로 열고 거리우선 경로를 띄우세요")
+        result = navermap.capture(page, navermap.shot_path(Path(folder), label), label)
         for line in result.lines():
             self.log(line)
         return result

@@ -11,6 +11,7 @@ Qt 시그널로 돌아온다 — 다른 스레드에서 보낸 시그널은 Qt �
 from __future__ import annotations
 
 import queue
+from pathlib import Path
 import threading
 import time
 import traceback
@@ -57,6 +58,7 @@ class SessionWorker(QObject):
     rebudget_planned = Signal(object)   # 대응자금 파일 정리: rebudget.Plan — 옮기기 전 표
     sites_changed = Signal(object)      # 화면 구조 저장: 앱 브라우저에 열린 사이트 {browser, erp, erp_login, parking, navermap}(session.open_sites)
     site_opened = Signal(str, str)      # 화면 구조 저장: 사이트를 열었거나 앞으로 가져왔다 — (사이트, 한 줄 안내)
+    routes_found = Signal(object)       # 출장증빙: 네이버 지도 최단거리 — [(키, RouteResult)] (session.find_routes)
     rebudget_applied = Signal(object)   # 대응자금 파일 정리: 옮긴 결과(rebudget.Move 목록)
 
     def __init__(self) -> None:
@@ -158,6 +160,14 @@ class SessionWorker(QObject):
     def open_site(self, site: str) -> None:
         """화면 구조 저장 업무 — 고른 사이트를 연다. 이미 열려 있으면 그 창을 앞으로만(다시 불러오지 않는다 — 로그인 · 띄운 화면 그대로)."""
         self._put("open_site", (site,), "structure")
+
+    def find_routes(self, legs: list, folder: str, keys: list, owner: str = "travel") -> None:
+        """출장증빙 — 구간마다 네이버 지도 최단거리를 보이지 않는 브라우저에서(담당자 2026-11-10 "백그라운드에서 자동으로"). keys 는 화면이 줄을 찾는 열쇠."""
+        self._put("find_routes", (legs, folder, keys), owner)
+
+    def capture_route(self, folder: str, label: str, key, owner: str = "travel") -> None:
+        """출장증빙 — 사람이 보이는 브라우저에 띄운 네이버 지도 길찾기 화면을 찍는다."""
+        self._put("capture_route", (folder, label, key), owner)
 
     @property
     def waiting(self) -> bool:
@@ -409,6 +419,15 @@ class SessionWorker(QObject):
     def _do_capture(self, session: ErpSession, site: str = "") -> None:
         self.busy.emit(True, "화면 구조를 읽는 중…")
         self.structure_saved.emit(str(session.capture_structure(site)))
+
+    def _do_find_routes(self, session: ErpSession, legs: list, folder: str, keys: list) -> None:
+        self.busy.emit(True, "네이버 지도에서 최단거리를 찾는 중…")
+        results = session.find_routes(legs, Path(folder))
+        self.routes_found.emit(list(zip(keys, results)))
+
+    def _do_capture_route(self, session: ErpSession, folder: str, label: str, key) -> None:
+        self.busy.emit(True, "네이버 지도 화면을 찍는 중…")
+        self.routes_found.emit([(key, session.capture_route(Path(folder), label))])
 
     def _do_open_site(self, session: ErpSession, site: str) -> None:
         if site == "parking":

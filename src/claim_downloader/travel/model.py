@@ -8,6 +8,10 @@
 - 자차: 한 쪽에 하이패스 영수증을 **이용일자별로** 묶어 그날 금액을 적고(담당자 "이용일자별로 나눠서 금액을 작성"), 아래에 이동경로(구간마다 km · 총)와 지도.
   출장지가 여러 곳이면 출발지 → 출장지들 → 출발지 구간마다.
 - 숙박: 영수증마다 숙박기간과 지원금액. 결제액이 공무원 여비 기준 상한을 넘으면 지원금액은 상한금액.
+
+출장자가 여럿이면(출장신청서 — travel/application.py) 증빙마다 출장자를 정하고(파일 이름 '<이름>_체류증빙' 꼴, 담당자 2026-11-10)
+출장자마다 따로 확인하고 따로 만든다(`for_traveler` · `review`). 하이패스가 있으면 자차 — 네이버 지도 최단거리(거리우선) 그림과 가는 길 · 오는 길 · 총 km 를
+자차 쪽에 적는다(담당자 2026-11-10).
 """
 from __future__ import annotations
 
@@ -29,7 +33,8 @@ KIND_NAMES = {STAY: "체류", PUBLIC: "대중교통", TOLL: "자차(하이패스
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
 FILE_SUFFIXES = IMAGE_SUFFIXES | {".pdf"}
 
-# 체류를 한 쪽에 칸으로 나눠 담는 출장 일수(이하) — 담당자 "출장일이 7일 이하일 경우 칸을 나눠서 한페이지에"
+# 체류를 한 묶음(한 쪽부터)으로 담는 출장 일수(이하) — 담당자 "출장일이 7일 이하일 경우 칸을 나눠서 한페이지에".
+# 한 쪽에 다 넣으면 증빙 글자가 작아질 때는 그리기(render.py)가 다음 쪽으로 넘긴다(담당자 2026-11-10 "최대한 증빙이 잘보이는 방향으로")
 ONE_PAGE_STAY_DAYS = 7
 
 
@@ -42,6 +47,9 @@ class Evidence:
     nights: int = 1         # 숙박 영수증 하나가 덮는 박 수
     place: str = ""         # 출장지가 여러 곳일 때 어느 곳의 체류 · 숙박인지
     part: int | None = None # 영수증 여러 장이 든 PDF(하이패스 '총 N 건') 중 몇 번째 상자인지 — 없으면 파일 전체
+    person: str = ""        # 출장자가 여럿일 때 누구 증빙인지 — SHARED('공통')면 모두의 출장증빙에 넣는다
+    origin: str = ""        # 대중교통 증빙(승차권 하나)의 출발지 — 담당자 2026-11-10 "증빙별로 출발지와 목적지 및 금액 작성"
+    goal: str = ""          # 대중교통 증빙의 목적지
 
 
 @dataclass
@@ -60,6 +68,9 @@ class Trip:
     lodging: list[Evidence] = field(default_factory=list)
     route_map: Path | None = None
     legs: list = field(default_factory=list)   # 구간 km — 출발지→출장지1 → … → 마지막 출장지→출발지. 출장지가 하나면 [가는 길, 오는 길(비면 가는 길)]
+    route_maps: list = field(default_factory=list)   # 구간마다 네이버 지도 최단거리 그림(legs 와 같은 차례) — 있으면 route_map 대신 이것들
+    route_stops: list = field(default_factory=list)  # 자차 경유지 + 목적지(차례대로) — 경유지가 있을 때만(담당자 2026-11-10). 비면 출장지로
+    fuel: str = ""          # 자차 연료 종류(휘발유 · 경유 · LPG …) — 자차 쪽 머리 줄에 적는다(담당자 2026-11-10)
 
     @property
     def days(self) -> int:
@@ -91,7 +102,7 @@ class Trip:
     def route_legs(self) -> list[tuple[str, float | None]]:
         """이동경로 구간(이름, km). 출장지가 하나면 담당자 양식 그대로 '출발지→도착지' · '도착지→출발지'."""
         legs = list(self.legs)
-        places = self.places
+        places = list(self.route_stops) if len(self.route_stops) > 1 else self.places
         if len(places) <= 1:
             go = legs[0] if legs else None
             back = legs[1] if len(legs) > 1 and legs[1] else go
@@ -100,7 +111,16 @@ class Trip:
         return [(f"{a}→{b}", legs[i] if i < len(legs) else None) for i, (a, b) in enumerate(zip(stops, stops[1:]))]
 
     def has_route(self) -> bool:
-        return self.route_map is not None or any(v for v in self.legs)
+        return self.route_map is not None or any(self.route_maps) or any(v for v in self.legs)
+
+    def maps(self) -> list[tuple[str, Path]]:
+        """이동경로 그림(설명, 파일) — 구간마다 찍은 것이 있으면 그것들(구간 이름 · km), 없으면 하나뿐인 지도."""
+        legs = self.route_legs()
+        shots = [(f"{legs[i][0] if i < len(legs) else ''} {km(legs[i][1]) if i < len(legs) else ''}".strip(), Path(p))
+                 for i, p in enumerate(self.route_maps) if p]
+        if shots:
+            return shots
+        return [("", self.route_map)] if self.route_map else []
 
 
 # ── 글자 ────────────────────────────────────────────────────────────────
@@ -226,15 +246,44 @@ def pdf_text(path: Path, pages: int = 2) -> str:
         return ""
 
 
-def guess(path: Path, year: int) -> Evidence:
-    """파일 이름 → (PDF 면) 글자 차례로 일자 · 금액을 짐작한다. 그림 영수증은 이름에 적힌 것만 — 화면에서 고친다."""
+def guess(path: Path, year: int, route: bool = False) -> Evidence:
+    """파일 이름 → (PDF 면) 글자 차례로 일자 · 금액을 짐작한다. 그림 영수증은 이름에 적힌 것만 — 화면에서 고친다.
+    route 면(대중교통) 출발지 · 목적지도 — 파일 이름 '…_춘천-서울_…' · '춘천→서울', 승차권 글자의 '출발 … 도착 …'."""
     stem = path.stem
     day, amount = guess_day(stem, year), guess_amount(stem)
-    if (day is None or amount is None) and path.suffix.lower() == ".pdf":
+    origin, goal = guess_route(stem) if route else ("", "")
+    if (day is None or amount is None or (route and not (origin and goal))) and path.suffix.lower() == ".pdf":
         text = pdf_text(path)
         day = day or guess_day(text, year)
         amount = amount or guess_amount(text)
-    return Evidence(path=path, day=day, amount=amount)
+        if route and not (origin and goal):
+            origin, goal = guess_route(text)
+    return Evidence(path=path, day=day, amount=amount, origin=origin, goal=goal)
+
+
+# 대중교통 출발지 · 목적지 — '춘천→서울' · '춘천-서울' · '춘천~서울', 또는 '출발(역 · 지) 춘천 … 도착(역 · 지) 서울'
+_STOP = r"[가-힣A-Za-z][가-힣A-Za-z0-9()]{1,14}"
+_ROUTE_ARROW = re.compile(rf"({_STOP})\s*(?:→|->|➝|➔|⇒|▶|~|-)\s*({_STOP})")
+_ROUTE_FROM = re.compile(r"(?:출발역|출발지|승차역|출발|승차)\s*[:：]?\s*([가-힣A-Za-z]{2,14})")
+_ROUTE_TO = re.compile(r"(?:도착역|도착지|하차역|도착|하차)\s*[:：]?\s*([가-힣A-Za-z]{2,14})")
+_NOT_STOP = ("증빙", "영수증", "대중교통", "교통", "승차권", "출장", "체류", "하이패스", "숙박", "금액", "합계", "일자", "출발", "도착",
+             "승차", "하차", "ktx", "srt", "itx", "열차", "기차", "버스", "택시", "지하철", "항공", "카드", "결제")
+
+
+def _stop_ok(word: str) -> bool:
+    low = word.lower()
+    return not any(w in low for w in _NOT_STOP) and not low.isdigit()
+
+
+def guess_route(text: str) -> tuple[str, str]:
+    """글자에서 (출발지, 목적지) — 둘 다 찾았을 때만, 아니면 ('', '')."""
+    for m in _ROUTE_ARROW.finditer(text or ""):
+        a, b = m.group(1), m.group(2)
+        if _stop_ok(a) and _stop_ok(b) and a != b:
+            return a, b
+    a = next((m.group(1) for m in _ROUTE_FROM.finditer(text or "") if _stop_ok(m.group(1))), "")
+    b = next((m.group(1) for m in _ROUTE_TO.finditer(text or "") if _stop_ok(m.group(1))), "")
+    return (a, b) if a and b and a != b else ("", "")
 
 
 # 하이패스 홈페이지 영수증 인쇄(담당자 2026-10-27 견본): 상자마다 '2026년10월23일 13시02분' · '9,600 원(카드)'
@@ -321,19 +370,34 @@ def _group(items, key):
     return groups
 
 
+def public_caption(e: Evidence) -> str:
+    """증빙(승차권) 하나 위에 적는 글 — '열차 · 춘천 → 서울 · 8,000원'. 모르는 것은 '?'(담당자 2026-11-10 "불분명한 경우 확인요청")."""
+    return f"{e.mode.strip() or '이동편 ?'} · {e.origin.strip() or '?'} → {e.goal.strip() or '?'} · {won(e.amount)}"
+
+
 def public_pages(trip: Trip) -> list[Page]:
-    pages = []
+    """대중교통 — 체류처럼 일자별로 나누고(일자 줄에 그날 합계), 일자 안에서는 증빙(승차권 · 영수증 파일) 하나하나가 따로 칸이다:
+    이동편이 바뀌어도 · 같은 이동편이라도 표를 나눠 끊었으면 다른 증빙(담당자 2026-11-10). 칸마다 이동편 · 출발지 → 목적지 · 금액,
+    머리 줄에 실비 합계. 날이 여럿이면 끝에 실비 합계 줄을 한 번 더."""
     # 같은 날은 넣은 차례(이동한 차례)대로 — 이동편 이름 차례로 섞지 않는다
     items = sorted(trip.public, key=lambda e: e.day or date.max)
-    groups: dict = {}
-    for e in items:
-        groups.setdefault((e.day, e.mode.strip()), []).append(e)
-    for (day, mode), group in groups.items():
-        total = sum(e.amount or 0 for e in group)
-        label = "* 교통비 증빙" + (f" ({mode})" if mode else " (대중교통)")
-        pages.append(Page([label, korean_date(day) if day else "일자 없음", won(total)],
-                          [Block([e.path for e in group], cols=grid_cols(len(group)), fill=True)]))
-    return pages
+    if not items:
+        return []
+    total = _sum_text(items)
+    blocks = []
+    for day, group in _group(items, lambda e: e.day):
+        blocks.append(Block([e.path for e in group], [public_caption(e) for e in group],
+                            title=[korean_date(day) if day else "일자 없음", f"증빙 {len(group)}건", f"일자 합계 {_sum_text(group)}"],
+                            cols=grid_cols(len(group)), fill=True))
+    if len(blocks) > 1:
+        blocks.append(Block([], title=["* 실비 합계", f"{len(blocks)}일 · 증빙 {len(items)}건", total]))
+    return [Page(["* 교통비 증빙 (대중교통)", f"실비 합계 {total}"], blocks)]
+
+
+def _sum_text(items: list[Evidence]) -> str:
+    """합계 글 — 금액을 모르는 증빙이 있으면 그 수를 함께(0원으로 보이지 않게)."""
+    missing = sum(1 for e in items if e.amount is None)
+    return won(sum(e.amount or 0 for e in items)) + (f" (금액 없음 {missing}건)" if missing else "")
 
 
 def car_pages(trip: Trip) -> list[Page]:
@@ -353,8 +417,10 @@ def car_pages(trip: Trip) -> list[Page]:
         known = [v for _, v in legs if v]
         total = sum(known) if known else None
         title = ["* 이동경로", *(f"{name} {km(v)}" for name, v in legs), f"총 이동경로 {km(total)}"]
-        blocks.append(Block([trip.route_map] if trip.route_map else [], title=title, cols=1, fill=True))
-    head = ["* 교통비 증빙 (자차)", won(toll_total)] if tolls else ["* 교통비 증빙 (자차)"]
+        maps = trip.maps()
+        # 네이버 지도 최단거리 그림 — 구간마다 찍었으면 칸마다 그 구간 이름 · km(담당자 2026-11-10 "가는거 오는거 총합 KM")
+        blocks.append(Block([p for _, p in maps], [c for c, _ in maps] if len(maps) > 1 else [], title=title, cols=1, fill=True))
+    head = ["* 교통비 증빙 (자차)"] + ([f"연료 {trip.fuel}"] if trip.fuel else []) + ([won(toll_total)] if tolls else [])
     return [Page(head, blocks)]
 
 
@@ -393,11 +459,176 @@ def problems(trip: Trip) -> list[str]:
                 out.append(f"{KIND_NAMES[kind]} · {e.path.name}: 금액이 없습니다.")
             if kind == PUBLIC and not e.mode.strip():
                 out.append(f"대중교통 · {e.path.name}: 이동편(열차 · 고속버스 …)이 없습니다.")
+            if kind == PUBLIC and not (e.origin.strip() and e.goal.strip()):
+                out.append(f"대중교통 · {e.path.name}: 출발지 · 목적지를 확인해 주세요.")
             if kind in (STAY, LODGING) and len(trip.places) > 1 and not trip.place_of(e):
                 out.append(f"{KIND_NAMES[kind]} · {e.path.name}: 어느 출장지인지 고르세요({' · '.join(trip.places)}).")
     if trip.tolls and not trip.has_route():
         out.append("자차 하이패스가 있는데 이동경로(지도 · km)가 없습니다.")
     return out
+
+
+# ── 출장자 ──────────────────────────────────────────────────────────────
+SHARED = "공통"      # 증빙 표의 출장자 칸에 이렇게 적으면 모든 출장자의 출장증빙에 들어간다
+_NAME = re.compile(r"[가-힣]{2,4}")
+_NOT_PERSON = ("체류", "증빙", "숙박", "교통", "하이패스", "자차", "영수증", "지도", "경로", "출장", "공통", "기타", "호텔", "열차", "버스", "택시")
+
+
+def split_names(text: str) -> list[str]:
+    """출장자 칸 → 이름 목록. 쉼표 · 가운뎃점 · 빗금 · 띄어쓰기로 나눈다(이름에는 띄어쓰기가 없다)."""
+    out = []
+    for name in re.split(r"[\s,，、·/]+", text or ""):
+        name = name.strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def person_hint(path: Path) -> str:
+    """파일 이름 '<이름>_체류증빙' 의 앞 이름(담당자 2026-11-10 — 파일명은 이름_체류증빙 · 이름_하이패스 증빙 · 이름_숙박비 증빙 · 이름_대중교통 증빙),
+    없으면 위 폴더 이름이 이름 꼴인 것. 이름 꼴(한글 2~4자)이 아니거나 항목 낱말이면 ''."""
+    head = path.stem.split("_", 1)[0].strip() if "_" in path.stem else ""
+    for candidate in [head, *reversed([p for p in path.parts[:-1]])]:
+        candidate = candidate.strip()
+        if _NAME.fullmatch(candidate) and not any(w in candidate for w in _NOT_PERSON) and not kind_of(candidate):
+            return candidate
+    return ""
+
+
+def person_of(path: Path, names: list[str]) -> str:
+    """그 파일이 누구 증빙인지 — 출장자가 한 명이면 그 사람, 여럿이면 파일 이름 앞 이름 → 경로에 이름이 하나만 든 것. 못 정하면 ''."""
+    if len(names) == 1:
+        return names[0]
+    hint = person_hint(path)
+    if hint and (hint in names or not names):
+        return hint
+    hits = [n for n in names if n and n in str(path)]
+    if len(hits) == 1:
+        return hits[0]
+    return hint if hint and not names else ""
+
+
+def names_in_files(paths) -> list[str]:
+    """증빙 파일 이름에서 읽은 출장자 — 신청서가 없을 때 출장자 칸을 채운다."""
+    out = []
+    for path in paths:
+        hint = person_hint(Path(path))
+        if hint and hint not in out:
+            out.append(hint)
+    return out
+
+
+def _all_evidence(trip: Trip) -> list[tuple[str, Evidence]]:
+    return [(kind, e) for kind, items in ((STAY, trip.stay), (PUBLIC, trip.public), (TOLL, trip.tolls), (LODGING, trip.lodging))
+            for e in items]
+
+
+def traveler_problems(trip: Trip, names: list[str]) -> list[str]:
+    """출장자가 여럿일 때 — 누구 것인지 모르는 증빙 · 출장자 목록에 없는 사람의 증빙."""
+    if len(names) <= 1:
+        return []
+    out = []
+    for kind, e in _all_evidence(trip):
+        who = e.person.strip()
+        if not who:
+            out.append(f"{KIND_NAMES[kind]} · {e.path.name}: 어느 출장자 것인지 고르세요({' · '.join(names)} 또는 {SHARED}).")
+        elif who != SHARED and who not in names:
+            out.append(f"{KIND_NAMES[kind]} · {e.path.name}: '{who}' 는 출장자 목록에 없습니다({' · '.join(names)}).")
+    return out
+
+
+def for_traveler(trip: Trip, name: str, names: list[str]) -> Trip:
+    """출장자 한 명의 출장증빙 — 그 사람 증빙과 '공통' 증빙만. 이동경로(자차)는 하이패스가 있는 사람 것에만 붙는다(하이패스가 있으면 자차)."""
+    single = len(names) <= 1
+
+    def mine(items: list[Evidence]) -> list[Evidence]:
+        return [e for e in items if single or e.person.strip() in (name, SHARED)]
+
+    out = Trip(**{**trip.__dict__})
+    out.name = name
+    out.stay, out.public, out.tolls, out.lodging = mine(trip.stay), mine(trip.public), mine(trip.tolls), mine(trip.lodging)
+    if not single and not out.tolls:
+        out.route_map, out.route_maps, out.legs, out.route_stops, out.fuel = None, [], [], [], ""
+    return out
+
+
+FUELS = ("휘발유", "경유", "LPG", "전기", "하이브리드", "수소")
+
+
+def parse_fuels(text: str) -> dict[str, str]:
+    """설정 travel_fuels('이름=연료' 줄들) → {이름: 연료}. 연료 이름이 표에 없어도 적힌 대로 둔다."""
+    out = {}
+    for line in (text or "").splitlines():
+        name, _, fuel = line.partition("=")
+        if name.strip() and fuel.strip():
+            out[name.strip()] = fuel.strip()
+    return out
+
+
+def format_fuels(fuels: dict[str, str]) -> str:
+    return "\n".join(f"{name}={fuel}" for name, fuel in fuels.items() if name.strip() and fuel.strip())
+
+
+def short_date(d: date) -> str:
+    return f"{d.month}월 {d.day}일({WEEKDAYS[d.weekday()]})"
+
+
+def review(trip: Trip) -> list[str]:
+    """출장자별 증빙 확인(담당자 2026-11-10 "출장자별로 증빙 확인") — 막지 않는 알림. 체류 빠진 날 · 기간 밖 날짜 · 교통비 · 자차 이동경로 · 숙박 박 수."""
+    out = []
+    if not trip.stay:
+        out.append("체류 증빙이 없습니다")
+    if trip.start and trip.end:
+        have = {e.day for e in trip.stay if e.day}
+        if trip.stay and have:
+            missing = [trip.start + timedelta(days=i) for i in range((trip.end - trip.start).days + 1)
+                       if trip.start + timedelta(days=i) not in have]
+            if missing:
+                out.append("체류 증빙이 없는 날: " + ", ".join(short_date(d) for d in missing[:7]) + (" …" if len(missing) > 7 else ""))
+        for kind, e in _all_evidence(trip):
+            last = trip.end - timedelta(days=1) if kind == LODGING and trip.end > trip.start else trip.end
+            if e.day and not (trip.start <= e.day <= last):
+                out.append(f"{KIND_NAMES[kind]} · {e.path.name}: 출장기간 밖의 날짜({short_date(e.day)})")
+        nights = sum(e.nights for e in trip.lodging)
+        if trip.lodging and nights > max(0, trip.days - 1):
+            out.append(f"숙박 {nights}박 — 출장 {trip.days}일(최대 {max(0, trip.days - 1)}박)보다 많습니다")
+    if not trip.public and not trip.tolls:
+        out.append("교통비 증빙(대중교통 · 하이패스)이 없습니다")
+    unclear = [e for e in trip.public if not (e.origin.strip() and e.goal.strip()) or e.amount is None]
+    if unclear:
+        out.append(f"대중교통 증빙 {len(unclear)}건 — 출발지 · 목적지 · 금액을 확인해 주세요")
+    if trip.tolls:
+        if not trip.maps():
+            out.append("하이패스가 있어 자차입니다 — 네이버 지도 최단거리 그림이 없습니다")
+        if not any(v for v in trip.legs):
+            out.append("하이패스가 있어 자차입니다 — 이동 거리(km)가 없습니다")
+        if not trip.fuel:
+            out.append("하이패스가 있어 자차입니다 — 연료 종류가 없습니다")
+    return out
+
+
+# ── 네이버 지도 길찾기 글자에서 km ───────────────────────────────────────
+_ROUTE = re.compile(r"(?:(\d+)\s*시간\s*)?(\d+)\s*분\s*([\d,]+(?:\.\d+)?)\s*km", re.I)
+
+
+def route_km(text: str) -> float | None:
+    """길찾기 결과 글자 → 가장 짧은 거리(km). '거리우선' 경로가 보이면 그 km, 아니면 경로 목록 중 가장 짧은 km.
+    경로 요약은 '1시간 10분 76km' 꼴(담당자 그림 2026-11-10) — 구간 안내('중앙고속도로 52km')는 '분' 이 앞에 없어 세지 않는다."""
+    flat = re.sub(r"\s+", " ", text or "")
+    values = []
+    for m in _ROUTE.finditer(flat):
+        try:
+            values.append((m.start(), float(m.group(3).replace(",", ""))))
+        except ValueError:
+            continue
+    if not values:
+        return None
+    at = flat.find("거리우선")
+    if at >= 0:
+        after = [(pos, v) for pos, v in values if 0 <= pos - at <= 160]
+        if after:
+            return after[0][1]
+    return min(v for _, v in values)
 
 
 def blocking(trip: Trip) -> list[str]:
@@ -429,7 +660,9 @@ KIND_WORDS = (
     (PUBLIC, ("대중교통", "열차", "기차", "ktx", "srt", "itx", "버스", "택시", "지하철", "승차권", "교통")),
     (STAY, ("체류",)),
 )
-MAP_WORDS = ("지도", "경로", "길찾기", "map")
+MAP_WORDS = ("지도", "경로", "길찾기", "최단거리", "map")
+GO_WORDS = ("가는", "출발", "갈때", "갈 때")
+BACK_WORDS = ("오는", "돌아", "귀가", "복귀", "올때", "올 때")
 MODES = (("열차", ("열차", "기차", "ktx", "srt", "itx", "무궁화", "새마을")), ("고속버스", ("고속버스",)),
          ("시외버스", ("시외버스",)), ("시내버스", ("시내버스",)), ("택시", ("택시",)), ("지하철", ("지하철",)), ("항공", ("항공", "비행기")))
 SKIP_WORDS = ("출장증빙", "신청서", "명령", "공문", "참가확인")
@@ -455,6 +688,7 @@ def mode_of(name: str) -> str:
 class Scan:
     files: dict[str, list[Path]] = field(default_factory=dict)
     route_map: Path | None = None
+    route_maps: list = field(default_factory=list)      # [가는 길, 오는 길] — 이름에 '가는' · '오는' 이 든 지도 그림
     unsorted: list[Path] = field(default_factory=list)
 
 
@@ -467,8 +701,16 @@ def scan_folder(folder: Path) -> Scan:
         rel = path.relative_to(folder)
         if any(w in path.stem for w in SKIP_WORDS):
             continue
-        if out.route_map is None and path.suffix.lower() in IMAGE_SUFFIXES and any(w in path.stem.lower() for w in MAP_WORDS):
-            out.route_map = path
+        if path.suffix.lower() in IMAGE_SUFFIXES and any(w in path.stem.lower() for w in MAP_WORDS):
+            back = any(w in path.stem for w in BACK_WORDS)
+            go = any(w in path.stem for w in GO_WORDS)
+            if go or back:
+                while len(out.route_maps) < 2:
+                    out.route_maps.append(None)
+                if out.route_maps[1 if back else 0] is None:
+                    out.route_maps[1 if back else 0] = path
+            if out.route_map is None and not back:
+                out.route_map = path
             continue
         kind = kind_of(path.stem)
         if not kind:

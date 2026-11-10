@@ -85,6 +85,9 @@ class Settings:
     # 출장증빙자료 만들기(travel/, 28절) — 출발지는 늘 이 장소로 미리 채운다(담당자 2026-10-27 "출발지는 기본적으로 강원대학교 춘천캠퍼스").
     # 출장마다 화면에서 고칠 수 있고, 기본값을 바꾸려면 config.json 의 이 값을 고친다
     travel_origin: str = "강원대학교 춘천캠퍼스"
+    # 출장자 이름마다 차량 연료 — 한 줄에 '이름=연료'(담당자 2026-11-10 "설정에서 연료 종류 설정할 수 있도록" · "이름으로 사람을 구별").
+    # 출장증빙의 자차 쪽에 적고, 출장증빙 화면에서 고르면 여기에도 남는다(travel.model.parse_fuels)
+    travel_fuels: str = ""
     # 주차등록 사이트(parking.py) — 담당자 요청 2026-10-21. 로그인 정보는 여기가 아니라 _주차로그인.json(비밀번호는 윈도우 DPAPI 로 감쌈)에
     parking_url: str = "https://traffic.kangwon.ac.kr/login"
     parking_auto_login: bool = True        # 로그인 정보가 있으면 사이트를 열 때 한 번 자동 로그인(담당자 허락 2026-10-21)

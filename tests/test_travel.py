@@ -22,7 +22,7 @@ def test_page_order_is_stay_transport_lodging():
                 stay=[ev("s.png", date(2026, 5, 28))], public=[ev("t.png", date(2026, 5, 28), 8000, "열차")],
                 tolls=[ev("h.png", date(2026, 5, 28), 2170)], lodging=[ev("l.png", date(2026, 5, 28), 90000)], legs=[142])
     heads = [p.head[0] for p in model.pages(trip)]
-    assert heads == ["* 체류 증빙", "* 교통비 증빙 (열차)", "* 교통비 증빙 (자차)", "* 숙박비 증빙"]
+    assert heads == ["* 체류 증빙", "* 교통비 증빙 (대중교통)", "* 교통비 증빙 (자차)", "* 숙박비 증빙"]
 
 
 def test_stay_one_page_up_to_seven_days_then_page_per_day():
@@ -67,14 +67,48 @@ def test_several_destinations():
     assert any("어느 출장지인지" in p for p in model.problems(trip))
 
 
-def test_public_splits_by_day_and_mode_in_travel_order():
+def test_public_by_day_each_ticket_its_own_cell_with_route_and_totals():
+    """담당자 2026-11-10 — 대중교통은 체류처럼 일자별로, 일자 안에서는 표(증빙) 하나하나가 따로(같은 이동편이라도 나눠 끊었으면),
+    증빙마다 출발지 · 목적지 · 금액, 일자 합계, 마지막에 실비 합계."""
     d = date(2026, 5, 28)
-    trip = Trip(public=[ev("a.png", d, 8000, "열차"), ev("b.png", d, 5000, "고속버스"), ev("c.png", d, 1000, "열차"),
-                        ev("d.png", date(2026, 5, 29), 5000, "고속버스")])
+
+    def ticket(name, day, amount, mode, origin="", goal=""):
+        e = ev(name, day, amount, mode)
+        e.origin, e.goal = origin, goal
+        return e
+    trip = Trip(public=[ticket("a.png", d, 8000, "열차", "춘천", "용산"), ticket("b.png", d, 5000, "고속버스", "동서울", "삼척"),
+                        ticket("c.png", d, 1000, "열차", "용산", "서울"), ticket("d.png", date(2026, 5, 29), 5000, "고속버스", "삼척")])
     pages = model.public_pages(trip)
-    assert [(p.head[0], p.head[2]) for p in pages] == [("* 교통비 증빙 (열차)", "9,000원"), ("* 교통비 증빙 (고속버스)", "5,000원"),
-                                                      ("* 교통비 증빙 (고속버스)", "5,000원")]
-    assert pages[0].head[1] == "2026년 5월 28일 목요일"
+    assert len(pages) == 1 and pages[0].head == ["* 교통비 증빙 (대중교통)", "실비 합계 19,000원"]
+    blocks = pages[0].blocks
+    assert [b.title for b in blocks] == [["2026년 5월 28일 목요일", "증빙 3건", "일자 합계 14,000원"],
+                                         ["2026년 5월 29일 금요일", "증빙 1건", "일자 합계 5,000원"],
+                                         ["* 실비 합계", "2일 · 증빙 4건", "19,000원"]]
+    assert [p.name for p in blocks[0].images] == ["a.png", "b.png", "c.png"]          # 같은 날은 이동한 차례 그대로
+    assert blocks[0].captions == ["열차 · 춘천 → 용산 · 8,000원", "고속버스 · 동서울 → 삼척 · 5,000원", "열차 · 용산 → 서울 · 1,000원"]
+    assert blocks[1].captions == ["고속버스 · 삼척 → ? · 5,000원"]
+    assert not blocks[2].images
+    probs = model.problems(trip)
+    assert any("d.png: 출발지 · 목적지를 확인해 주세요" in p for p in probs)
+    assert not any("a.png: 출발지" in p for p in probs)
+    assert any("대중교통 증빙 1건 — 출발지 · 목적지 · 금액을 확인해 주세요" in p for p in model.review(trip))
+    trip.public[3].amount = None
+    assert model.public_pages(trip)[0].blocks[1].title[2] == "일자 합계 0원 (금액 없음 1건)"
+    assert model.public_pages(trip)[0].head[1] == "실비 합계 14,000원 (금액 없음 1건)"
+    one_day = Trip(public=trip.public[:2])
+    assert [b.title[0] for b in model.public_pages(one_day)[0].blocks] == ["2026년 5월 28일 목요일"]   # 하루면 실비 합계 줄은 머리 줄에만
+
+
+def test_guess_route_from_names_and_ticket_text():
+    assert model.guess_route("홍길동_대중교통 증빙_0528_춘천-서울_8000원") == ("춘천", "서울")
+    assert model.guess_route("KTX 춘천→용산") == ("춘천", "용산")
+    assert model.guess_route("승차권\n출발 춘천 10:00\n도착 동서울 11:20\n8,000원") == ("춘천", "동서울")
+    assert model.guess_route("원주-수원") == ("원주", "수원")
+    assert model.guess_route("2026-05-28 영수증") == ("", "")
+    assert model.guess_route("홍길동_대중교통 증빙_KTX-이음") == ("", "")
+    got = model.guess(Path("홍길동_대중교통 증빙_0528_춘천-용산_8,000원.png"), 2026, route=True)
+    assert (got.day, got.amount, got.origin, got.goal) == (date(2026, 5, 28), 8000, "춘천", "용산")
+    assert model.guess(Path("춘천-용산.png"), 2026).origin == ""          # 대중교통이 아니면 짐작하지 않는다
 
 
 def test_toll_amounts_by_use_date_and_route():
@@ -226,21 +260,17 @@ def test_trim_cuts_white_margins(qapp):
     assert render.trim(blank).size() == blank.size()        # 내용이 없으면 그대로
 
 
-def test_page_shows_place_column_and_legs_for_several_destinations(qapp, tmp_path):
+def test_page_shows_place_column_for_several_destinations(qapp, tmp_path):
     from claim_downloader.ui.pages.travel import TravelPage
     page = TravelPage()
     page.show()
     stay = page.tables["stay"]
-    assert stay.isColumnHidden(2) and len(page.leg_spins) == 2
+    assert stay.isColumnHidden(2)
     page.dest_edit.setText("삼척, 강릉")
-    assert not stay.isColumnHidden(2) and len(page.leg_spins) == 3
+    assert not stay.isColumnHidden(2)
     (tmp_path / "삼척").mkdir()
     stay.add_files([_image(tmp_path / "삼척" / "0528.png", 300, 400)], 2026)
     assert page.trip().stay[0].place == "삼척"
-    page.leg_spins[0].setValue(100)
-    page.leg_spins[1].setValue(50)
-    page.leg_spins[2].setValue(120)
-    assert page.total_label.text() == "총 이동경로 270km"
 
 
 def test_toll_receipts_widen_when_few():

@@ -7,12 +7,14 @@ QGuiApplication 이 떠 있어야 한다(앱 안에서 부른다).
 """
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QMarginsF, QRectF, QSizeF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen, QTransform
 
-from .model import Block, Page, grid_cols, rows_for
+from .model import Block, Page, rows_for
 
 DPI = 150
 MARGIN = 40          # 쪽 바깥 여백(점)
@@ -20,7 +22,6 @@ HEAD_H = 46          # 머리 줄 높이
 TITLE_H = 36         # 묶음 머리 줄 높이
 CAPTION_H = 30       # 칸 위 일자 글
 GAP = 10
-ROW_MAX = 520        # 흘려 담는 묶음(자차 하이패스)의 한 줄 최대 높이
 PDF_WIDTH = 1400     # PDF 영수증을 그림으로 바꿀 폭(점)
 TRIM_SCAN = 600      # 여백을 찾을 때 줄여 볼 크기(긴 변) — 원본을 다 훑으면 느리다
 TRIM_INK = 232       # 이보다 어두운(0~255) 점이 내용
@@ -178,23 +179,280 @@ def _load(path: Path) -> list[QImage]:
     return [] if image.isNull() else [image]
 
 
-class _Cells:
-    """그림 묶음 — 증빙 파일 하나가 PDF 여러 쪽이면 칸도 여럿(설명 글은 첫 칸에만)."""
+# ── 증빙이 잘 보이는 크기 ──────────────────────────────────────────────────
+# 담당자 2026-11-10 "모든 증빙서류에서 원본 증빙서류가 잘보이게 배치하기 … 증빙을 보고 잘보이는 선으로 편집을 했을 때 다음페이지로
+# 넘어가서 만드는게 좋다고 판단되면 최대한 증빙이 잘보이는 방향으로". 그래서 칸 수 · 쪽 수를 미리 정하지 않는다:
+# 증빙마다 안의 글자 한 줄 높이를 재어(text_height) 쪽에서 그 글자가 MIN_TEXT 점은 되게 할 배율(need)을 정하고,
+# 모든 증빙이 그만큼 보이는 짜임 중 쪽이 가장 적은 것을 고른 뒤(_plan), 쪽에 남는 높이는 증빙을 더 키우는 데 쓴다(_allot).
+# 쪽 폭을 다 써도 그만큼 안 되는 증빙(지도 그림 · 큰 표)은 쪽 폭에 맞춘다.
+MIN_TEXT = 14.0      # 쪽(150 DPI)에서 증빙 글자 한 줄의 최소 높이(점) — 약 2.4mm, 8pt 글씨
+TEXT_SCAN = 1400     # 글자 높이를 잴 때 볼 폭 — 이보다 크면 줄여 재고 되돌려 셈한다
+TEXT_INK = 150       # 이보다 어두운 점이 글자 — 옅은 바탕색 · 그림자는 빼고
+TEXT_EDGE = 0.04     # 둘레(테두리 선 · 그림자)는 빼고 잰다
+TEXT_BAR = 0.7       # 한 줄이 이만큼 넘게 칠해진 띠는 글자가 아니라 막대 · 선
+FALLBACK_CHARS = 40  # 글자 높이를 못 재면(사진 · 빈 그림) 한 줄에 글자가 이만큼 든 영수증으로 본다
+MAX_COLS = 4
+CELL_PAD = 6
+MIN_CELL = 160       # 칸 하나의 최소 높이(위 설명 글 포함)
 
-    def __init__(self, block: Block, cache: dict):
-        self.items: list[tuple[QImage | None, str]] = []
-        for i, path in enumerate(block.images):
-            caption = block.captions[i] if i < len(block.captions) else ""
-            images = cache.setdefault(path, load_images(path))
-            part = block.parts[i] if i < len(block.parts) else None
-            if part is not None and part < len(images):
-                images = [images[part]]
-            if not images:
-                self.items.append((None, caption or path.name))
-            for j, image in enumerate(images):
-                self.items.append((image, caption if j == 0 else ""))
-        # 칸 수는 실제 그림 수로 — PDF 영수증이 여러 쪽이면 늘어난다. 하이패스도 그날 영수증이 적으면 칸을 넓혀 크게(담당자 2026-10-27 "하이패스 내역도 동일하게")
-        self.cols = grid_cols(len(self.items)) if self.items else block.cols
+
+def text_height(image: QImage) -> float | None:
+    """증빙 안 글자 한 줄의 높이(원본 점). 가로로 훑어 글자가 있는 줄이 이어진 띠들의 높이를 모아 작은 쪽 30% 값 —
+    큰 제목이 아니라 본문 글자로 본다. 거의 모든 줄에 걸친 세로선(표 · 테두리)은 지우고 센다. 띠가 셋보다 적으면 못 잰 것(None)."""
+    if image.isNull() or image.width() < 32 or image.height() < 32:
+        return None
+    scan = image.scaledToWidth(TEXT_SCAN, Qt.SmoothTransformation) if image.width() > TEXT_SCAN else image
+    flat = QImage(scan.size(), QImage.Format_RGB32)
+    flat.fill(QColor("white"))
+    painter = QPainter(flat)
+    painter.drawImage(0, 0, scan)
+    painter.end()
+    edge_x, edge_y = int(flat.width() * TEXT_EDGE), int(flat.height() * TEXT_EDGE)
+    flat = flat.copy(edge_x, edge_y, flat.width() - 2 * edge_x, flat.height() - 2 * edge_y)
+    width, height = flat.width(), flat.height()
+    table = bytes(1 if b < TEXT_INK else 0 for b in range(256))
+    rows = [line.translate(table) for line in _rows(flat)]
+    columns = [line.translate(table).count(1) for line in _rows(flat.transformed(QTransform().rotate(90)))]
+    lines = [x for x, n in enumerate(columns[:width]) if n > height / 2]
+    if lines:
+        mask = bytearray(b"\x01" * width)
+        for x in lines:
+            mask[x] = 0
+        keep = int.from_bytes(mask, "big")
+        counts = [(int.from_bytes(r, "big") & keep).bit_count() for r in rows]
+    else:
+        counts = [r.count(1) for r in rows]
+    least = max(3, width * 0.01)
+    runs, run, peak = [], 0, 0
+    for n in counts + [0]:
+        if n >= least:
+            run, peak = run + 1, max(peak, n)
+        elif run:
+            if peak <= TEXT_BAR * width:
+                runs.append(run)
+            run, peak = 0, 0
+    runs = sorted(r for r in runs if 4 <= r <= height / 8)
+    if len(runs) < 3:
+        return None
+    return runs[len(runs) * 3 // 10] * image.width() / scan.width()
+
+
+def legible_scale(image: QImage) -> float:
+    """이 증빙을 쪽에 몇 배로 놓아야 글자가 잘 보이는지(MIN_TEXT / 글자 높이)."""
+    w = max(1, image.width())
+    text = text_height(image) or w / FALLBACK_CHARS
+    text = min(max(text, w / 90), w / 12)
+    return MIN_TEXT / text
+
+
+@dataclass
+class _Cell:
+    image: QImage | None
+    caption: str
+    need: float          # 잘 보일 배율
+    w: float
+    h: float
+
+
+def _cells(block: Block, cache: dict, needs: dict) -> list[_Cell]:
+    """묶음의 칸들 — 증빙 파일 하나가 PDF 여러 쪽이면 칸도 여럿(설명 글은 첫 칸에만)."""
+    out = []
+    for i, path in enumerate(block.images):
+        caption = block.captions[i] if i < len(block.captions) else ""
+        images = cache.setdefault(path, load_images(path))
+        part = block.parts[i] if i < len(block.parts) else None
+        if part is not None and part < len(images):
+            images = [images[part]]
+        if not images:
+            out.append(_Cell(None, caption or path.name, 1.0, 600, 260))
+        for j, image in enumerate(images):
+            if id(image) not in needs:
+                needs[id(image)] = legible_scale(image)
+            out.append(_Cell(image, caption if j == 0 else "", needs[id(image)], image.width(), image.height()))
+    return out
+
+
+@dataclass
+class _Grid:
+    cols: int
+    rows: int
+    ratio: float         # 가장 덜 보이는 증빙의 (배율 / 잘 보일 배율) — 1 이상이면 모두 잘 보인다
+    area: float
+
+
+def _caption_h(cells: list[_Cell]) -> float:
+    return CAPTION_H if any(c.caption for c in cells) else 0
+
+
+def _grid(cells: list[_Cell], width: float, height: float, cols: int) -> _Grid | None:
+    rows = rows_for(len(cells), cols)
+    cw = width / cols - 2 * CELL_PAD
+    ch = height / rows - _caption_h(cells) - 2 * CELL_PAD
+    if cw <= 0 or ch <= 0:
+        return None
+    scales = [min(cw / c.w, ch / c.h) for c in cells]
+    return _Grid(cols, rows, min(s / c.need for s, c in zip(scales, cells)), sum(s * s * c.w * c.h for s, c in zip(scales, cells)))
+
+
+def best_grid(cells: list[_Cell], width: float, height: float) -> _Grid:
+    """주어진 넓이에서 칸 나누기 — 모두 잘 보이는 것 중 증빙이 가장 크게 보이는 것, 그런 것이 없으면 가장 덜 보이는 증빙이 가장 크게."""
+    options = [g for cols in range(1, min(len(cells), MAX_COLS) + 1) if (g := _grid(cells, width, height, cols))]
+    if not options:
+        return _Grid(1, len(cells), 0.0, 0.0)
+    return max(options, key=lambda g: (min(g.ratio, 1.0), g.area))
+
+
+def min_height(cells: list[_Cell], width: float) -> float:
+    """모든 증빙이 잘 보이는 칸 나누기 중 가장 낮은 높이. 쪽 폭을 다 써도 모자라는 증빙은 쪽 폭에 맞춘 높이(한 줄에 하나)."""
+    if not cells:
+        return 0.0
+    cap = _caption_h(cells)
+    best = None
+    for cols in range(1, min(len(cells), MAX_COLS) + 1):
+        cw = width / cols - 2 * CELL_PAD
+        if cols > 1 and any(cw / c.w < c.need for c in cells):
+            continue
+        row = max(MIN_CELL, max(c.h * min(c.need, cw / c.w) for c in cells) + cap + 2 * CELL_PAD)
+        h = rows_for(len(cells), cols) * row
+        best = h if best is None else min(best, h)
+    return best
+
+
+@dataclass
+class _Slot:
+    block: int           # 쪽 짜임(Page)의 몇 번째 묶음인지
+    start: int           # 그 묶음의 몇 번째 칸부터
+    count: int
+    need_h: float        # 잘 보이는 가장 낮은 높이
+    room_h: float = 0.0  # 실제로 준 높이
+
+
+def _fit(cells: list[_Cell], start: int, limit: int, room: float, title_h: float, width: float) -> tuple[int, float]:
+    """start 부터 몇 칸이 room 안에 잘 보이게 들어가는지 — (칸 수, 그 높이). 높이는 칸이 늘수록 줄지 않으므로 처음 넘칠 때 멈춘다."""
+    best = (0, 0.0)
+    for k in range(1, limit + 1):
+        h = min_height(cells[start:start + k], width)
+        if title_h + h > room:
+            break
+        best = (k, h)
+    return best
+
+
+def _chunks(cells: list[_Cell], start: int, title_h: float, width: float, room: float) -> list[int]:
+    """start 부터 남은 칸을 빈 쪽들에 담으면 쪽마다 몇 칸인지."""
+    out = []
+    while start < len(cells):
+        k = max(1, _fit(cells, start, len(cells) - start, room, title_h, width)[0])
+        out.append(k)
+        start += k
+    return out
+
+
+def _plan(cells_of: list[list[_Cell]], titles: list[list[str]], width: float, first_room: float, full_room: float) -> list[list[_Slot]]:
+    """쪽 짜임 하나를 실제 쪽들로 — 묶음 차례대로 담되, 모든 증빙이 잘 보이게 들어가는 만큼만 한 쪽에 두고 나머지는 다음 쪽.
+    묶음이 쪽을 넘기면 남은 쪽들에 고르게 나누고(7장이 6 + 1 이 아니라 4 + 3), 새 쪽에서 시작해도 쪽이 늘지 않으면 갈라 놓지 않는다."""
+    pages: list[list[_Slot]] = []
+    current: list[_Slot] = []
+    room = first_room
+    spread: dict[int, int] = {}         # 쪽을 넘기는 묶음 — 남은 칸을 담을 쪽 수(쪽마다 남은 칸 ÷ 남은 쪽 수만큼)
+    bi = start = 0
+
+    def turn() -> None:
+        nonlocal current, room
+        pages.append(current)
+        current, room = [], full_room
+
+    while bi < len(cells_of):
+        cells = cells_of[bi]
+        title_h = TITLE_H + GAP if titles[bi] else 0
+        if not cells:                                       # 글 줄만 있는 묶음(실비 합계)
+            if current and title_h > room:
+                turn()
+            current.append(_Slot(bi, 0, 0, 0.0))
+            room -= title_h + GAP
+            bi += 1
+            continue
+        left = len(cells) - start
+        limit = math.ceil(left / spread[bi]) if spread.get(bi) else left
+        k, h = _fit(cells, start, limit, room, title_h, width)
+        if k < left and bi not in spread:
+            fresh = _chunks(cells, start, title_h, width, full_room)
+            rest = _chunks(cells, start + k, title_h, width, full_room) if k else []
+            if current and (k == 0 or len(fresh) <= len(rest)):
+                spread[bi] = len(fresh)                     # 새 쪽에서 시작해도 쪽이 늘지 않으면 갈라 놓지 않는다
+                turn()
+                continue
+            if k == 0:                                      # 빈 쪽에도 잘 보이게 안 들어가는 증빙 — 하나라도 놓고 줄여 그린다
+                k, h = 1, min_height(cells[start:start + 1], width)
+                rest = _chunks(cells, start + 1, title_h, width, full_room)
+            spread[bi] = len(rest) + 1
+        elif k == 0:
+            if current:
+                turn()
+                continue
+            k, h = 1, min_height(cells[start:start + 1], width)
+        current.append(_Slot(bi, start, k, h))
+        room -= title_h + h + GAP
+        start += k
+        if bi in spread:
+            spread[bi] = max(1, spread[bi] - 1)
+        if start >= len(cells):
+            bi, start = bi + 1, 0
+        else:
+            turn()
+    if current:
+        pages.append(current)
+    return pages
+
+
+def _row_heights(cells: list[_Cell], width: float, height: float, grid: _Grid) -> list[float]:
+    """칸 나누기대로 놓았을 때 줄마다 실제로 쓰는 높이 — 그 줄에서 가장 큰 증빙 + 설명 글."""
+    cw = width / grid.cols - 2 * CELL_PAD
+    ch = height / grid.rows - _caption_h(cells) - 2 * CELL_PAD
+    out = []
+    for r in range(grid.rows):
+        row = cells[r * grid.cols:(r + 1) * grid.cols]
+        if cw <= 0 or ch <= 0:
+            out.append(height / grid.rows)
+            continue
+        tallest = max(c.h * min(cw / c.w, ch / c.h) for c in row)
+        out.append(min(height / grid.rows, max(MIN_CELL, tallest + _caption_h(cells) + 2 * CELL_PAD)))
+    return out
+
+
+def _used(cells: list[_Cell], width: float, height: float) -> float:
+    return sum(_row_heights(cells, width, height, best_grid(cells, width, height)))
+
+
+def _allot(slots: list[_Slot], cells_of: list[list[_Cell]], titles: list[list[str]], width: float, room: float) -> None:
+    """한 쪽의 묶음들에 높이를 나눠 준다 — 잘 보이는 높이부터 주고, 남는 높이는 아직 더 커질 수 있는 묶음에 그 높이 비율대로.
+    준 높이를 다 못 쓰는 묶음(폭이 모자라 더 안 커지는 증빙)은 쓰는 만큼으로 줄이고 남은 것을 다른 묶음에 다시 나눈다 — 남으면 쪽 아래 여백."""
+    grids = [s for s in slots if s.count]
+    if not grids:
+        return
+    space = room - sum(TITLE_H + GAP for s in slots if titles[s.block]) - GAP * (len(slots) - 1)
+    need = sum(s.need_h for s in grids)
+    if need >= space:
+        for s in grids:
+            s.room_h = s.need_h * space / need if need else 0
+        return
+    sub = {id(s): cells_of[s.block][s.start:s.start + s.count] for s in grids}
+    for s in grids:
+        s.room_h = s.need_h
+    done: set[int] = set()
+    for _ in range(6):
+        extra = space - sum(s.room_h for s in grids)
+        active = [s for s in grids if id(s) not in done]
+        if extra < 1 or not active:
+            break
+        weight = sum(s.need_h for s in active) or 1
+        for s in active:
+            s.room_h += extra * s.need_h / weight
+        for s in active:
+            used = _used(sub[id(s)], width, s.room_h)
+            if used < s.room_h - 1:                     # 더 줘도 안 커진다
+                s.room_h = max(s.need_h, used)
+                done.add(id(s))
 
 
 def _draw_bar(p: QPainter, rect: QRectF, cells: list[str], px: int, fill: QColor | None = None) -> None:
@@ -226,47 +484,52 @@ def _draw_bar(p: QPainter, rect: QRectF, cells: list[str], px: int, fill: QColor
         x += w
 
 
-def _draw_cell(p: QPainter, rect: QRectF, image: QImage | None, caption: str) -> None:
-    if caption:
-        cap = QRectF(rect.left(), rect.top(), rect.width(), CAPTION_H)
-        p.fillRect(cap, SOFT)
-        p.setPen(QPen(LINE, 1))
-        p.drawRect(cap)
-        p.setFont(_font(17, True))
-        p.setPen(INK)
-        p.drawText(cap, Qt.AlignCenter, caption)
-        rect = rect.adjusted(0, CAPTION_H, 0, 0)
-    box = rect.adjusted(6, 6, -6, -6)
-    if image is None:
+def _draw_cell(p: QPainter, rect: QRectF, cell: _Cell, cap_h: float) -> None:
+    if cap_h:
+        if cell.caption:
+            cap = QRectF(rect.left(), rect.top(), rect.width(), cap_h)
+            p.fillRect(cap, SOFT)
+            p.setPen(QPen(LINE, 1))
+            p.drawRect(cap)
+            px = 17          # 긴 설명(대중교통 '열차 · 춘천 → 서울 · 8,000원')은 칸 폭에 맞게 글자를 줄인다
+            while px > 11 and QFontMetrics(_font(px, True)).horizontalAdvance(cell.caption) > cap.width() - 12:
+                px -= 1
+            p.setFont(_font(px, True))
+            p.setPen(INK)
+            p.drawText(cap, Qt.AlignCenter, QFontMetrics(_font(px, True)).elidedText(cell.caption, Qt.ElideRight, int(cap.width() - 12)))
+        rect = rect.adjusted(0, cap_h, 0, 0)
+    box = rect.adjusted(CELL_PAD, CELL_PAD, -CELL_PAD, -CELL_PAD)
+    if cell.image is None:
         p.setFont(_font(15))
         p.setPen(MUTED)
         p.drawText(box, Qt.AlignCenter | Qt.TextWordWrap, "그림을 읽지 못한 파일")
         return
     if box.width() <= 0 or box.height() <= 0:
         return
+    image = cell.image
     scale = min(box.width() / image.width(), box.height() / image.height())
     w, h = image.width() * scale, image.height() * scale
     target = QRectF(box.center().x() - w / 2, box.center().y() - h / 2, w, h)      # 가운데(담당자 2026-10-27)
     p.drawImage(target, image)
 
 
-def _grid_height(cells: _Cells, width: float, row_h: float) -> float:
-    return rows_for(len(cells.items), cells.cols) * row_h
-
-
-def _draw_grid(p: QPainter, rect: QRectF, cells: _Cells, start: int, count: int, row_h: float) -> None:
-    col_w = rect.width() / cells.cols
-    for k in range(count):
-        image, caption = cells.items[start + k]
-        r, c = divmod(k, cells.cols)
+def _draw_grid(p: QPainter, rect: QRectF, cells: list[_Cell], grid: _Grid) -> None:
+    """줄마다 실제 높이로 위에서부터 — 설명 글 바로 아래에 증빙. 줄 안에서는 가운데."""
+    col_w = rect.width() / grid.cols
+    cap_h = _caption_h(cells)
+    heights = _row_heights(cells, rect.width(), rect.height(), grid)
+    y = rect.top()
+    for r, row_h in enumerate(heights):
+        row = cells[r * grid.cols:(r + 1) * grid.cols]
         # 마지막 줄이 덜 차면 그 줄을 가운데로
-        in_row = min(cells.cols, count - r * cells.cols)
-        left = rect.left() + (cells.cols - in_row) * col_w / 2
-        _draw_cell(p, QRectF(left + c * col_w, rect.top() + r * row_h, col_w, row_h), image, caption)
+        left = rect.left() + (grid.cols - len(row)) * col_w / 2
+        for c, cell in enumerate(row):
+            _draw_cell(p, QRectF(left + c * col_w, y, col_w, row_h), cell, cap_h)
+        y += row_h
 
 
 def render(pages: list[Page], out: Path) -> int:
-    """쪽들을 out 에 쓰고 실제 쪽 수를 돌려준다. 흘려 담는 묶음이 한 쪽에 안 들어가면 같은 머리 줄로 다음 쪽에 이어 그린다."""
+    """쪽들을 out 에 쓰고 실제 쪽 수를 돌려준다. 쪽 짜임 하나가 증빙이 잘 보이게 한 쪽에 안 들어가면 같은 머리 줄 '(계속)' 으로 다음 쪽에 이어 그린다."""
     writer = QPdfWriter(str(out))
     writer.setResolution(DPI)
     writer.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Portrait, QMarginsF(0, 0, 0, 0)))
@@ -275,6 +538,7 @@ def render(pages: list[Page], out: Path) -> int:
     size = QSizeF(writer.width(), writer.height())
     frame = QRectF(MARGIN, MARGIN, size.width() - 2 * MARGIN, size.height() - 2 * MARGIN)
     cache: dict = {}
+    needs: dict = {}
     count = 0
 
     def new_page(page: Page, cont: bool) -> float:
@@ -299,43 +563,26 @@ def render(pages: list[Page], out: Path) -> int:
 
     inner_left, inner_w = frame.left() + 16, frame.width() - 32
     bottom = frame.bottom() - 12
+    full_room = bottom - (frame.top() + HEAD_H + GAP)
     for page in pages:
+        cells_of = [_cells(block, cache, needs) for block in page.blocks]
+        titles = [block.title for block in page.blocks]
         y = new_page(page, False)
-        all_cells = [_Cells(block, cache) for block in page.blocks]
-        for index, block in enumerate(page.blocks):
-            cells = all_cells[index]
-            title_h = TITLE_H + GAP if block.title else 0
-            if block.fill:
-                # 남은 높이를 이 묶음과 뒤의 남은 높이 묶음(출장지 여러 곳의 체류)이 줄 수만큼 나눠 쓴다 — 너무 좁으면 새 쪽에서
-                rest = [i for i in range(index, len(page.blocks)) if page.blocks[i].fill]
-                titles = sum(TITLE_H + GAP for i in rest if page.blocks[i].title)
-                weights = [rows_for(len(all_cells[i].items), all_cells[i].cols) if all_cells[i].items else 0 for i in rest]
-                if (bottom - y - titles) / max(1, sum(1 for w in weights if w)) < 220:
-                    y = new_page(page, True)
-                share = (bottom - y - titles - GAP * (len(rest) - 1)) * (weights[0] / sum(weights)) if sum(weights) else 0
+        plan = _plan(cells_of, titles, inner_w, bottom - y, full_room)
+        for n, slots in enumerate(plan):
+            if n:
+                y = new_page(page, True)
+            _allot(slots, cells_of, titles, inner_w, bottom - y)
+            for slot in slots:
+                block = page.blocks[slot.block]
                 if block.title:
-                    _draw_bar(painter, QRectF(inner_left, y, inner_w, TITLE_H), block.title, 17, SOFT)
-                    y += title_h
-                if cells.items:
-                    rows = rows_for(len(cells.items), cells.cols)
-                    _draw_grid(painter, QRectF(inner_left, y, inner_w, share), cells, 0, len(cells.items), share / rows)
-                y += share + (GAP if len(rest) > 1 else 0)
-                continue
-            row_h = min(ROW_MAX, inner_w / cells.cols * 1.35)
-            start = 0
-            first = True
-            while first or start < len(cells.items):
-                room_rows = int((bottom - y - (title_h if first else 0)) // row_h)
-                if room_rows < 1:
-                    y = new_page(page, True)
-                    continue
-                if block.title:
-                    _draw_bar(painter, QRectF(inner_left, y, inner_w, TITLE_H), block.title if first else [block.title[0] + " (계속)"] + block.title[1:], 17, SOFT)
-                    y += title_h
-                first = False
-                take = min(len(cells.items) - start, room_rows * cells.cols)
-                _draw_grid(painter, QRectF(inner_left, y, inner_w, row_h * rows_for(take, cells.cols)), cells, start, take, row_h)
-                y += row_h * rows_for(take, cells.cols) + GAP
-                start += take
+                    title = block.title if slot.start == 0 else [block.title[0] + " (계속)"] + block.title[1:]
+                    _draw_bar(painter, QRectF(inner_left, y, inner_w, TITLE_H), title, 17, SOFT)
+                    y += TITLE_H + GAP
+                if slot.count:
+                    cells = cells_of[slot.block][slot.start:slot.start + slot.count]
+                    _draw_grid(painter, QRectF(inner_left, y, inner_w, slot.room_h), cells, best_grid(cells, inner_w, slot.room_h))
+                    y += slot.room_h
+                y += GAP
     painter.end()
     return count
