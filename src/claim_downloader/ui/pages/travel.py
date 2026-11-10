@@ -43,9 +43,10 @@ from PySide6.QtWidgets import (
 )
 
 from ... import settings
-from ...travel import application, model
+from ...travel import application, fuels, model
 from ..art import Art
 from ..tokens import COLORS
+from ..travel_fuel_card import fuel_box
 from ..travel_preview import MAKE as PREVIEW_MAKE
 from ..travel_preview import TravelPreview
 from ..flow import CURRENT, DONE, HIDDEN, OPEN, FlowArea, FlowStep
@@ -658,17 +659,12 @@ class TravelPage(QWidget):
         for name in drivers:
             if name in self.fuel_boxes:
                 continue
-            box = QComboBox()
-            box.addItem("연료 고르기", "")
-            for fuel in FUELS:
-                box.addItem(fuel, fuel)
             # 설정의 '출장 차량 연료' 에 그 이름이 있으면 미리 고른다(이름으로 사람을 구별 — 담당자 2026-11-10)
             saved = model.parse_fuels(settings.load().travel_fuels).get(name, "")
             if saved and not self._fuel_of.get(name):
                 self._fuel_of[name] = saved
-                if box.findData(saved) < 0:
-                    box.addItem(saved, saved)
-            box.setCurrentIndex(max(box.findData(self._fuel_of.get(name, "")), 0))
+            # 보기는 ERP 출장 교통비 창의 '연비/전비/수소' 보기(travel/fuels.py — 화면 구조 기록에서)
+            box = fuel_box(fuels.options()[0], self._fuel_of.get(name, ""))
             box.currentIndexChanged.connect(lambda _i, n=name, b=box: self._set_fuel(n, b.currentData() or ""))
             holder = QWidget()
             line = QHBoxLayout(holder)
@@ -932,6 +928,12 @@ class TravelPage(QWidget):
         self.review_label.setText(self._review_text(merged, names, scan))
         if merged:
             self.log(application.log_line(merged, self._apps))
+            for app in apps:
+                if app.shape and (merged.start is None or not merged.places):
+                    # 못 읽은 칸이 있으면 그 신청서의 글 모양(이름 · 곳은 □) — 기록을 받아 읽는 꼴을 넓힌다
+                    self.log(f"출장신청서 글 모양 — {app.path.name} (칸 이름 · 숫자만, 다른 글자는 □):")
+                    for line in app.shape:
+                        self.log("  | " + line)
         else:
             self.log(f"출장신청서 없음: {path.name} — 증빙 파일 이름으로 출장자 {len(names)}명")
         self._go("review")

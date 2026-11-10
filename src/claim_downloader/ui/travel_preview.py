@@ -26,8 +26,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..travel import model
+from ..travel import fuels, model
 from .tokens import COLORS
+from .travel_fuel_card import fuel_box
 from .widgets import Pill, WrapLabel
 
 MAKE = 2                 # 대화창 결과 — [이대로 만들기]
@@ -453,14 +454,7 @@ class TravelPreview(QDialog):
             form.addRow(f"{label} (km)", edit)
             kms[key] = edit
         self._editor_fields["kms"] = kms
-        fuel = QComboBox()
-        fuel.addItem("연료 고르기", "")
-        for name in model.FUELS:
-            fuel.addItem(name, name)
-        current = self.source.fuel_of(driver)
-        if current and fuel.findData(current) < 0:
-            fuel.addItem(current, current)
-        fuel.setCurrentIndex(max(fuel.findData(current), 0))
+        fuel = fuel_box(fuels.options()[0], self.source.fuel_of(driver))
         if "연료" in flagged:
             fuel.setStyleSheet(_flag_style())
         form.addRow("차량 연료", fuel)

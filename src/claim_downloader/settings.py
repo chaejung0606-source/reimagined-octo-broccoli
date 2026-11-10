@@ -88,6 +88,8 @@ class Settings:
     # 출장자 이름마다 차량 연료 — 한 줄에 '이름=연료'(담당자 2026-11-10 "설정에서 연료 종류 설정할 수 있도록" · "이름으로 사람을 구별").
     # 출장증빙의 자차 쪽에 적고, 출장증빙 화면에서 고르면 여기에도 남는다(travel.model.parse_fuels)
     travel_fuels: str = ""
+    # 연료 보기 — ERP 출장명령부(국내)교통비 창의 '연비/전비/수소' 보기를 화면 구조 기록에서 찾아 '|' 로 이어 남긴 것(travel/fuels.py)
+    travel_fuel_options: str = ""
     # 주차등록 사이트(parking.py) — 담당자 요청 2026-10-21. 로그인 정보는 여기가 아니라 _주차로그인.json(비밀번호는 윈도우 DPAPI 로 감쌈)에
     parking_url: str = "https://traffic.kangwon.ac.kr/login"
     parking_auto_login: bool = True        # 로그인 정보가 있으면 사이트를 열 때 한 번 자동 로그인(담당자 허락 2026-10-21)

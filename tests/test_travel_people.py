@@ -107,6 +107,31 @@ TWO_ROWS = """출장 계획서
 """
 
 
+@pytest.mark.parametrize("text", [
+    # 공문식 — 가. 나. 다. 번호(2026-11-10 실제 신청서에서 기간 · 출장지를 못 읽음)
+    "국내 출장 신청서\n가. 출 장 자: 연구원 홍길동\n나. 출장기간: 2026. 11. 10.(화) ~ 11. 12.(목) [3일간]\n다. 출 장 지: 연세대학교 원주캠퍼스\n라. 출장목적: 협의",
+    # 칸 이름이 먼저 다 나오고 값이 아래에 차례로(표를 PDF 로 저장하면 이렇게 읽히기도 한다)
+    "출장신청서\n출장자\n출장기간\n출장지\n출장목적\n연구원 홍길동\n2026. 11. 10. ~ 2026. 11. 12.\n연세대학교 원주캠퍼스\n협의",
+    # 한 줄 머리 + 값 줄 · 해 없는 기간(신청일의 해로)
+    "출장신청서 신청일 2026. 11. 3.\n출장자 연구원 홍길동\n출장기간 출장지\n11. 10.(화) ~ 11. 12.(목)\n출장지 연세대학교 원주캠퍼스",
+    # 숫자를 한 글자씩 띄운 PDF · 날짜가 두 줄에 · '부터'
+    "출 장 기 간\n2 0 2 6 . 1 1 . 1 0 . 09:00 부터\n2 0 2 6 . 1 1 . 1 2 . 18:00 까지\n출 장 지 연세대학교 원주캠퍼스\n출장자 연구원 홍길동",
+])
+def test_application_reads_period_and_place_in_other_layouts(text):
+    app = application.parse_text(text)
+    assert (app.start, app.end) == (date(2026, 11, 10), date(2026, 11, 12)), application.shape(text)
+    assert app.places == ["연세대학교 원주캠퍼스"]
+    assert app.travelers == ["홍길동"]
+
+
+def test_shape_hides_names_and_places_but_keeps_labels_and_dates():
+    lines = application.shape("가. 출 장 자: 연구원 홍길동\n나. 출장기간: 2026. 11. 10.(화) ~ 11. 12.(목)\n다. 출장지: 연세대학교 원주캠퍼스\n"
+                              "연락처 01012345678")
+    text = "\n".join(lines)
+    assert "홍길동" not in text and "연세대학교" not in text and "01012345678" not in text
+    assert "출장기간" in text and "2026. 11. 10.(화) ~ 11. 12.(목)" in text and "연구원" in text and "□□□" in text
+
+
 def test_application_with_several_trips_picks_by_folder_date():
     """담당자 2026-11-10 "그럴땐 저장폴더명에 있는 날짜를 기준으로 출장증빙 생성"."""
     app = application.parse_text(TWO_FORMS)
@@ -552,6 +577,42 @@ def test_several_folders_one_after_another(qapp, tmp_path, isolated_home, monkey
     assert list(Path(second).glob("홍길동 출장증빙_26.11.10.pdf")) and page.next_button.isHidden()
     page._go("folder")
     assert page.start_button.text() == "모두 만들었습니다" and not page.start_button.isEnabled()
+
+
+STRUCTURE = """════ 화면 구조 3번째 ════
+창 1 — 출장명령부(국내)교통비
+  프레임 0: https://knu-icf.kangwon.ac.kr/rcomm_0027_07.act
+<input radio>  #TRIP_CHANGE  name=TRIP_CHANGE  값: 1  라벨: 자차
+<select>  #TRIP_FUEL  name=TRIP_FUEL  라벨: 연비/전비/수소  값: 수소  보기: 연비/전비/수소 | 휘발유 | 경유 | LPG | 전기 | 수소  [비활성]
+<select>  #TRIP_GRAD  name=TRIP_GRAD  보기: 연비/전비/수소 | 휘발유 | 경유
+<select>  #CAR_USE  name=CAR_USE  보기: 선택 | 하중이 무거운 수하물을 운송해야 하는 경우
+"""
+
+
+def test_fuel_options_come_from_erp_structure_record(isolated_home):
+    """담당자 2026-11-10 "연료는 erp에서 출장 교통비 세부내역 작성할 때 연비/전비/수소에 있는 항목 중에 선택 … 화면구조저장 … 기록 찾아서"."""
+    from claim_downloader import settings
+    from claim_downloader.travel import fuels
+    assert fuels.from_text(STRUCTURE) == ["휘발유", "경유", "LPG", "전기", "수소"]            # 안내 글 '연비/전비/수소' 는 보기가 아니다
+    assert fuels.from_text("<select>  #X  라벨: 연비/전비/수소  보기: 선택 | 하이브리드 | 수소") == ["하이브리드", "수소"]
+    assert fuels.from_text("<select>  #CAR_USE  보기: 선택 | 무거운 짐") == []
+    options, source = fuels.options()
+    assert options == list(model.FUELS) and "찾지 못해" in source                      # 기록이 없으면 기본 보기
+    settings.data_dir().mkdir(parents=True, exist_ok=True)
+    settings.structure_book_path().write_text(STRUCTURE, encoding="utf-8")
+    options, source = fuels.options()
+    assert options == ["휘발유", "경유", "LPG", "전기", "수소"] and "_화면구조_모음.txt" in source
+    settings.structure_book_path().unlink()                                          # 모음이 새로 시작해도 남겨 둔 보기로
+    assert fuels.options()[0] == ["휘발유", "경유", "LPG", "전기", "수소"] and settings.load().travel_fuel_options
+
+
+def test_fuel_box_shows_whole_option_text(qapp):
+    """설정의 연료 칸이 '…' 로만 보이던 것(담당자 2026-11-10 그림) — 칸 · 펼친 목록 폭을 글자만큼."""
+    from claim_downloader.ui.travel_fuel_card import fuel_box
+    box = fuel_box(["휘발유", "경유", "전기(전비)"], "경유")
+    assert box.currentData() == "경유" and box.count() == 4
+    width = box.fontMetrics().horizontalAdvance("전기(전비)")
+    assert box.view().minimumWidth() >= width and box.sizeHint().width() >= width
 
 
 def test_settings_fuel_card(qapp, isolated_home):

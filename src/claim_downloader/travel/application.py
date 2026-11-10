@@ -26,7 +26,7 @@ UNREADABLE = (".hwp", ".doc", ".docx", ".jpg", ".jpeg", ".png")
 LABELS = {
     "travelers": ("출장자명", "출장자", "출장인원", "출장인", "동행자", "출장대상자", "성명"),
     "period": ("출장기간", "출장일시", "출장일자", "출장일정", "기간", "일시", "일정"),
-    "place": ("출장지역", "출장장소", "출장지", "목적지", "출장처", "방문지", "방문처", "장소"),
+    "place": ("출장지역", "출장장소", "출장지", "목적지", "출장처", "방문지", "방문처", "방문기관", "출장기관", "행선지", "용무지", "장소"),
     "purpose": ("출장목적", "출장사유", "목적", "용무", "사유"),
     "origin": ("출발지",),
 }
@@ -89,6 +89,7 @@ class Application:
     trips: list[TripEntry] = field(default_factory=list)   # 신청서에 적힌 출장들 — 둘 이상이면 폴더 이름의 날짜로 고른다
     chosen: int = 0
     everyone: list[str] = field(default_factory=list)      # 모든 출장의 출장자(고른 출장에 출장자가 따로 없을 때)
+    shape: list[str] = field(default_factory=list)         # 못 읽은 칸이 있을 때 글 모양(이름 가림) — 기록에 남긴다
 
     @property
     def destination(self) -> str:
@@ -157,7 +158,8 @@ def _label_re(label: str) -> str:
     return r"\s*".join(re.escape(ch) for ch in label)
 
 
-_LEAD = r"^[\s\d.()\[\]①-⑳□■○●◎▶▷·\-*]*"
+# 줄 머리의 번호 · 기호 — '1.' · '①' · '○' 와 공문의 '가.' '나)' 도(2026-11-10 실제 신청서에서 기간 · 출장지를 못 읽음)
+_LEAD = r"^[\s\d.()\[\]①-⑳□■○●◎▶▷·\-*]*(?:[가나다라마바사아자차카타파하]\s*[.)]\s*)?"
 
 
 def _match_label(line: str) -> tuple[str, str] | None:
@@ -202,24 +204,51 @@ def _value(lines: list[str], i: int, rest: str, more: int = 0, people: bool = Fa
     return " ".join(parts).strip()
 
 
-def parse_period(text: str) -> tuple[date | None, date | None]:
-    """'2026. 11. 10.(화) 09:00 ~ 2026. 11. 12.(목)' · '2026-11-10 ~ 11-12' · '2026.11.10' → (시작, 끝)."""
+_WIDE = str.maketrans("０１２３４５６７８９．～：（）－／", "0123456789.~:()-/")
+
+
+def _normalize(text: str) -> str:
+    """PDF 글자 고르기 — 전각 숫자 · 기호를 반각으로, 한 글자씩 띄운 숫자('2 0 2 6 . 1 1 . 1 0')는 붙인다(한글에서 PDF 로 저장하면 그렇게 나오기도 한다)."""
+    text = (text or "").translate(_WIDE)
+    if re.search(r"(?<!\d)\d \d \d \d(?!\d)", text):
+        text = re.sub(r"(?<!\d)\d(?: \d)+(?!\d)", lambda m: m.group(0).replace(" ", ""), text)
+    return text
+
+
+# 해가 없는 기간 — '11. 10.(화) ~ 11. 12.(목)' · '11월 10일 ~ 12일' · '11.10 부터 11.12'
+_MD_RANGE = re.compile(r"(?<![\d.])(\d{1,2})\s*[.월/]\s*(\d{1,2})\s*일?[^~∼〜\n]{0,24}?(?:[~∼〜]|부터)\s*(?:(\d{1,2})\s*[.월/]\s*)?(\d{1,2})(?!\d)")
+
+
+def parse_period(text: str, year: int | None = None) -> tuple[date | None, date | None]:
+    """'2026. 11. 10.(화) 09:00 ~ 2026. 11. 12.(목)' · '2026-11-10 ~ 11-12' · '2026.11.10' → (시작, 끝).
+    해가 없는 꼴('11. 10. ~ 11. 12.')은 year(신청서의 다른 날짜 · 폴더 날짜의 해)가 있을 때만."""
+    text = _normalize(text)
     full = [(_make(*(int(g) for g in m.groups())), m.end()) for m in _FULL_DATE.finditer(text or "")]
     full = [(d, end) for d, end in full if d]
     if not full:
-        return None, None
+        m = _MD_RANGE.search(text or "") if year else None
+        if not m:
+            return None, None
+        start = _make(year, int(m.group(1)), int(m.group(2)))
+        if start is None:
+            return None, None
+        month = int(m.group(3)) if m.group(3) else start.month
+        end = _make(year, month, int(m.group(4)))
+        if end and end < start:
+            end = _make(year + 1, month, int(m.group(4)))
+        return start, end or start
     start, after = full[0]
     if len(full) > 1:
         return start, full[1][0]
-    # 끝 날에 해가 없는 꼴 — '~ 11. 12.' · '~ 11월 12일' · '~ 12일'
+    # 끝 날에 해가 없는 꼴 — '~ 11. 12.' · '~ 11월 12일' · '~ 12일' · '부터 11. 12.'
     tail = (text or "")[after:]
-    m = re.search(r"[~∼〜]\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})", tail)
+    m = re.search(r"(?:[~∼〜]|부터)\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})", tail)
     if m:
         end = _make(start.year, int(m.group(1)), int(m.group(2)))
         if end and end < start:
             end = _make(start.year + 1, int(m.group(1)), int(m.group(2)))
         return start, end or start
-    m = re.search(r"[~∼〜]\s*(\d{1,2})\s*일", tail)
+    m = re.search(r"(?:[~∼〜]|부터)\s*(\d{1,2})\s*일", tail)
     if m:
         return start, _make(start.year, start.month, int(m.group(1))) or start
     return start, start
@@ -286,11 +315,93 @@ def vague_place(place: str) -> str:
     return ""
 
 
+_NOT_PERIOD = ("신청일", "작성일", "기안일", "시행일", "접수", "등록일", "제출일", "결재일")
+
+
+def _label_keys(line: str) -> list[str]:
+    """줄 전체가 칸 이름들뿐이면 그 칸들(표의 머리 줄 '출장기간 출장지 출장목적'), 아니면 []."""
+    keys, rest = [], line
+    while rest.strip():
+        hit = _match_label(rest)
+        if not hit:
+            return []
+        keys.append(hit[0])
+        if hit[1] == rest:
+            return []
+        rest = hit[1]
+    return keys
+
+
+def _header_runs(lines: list[str]) -> list[tuple[int, int, list[str]]]:
+    """칸 이름만 있는 줄이 이어진 곳(표의 칸 이름이 먼저 다 나오고 값이 그 아래에 차례로 나오는 PDF) — (시작, 끝, 칸들)."""
+    runs, i = [], 0
+    while i < len(lines):
+        keys, j = [], i
+        while j < len(lines) and _label_keys(lines[j]):
+            keys += _label_keys(lines[j])
+            j += 1
+        if len(keys) >= 2:
+            runs.append((i, j, keys))
+            i = j
+        else:
+            i += 1
+    return runs
+
+
+def _column_values(lines: list[str]) -> dict[str, str]:
+    """칸 이름이 먼저 다 나오고 값이 아래에 차례로 나오는 표 — 값 줄을 칸 차례에 맞추되, 날짜가 든 줄을 기간 칸에 맞춘다."""
+    out: dict[str, str] = {}
+    for _start, end, keys in _header_runs(lines):
+        values = []
+        k = end
+        while k < len(lines) and len(values) < len(keys) + 8 and not _label_keys(lines[k]):
+            if not any(w in _squash(lines[k]) for w in APPROVAL_WORDS):
+                values.append(lines[k])
+            k += 1
+        offset = 0
+        if "period" in keys:
+            dated = next((n for n, v in enumerate(values) if _FULL_DATE.search(_normalize(v)) or _MD_RANGE.search(_normalize(v))), None)
+            if dated is not None:
+                offset = dated - keys.index("period")
+        for n, key in enumerate(keys):
+            idx = n + offset
+            if 0 <= idx < len(values) and key not in out:
+                out[key] = values[idx]
+    return out
+
+
+def _find_period(lines: list[str], year: int | None) -> tuple[date | None, date | None]:
+    """칸 이름으로 못 찾은 기간 — ① 한 줄의 '날짜 ~ 날짜' ② 몇 줄에 나뉜 날짜 둘 ③ 해 없는 '11. 10. ~ 11. 12.'. 신청일 · 결재 줄은 뺀다."""
+    usable = [_normalize(line) for line in lines
+              if not any(w in _squash(line) for w in APPROVAL_WORDS + _NOT_PERIOD)]
+    for line in usable:
+        m = _RANGE.search(line)
+        if m:
+            found = parse_period(m.group(1))
+            if found[0]:
+                return found
+    for i in range(len(usable)):
+        joined = " ".join(usable[i:i + 3])
+        if len(_FULL_DATE.findall(joined)) >= 2 and (_FULL_DATE.search(usable[i])):
+            found = parse_period(joined)
+            if found[0] and found[1] and found[1] >= found[0] and (found[1] - found[0]).days <= 60:
+                return found
+    for line in usable:
+        if _MD_RANGE.search(line):
+            found = parse_period(line, year)
+            if found[0]:
+                return found
+    return None, None
+
+
 def _parse_lines(lines: list[str], path: Path | None = None) -> Application:
     """출장 하나의 글 줄들 → Application. 칸 이름이 있으면 그 값, 없으면 표 모양(직급 + 이름)과 날짜 범위로."""
     app = Application(path=path or Path("출장신청서"))
     traveler_values: list[str] = []
+    in_header = {n for start, end, _keys in _header_runs(lines) for n in range(start, end)}
     for i, line in enumerate(lines):
+        if i in in_header:
+            continue                                  # 표의 칸 이름 줄 — 값은 _column_values 가 맞춘다
         hit = _match_label(line)
         if not hit:
             continue
@@ -317,6 +428,21 @@ def _parse_lines(lines: list[str], path: Path | None = None) -> Application:
             app.origin = _value(lines, i, rest)[:MAX_PLACE]
             if app.origin:
                 app.found.append("출발지")
+    columns = _column_values(lines) if in_header else {}
+    if columns.get("travelers"):
+        traveler_values.append(columns["travelers"])
+    if app.start is None and columns.get("period"):
+        start, end = parse_period(columns["period"])
+        if start:
+            app.start, app.end = start, end
+            app.found.append("출장기간")
+    if not app.places and columns.get("place") and not _FULL_DATE.search(columns["place"]):
+        app.places = clean_place(columns["place"])
+        if app.places:
+            app.found.append("출장지")
+    if not app.purpose and columns.get("purpose"):
+        app.purpose = columns["purpose"][:120]
+        app.found.append("목적")
     for value in traveler_values:
         more = _MORE.search(value)
         if more and app.expected is None:
@@ -329,16 +455,11 @@ def _parse_lines(lines: list[str], path: Path | None = None) -> Application:
     if app.travelers:
         app.found.insert(0, "출장자")
     if app.start is None:
-        # 칸 이름 없이 날짜 범위만 적힌 신청서 — '날짜 ~ 날짜' 꼴 하나
-        for line in lines:
-            if any(w in _squash(line) for w in APPROVAL_WORDS):
-                continue
-            m = _RANGE.search(line)
-            if m:
-                app.start, app.end = parse_period(m.group(1))
-                if app.start:
-                    app.found.append("출장기간")
-                    break
+        # 칸 이름으로 못 찾았으면 날짜 범위로 — 해가 없는 꼴은 신청서에 적힌 다른 날짜(신청일 등)의 해로
+        years = [int(m.group(1)) for line in lines for m in _FULL_DATE.finditer(_normalize(line))]
+        app.start, app.end = _find_period(lines, years[0] if years else None)
+        if app.start:
+            app.found.append("출장기간")
     if not app.travelers:
         app.notes.append("출장자 이름을 찾지 못했습니다 — 직접 적어 주세요")
     elif app.expected and app.expected != len(app.travelers):
@@ -436,7 +557,7 @@ def _add_trip(trips: list[TripEntry], trip: TripEntry) -> None:
 
 def parse_text(text: str, path: Path | None = None) -> Application:
     """출장신청서 글자 → Application. 출장이 여럿이면(양식이 되풀이되거나 표에 줄마다) trips 에 모두 — 고르기는 select."""
-    lines = _lines(text)
+    lines = _lines(_normalize(text))
     parts = [_parse_lines(group, path) for group in _groups(lines)]
     app = parts[0]
     trips: list[TripEntry] = []
@@ -540,6 +661,32 @@ def select(app: Application | None, folder: Path | str) -> Application | None:
     return app
 
 
+# 글 모양에 남길 낱말 — 칸 이름 · 직급 · 흔한 양식 글자(사람 이름 · 곳 이름은 □ 로)
+_KEEP = ({w for words in LABELS.values() for w in words} | set(POSITIONS) | NOT_NAMES | set(VAGUE_WORDS) | set(APPROVAL_WORDS)
+         | set(_NOT_PERIOD) | {"신청서", "출장신청서", "출장명령서", "출장계획서", "일간", "부터", "까지", "요일", "박", "일", "월", "년", "시", "분"}
+         | set("월화수목금토일"))
+_LABEL_CHARS = set("".join(w for words in LABELS.values() for w in words))
+
+
+def shape(text: str, limit: int = 45) -> list[str]:
+    """신청서의 글 모양 — 못 읽은 칸이 있을 때 기록에 남겨 어떤 꼴인지 본다(담당자 2026-11-10 "출장기간과 목적지를 못 읽네요").
+    칸 이름 · 직급 · 양식 글자 · 숫자 · 기호만 남기고 다른 한글(이름 · 곳 · 목적)은 □, 7자리 넘는 숫자는 #."""
+    def mask(m: re.Match) -> str:
+        word = m.group(0)
+        if word in _KEEP or (len(word) == 1 and word in _LABEL_CHARS):
+            return word
+        for keep in _KEEP:
+            if len(keep) >= 2 and word.startswith(keep) and len(word) - len(keep) <= 1:
+                return word
+        return "□" * len(word)
+    out = []
+    for line in _lines(_normalize(text))[:limit]:
+        line = re.sub(r"[가-힣]+", mask, line)
+        line = re.sub(r"[A-Za-z]{2,}", lambda m: "a" * len(m.group(0)), line)
+        out.append(re.sub(r"\d{7,}", lambda m: "#" * len(m.group(0)), line)[:140])
+    return out
+
+
 def read(path: Path) -> Application:
     suffix = path.suffix.lower()
     if suffix not in READABLE:
@@ -551,7 +698,10 @@ def read(path: Path) -> Application:
         app = Application(path=path)
         app.notes.append(f"{path.name}: 글자를 읽지 못했습니다(스캔한 그림 PDF 일 수 있습니다) — 출장 정보를 직접 적어 주세요")
         return app
-    return parse_text(text, path)
+    app = parse_text(text, path)
+    if app.start is None or not app.places:
+        app.shape = shape(text)
+    return app
 
 
 def merge(apps: list[Application]) -> Application | None:

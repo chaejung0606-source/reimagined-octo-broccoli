@@ -17,8 +17,23 @@ from PySide6.QtWidgets import (
 )
 
 from .. import settings
-from ..travel import model
-from .widgets import Card
+from ..travel import fuels, model
+from .widgets import Card, WrapLabel
+
+
+def fuel_box(options: list[str], current: str = "", placeholder: str = "연료 고르기") -> QComboBox:
+    """연료 고르기 칸 — 보기 글자가 잘리지 않게(표 칸 안에서 '…' 로만 보이던 것, 담당자 2026-11-10 그림) 칸과 펼친 목록 폭을 글자만큼."""
+    box = QComboBox()
+    box.addItem(placeholder, "")
+    for option in options:
+        box.addItem(option, option)
+    if current and box.findData(current) < 0:
+        box.addItem(current, current)
+    box.setCurrentIndex(max(box.findData(current), 0))
+    box.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+    box.setMinimumContentsLength(max(6, max((len(o) for o in options), default=6)))
+    box.view().setMinimumWidth(box.view().sizeHintForColumn(0) + 32)
+    return box
 
 
 class TravelFuelCard(Card):
@@ -30,11 +45,16 @@ class TravelFuelCard(Card):
         self.table.setHorizontalHeaderLabels(("이름", "연료"))
         self.table.verticalHeader().hide()
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.options, source = fuels.options()
+        self.source_label = WrapLabel(source)
+        self.source_label.setObjectName("muted")
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Interactive)
+        self.table.setColumnWidth(1, max(180, fuel_box(self.options).sizeHint().width() + 24))
         self.table.setMinimumHeight(120)
         self.table.itemChanged.connect(lambda _item: self._save())
         self.add(self.table)
+        self.add(self.source_label)
         row = QHBoxLayout()
         add = QPushButton("사람 추가")
         add.clicked.connect(lambda: self._add_row("", ""))
@@ -55,15 +75,10 @@ class TravelFuelCard(Card):
         self.table.blockSignals(True)
         self.table.insertRow(row)
         self.table.setItem(row, 0, QTableWidgetItem(name))
-        box = QComboBox()
-        box.addItem("연료 고르기", "")
-        for option in model.FUELS:
-            box.addItem(option, option)
-        if fuel and box.findData(fuel) < 0:
-            box.addItem(fuel, fuel)
-        box.setCurrentIndex(max(box.findData(fuel), 0))
+        box = fuel_box(self.options, fuel)
         box.currentIndexChanged.connect(lambda _i: self._save())
         self.table.setCellWidget(row, 1, box)
+        self.table.setRowHeight(row, box.sizeHint().height() + 6)
         self.table.blockSignals(False)
         if not name:
             self.table.editItem(self.table.item(row, 0))
