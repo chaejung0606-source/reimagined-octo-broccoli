@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -115,6 +116,19 @@ def page_text(page) -> str:
     return "\n".join(out)
 
 
+def search_queries(text: str) -> list[str]:
+    """검색어 차례 — 그대로 → 괄호를 뺀 것 → 괄호 속(지역)을 앞에 둔 것. 출장신청서의 출장지가 '강원가명정보활용지원센터 (원주)' 꼴이다(2026-11-10)."""
+    text = (text or "").strip()
+    out = [text]
+    inside = re.findall(r"\(([^)]*)\)", text)
+    bare = re.sub(r"\s*\([^)]*\)\s*", " ", text).strip()
+    if bare and bare != text:
+        out.append(bare)
+        if inside and inside[0].strip():
+            out.append(f"{inside[0].strip()} {bare}")
+    return list(dict.fromkeys(q for q in out if q))
+
+
 def search_place(page, query: str) -> tuple[Place | None, str]:
     """네이버 지도 검색으로 곳 하나 — (곳, 까닭). 결과가 없으면 (None, '검색 결과 없음')."""
     try:
@@ -143,8 +157,12 @@ def find_route(page, origin: str, goal: str, out: Path, log: Callable[[str], Non
         wait(1.5)
     places = []
     for query in (origin, goal):
-        place, why = search_place(page, query)
-        result.steps.append(f"검색 '{query}' → {place.name if place else why}")
+        place, why = None, ""
+        for attempt in search_queries(query):          # 괄호 든 곳('…센터 (원주)')은 괄호를 빼고 · 괄호 속 지역을 앞에 두고 한 번 더
+            place, why = search_place(page, attempt)
+            result.steps.append(f"검색 '{attempt}' → {place.name if place else why}")
+            if place is not None or why != "검색 결과 없음":
+                break
         if place is None:
             result.note = f"'{query}' 를 네이버 지도에서 찾지 못했습니다 ({why})"
             if why == "검색 결과 없음":

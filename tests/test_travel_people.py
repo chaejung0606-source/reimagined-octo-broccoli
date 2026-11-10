@@ -124,6 +124,75 @@ def test_application_reads_period_and_place_in_other_layouts(text):
     assert app.travelers == ["홍길동"]
 
 
+# 실제 신청서(2026-11-10 담당자가 보낸 PDF — 한글에서 PDF 로 저장한 내부결재 공문)를 pypdf 로 읽은 줄 차례를 그대로 본뜬 것. 이름 · 곳 · 메일은 바꿨다.
+GONGMUN = """『실사구시(實事求是)』
+가나대학교
+HRHFB261020UF0000000642231001101
+수신 내부결재
+결
+재
+비전임산
+학협력중
+점교수
+데이터보안·
+활용혁신융
+합대학사업
+부단장
+(경유)
+ 2026.10.20.
+부서명 데이터보안 ·활용혁신융합대학사업단
+국내 출장신청서
+  끝.
+협조자
+시행 데이터보안 ·활용혁신융합대학사업단-3699 ( ) 접수 ( )
+우 24341 강원특별자치도 춘천시 효자동 가나대학길 1 (효자동) / www.example.ac.kr
+전화번호 팩스번호 / someone@example.com / 공개
+하나 된 가나대, 청렴으로 여는 고등교육의 미래
+다음과 같이 출장을 명함
+소속 직급 성명 출장내용 출장기간 출장지
+여비지급
+대상여부
+데이터보안·활
+용혁신융합대학
+사업단
+비전임산학협력
+중점교수 홍길동
+비교과 교육과정 운
+영을 위한 합성데이
+터 제공 협의
+2026.10.20. (화) 09:00 가나다라정보
+활용지원센터
+(원주)
+예~
+2026.10.20. (화) 18:00
+출장목적 업무회의
+이동사항 및
+출장비고
+출장추가비고
+회계구분 지급기관
+연구비
+지급
+공용차량
+이용
+"""
+
+
+def test_reads_real_gongmun_table_layout():
+    """담당자 2026-11-10 "여기 PDF파일을 읽으면 되는데 뭐가 문제인가요" — 표 칸이 칸마다 줄을 바꿔 나와, 출장지가 기간 줄들 사이에 끼고
+    '예'(여비지급 대상여부)가 '~' 에 붙어 나온다. 시작 · 끝 날짜가 네 줄 떨어져 있다."""
+    app = application.parse_text(GONGMUN)
+    assert app.travelers == ["홍길동"]
+    assert (app.start, app.end) == (date(2026, 10, 20), date(2026, 10, 20))
+    assert app.places == ["가나다라정보활용지원센터 (원주)"] and application.vague_place(app.places[0]) == ""
+    assert app.purpose == "업무회의" and not app.notes
+
+
+def test_naver_search_queries_drop_parentheses():
+    assert navermap.search_queries("가나다라정보활용지원센터 (원주)") == [
+        "가나다라정보활용지원센터 (원주)", "가나다라정보활용지원센터", "원주 가나다라정보활용지원센터"]
+    assert navermap.search_queries("연세대학교 원주캠퍼스") == ["연세대학교 원주캠퍼스"]
+
+
 def test_shape_hides_names_and_places_but_keeps_labels_and_dates():
     lines = application.shape("가. 출 장 자: 연구원 홍길동\n나. 출장기간: 2026. 11. 10.(화) ~ 11. 12.(목)\n다. 출장지: 연세대학교 원주캠퍼스\n"
                               "연락처 01012345678")

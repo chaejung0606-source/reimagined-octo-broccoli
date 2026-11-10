@@ -370,8 +370,66 @@ def _column_values(lines: list[str]) -> dict[str, str]:
     return out
 
 
+def _period_block(lines: list[str]) -> tuple[date, date, int, int] | None:
+    """여러 줄에 걸친 '날짜 … ~ … 날짜' — 표 칸 안에서 줄이 바뀌어 시작 날짜와 끝 날짜 사이에 옆 칸(출장지)의 글이 끼어드는 꼴.
+    실제 신청서(2026-11-10 담당자 기록의 글 모양): '2026.10.20. (화) 09:00 <출장지 앞부분>' / '<출장지>' / '(..)' / '.~' / '2026.10.20. (화) 18:00'.
+    시작 날짜 줄부터 8줄 안에 둘째 날짜가 있고 그 사이에 '~' · '부터' 가 있을 때만(시행일 같은 날짜와 섞지 않게). (시작, 끝, 시작 줄, 끝 줄)."""
+    usable = [(n, _normalize(line)) for n, line in enumerate(lines)
+              if not any(w in _squash(line) for w in APPROVAL_WORDS + _NOT_PERIOD)]
+    for k, (n, line) in enumerate(usable):
+        first = _FULL_DATE.search(line)
+        if not first or re.search(r"[~∼〜]|부터", line[first.end():]):
+            continue                                   # 그 줄에 '~' 까지 다 있으면 한 줄 기간(표의 줄마다 출장 등) — 여기서 다루지 않는다
+        between = line[first.end():]
+        for m, (n2, line2) in enumerate(usable[k + 1:k + 9]):
+            if _match_label(line2) and not _FULL_DATE.search(line2):
+                break                                  # 다음 칸(출장목적 …)으로 넘어갔다
+            second = _FULL_DATE.search(line2)
+            if second:
+                between += " " + line2[:second.start()]
+                if re.search(r"[~∼〜]|부터", between):
+                    start, end = parse_period(line[first.start():] + " ~ " + line2[second.start():])
+                    if start and end and end >= start and (end - start).days <= 60:
+                        return start, end, n, n2
+                break
+            between += " " + line2
+    return None
+
+
+# 기간 칸 글 — 출장지 조각을 고를 때 뺀다
+_PERIOD_BITS = re.compile(r"20\d{2}\s*[.\-/년]\s*\d{1,2}\s*[.\-/월]\s*\d{1,2}\s*[.일]?|\d{1,2}:\d{2}|\([월화수목금토일]\)|[~∼〜]|부터|까지|"
+                          r"\(?\s*(?:당일|\d+\s*일간?|\d+\s*박\s*\d+\s*일)\s*\)?")
+
+
+_YES_NO = {"예", "아니오", "아니요", "해당", "해당없음", "O", "X", "o", "x", "Y", "N", "유", "무"}
+
+
+def _place_between(lines: list[str], first: int, last: int) -> list[str]:
+    """머리 줄이 '… 출장기간 출장지' 인 표 — 기간 칸 오른쪽의 출장지 글이 기간 줄들 사이에 끼어 나온다. 그 조각들을 이어 출장지로.
+    끝 날짜 줄 뒤로도 다음 칸 이름(출장목적 …)이 나오기 전까지 두 줄은 출장지가 이어진 것으로 본다."""
+    pieces = []
+    k = first
+    while k < len(lines) and (k <= last or (k - last <= 2 and not _is_label_line(lines[k]))):
+        if k > last and (_FULL_DATE.search(lines[k]) or any(w in _squash(lines[k]) for w in APPROVAL_WORDS)):
+            break
+        text = _PERIOD_BITS.sub(" ", _normalize(lines[k]))
+        text = re.sub(r"\s+", " ", text).strip(" .,·-")
+        # 출장지 오른쪽 칸(여비지급 대상여부 '예' · '아니오')이 같은 줄에 붙어 나온다 — 뺀다
+        if re.search(r"[가-힣A-Za-z]", text) and text not in _YES_NO:
+            pieces.append(text)
+        k += 1
+    # 표 칸 안에서 줄이 바뀐 것은 낱말 가운데서도 바뀐다('강원가명정보' / '활용지원센터') — 한글끼리는 붙이고, 괄호 앞은 띄운다
+    place = ""
+    for piece in pieces:
+        if place and not (re.search(r"[가-힣A-Za-z0-9]$", place) and re.match(r"[가-힣A-Za-z0-9]", piece)):
+            place += " "
+        place += piece
+    place = re.sub(r"\s*\(\s*\)\s*", " ", place).strip()
+    return clean_place(place) if place else []
+
+
 def _find_period(lines: list[str], year: int | None) -> tuple[date | None, date | None]:
-    """칸 이름으로 못 찾은 기간 — ① 한 줄의 '날짜 ~ 날짜' ② 몇 줄에 나뉜 날짜 둘 ③ 해 없는 '11. 10. ~ 11. 12.'. 신청일 · 결재 줄은 뺀다."""
+    """칸 이름으로 못 찾은 기간 — ① 한 줄의 '날짜 ~ 날짜' ② 몇 줄에 나뉜 '날짜 … ~ … 날짜' ③ 해 없는 '11. 10. ~ 11. 12.'. 신청일 · 결재 줄은 뺀다."""
     usable = [_normalize(line) for line in lines
               if not any(w in _squash(line) for w in APPROVAL_WORDS + _NOT_PERIOD)]
     for line in usable:
@@ -380,6 +438,9 @@ def _find_period(lines: list[str], year: int | None) -> tuple[date | None, date 
             found = parse_period(m.group(1))
             if found[0]:
                 return found
+    block = _period_block(lines)
+    if block:
+        return block[0], block[1]
     for i in range(len(usable)):
         joined = " ".join(usable[i:i + 3])
         if len(_FULL_DATE.findall(joined)) >= 2 and (_FULL_DATE.search(usable[i])):
@@ -392,6 +453,20 @@ def _find_period(lines: list[str], year: int | None) -> tuple[date | None, date 
             if found[0]:
                 return found
     return None, None
+
+
+def _header_order(lines: list[str]) -> tuple[int, list[str]] | None:
+    """칸 이름이 한 줄에 여럿 든 머리 줄('소속 직급 성명 … 출장기간 출장지') — (줄 번호, 그 줄의 칸들 차례)."""
+    for n, line in enumerate(lines):
+        squashed = _squash(line)
+        keys = []
+        for key, labels in LABELS.items():
+            spots = [squashed.find(_squash(w)) for w in labels if len(w) >= 2 and _squash(w) in squashed]
+            if spots:
+                keys.append((min(spots), key))
+        if len(keys) >= 2 and {"period", "place"} <= {k for _, k in keys}:
+            return n, [k for _, k in sorted(keys)]
+    return None
 
 
 def _parse_lines(lines: list[str], path: Path | None = None) -> Application:
@@ -460,6 +535,15 @@ def _parse_lines(lines: list[str], path: Path | None = None) -> Application:
         app.start, app.end = _find_period(lines, years[0] if years else None)
         if app.start:
             app.found.append("출장기간")
+    if not app.places:
+        # 머리 줄이 '… 출장기간 출장지' 인 표 — 출장지 글은 기간 칸의 줄들 사이에 끼어 나온다(2026-11-10 실제 신청서)
+        header = _header_order(lines)
+        block = _period_block(lines[header[0] + 1:]) if header else None
+        if header and block and header[1].index("place") == header[1].index("period") + 1:
+            first, last = block[2] + header[0] + 1, block[3] + header[0] + 1
+            app.places = _place_between(lines, first, last)
+            if app.places:
+                app.found.append("출장지")
     if not app.travelers:
         app.notes.append("출장자 이름을 찾지 못했습니다 — 직접 적어 주세요")
     elif app.expected and app.expected != len(app.travelers):
@@ -663,7 +747,9 @@ def select(app: Application | None, folder: Path | str) -> Application | None:
 
 # 글 모양에 남길 낱말 — 칸 이름 · 직급 · 흔한 양식 글자(사람 이름 · 곳 이름은 □ 로)
 _KEEP = ({w for words in LABELS.values() for w in words} | set(POSITIONS) | NOT_NAMES | set(VAGUE_WORDS) | set(APPROVAL_WORDS)
-         | set(_NOT_PERIOD) | {"신청서", "출장신청서", "출장명령서", "출장계획서", "일간", "부터", "까지", "요일", "박", "일", "월", "년", "시", "분"}
+         | set(_NOT_PERIOD) | {"신청서", "출장신청서", "출장명령서", "출장계획서", "일간", "부터", "까지", "요일", "박", "일", "월", "년", "시", "분",
+                                "당일", "비고", "출장비고", "출장구분", "교통수단", "자가용", "관용차", "숙박", "부서", "학과", "대학교", "캠퍼스",
+                                "본관", "회의실", "센터", "아래", "다음", "같이"}
          | set("월화수목금토일"))
 _LABEL_CHARS = set("".join(w for words in LABELS.values() for w in words))
 
