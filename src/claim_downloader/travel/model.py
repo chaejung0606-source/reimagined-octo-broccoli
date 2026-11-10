@@ -742,7 +742,8 @@ def review(trip: Trip) -> list[str]:
 
 
 # ── 네이버 지도 길찾기 글자에서 km ───────────────────────────────────────
-_ROUTE = re.compile(r"(?:(\d+)\s*시간\s*)?(\d+)\s*분\s*([\d,]+(?:\.\d+)?)\s*km", re.I)
+# '1시간 10분 76km' · '2분 | 540m'(2026-11-10 담당자 그림 — 시간과 거리 사이에 칸막이, 가까우면 m)
+_ROUTE = re.compile(r"(?:(\d+)\s*시간\s*)?(\d+)\s*분\s*[|ㆍ·/]?\s*([\d,]+(?:\.\d+)?)\s*(km|m)(?![a-z])", re.I)
 
 
 def route_km(text: str) -> float | None:
@@ -752,7 +753,8 @@ def route_km(text: str) -> float | None:
     values = []
     for m in _ROUTE.finditer(flat):
         try:
-            values.append((m.start(), float(m.group(3).replace(",", ""))))
+            value = float(m.group(3).replace(",", ""))
+            values.append((m.start(), value / 1000 if m.group(4).lower() == "m" else value))
         except ValueError:
             continue
     if not values:

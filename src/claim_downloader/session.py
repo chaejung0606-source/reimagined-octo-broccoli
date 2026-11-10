@@ -773,11 +773,20 @@ class ErpSession:
         out = []
         known = self._known_places()
         before = dict(known)
+        waiting = False
         for origin, goal, label in legs:
+            if waiting:
+                # 네이버 지도 창은 하나 — 앞 구간을 사람이 확인하고 찍은 뒤에 다음 구간을 띄운다
+                out.append(navermap.RouteResult(origin=origin, goal=goal, label=label, deferred=True))
+                continue
             try:
                 page = self._map_page()
+                # 찍지 않고 길찾기를 띄워 둔 채 사람의 확인을 기다린다(담당자 2026-11-10 "사용자가 목적지를 확인하거나 틀리면 재설정해가지고
+                # 그 상태를 어플에서 캡쳐") — [이 경로로 찍기] 가 capture_route 로 찍는다
                 result = navermap.find_route(page, origin, goal, navermap.shot_path(Path(folder), label), self.log,
-                                             wait=lambda s, page=page: page.wait_for_timeout(int(s * 1000)), label=label, known=known)
+                                             wait=lambda s, page=page: page.wait_for_timeout(int(s * 1000)), label=label, known=known,
+                                             confirm=True)
+                waiting = result.pending
             except Exception as error:  # noqa: BLE001 — 네이버에 닿지 못함 · 창을 닫음 등
                 result = navermap.RouteResult(origin=origin, goal=goal, label=label,
                                               note="네이버 지도에 닿지 못했습니다: " + (str(error).splitlines()[0][:120] if str(error) else type(error).__name__))
@@ -796,7 +805,12 @@ class ErpSession:
             data = json.loads(settings_mod.load().travel_places or "{}")
         except ValueError:
             return {}
-        return {k: v for k, v in data.items() if isinstance(v, dict) and {"name", "x", "y"} <= set(v)} if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        from .travel import navermap
+        # 열쇠(검색어)와 이름이 다른 기억은 버린다 — 2026-11-10 앞 판이 주변 가게('포랑 춘천점' · '호담')를 잘못 집어 기억했을 수 있다
+        return {k: v for k, v in data.items() if isinstance(v, dict) and {"name", "x", "y"} <= set(v)
+                and (v.get("found") or navermap.norm(v["name"]) == k or navermap.same_place(k, v["name"]))}
 
     def _save_places(self, known: dict) -> None:
         import json
@@ -808,7 +822,8 @@ class ErpSession:
         page = next((p for p in self._pages() if _host(p.url) in NAVER_MAP_HOSTS), None) if self.browser_open else None
         if page is None:
             return navermap.RouteResult(label=label, note="네이버 지도 창이 없습니다 — [브라우저에서 직접] 으로 열고 거리우선 경로를 띄우세요")
-        result = navermap.capture(page, navermap.shot_path(Path(folder), label), label)
+        result = navermap.capture(page, navermap.shot_path(Path(folder), label), label,
+                                  wait=lambda s: page.wait_for_timeout(int(s * 1000)))
         if result.places:
             # 사람이 띄운 길찾기의 출발지 · 목적지를 기억한다 — 다음에는 앱이 검색 없이 그 곳으로 길을 찾는다
             known = self._known_places()

@@ -343,6 +343,7 @@ class TravelPage(QWidget):
         self._route_checked = False              # 자차 경로(출발지 · 경유지 · 목적지 · 연료)를 사람이 확인했는지 — 바뀌면 다시 확인
         self._routes: dict[tuple, dict] = {}     # (출장자, 구간 번호) → {origin, goal, label, km, image, status}
         self._searching: set = set()
+        self._pending_route: tuple | None = None   # 네이버 지도 창에 띄워 두고 사람의 확인을 기다리는 구간 — [이 경로로 찍기] 가 찍는다
         self._auto_routes = True                 # ③ 이 열리면 저절로 찾는다 — 한 번 찾은 구간은 다시 찾지 않는다
         self.tables: dict[str, EvidenceTable] = {}
         self._log = None
@@ -832,9 +833,9 @@ class TravelPage(QWidget):
         title = QLabel("자차 이동경로 — 네이버 지도 최단거리")
         title.setObjectName("cardTitle")
         rows.addWidget(title)
-        rows.addWidget(muted_label("하이패스가 있는 출장자는 자차입니다. 앱이 네이버 지도에서 출발지 → 출장목적지의 거리우선 경로를 찾아 지도 그림과 km 를 "
-                                   "채웁니다(화면에 브라우저가 뜨지 않습니다). 목적지가 하나면 그림 하나 — 오는 길은 같은 거리로 적고, 경유지가 있으면 "
-                                   "구간마다 그림과 거리. km 는 표에서 고칠 수 있습니다."))
+        rows.addWidget(muted_label("하이패스가 있는 출장자는 자차입니다. 앱이 앱 브라우저의 네이버 지도 창에 출발지 → 출장목적지 길찾기를 띄웁니다. "
+                                   "그 창에서 목적지가 맞는지 보고(틀리면 그 창에서 다시 고르고 길찾기) [이 경로로 찍기 · 거리 넣기] 를 누르면, 앱이 "
+                                   "'거리우선' 을 골라 화면을 찍고 km 를 넣습니다. 목적지가 하나면 그림 하나 — 오는 길은 같은 거리, 경유지가 있으면 구간마다."))
         self.route_table = QTableWidget(0, len(ROUTE_COLUMNS))
         self.route_table.setHorizontalHeaderLabels(ROUTE_COLUMNS)
         self.route_table.verticalHeader().hide()
@@ -845,16 +846,24 @@ class TravelPage(QWidget):
         self.route_table.setMinimumHeight(90)
         self.route_table.itemChanged.connect(self._on_route_edited)
         rows.addWidget(self.route_table)
+        # 확인 기다림 안내 — 네이버 지도 창에 길찾기를 띄웠으니 보고 찍으라고(담당자 2026-11-10 "사용자가 목적지를 확인하거나 틀리면 재설정")
+        self.route_notice = WrapLabel("")
+        self.route_notice.setObjectName("noticeText")
+        self.route_notice.setStyleSheet(f"background: {COLORS['warning_bg']}; border: 1px solid {COLORS['warning']}; border-radius: 8px; padding: 8px 10px;")
+        self.route_notice.hide()
+        rows.addWidget(self.route_notice)
         buttons = QHBoxLayout()
         self.route_find = QPushButton("최단거리 다시 찾기")
         self.route_find.setToolTip("못 찾은 구간(또는 고른 줄)을 네이버 지도에서 다시 찾습니다 — 앱 브라우저의 네이버 지도 탭에서")
         self.route_find.clicked.connect(lambda: self._find_routes(force=True))
-        manual = QPushButton("브라우저에서 직접")
-        manual.setToolTip("자동으로 못 찾으면 — 앱 브라우저에 네이버 지도 길찾기를 열어 거리우선 경로를 직접 띄운 뒤 [지금 화면 찍기]")
+        manual = QPushButton("네이버 지도 창 열기")
+        manual.setToolTip("앱 브라우저에 네이버 지도 길찾기를 엽니다 — 직접 출발지 · 목적지를 넣고 길찾기를 누른 뒤 [이 경로로 찍기 · 거리 넣기]")
         manual.clicked.connect(lambda: self._worker().open_site("navermap"))
-        shoot = QPushButton("지금 화면 찍기 → 고른 줄")
-        shoot.setToolTip("앱 브라우저에 띄운 네이버 지도 길찾기 화면을 찍어 고른 구간의 그림으로 넣고 km 를 읽습니다")
+        shoot = QPushButton("이 경로로 찍기 · 거리 넣기")
+        shoot.setObjectName("primary")
+        shoot.setToolTip("네이버 지도 창의 길찾기를 '거리우선' 으로 골라 찍고 km 를 넣습니다 — 확인 기다리는 구간(없으면 고른 줄)에")
         shoot.clicked.connect(self._capture_route)
+        self.route_shoot = shoot
         pick = QPushButton("지도 그림 고르기 → 고른 줄")
         pick.setObjectName("ghost")
         pick.clicked.connect(self._pick_map)
@@ -1292,11 +1301,23 @@ class TravelPage(QWidget):
             route = self._routes.get(key)
             if route is None:
                 continue
+            if result.pending:
+                route["status"] = "확인 기다림 — 네이버 지도 창"
+                self._pending_route = key
+                continue
+            if result.deferred:
+                route["status"] = "차례 기다림"
+                continue
             if result.ok:
                 route["image"] = result.image
                 if result.km is not None:
                     route["km"] = result.km
-                route["status"] = "찾음(거리우선)" if result.km is not None else (result.note or "그림만 찍음")
+                route["status"] = "찍음(거리우선)" if result.km is not None else (result.note or "그림만 찍음")
+                if key == self._pending_route:
+                    self._pending_route = None
+                    # 다음 구간(경유지가 있을 때)을 이어 띄운다 — 창이 하나라 한 구간씩
+                    if any(not r["image"] or r["km"] is None for k, r in self._routes.items() if k != key):
+                        QTimer.singleShot(0, self._find_routes)
             else:
                 route["status"] = "못 찾음 — " + (result.note or "까닭 모름")
                 if result.need_place:
@@ -1306,6 +1327,7 @@ class TravelPage(QWidget):
                 else:
                     failed.append(result.note or "까닭 모름")
         self._fill_route_table()
+        self._show_route_notice(found)
         self._sync_goal_box()
         if self._needs_goal() and self._stage == "files":
             self.goal_box.show()
@@ -1316,16 +1338,29 @@ class TravelPage(QWidget):
             # 목적지 이름 탓이 아닌 실패(출발지부터 못 찾음 · 길찾기 화면이 안 뜸)는 목적지를 묻지 않고 사람이 할 길을 알린다(담당자 2026-11-10
             # "목적지가 검색이 안된다고 하는데 둘다 검색이 됩니다" — 그때는 출발지부터 앱의 검색이 비어 왔는데 목적지를 물었다)
             QMessageBox.information(self, "네이버 지도 최단거리", "앱이 네이버 지도 최단거리를 찾지 못했습니다.\n\n" + "\n".join(dict.fromkeys(failed))[:600] +
-                                    "\n\n[브라우저에서 직접] 으로 네이버 지도 길찾기에서 출발지 · 목적지를 넣고 '거리우선' 경로를 띄운 뒤, "
-                                    "자차 이동경로 표에서 그 줄을 고르고 [지금 화면 찍기 → 고른 줄] 을 누르세요.\n"
+                                    "\n\n[네이버 지도 창 열기] 로 길찾기에서 출발지 · 목적지를 넣고 길찾기를 누른 뒤, "
+                                    "자차 이동경로 표에서 그 줄을 고르고 [이 경로로 찍기 · 거리 넣기] 를 누르세요.\n"
                                     "그 길찾기의 출발지 · 목적지는 앱이 기억해 다음부터는 저절로 찾습니다.")
         self._sync()
 
+    def _show_route_notice(self, found) -> None:
+        """확인 기다리는 구간이 있으면 무엇을 하라는지 한 줄 — 네이버 지도 창을 보고 [이 경로로 찍기 · 거리 넣기]."""
+        key = self._pending_route if self._pending_route in self._routes else None
+        if key is None:
+            self.route_notice.hide()
+            return
+        route = self._routes[key]
+        note = next((r.note for k, r in found if k == key and r.pending), "") or navermap.CONFIRM_NOTE
+        who = f"{key[0]} · " if key[0] != "출장자" else ""
+        self.route_notice.setText(f"{who}{route['label']}: {route['origin'] or '?'} → {route['goal'] or '?'}\n{note}\n"
+                                  "앱이 그 화면을 '거리우선' 으로 골라 찍고 km 를 넣습니다 — 오는 길은 같은 거리로 적습니다.")
+        self.route_notice.show()
+
     def _capture_route(self) -> None:
-        key = self._selected_route()
+        key = self._pending_route if self._pending_route in self._routes else self._selected_route()
         folder = self.folder_edit.text().strip()
         if key is None or not folder:
-            QMessageBox.information(self, "지금 화면 찍기", "자차 이동경로 표에서 넣을 줄(구간)을 먼저 고르세요.")
+            QMessageBox.information(self, "이 경로로 찍기", "자차 이동경로 표에서 넣을 줄(구간)을 먼저 고르세요.")
             return
         self._searching.add(key)
         self._fill_route_table()
