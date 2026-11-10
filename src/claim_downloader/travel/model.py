@@ -213,6 +213,8 @@ def stay_period(ev: Evidence) -> str:
 
 # ── 파일에서 일자 · 금액 짐작(사람이 화면에서 고친다) ─────────────────────────
 _FULL_DATE = re.compile(r"(20\d{2})\s*[.\-/년]\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})")
+# 숫자만 붙여 쓴 날짜 '20261020'(담당자 2026-11-10 "일자 20261020 이렇게 입력해도 2026-10-20으로") — 달 · 일이 맞는 것만
+_COMPACT_DATE = re.compile(r"(?<!\d)(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)")
 _SHORT_DATE = re.compile(r"(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)|(?<!\d)(\d{1,2})[.\-](\d{1,2})(?!\d)|(?<![\d.])(\d{2})(\d{2})(?![\d,])")
 _AMOUNT = re.compile(r"(\d{1,3}(?:,\d{3})+|\d{3,7})\s*원")
 
@@ -225,9 +227,12 @@ def _make(y: int, m: int, d: int) -> date | None:
 
 
 def guess_day(text: str, year: int) -> date | None:
-    match = _FULL_DATE.search(text)
-    if match:
-        return _make(*(int(g) for g in match.groups()))
+    """글에서 일자 — '2026-10-20' · '2026. 10. 20' · '2026년 10월 20일' → '20261020' → '261020' · '10.20' · '1020'(year 의 해) 차례."""
+    for pattern in (_FULL_DATE, _COMPACT_DATE):
+        for match in pattern.finditer(text):
+            found = _make(*(int(g) for g in match.groups()))
+            if found:
+                return found
     for match in _SHORT_DATE.finditer(text):
         g = match.groups()
         if g[0]:
@@ -239,6 +244,77 @@ def guess_day(text: str, year: int) -> date | None:
         if found:
             return found
     return None
+
+
+_CALC_OPS = {"+", "-", "*", "/"}
+
+
+def calc(text: str) -> float | None:
+    """금액 칸의 셈 — 엑셀처럼 더하기 · 빼기 · 곱하기 · 나누기 · 괄호(담당자 2026-11-10 "하이패스 같이 금액을 사용자가 확인해서 넣어야 할 때
+    엑셀처럼 더하기 빼기 나누기 정도는 금액 칸에서"). '4100+4100' · '=8,200/2' · '4,100×2' · '(4100+4100)÷2원'. 셈이 아니면(글자가 섞임) None.
+    eval 을 쓰지 않는다 — 숫자 · 연산자 · 괄호만 직접 읽는다."""
+    expr = (text or "").strip().lstrip("=")
+    for a, b in (("×", "*"), ("x", "*"), ("X", "*"), ("÷", "/"), ("－", "-"), ("＋", "+"), ("원", ""), (",", ""), (" ", "")):
+        expr = expr.replace(a, b)
+    if not expr or not re.fullmatch(r"[\d.+\-*/()]+", expr):
+        return None
+    tokens = re.findall(r"\d+(?:\.\d+)?|[+\-*/()]", expr)
+    if "".join(tokens) != expr:
+        return None
+    pos = 0
+
+    def peek() -> str:
+        return tokens[pos] if pos < len(tokens) else ""
+
+    def take() -> str:
+        nonlocal pos
+        pos += 1
+        return tokens[pos - 1]
+
+    def number() -> float:
+        token = take() if pos < len(tokens) else ""
+        if token == "-":
+            return -number()
+        if token == "+":
+            return number()
+        if token == "(":
+            value = total()
+            if take() != ")":
+                raise ValueError
+            return value
+        return float(token)
+
+    def term() -> float:
+        value = number()
+        while peek() in ("*", "/"):
+            if take() == "*":
+                value *= number()
+            else:
+                value /= number()
+        return value
+
+    def total() -> float:
+        value = term()
+        while peek() in ("+", "-"):
+            value = value + term() if take() == "+" else value - term()
+        return value
+
+    try:
+        value = total()
+    except (ValueError, ZeroDivisionError, IndexError):
+        return None
+    return value if pos == len(tokens) else None
+
+
+def amount_of(text: str) -> int | None:
+    """금액 칸의 값 — 셈이면 그 결과(원 단위로 반올림), 아니면 글자 속 숫자('4,100원(카드)' → 4100)."""
+    value = calc(text)
+    if value is not None:
+        return int(round(value))
+    if re.fullmatch(r"=?[\d,.\s+\-*/()×xX÷원]*[+\-*/×xX÷][\d,.\s+\-*/()×xX÷원]*", (text or "").strip()):
+        return None              # 셈인데 틀렸다('7/0' · '4100*') — 숫자만 이어 붙여 엉뚱한 금액을 만들지 않는다
+    digits = "".join(ch for ch in (text or "") if ch.isdigit())
+    return int(digits) if digits else None
 
 
 def guess_amount(text: str) -> int | None:
@@ -451,29 +527,47 @@ def _sum_text(items: list[Evidence]) -> str:
 
 
 def car_pages(trip: Trip) -> list[Page]:
+    """자차 — 하이패스 쪽과 이동경로 쪽을 나눈다(담당자 2026-11-10 "교통비 증빙 (자차-하이패스)" · "교통비 증빙 (자차-이동경로)" ·
+    "하이패스 증빙에서는 연료 표시 필요없습니다. 또 이동경로 증빙페이지에서는 금액이 필요없습니다" · "이동경로에도 이동일자를" ·
+    "이동일자는 자차의 경우 하이패스 이용내역과 동일하게"). 하이패스 쪽 머리 줄은 금액만, 이동경로 쪽은 연료만,
+    이동경로 줄 왼쪽은 하이패스 이용일자."""
     tolls = _sorted(trip.tolls)
     route = trip.has_route()
-    if not tolls and not route:
-        return []
-    toll_total = sum(e.amount or 0 for e in tolls)
-    blocks = []
-    for day, group in _group(tolls, lambda e: e.day):
-        subtotal = sum(e.amount or 0 for e in group)
-        blocks.append(Block([e.path for e in group], parts=[e.part for e in group], refs=[e.ref for e in group],
-                            title=[korean_date(day) if day else "일자 없음", f"하이패스 {won(subtotal)}"],
-                            cols=grid_cols(len(group))))
+    pages = []
+    if tolls:
+        blocks = []
+        for day, group in _group(tolls, lambda e: e.day):
+            subtotal = sum(e.amount or 0 for e in group)
+            blocks.append(Block([e.path for e in group], parts=[e.part for e in group], refs=[e.ref for e in group],
+                                title=[korean_date(day) if day else "일자 없음", f"하이패스 {won(subtotal)}"],
+                                cols=grid_cols(len(group))))
+        # 이동경로가 아직 없으면(지도 · km 전) 이 머리 줄을 눌러 km · 연료를 고친다 — 미리 보기에서 갈 곳이 있게
+        pages.append(Page(["* 교통비 증빙 (자차-하이패스)", won(sum(e.amount or 0 for e in tolls))], blocks,
+                          head_ref=() if route else route_key(trip)))
     if route:
         legs = trip.route_legs()
         known = [v for _, v in legs if v]
         total = sum(known) if known else None
-        title = ["* 이동경로", *(f"{name} {km(v)}" for name, v in legs), f"총 이동경로 {km(total)}"]
+        title = [route_days(trip) or "이동경로", *(f"{name} {km(v)}" for name, v in legs), f"총 이동경로 {km(total)}"]
         maps = trip.maps()
         # 네이버 지도 최단거리 그림 — 구간마다 찍었으면 칸마다 그 구간 이름 · km(담당자 2026-11-10 "가는거 오는거 총합 KM")
         route_ref = route_key(trip)
-        blocks.append(Block([p for _, p in maps], [c for c, _ in maps] if len(maps) > 1 else [], title=title, cols=1, fill=True,
-                            refs=[route_ref] * len(maps), title_ref=route_ref))
-    head = ["* 교통비 증빙 (자차)"] + ([f"연료 {trip.fuel}"] if trip.fuel else []) + ([won(toll_total)] if tolls else [])
-    return [Page(head, blocks, head_ref=route_key(trip))]
+        block = Block([p for _, p in maps], [c for c, _ in maps] if len(maps) > 1 else [], title=title, cols=1, fill=True,
+                      refs=[route_ref] * len(maps), title_ref=route_ref)
+        head = ["* 교통비 증빙 (자차-이동경로)"] + ([f"연료 {trip.fuel}"] if trip.fuel else [])
+        pages.append(Page(head, [block], head_ref=route_ref))
+    return pages
+
+
+def route_days(trip: Trip) -> str:
+    """이동경로의 이동일자 — 하이패스 이용일자와 같게(담당자 2026-11-10 "이동일자는 자차의 경우 하이패스 이용내역과 동일하게" ·
+    "자차는 무조건 하이패스 이용내역이 있어야 합니다"). 하이패스 일자를 아직 모르면 ''(그 영수증의 일자를 채우면 같이 나온다)."""
+    days = sorted({e.day for e in trip.tolls if e.day})
+    if not days:
+        return ""
+    first = days[0]
+    rest = [f"{d.month}월 {d.day}일 {WEEKDAYS[d.weekday()]}요일" if d.year == first.year else korean_date(d) for d in days[1:]]
+    return ", ".join([korean_date(first), *rest])
 
 
 def route_key(trip: Trip) -> tuple:

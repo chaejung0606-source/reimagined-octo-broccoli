@@ -7,8 +7,8 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QImage, QPainter, QPen
+from PySide6.QtCore import QEvent, QRectF, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -35,6 +35,11 @@ MAKE = 2                 # 대화창 결과 — [이대로 만들기]
 PAGE_GAP = 14
 SIDE_WIDTH = 360
 MODE_NAMES = tuple(name for name, _ in model.MODES)
+# 확대 · 축소 — 그림 보기처럼(담당자 2026-11-10 "미리보기가 너무 확대되어 있습니다. 사용자가 확대 축소 화면을 이미지 보는 것 처럼").
+# 100% = A4 폭 210mm 를 화면 96dpi 로(794px). 처음은 '쪽 맞춤'(한 쪽이 다 보이게), Ctrl+휠 · [−] [+] · Ctrl+= / Ctrl+- / Ctrl+0.
+ACTUAL_WIDTH = 794
+ZOOM_STEPS = (0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0)
+FIT_PAGE, FIT_WIDTH, FREE = "page", "width", "free"
 
 
 def _flag_style() -> str:
@@ -53,6 +58,7 @@ class PageView(QWidget):
         self.flagged = flagged            # ref → 확인할 칸 이름들
         self.page_size = page_size
         self.selected: tuple = ()
+        self.label_height = 24            # 쪽 위 'N쪽' 줄 — 쪽 맞춤이 한 쪽을 칸 높이에 넣을 때 뺀다
         self.setMouseTracking(True)
 
     def set_width(self, width: int) -> None:
@@ -114,7 +120,7 @@ class PageView(QWidget):
 
 
 class PreviewPanel(QWidget):
-    """미리 보기 본문 — 쪽 그림 · 확인할 것 · 고치는 칸. 출장증빙 화면의 ⑤ 단계에 그대로 들어가고(담당자 2026-11-10 "5단계로 미리보기를"),
+    """미리 보기 본문 — 쪽 그림 · 확인할 것 · 고치는 칸. 출장증빙 화면의 ④ 단계에 그대로 들어가고(담당자 2026-11-10 "5단계로 미리보기를"),
     만들기 전 확인 창(TravelPreview)도 이것을 쓴다.
     source 는 출장증빙 화면(TravelPage) — trips() · apply_edit(ref, 값) · route_rows(사람) · apply_route(사람, km, 연료) · fuel_of(사람)."""
 
@@ -131,6 +137,8 @@ class PreviewPanel(QWidget):
         self._selected: tuple = ()
         self._editor_fields: dict = {}
         self._trip: model.Trip | None = None
+        self._zoom_mode = FIT_PAGE
+        self._zoom = 1.0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -143,6 +151,17 @@ class PreviewPanel(QWidget):
         self.person_box.currentIndexChanged.connect(lambda _i: self.refresh(keep=False))
         head.addWidget(self.person_box)
         head.addStretch(1)
+        self.zoom_out_button = self._tool("−", "축소 (Ctrl+-, Ctrl+휠 아래)", lambda: self.zoom_step(-1))
+        self.zoom_label = QLabel("")
+        self.zoom_label.setObjectName("muted")
+        self.zoom_label.setAlignment(Qt.AlignCenter)
+        self.zoom_label.setMinimumWidth(self.zoom_label.fontMetrics().horizontalAdvance("400%") + 12)
+        self.zoom_in_button = self._tool("+", "확대 (Ctrl+=, Ctrl+휠 위)", lambda: self.zoom_step(1))
+        self.fit_page_button = self._tool("쪽 맞춤", "한 쪽이 다 보이게 (Ctrl+0)", lambda: self.set_zoom(FIT_PAGE))
+        self.fit_width_button = self._tool("폭 맞춤", "쪽 폭을 칸 폭에 맞춤", lambda: self.set_zoom(FIT_WIDTH))
+        for widget in (self.zoom_out_button, self.zoom_label, self.zoom_in_button, self.fit_page_button, self.fit_width_button):
+            head.addWidget(widget)
+        head.addSpacing(12)
         self.status_label = QLabel("")
         self.status_label.setObjectName("muted")
         head.addWidget(self.status_label)
@@ -159,6 +178,11 @@ class PreviewPanel(QWidget):
         self.pages_layout.setContentsMargins(0, 0, 0, 0)
         self.pages_layout.setSpacing(PAGE_GAP)
         self.scroll.setWidget(holder)
+        self.scroll.viewport().installEventFilter(self)          # Ctrl+휠로 확대 · 축소
+        for keys, step in ((QKeySequence.ZoomIn, 1), ("Ctrl+=", 1), (QKeySequence.ZoomOut, -1)):
+            QShortcut(QKeySequence(keys), self, activated=lambda step=step: self.zoom_step(step),
+                      context=Qt.WidgetWithChildrenShortcut)
+        QShortcut(QKeySequence("Ctrl+0"), self, activated=lambda: self.set_zoom(FIT_PAGE), context=Qt.WidgetWithChildrenShortcut)
         body.addWidget(self.scroll, 1)
 
         side = QWidget()
@@ -216,10 +240,73 @@ class PreviewPanel(QWidget):
         if self._selected:
             self._scroll_to(self._selected)
 
+    @staticmethod
+    def _tool(text: str, tip: str, slot) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("ghost")
+        button.setToolTip(tip)
+        button.setFocusPolicy(Qt.NoFocus)
+        button.clicked.connect(slot)
+        return button
+
+    def page_width(self) -> int:
+        """지금 배율의 쪽 폭(px) — 쪽 맞춤은 한 쪽이 칸 높이 안에 다 들어가게, 폭 맞춤은 칸 폭, 그 밖은 ACTUAL_WIDTH × 배율."""
+        port = self.scroll.viewport()
+        width = max(200, port.width() - 6)
+        if self._zoom_mode == FIT_WIDTH:
+            return width
+        if self._zoom_mode == FIT_PAGE:
+            image = self._views[0].image if self._views else None
+            ratio = image.height() / max(1, image.width()) if image is not None else 297 / 210
+            label = self._views[0].label_height if self._views else 24
+            return max(160, min(width, int((port.height() - label - 12) / ratio)))
+        return max(120, int(ACTUAL_WIDTH * self._zoom))
+
+    def set_zoom(self, mode: str, zoom: float | None = None) -> None:
+        """배율을 바꾸고 보던 자리(세로 · 가로 비율)를 지킨다."""
+        bars = (self.scroll.verticalScrollBar(), self.scroll.horizontalScrollBar())
+        where = [bar.value() / bar.maximum() if bar.maximum() else 0.0 for bar in bars]
+        self._zoom_mode = mode
+        if zoom is not None:
+            self._zoom = max(ZOOM_STEPS[0], min(ZOOM_STEPS[-1], zoom))
+        self._fit_pages()
+
+        def back() -> None:
+            for bar, ratio in zip(bars, where):
+                bar.setValue(int(ratio * bar.maximum()))
+        QTimer.singleShot(0, back)
+
+    def zoom_step(self, step: int) -> None:
+        """한 단계 확대(+1) · 축소(-1) — 지금 보이는 크기에서 다음 단계로."""
+        now = self.page_width() / ACTUAL_WIDTH
+        if step > 0:
+            target = next((z for z in ZOOM_STEPS if z > now + 0.01), ZOOM_STEPS[-1])
+        else:
+            target = next((z for z in reversed(ZOOM_STEPS) if z < now - 0.01), ZOOM_STEPS[0])
+        self.set_zoom(FREE, target)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Wheel and event.modifiers() & Qt.ControlModifier:
+            try:
+                port = self.scroll.viewport()
+            except RuntimeError:         # 앱을 닫는 중 — 칸이 이미 지워졌다
+                return False
+            if watched is port:
+                delta = event.angleDelta().y()
+                if delta:
+                    self.zoom_step(1 if delta > 0 else -1)
+                return True              # Ctrl+휠은 쪽을 굴리지 않는다
+        return False
+
     def _fit_pages(self) -> None:
-        width = max(320, self.scroll.viewport().width() - 6)
+        width = self.page_width()
         for view in self._views:
             view.set_width(width)
+        name = {FIT_PAGE: "쪽 맞춤 · ", FIT_WIDTH: "폭 맞춤 · "}.get(self._zoom_mode, "")
+        self.zoom_label.setText(f"{round(width / ACTUAL_WIDTH * 100)}%")
+        self.zoom_label.setToolTip(f"{name}{round(width / ACTUAL_WIDTH * 100)}% — Ctrl+휠로 확대 · 축소")
+        self.fit_page_button.setEnabled(self._zoom_mode != FIT_PAGE)
+        self.fit_width_button.setEnabled(self._zoom_mode != FIT_WIDTH)
         if self.scroll.widget() is not None and self.scroll.widget().layout() is not None:
             self.scroll.widget().layout().activate()
 
@@ -230,7 +317,9 @@ class PreviewPanel(QWidget):
             hit = next((h for h in sorted(self._hits, key=lambda h: (h.page, h.rect.top())) if h.ref == ref), None)
             if hit is not None and hit.page < len(self._views):
                 view = self._views[hit.page]
-                self.scroll.verticalScrollBar().setValue(max(0, view.y() + int(view._rect(hit).top()) - 40))
+                rect = view._rect(hit)
+                self.scroll.verticalScrollBar().setValue(max(0, view.y() + int(rect.top()) - 40))
+                self.scroll.horizontalScrollBar().setValue(max(0, view.x() + int(rect.left()) - 40))
         QTimer.singleShot(0, go)
 
     # ── 그리기 ──────────────────────────────────────────────────────────
@@ -265,11 +354,12 @@ class PreviewPanel(QWidget):
         for i, image in enumerate(images):
             label = QLabel(f"{i + 1}쪽")
             label.setObjectName("muted")
-            self.pages_layout.addWidget(label)
+            self.pages_layout.addWidget(label, 0, Qt.AlignHCenter)
             view = PageView(image, [h for h in hits if h.page == i], self._flagged, render.PAGE_SIZE)
+            view.label_height = label.sizeHint().height() + PAGE_GAP
             view.selected = self._selected
             view.clicked.connect(lambda hit: self._select(hit.ref, scroll=False))
-            self.pages_layout.addWidget(view)
+            self.pages_layout.addWidget(view, 0, Qt.AlignHCenter)
             self._views.append(view)
         if not images:
             empty = QLabel("만들 쪽이 없습니다 — 증빙을 넣어 주세요.")
@@ -393,7 +483,7 @@ class PreviewPanel(QWidget):
         if kind == model.OTHER:
             line("label", "내용", ev.label, "예: 참가확인서", ("내용",))
         elif kind != model.STAY:
-            line("amount", "금액(원)", f"{ev.amount:,}" if ev.amount is not None else "", "예: 8,400", ("금액",))
+            line("amount", "금액(원)", f"{ev.amount:,}" if ev.amount is not None else "", "예: 8,400 · 4100+4100 처럼 셈도", ("금액",))
         if kind == model.PUBLIC:
             mode = QComboBox()
             mode.setEditable(True)

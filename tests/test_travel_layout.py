@@ -106,7 +106,8 @@ def test_map_keeps_page_width_and_goes_to_next_page(qapp, tmp_path):
     assert render.render(model.car_pages(trip), out) == 2
     texts = _pages_text(out)
     assert "하이패스4,000원" in texts[0] and "이동경로" not in texts[0]
-    assert "(자차)(계속)" in texts[1] and "총이동경로152km" in texts[1] and "연료휘발유" in texts[1]
+    assert "(자차-이동경로)" in texts[1] and "총이동경로152km" in texts[1] and "연료휘발유" in texts[1]
+    assert "연료" not in texts[0] and "2026년5월1일금요일,5월2일토요일" in texts[1]        # 하이패스 쪽엔 연료 없음 · 이동일자 = 하이패스 이용일자
 
 
 def test_public_page_draws_route_captions_and_totals(qapp, tmp_path):

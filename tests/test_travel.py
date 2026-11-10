@@ -22,7 +22,7 @@ def test_page_order_is_stay_transport_lodging():
                 stay=[ev("s.png", date(2026, 5, 28))], public=[ev("t.png", date(2026, 5, 28), 8000, "열차")],
                 tolls=[ev("h.png", date(2026, 5, 28), 2170)], lodging=[ev("l.png", date(2026, 5, 28), 90000)], legs=[142])
     heads = [p.head[0] for p in model.pages(trip)]
-    assert heads == ["* 체류 증빙", "* 교통비 증빙 (대중교통)", "* 교통비 증빙 (자차)", "* 숙박비 증빙"]
+    assert heads == ["* 체류 증빙", "* 교통비 증빙 (대중교통)", "* 교통비 증빙 (자차-하이패스)", "* 교통비 증빙 (자차-이동경로)", "* 숙박비 증빙"]
 
 
 def test_stay_one_page_up_to_seven_days_then_page_per_day():
@@ -60,8 +60,8 @@ def test_several_destinations():
     page = model.stay_pages(trip)[0]
     assert [(b.title, [p.name for p in b.images]) for b in page.blocks] == [(["삼척 출장 증빙"], ["a.png", "b.png"]),
                                                                           (["부산 출장 증빙"], ["c.png"])]
-    route = model.car_pages(trip)[0].blocks[-1].title
-    assert route == ["* 이동경로", "출발지→삼척 120km", "삼척→부산 300km", "부산→출발지 330km", "총 이동경로 750km"]
+    route = model.car_pages(trip)[-1].blocks[-1].title
+    assert route == ["2026년 5월 28일 목요일", "출발지→삼척 120km", "삼척→부산 300km", "부산→출발지 330km", "총 이동경로 750km"]
     assert [p.head[2] for p in model.lodging_pages(trip)] == ["지원금액 70,000원", "지원금액 80,000원"]   # 그 밖의 지역 · 광역시
     trip.stay.append(ev("d.png", date(2026, 5, 30)))
     assert any("어느 출장지인지" in p for p in model.problems(trip))
@@ -114,10 +114,16 @@ def test_guess_route_from_names_and_ticket_text():
 def test_toll_amounts_by_use_date_and_route():
     trip = Trip(tolls=[ev("1.png", date(2026, 5, 28), 2170), ev("2.png", date(2026, 5, 28), 2800), ev("3.png", date(2026, 5, 29), 1820)],
                 route_map=Path("map.png"), legs=[142])
-    page = model.car_pages(trip)[0]
-    assert page.head == ["* 교통비 증빙 (자차)", "6,790원"]
-    assert [b.title for b in page.blocks] == [["2026년 5월 28일 목요일", "하이패스 4,970원"], ["2026년 5월 29일 금요일", "하이패스 1,820원"],
-                                              ["* 이동경로", "출발지→도착지 142km", "도착지→출발지 142km", "총 이동경로 284km"]]
+    hipass, route = model.car_pages(trip)
+    # 담당자 2026-11-10 — 하이패스 쪽(금액만)과 이동경로 쪽(연료만)을 나누고, 이동일자는 하이패스 이용일자와 같게
+    assert hipass.head == ["* 교통비 증빙 (자차-하이패스)", "6,790원"] and route.head == ["* 교통비 증빙 (자차-이동경로)"]
+    assert [b.title for b in hipass.blocks] == [["2026년 5월 28일 목요일", "하이패스 4,970원"], ["2026년 5월 29일 금요일", "하이패스 1,820원"]]
+    assert [b.title for b in route.blocks] == [["2026년 5월 28일 목요일, 5월 29일 금요일", "출발지→도착지 142km", "도착지→출발지 142km",
+                                                "총 이동경로 284km"]]
+    trip.fuel = "경유"
+    assert model.car_pages(trip)[1].head == ["* 교통비 증빙 (자차-이동경로)", "연료 경유"]
+    # 자차는 늘 하이패스가 있다(담당자) — 하이패스 일자를 아직 모르면 출장기간으로 채우지 않고 비워 둔다(영수증 일자를 채우면 같이 나온다)
+    assert model.route_days(Trip(start=date(2026, 5, 28), end=date(2026, 5, 29), tolls=[ev("h.png")], legs=[1])) == ""
 
 
 def test_lodging_cap_by_region_nights_and_people():
@@ -236,7 +242,7 @@ def test_render_makes_pdf_and_continues_long_toll_pages(qapp, tmp_path):
     assert count == len(PdfReader(str(out)).pages)
     assert count > len(model.pages(trip))          # 하이패스 14장은 한 쪽에 안 들어가 이어진다
     text = "".join(page.extract_text() for page in PdfReader(str(out)).pages)
-    for words in ("체류 증빙", "교통비 증빙 (자차)", "(계속)", "총 이동경로 284", "지원금액 140,000원"):
+    for words in ("체류 증빙", "교통비 증빙 (자차-하이패스)", "교통비 증빙 (자차-이동경로)", "(계속)", "총 이동경로 284", "지원금액 140,000원"):
         assert words in text.replace("\n", " ")
 
 

@@ -291,15 +291,15 @@ def test_split_by_traveler_and_review():
 def test_one_map_for_a_round_trip_and_fuel_in_head():
     """담당자 2026-11-10 — 출발지와 목적지가 같으면(왕복) 지도 하나, 경유지가 있을 때만 구간마다. 자차 쪽에 연료도."""
     trip = Trip(name="가", tolls=[ev("h.png", date(2026, 11, 10), 3100)], legs=[76], route_maps=[Path("go.png")], fuel="경유")
-    page = model.car_pages(trip)[0]
-    assert page.head == ["* 교통비 증빙 (자차)", "연료 경유", "3,100원"]
+    hipass, page = model.car_pages(trip)
+    assert hipass.head == ["* 교통비 증빙 (자차-하이패스)", "3,100원"] and page.head == ["* 교통비 증빙 (자차-이동경로)", "연료 경유"]
     route = page.blocks[-1]
-    assert route.title == ["* 이동경로", "출발지→도착지 76km", "도착지→출발지 76km", "총 이동경로 152km"]
+    assert route.title == ["2026년 11월 10일 화요일", "출발지→도착지 76km", "도착지→출발지 76km", "총 이동경로 152km"]
     assert [p.name for p in route.images] == ["go.png"] and route.captions == []
     trip.route_stops, trip.legs = ["원주시청", "연세대학교 원주캠퍼스"], [80, 5, 79]
     trip.route_maps = [Path("1.png"), Path("2.png"), Path("3.png")]
-    route = model.car_pages(trip)[0].blocks[-1]
-    assert route.title == ["* 이동경로", "출발지→원주시청 80km", "원주시청→연세대학교 원주캠퍼스 5km", "연세대학교 원주캠퍼스→출발지 79km",
+    route = model.car_pages(trip)[-1].blocks[-1]
+    assert route.title == ["2026년 11월 10일 화요일", "출발지→원주시청 80km", "원주시청→연세대학교 원주캠퍼스 5km", "연세대학교 원주캠퍼스→출발지 79km",
                            "총 이동경로 164km"]
     assert route.captions[0] == "출발지→원주시청 80km" and len(route.images) == 3
 
@@ -1066,6 +1066,69 @@ def test_step_five_preview_in_the_page(qapp, tmp_path, isolated_home):
     panel._apply()
     assert page.tables["stay"].item(0, travel_page.SHOP_COL).text() == "원주"
     assert not any(f.startswith("가맹점") for f in panel._flagged.get(stay.ref, []))
+
+
+def test_preview_dates_typed_as_digits_and_zoom(qapp, tmp_path, isolated_home):
+    """담당자 2026-11-10 "5단계에서 일자 20261020 이렇게 입력해도 2026-10-20으로" · "미리보기가 너무 확대되어 있습니다 … 확대 축소 화면을
+    이미지 보는 것 처럼" — 숫자만 적은 일자도 읽고, 미리 보기는 처음에 한 쪽이 다 보이게(쪽 맞춤), [−] [+] · Ctrl+휠 · 폭 맞춤."""
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+
+    from claim_downloader import settings
+    from claim_downloader.ui import travel_preview
+    from claim_downloader.ui.pages import travel as travel_page
+    assert model.guess_day("20261020", 2026) == date(2026, 10, 20) and model.guess_day("20261340", 2026) is None
+    assert model.guess_day("승인 20261399 일자 2026.10.21", 2026) == date(2026, 10, 21)
+    settings.update(travel_fuels="홍길동=휘발유")
+    folder = tmp_path / "출장비 지급(26.10.20. 협의)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(GONGMUN, encoding="utf-8")
+    _image(folder / "홍길동_하이패스 증빙.png")
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.resize(1400, 1000)
+    page.show()
+    page.load_folder(str(folder))
+    page.route_ok.click()
+    page.info_next.click()
+    qapp.processEvents()
+    page._refresh_preview()
+    panel = page.preview_panel
+    hipass = next(iter(page.tables["toll"].evidence(2026)))
+    panel._select(hipass.ref)
+    panel._editor_fields["day"].setText("20261020")
+    panel._apply()
+    assert page.tables["toll"].item(0, 1).text() == "2026-10-20"
+    page.tables["toll"].item(0, 1).setText("20261021")                       # ③ 표에 바로 적어도
+    assert page.tables["toll"].item(0, 1).text() == "2026-10-21"
+    # 금액 칸은 엑셀처럼 셈도(담당자 2026-11-10 "더하기 빼기 나누기 정도는 금액 칸에서")
+    panel._select(hipass.ref)
+    panel._editor_fields["amount"].setText("4100+4100")
+    panel._apply()
+    assert page.tables["toll"].item(0, 2).text() == "8,200"
+    page.tables["toll"].item(0, 2).setText("=(10000-1800)/2")
+    assert page.tables["toll"].item(0, 2).text() == "4,100"
+    assert model.amount_of("4,100×2원") == 8200 and model.amount_of("7/0") is None and model.amount_of("4,100원(카드)") == 4100
+    # 미리 보기 · 고치기(④) 다음에 PDF 만들기(⑤) — 만들기가 마지막 단계(담당자 "4단계와 5단계 스위치")
+    qapp.processEvents()
+    assert page.step_preview.y() < page.step_make.y()
+    # 처음은 쪽 맞춤 — 한 쪽이 미리 보기 칸 높이 안에
+    panel.resize(1100, 760)
+    qapp.processEvents()
+    panel._fit_pages()
+    view = panel._views[0]
+    assert view.height() <= panel.scroll.viewport().height() and panel.zoom_label.text().endswith("%")
+    small = view.width()
+    panel.zoom_step(1)
+    assert view.width() > small and panel._zoom_mode == travel_preview.FREE
+    bigger = view.width()
+    wheel = QWheelEvent(QPointF(20, 20), QPointF(20, 20), QPoint(0, 0), QPoint(0, -120), Qt.NoButton, Qt.ControlModifier,
+                        Qt.NoScrollPhase, False)
+    qapp.sendEvent(panel.scroll.viewport(), wheel)                          # Ctrl+휠 아래 = 축소
+    assert view.width() < bigger
+    panel.set_zoom(travel_preview.FIT_WIDTH)
+    assert abs(view.width() - (panel.scroll.viewport().width() - 6)) <= 20
+    panel.set_zoom(travel_preview.FIT_PAGE)
+    assert view.width() == small
 
 
 CAPTCHA_PAGE = """<!doctype html><html><body><div id="list">검색 중</div><script>

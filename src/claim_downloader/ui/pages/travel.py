@@ -7,7 +7,7 @@
     "네이버지도 경로검색은 백그라운드에서 자동으로" · "목적지가 불분명해서 검색이 되지 않을경우 … 해당 출장자의 출장목적지를 입력해달라고 입력하는 박스".
     ① 폴더 → ② 출장신청서 검토 · 출장자(출장자 · 기간 · 출발지 · 출장지, 목적지가 분명하지 않으면 출장자마다 입력 칸) →
     ③ 출장자별 증빙(출장자마다 확인 표 · 항목별 증빙 표에 출장자 칸 · 하이패스가 있는 출장자의 네이버 지도 최단거리 가는 길 · 오는 길 · 총 km) →
-    ④ 출장자마다 만들기.
+    ④ 미리 보기 · 고치기 → ⑤ 출장자마다 만들기(담당자 2026-11-10 — PDF 만들기가 마지막 단계).
 신청서 읽기는 travel/application.py, 쪽 짜임 · 확인은 travel/model.py(Qt 없음), 그리기는 travel/render.py, 네이버 지도는 travel/navermap.py
 (브라우저 스레드 · 앱 브라우저의 네이버 지도 탭 — ui/worker.py). ERP 는 쓰지 않는다. 덮어쓰지 않는다.
 """
@@ -69,6 +69,7 @@ PLACE_COL = {model.STAY: 2, model.LODGING: 4}
 # 대중교통 증빙마다 꼭 있어야 할 칸 — 비어 있으면 칸을 칠해 확인을 부탁한다(담당자 2026-11-10 "불분명한 경우 확인요청하기")
 PUBLIC_NEEDED = {2: "금액", 3: "이동편", 4: "출발지", 5: "목적지"}
 SHOP_COL = 3              # 체류 영수증 가맹점의 시 · 군 — 출장지와 같아야 한다(담당자 2026-11-10)
+AMOUNT_KINDS = (model.PUBLIC, model.TOLL, model.LODGING)      # 셋째 칸(2)이 금액인 표
 NEEDED = {model.PUBLIC: PUBLIC_NEEDED, model.STAY: {SHOP_COL: "가맹점 지역"}}
 UNCLEAR_ROLE = Qt.UserRole + 7
 
@@ -105,8 +106,8 @@ def _parse_day(text: str, year: int) -> date | None:
 
 
 def _parse_int(text: str) -> int | None:
-    digits = "".join(ch for ch in text if ch.isdigit())
-    return int(digits) if digits else None
+    """금액 · 박 수 칸 — '4100+4100' 같은 셈도 받는다(model.amount_of)."""
+    return model.amount_of(text)
 
 
 def _parse_km(text: str) -> float | None:
@@ -147,7 +148,20 @@ class EvidenceTable(QTableWidget):
                 self.setColumnWidth(col, 104)
         self.itemChanged.connect(self._on_item)
 
-    def _on_item(self, _item) -> None:
+    def _on_item(self, item) -> None:
+        shown = ""
+        if item is not None and item.column() == 1 and item.text().strip():
+            # 일자는 어떻게 적어도('20261020' · '2026.10.20' · '10.20') 2026-10-20 꼴로 고쳐 보인다(담당자 2026-11-10)
+            day = _parse_day(item.text(), self.year())
+            shown = day.isoformat() if day is not None else ""
+        elif item is not None and item.column() == 2 and self.kind in AMOUNT_KINDS and item.text().strip():
+            # 금액 칸은 엑셀처럼 셈도 — '4100+4100' 을 적으면 8,200 으로(담당자 2026-11-10)
+            number = _parse_int(item.text())
+            shown = f"{number:,}" if number is not None else ""
+        if shown and item.text() != shown:
+            self.blockSignals(True)
+            item.setText(shown)
+            self.blockSignals(False)
         self.mark_unclear()
         self.changed.emit()
 
@@ -331,7 +345,7 @@ class TravelPage(QWidget):
         self.setObjectName("page")
         self.browser = worker                    # 네이버 지도 최단거리를 찾는 브라우저 스레드(app.session_worker) — 없으면 처음 쓸 때 만든다
         self._owns_browser = False
-        self._stage = "folder"                   # folder → review → files(③ · ④ 함께)
+        self._stage = "folder"                   # folder → review → files(③ · ④ 미리 보기 · ⑤ 만들기 함께)
         self._made: list[Path] = []
         self._apps: list[Path] = []              # 읽은 출장신청서 파일
         self._scan = model.Scan()
@@ -361,8 +375,9 @@ class TravelPage(QWidget):
         self.area.add(self.step_folder)
         self.area.add(self.step_info)
         self.area.add(self.step_files, 1)
-        self.area.add(self.step_make)
+        # 미리 보기 · 고치기 → 만들기 차례 — PDF 만들기가 마지막 단계(담당자 2026-11-10 "4단계와 5단계 스위치해주세요")
         self.area.add(self.step_preview)
+        self.area.add(self.step_make)
         layout.addWidget(self.area, 1)
         if self.browser is not None:
             self.browser.routes_found.connect(self._on_routes)
@@ -423,7 +438,7 @@ class TravelPage(QWidget):
 
     def _build_folder(self) -> FlowStep:
         """① 폴더만 — 담당자 2026-11-10 "1단계에는 출장증빙을 만들 폴더만 선택하고" · "여러 폴더를 선택할 수 있도록".
-        넣은 폴더들은 차례로 하나씩 ② → ③ → ④ 를 거친다(폴더마다 출장신청서 · 출장자 · 증빙이 다르다)."""
+        넣은 폴더들은 차례로 하나씩 ② → ③ → ④ 미리 보기 → ⑤ 만들기를 거친다(폴더마다 출장신청서 · 출장자 · 증빙이 다르다)."""
         step = FlowStep("1", "출장증빙을 만들 폴더를 고르세요",
                         f"보통 '출장비 지급(…)' 폴더 — 출장신청서와 증빙 파일({NAMING})이 든 폴더. 여러 개면 모두 넣으세요(끌어다 놓아도 됩니다) — "
                         "차례로 하나씩 만들고, 만든 출장증빙은 그 폴더에 둡니다.")
@@ -907,7 +922,7 @@ class TravelPage(QWidget):
         return self.route_box
 
     def _build_make(self) -> FlowStep:
-        step = FlowStep("4", "출장자마다 출장증빙 만들기", "출장자마다 '<이름> 출장증빙_yy.mm.dd.pdf' 를 폴더에 만듭니다. 같은 이름이 있으면 덮어쓰지 않고 _2.")
+        step = FlowStep("5", "출장자마다 출장증빙 만들기", "출장자마다 '<이름> 출장증빙_yy.mm.dd.pdf' 를 폴더에 만듭니다. 같은 이름이 있으면 덮어쓰지 않고 _2.")
         self.plan_label = WrapLabel("")
         self.plan_label.setObjectName("body")
         step.add(self.plan_label)
@@ -938,8 +953,8 @@ class TravelPage(QWidget):
         return step
 
     def _build_preview(self) -> FlowStep:
-        """⑤ 미리 보기 — 만들 PDF 와 같은 쪽을 앱 안에서(담당자 2026-11-10 "5단계로 미리보기를 넣어주세요"). 확인할 곳을 칠하고 눌러 고친다(ui/travel_preview.py)."""
-        step = FlowStep("5", "미리 보기 · 고치기", "만들 출장증빙(PDF 와 같은 쪽)입니다. 확인이 필요한 곳은 칠해져 있습니다 — 눌러서 오른쪽 칸에서 고치세요.")
+        """④ 미리 보기 — 만들 PDF 와 같은 쪽을 앱 안에서(담당자 2026-11-10 "5단계로 미리보기를 넣어주세요" → 같은 날 "4단계와 5단계 스위치 · 출장증빙 PDF 만들기가 마지막 단계로"). 확인할 곳을 칠하고 눌러 고친다(ui/travel_preview.py)."""
+        step = FlowStep("4", "미리 보기 · 고치기", "만들 출장증빙(PDF 와 같은 쪽)입니다. 확인이 필요한 곳은 칠해져 있습니다 — 눌러서 오른쪽 칸에서 고치세요.")
         self.preview_panel = PreviewPanel(self)
         self.preview_panel.setMinimumHeight(780)
         self.preview_panel.edited.connect(self._on_preview_edit)
@@ -961,7 +976,7 @@ class TravelPage(QWidget):
 
     def _on_preview_edit(self) -> None:
         if self._made:
-            self.preview_note.setText("고친 내용은 ④ [출장증빙 PDF 만들기] 를 다시 눌러야 PDF 에 들어갑니다.")
+            self.preview_note.setText("고친 내용은 ⑤ [출장증빙 PDF 만들기] 를 다시 눌러야 PDF 에 들어갑니다.")
             self.preview_note.show()
 
     # ── ① 폴더 → ② 출장신청서 검토 ─────────────────────────────────────────
@@ -1663,7 +1678,7 @@ class TravelPage(QWidget):
         self._fill_route_table()
         self._sync()
 
-    # ── ④ 만들기 ────────────────────────────────────────────────────────
+    # ── ⑤ 만들기 ────────────────────────────────────────────────────────
     def _make(self, confirmed: bool = False) -> None:
         folder = Path(self.folder_edit.text().strip())
         if not folder.is_dir():
