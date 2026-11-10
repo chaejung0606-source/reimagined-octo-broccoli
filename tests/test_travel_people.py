@@ -611,6 +611,30 @@ def test_page_puts_named_other_files_into_other_table(qapp, tmp_path, isolated_h
     assert page.trips()[0].other[0].label == "학회 참가확인서"
 
 
+def test_route_check_turns_on_after_fuel_is_picked(qapp, tmp_path, isolated_home):
+    """담당자 2026-11-10 "출발지경유지목적지와 연료를 확인했습니다. 이부분 체크하려고 하는데 체크가 안됩니다" — 설정에 연료가 없는 사람은
+    ② 에서 연료를 고르는데, 고른 뒤에도 확인 칸이 꺼진 채('아직 빈 것: 연료')라 눌리지 않았다."""
+    from claim_downloader.ui.pages import travel as travel_page
+    folder = tmp_path / "출장비 지급(26.10.20. 협의)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(GONGMUN, encoding="utf-8")
+    for name in ("홍길동_체류 증빙.png", "홍길동_하이패스 증빙.png"):
+        _image(folder / name)
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.show()
+    page.load_folder(str(folder))
+    assert page._drivers() == ["홍길동"] and page.goal_box.isHidden()
+    assert page._car_missing() == ["연료"] and not page.route_ok.isEnabled() and "연료" in page.route_summary.text()
+    box = page.fuel_boxes["홍길동"]
+    box.setCurrentIndex(box.findData("휘발유"))
+    assert page.route_ok.isEnabled() and "아직 빈 것" not in page.route_summary.text()
+    page.route_ok.click()
+    assert page.route_ok.isChecked() and page.info_next.isEnabled()
+    # 연료를 다시 비우면 확인도 풀린다
+    box.setCurrentIndex(0)
+    assert not page.route_ok.isEnabled() and not page.route_ok.isChecked() and not page.info_next.isEnabled()
+
+
 def test_several_folders_one_after_another(qapp, tmp_path, isolated_home, monkeypatch):
     """담당자 2026-11-10 "여러 폴더를 선택할 수 있도록" — ① 에 폴더 여럿, 차례로 ② → ③ → ④, 만든 뒤 [다음 폴더]."""
     from PySide6.QtWidgets import QFileDialog

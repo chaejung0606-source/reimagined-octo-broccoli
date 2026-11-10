@@ -685,6 +685,8 @@ class TravelPage(QWidget):
                 settings.update(travel_fuels=model.format_fuels(fuels))
         if recheck:
             self._uncheck_route()
+        # 확인 칸 · '아직 빈 것' 줄도 다시 — 전에는 연료를 골라도 그대로라 확인 칸이 꺼진 채 눌리지 않았다(담당자 2026-11-10 "체크가 안됩니다")
+        self._sync_car_box()
         self._sync()
 
     def _uncheck_route(self) -> None:
@@ -736,6 +738,7 @@ class TravelPage(QWidget):
             lines.append((f"{name}: " if len(drivers) > 1 or name != "출장자" else "") + path)
         self.route_summary.setText("경로: " + " / ".join(lines) + (f"\n아직 빈 것: {', '.join(missing)}" if missing else ""))
         self.route_ok.setEnabled(not missing)
+        self.route_ok.setToolTip(f"먼저 채우세요: {', '.join(missing)}" if missing else "")
         if missing:
             self._uncheck_route()
 
