@@ -10,16 +10,20 @@
 
 **네이버 지도 화면은 실측 전이다**(이 클라우드 환경은 네이버에 닿지 않는다 — CLAUDE.md 28절). 검색 주소 · 길찾기 주소 꼴 · 화면 글자는 공개된 웹 화면의
 일반적인 모양으로 짐작했다. 어느 단계든 안 되면 그 까닭을 돌려주고(지어내지 않는다), 화면은 [브라우저에서 직접](보이는 브라우저) · [지도 찍기] 로 사람이 한다.
+2026-11-10 담당자 PC: 검색 주소(allSearch)의 답에서 '강원대학교 춘천캠퍼스' 도 곳이 안 나왔다(사람은 네이버 지도에서 둘 다 찾음) — 그래서 답의 꼴을 짐작하지 않고
+JSON 어디서든 '이름 + 경도 · 위도' 를 읽고(places_in), 그래도 없으면 지도 검색 화면을 열어 그 화면이 스스로 받는 답에서 읽는다(search_on_page).
+한 번 찾은 곳 · 사람이 띄운 길찾기 주소의 곳은 기억한다(settings.travel_places — 늘 같은 출발지는 다시 찾지 않는다). 못 찾으면 답의 모양(열쇠 이름)을 기록에.
 누르는 것은 '거리우선'(글자가 정확히 같은 것이 하나일 때) 하나뿐이고 값을 넣지 않는다(주소로 연다). 네이버 지도는 로그인이 없다.
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from .model import route_km
 
@@ -29,21 +33,18 @@ SHORTEST = "거리우선"
 VIEWPORT = {"width": 1400, "height": 900}        # 담당자 그림처럼 왼쪽 경로 목록과 지도가 한 화면에
 SEARCH_NEAR = "127.7300;37.8700"                   # 강원대학교 춘천캠퍼스 둘레부터 — 같은 이름이 여럿이면 가까운 곳이 먼저
 
-# 지도 화면 안에서 부르는 장소 검색 — 같은 출처라 쿠키 · 머리글이 화면과 같다. 결과 꼴이 다르면 ok=false 로 까닭만.
+# 지도 화면 안에서 부르는 장소 검색 — 같은 출처라 쿠키 · 머리글이 화면과 같다. 답의 모양을 짐작하지 않고 글 그대로 돌려 파이썬이 읽는다(places_in).
+# 2026-11-10 담당자 PC 에서 이 검색이 '강원대학교 춘천캠퍼스' 까지 빈 결과였다 — 그래서 이것은 첫 시도일 뿐이고, 안 되면 지도 화면의 검색(search_on_page)으로.
 SEARCH_JS = """async ([q, near]) => {
   try {
     const url = '/p/api/search/allSearch?query=' + encodeURIComponent(q) + '&type=all&searchCoord=' + encodeURIComponent(near) + '&boundary=';
     const r = await fetch(url, {credentials: 'include', headers: {'Accept': 'application/json'}});
-    if (!r.ok) return {ok: false, why: 'HTTP ' + r.status};
-    const j = await r.json();
-    const res = (j && j.result) || {};
-    const list = ((res.place || {}).list || []).concat(((res.address || {}).jibunsAddress || {}).list || []);
-    return {ok: true, list: list.slice(0, 5).map(p => ({
-      id: String(p.id || p.sid || ''), name: String(p.name || p.title || p.fullAddress || q),
-      x: Number(p.x), y: Number(p.y), address: String(p.roadAddress || p.address || p.fullAddress || '')}))
-      .filter(p => isFinite(p.x) && isFinite(p.y) && p.x && p.y)};
-  } catch (e) { return {ok: false, why: String(e).slice(0, 120)}; }
+    const text = await r.text();
+    return {ok: r.ok, status: r.status, text: text.slice(0, 400000)};
+  } catch (e) { return {ok: false, status: 0, text: '', why: String(e).slice(0, 120)}; }
 }"""
+SEARCH_POLLS = 24                                  # 지도 화면 검색 — 0.5초씩, 결과가 오면 바로 멈춘다
+JSON_LIMIT = 3_000_000
 
 TEXT_JS = "() => (document.body && document.body.innerText) || ''"
 
@@ -82,6 +83,7 @@ class RouteResult:
     need_place: str = ""            # 검색되지 않은 곳 — 화면이 그 출장자의 출장목적지를 다시 묻는다
     note: str = ""
     steps: list[str] = field(default_factory=list)
+    places: list = field(default_factory=list)     # 배운 곳(사람이 띄운 길찾기 주소에서) — session 이 settings.travel_places 에 더한다
 
     def lines(self) -> list[str]:
         head = (f"✓ 네이버 지도 최단거리 {self.label}: {self.origin} → {self.goal} {self.km:g}km" if self.ok and self.km is not None
@@ -129,45 +131,247 @@ def search_queries(text: str) -> list[str]:
     return list(dict.fromkeys(q for q in out if q))
 
 
-def search_place(page, query: str) -> tuple[Place | None, str]:
-    """네이버 지도 검색으로 곳 하나 — (곳, 까닭). 결과가 없으면 (None, '검색 결과 없음')."""
+# ── 찾기 — 네이버 답의 모양에 기대지 않는다 ────────────────────────────────
+_X_KEYS = ("x", "lng", "lon", "longitude", "mapx")
+_Y_KEYS = ("y", "lat", "latitude", "mapy")
+_NAME_KEYS = ("name", "title", "placeName", "businessName", "display", "fullAddress", "roadAddress")
+_ADDRESS_KEYS = ("roadAddress", "address", "fullAddress", "commonAddress")
+_TAG = re.compile(r"<[^>]+>")
+
+
+def norm(text: str) -> str:
+    """견줄 이름 — 띄어쓰기 · 문장부호를 빼고 소문자('강원 가명정보 활용지원센터' = '강원가명정보활용지원센터')."""
+    return re.sub(r"[\W_]+", "", text or "").lower()
+
+
+def _coord(value) -> float | None:
+    try:
+        number = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if number > 1_000_000:          # 지역 검색의 mapx · mapy 꼴(경도 × 10^7)
+        number /= 10_000_000
+    return number
+
+
+def _first(d: dict, keys) -> object:
+    for key in keys:
+        value = d.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def places_in(data, limit: int = 60) -> list[Place]:
+    """JSON 어디에 있든 '이름 + 경도 · 위도(우리나라)' 가 함께 든 것 — 나온 차례대로. 검색 답의 꼴(result.place.list · GraphQL …)이 바뀌어도 읽힌다."""
+    out: list[Place] = []
+    seen: set = set()
+
+    def walk(node, depth: int) -> None:
+        if len(out) >= limit or depth > 14:
+            return
+        if isinstance(node, dict):
+            x, y = _coord(_first(node, _X_KEYS)), _coord(_first(node, _Y_KEYS))
+            name = _first(node, _NAME_KEYS)
+            if x is not None and y is not None and 124 <= x <= 132 and 33 <= y <= 39.5 and isinstance(name, str):
+                name = _TAG.sub("", name).strip()
+                key = (norm(name), round(x, 5), round(y, 5))
+                if name and key not in seen:
+                    seen.add(key)
+                    address = _first(node, _ADDRESS_KEYS)
+                    out.append(Place(name=name, x=x, y=y, id=str(_first(node, ("id", "sid", "placeId", "businessId")) or ""),
+                                     address=str(address) if isinstance(address, str) else ""))
+            for value in node.values():
+                walk(value, depth + 1)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, depth + 1)
+
+    walk(data, 0)
+    return out
+
+
+def shape(data, depth: int = 0) -> str:
+    """답의 모양(열쇠 이름만) — 못 찾았을 때 기록에 남겨 다음에 고친다. 값은 적지 않는다."""
+    if depth > 2:
+        return "…"
+    if isinstance(data, dict):
+        if not data:
+            return "{}"
+        parts = [f"{k}:{shape(v, depth + 1)}" if isinstance(v, (dict, list)) else (f"{k}=null" if v is None else str(k))
+                 for k, v in list(data.items())[:10]]
+        return "{" + ",".join(parts) + ("…" if len(data) > 10 else "") + "}"
+    if isinstance(data, list):
+        return f"[{len(data)}" + (" " + shape(data[0], depth + 1) if data else "") + "]"
+    return type(data).__name__
+
+
+def rank(query: str, places: list[Place], prefer_id: str = "") -> tuple[Place | None, str]:
+    """찾은 곳 중 하나 — 화면이 고른 곳(id) → 이름이 검색어와 같은 곳 → 이름이 검색어를 담은(또는 그 반대) 곳 → 첫 결과. (곳, 고른 까닭)."""
+    if not places:
+        return None, ""
+    if prefer_id:
+        for place in places:
+            if place.id == prefer_id:
+                return place, "지도 화면이 고른 곳"
+    whole = norm(query)
+    bare = norm(re.sub(r"\([^)]*\)", " ", query or ""))
+    for place in places:
+        if norm(place.name) in (whole, bare):
+            return place, "이름이 같은 곳"
+    for place in places:
+        name = norm(place.name)
+        if len(name) >= 2 and bare and (bare in name or name in bare):
+            return place, "이름이 비슷한 곳"
+    return places[0], "첫 결과(이름이 같은 곳 없음)"
+
+
+def search_api(page, query: str) -> tuple[list[Place], str]:
+    """지도 화면 안에서 검색 주소를 불러 — (찾은 곳들, 못 찾았으면 까닭과 답의 모양)."""
     try:
         got = page.evaluate(SEARCH_JS, [query, SEARCH_NEAR])
     except Exception as error:  # noqa: BLE001
-        return None, "검색을 부르지 못함: " + (str(error).splitlines()[0][:100] if str(error) else type(error).__name__)
-    if not isinstance(got, dict) or not got.get("ok"):
-        return None, "검색을 부르지 못함: " + str((got or {}).get("why", "모양이 다름"))
-    found = got.get("list") or []
-    if not found:
-        return None, "검색 결과 없음"
-    p = found[0]
-    return Place(name=p.get("name") or query, x=float(p["x"]), y=float(p["y"]), id=p.get("id", ""), address=p.get("address", "")), ""
+        return [], "검색을 부르지 못함: " + (str(error).splitlines()[0][:100] if str(error) else type(error).__name__)
+    if not isinstance(got, dict):
+        return [], "검색 답의 모양이 다름"
+    if got.get("why"):
+        return [], "검색을 부르지 못함: " + str(got["why"])
+    text = got.get("text") or ""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        head = re.sub(r"\s+", " ", text[:80])
+        return [], f"HTTP {got.get('status')} · JSON 아님({head!r})"
+    found = places_in(data)
+    return found, "" if found else f"HTTP {got.get('status')} · 곳 없음 · 답 {shape(data)[:240]}"
+
+
+def search_on_page(page, query: str, wait: Callable[[float], None]) -> tuple[list[Place], str, str]:
+    """네이버 지도 검색 화면(/p/search/검색어)을 열고, 그 화면이 스스로 받는 답(JSON)에서 곳을 읽는다 — 화면에 결과가 보이면 좌표도 그 답에 있다.
+    (찾은 곳들, 화면이 하나를 골랐으면 그 id, 못 찾았으면 까닭)."""
+    seen: list = []
+
+    def keep(response) -> None:          # 알림 자리에서는 담아만 둔다 — 여기서 Playwright 를 부르지 않는다(21절)
+        seen.append(response)
+
+    page.on("response", keep)
+    read = 0
+    found: list[Place] = []
+    paths: list[str] = []
+    try:
+        page.goto(f"{BASE}/p/search/{quote(query, safe='')}", wait_until="domcontentloaded")
+        for _ in range(SEARCH_POLLS):
+            wait(0.5)
+            while read < len(seen):
+                response = seen[read]
+                read += 1
+                try:
+                    if response.request.resource_type not in ("xhr", "fetch") or "naver" not in response.url:
+                        continue
+                    body = response.body()
+                    if len(body) > JSON_LIMIT:
+                        continue
+                    data = json.loads(body.decode("utf-8", "replace"))
+                except Exception:  # noqa: BLE001 — JSON 이 아닌 답 · 이미 사라진 답
+                    continue
+                paths.append(response.url.split("?")[0].split("naver.com", 1)[-1][:60])
+                found += [p for p in places_in(data) if all((p.name, p.x, p.y) != (q.name, q.x, q.y) for q in found)]
+            if found:
+                break
+    finally:
+        page.remove_listener("response", keep)
+    chosen = re.search(r"/place/(\d+)", page.url or "")
+    why = "" if found else (f"검색 화면이 받은 답 {len(paths)}개에 곳 없음" + (f" ({', '.join(dict.fromkeys(paths))[:200]})" if paths else ""))
+    return found, chosen.group(1) if chosen else "", why
+
+
+def search_place(page, query: str, wait: Callable[[float], None] | None = None,
+                 known: dict | None = None) -> tuple[Place | None, str, list[str]]:
+    """네이버 지도에서 곳 하나 — (곳, 못 찾았으면 '검색 결과 없음' 등, 한 일). known 은 전에 찾은 곳(settings.travel_places)."""
+    steps: list[str] = []
+    for attempt in search_queries(query):
+        hit = (known or {}).get(norm(attempt)) or (known or {}).get(norm(re.sub(r"\([^)]*\)", " ", attempt)))
+        if hit:
+            steps.append(f"'{attempt}' → 전에 찾은 곳 '{hit['name']}'")
+            return Place(**hit), "", steps
+    why = ""
+    for attempt in search_queries(query):          # 괄호 든 곳('…센터 (원주)')은 괄호를 빼고 · 괄호 속 지역을 앞에 두고 한 번 더
+        found, why = search_api(page, attempt)
+        place, how = rank(attempt, found)
+        if place is not None:
+            steps.append(f"검색 '{attempt}' → {place.name} ({how})")
+            return place, "", steps
+        steps.append(f"검색 '{attempt}' → {why}")
+        if wait is None:
+            continue
+        found, chosen, why = search_on_page(page, attempt, wait)
+        place, how = rank(attempt, found, chosen)
+        if place is not None:
+            steps.append(f"지도 화면 검색 '{attempt}' → {place.name} ({how})")
+            return place, "", steps
+        steps.append(f"지도 화면 검색 '{attempt}' → {why}")
+    return None, "검색 결과 없음", steps
+
+
+def remember(known: dict | None, query: str, place: Place) -> None:
+    """찾은 곳을 known 에 — 검색어 이름과 네이버 이름 둘로."""
+    if known is None:
+        return
+    value = {"name": place.name, "x": place.x, "y": place.y, "id": place.id, "address": place.address}
+    for key in {norm(query), norm(re.sub(r"\([^)]*\)", " ", query)), norm(place.name)} - {""}:
+        known[key] = value
+
+
+def mercator_back(x: float, y: float) -> tuple[float, float]:
+    """웹 메르카토르(m) → WGS84(경도, 위도)."""
+    lon = x / 20037508.34 * 180.0
+    lat = math.atan(math.exp(y / 20037508.34 * math.pi)) * 360.0 / math.pi - 90.0
+    return lon, lat
+
+
+def places_from_url(url: str) -> list[Place]:
+    """길찾기 주소(/p/directions/x,y,이름,id,종류/…)의 곳들 — 사람이 브라우저에서 띄운 길찾기에서 출발지 · 목적지를 배운다."""
+    if "/directions/" not in (url or ""):
+        return []
+    out = []
+    for part in url.split("?")[0].split("/directions/", 1)[1].split("/"):
+        bits = part.split(",")
+        if len(bits) < 3:
+            continue
+        try:
+            x, y = float(bits[0]), float(bits[1])
+        except ValueError:
+            continue
+        lon, lat = mercator_back(x, y) if abs(x) > 1000 else (x, y)
+        name = unquote(bits[2]).strip()
+        if name and 124 <= lon <= 132 and 33 <= lat <= 39.5:
+            out.append(Place(name=name, x=lon, y=lat, id=bits[3] if len(bits) > 3 else ""))
+    return out
 
 
 def find_route(page, origin: str, goal: str, out: Path, log: Callable[[str], None],
-               wait: Callable[[float], None], label: str = "") -> RouteResult:
-    """origin → goal 의 자동차 거리우선 경로를 찾아 out 에 화면을 찍는다. page 는 네이버 지도가 열린 (보이지 않는) 창."""
+               wait: Callable[[float], None], label: str = "", known: dict | None = None) -> RouteResult:
+    """origin → goal 의 자동차 거리우선 경로를 찾아 out 에 화면을 찍는다. page 는 네이버 지도가 열린 (보이지 않는) 창.
+    known 은 전에 찾은 곳(이름 → 곳) — 새로 찾은 곳을 더한다."""
     result = RouteResult(origin=origin, goal=goal, label=label)
     if not origin.strip() or not goal.strip():
-        result.need_place = goal if not goal.strip() else origin
+        result.need_place = goal if not goal.strip() else ""
         result.note = "출발지 · 목적지가 비어 있습니다"
         return result
     if not page.url.startswith(BASE):
         page.goto(DIRECTIONS_URL, wait_until="domcontentloaded")
         wait(1.5)
     places = []
-    for query in (origin, goal):
-        place, why = None, ""
-        for attempt in search_queries(query):          # 괄호 든 곳('…센터 (원주)')은 괄호를 빼고 · 괄호 속 지역을 앞에 두고 한 번 더
-            place, why = search_place(page, attempt)
-            result.steps.append(f"검색 '{attempt}' → {place.name if place else why}")
-            if place is not None or why != "검색 결과 없음":
-                break
+    for role, query in (("출발지", origin), ("목적지", goal)):
+        place, why, steps = search_place(page, query, wait, known)
+        result.steps += steps
         if place is None:
-            result.note = f"'{query}' 를 네이버 지도에서 찾지 못했습니다 ({why})"
-            if why == "검색 결과 없음":
+            result.note = f"{role} '{query}' 를 네이버 지도에서 찾지 못했습니다 ({why})"
+            # 목적지만 다시 묻는다 — 출발지(늘 같은 곳)부터 안 되면 곳 이름이 아니라 앱의 검색이 안 된 것이다(2026-11-10 담당자 PC)
+            if role == "목적지" and why == "검색 결과 없음":
                 result.need_place = query
             return result
+        remember(known, query, place)
         places.append(place)
     url = directions_url(*places)
     page.goto(url, wait_until="domcontentloaded")
@@ -200,6 +404,7 @@ def capture(page, out: Path, label: str = "") -> RouteResult:
     """사람이 (보이는 브라우저에서) 띄운 길찾기 화면을 그대로 찍고 km 를 읽는다 — 자동 찾기가 안 될 때의 길."""
     result = RouteResult(label=label)
     result.km = route_km(page_text(page))
+    result.places = places_from_url(page.url)
     out.parent.mkdir(parents=True, exist_ok=True)
     page.screenshot(path=str(out))
     result.image, result.ok = str(out), True

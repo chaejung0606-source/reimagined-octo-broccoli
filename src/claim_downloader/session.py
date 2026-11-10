@@ -774,11 +774,13 @@ class ErpSession:
         못 하면 그 구간의 RouteResult.note(목적지를 못 찾으면 need_place). 사람에게 묻지 않는다 — 화면이 묻는다."""
         from .travel import navermap
         out = []
+        known = self._known_places()
+        before = dict(known)
         for origin, goal, label in legs:
             try:
                 page = self._map_page()
                 result = navermap.find_route(page, origin, goal, navermap.shot_path(Path(folder), label), self.log,
-                                             wait=lambda s, page=page: page.wait_for_timeout(int(s * 1000)), label=label)
+                                             wait=lambda s, page=page: page.wait_for_timeout(int(s * 1000)), label=label, known=known)
             except Exception as error:  # noqa: BLE001 — 네이버에 닿지 못함 등
                 self._close_map()
                 result = navermap.RouteResult(origin=origin, goal=goal, label=label,
@@ -786,7 +788,23 @@ class ErpSession:
             for line in result.lines():
                 self.log(line)
             out.append(result)
+        if known != before:
+            self._save_places(known)
         return out
+
+    @staticmethod
+    def _known_places() -> dict:
+        """전에 네이버 지도에서 찾은 곳(settings.travel_places) — 깨졌으면 빈 것."""
+        import json
+        try:
+            data = json.loads(settings_mod.load().travel_places or "{}")
+        except ValueError:
+            return {}
+        return {k: v for k, v in data.items() if isinstance(v, dict) and {"name", "x", "y"} <= set(v)} if isinstance(data, dict) else {}
+
+    def _save_places(self, known: dict) -> None:
+        import json
+        settings_mod.update(travel_places=json.dumps(known, ensure_ascii=False))
 
     def capture_route(self, folder: Path, label: str):
         """사람이 보이는 브라우저에 띄운 네이버 지도 길찾기 화면을 찍는다 — 자동 찾기가 안 될 때. 열린 지도 창이 없으면 note 만."""
@@ -795,6 +813,13 @@ class ErpSession:
         if page is None:
             return navermap.RouteResult(label=label, note="네이버 지도 창이 없습니다 — [브라우저에서 직접] 으로 열고 거리우선 경로를 띄우세요")
         result = navermap.capture(page, navermap.shot_path(Path(folder), label), label)
+        if result.places:
+            # 사람이 띄운 길찾기의 출발지 · 목적지를 기억한다 — 다음에는 앱이 검색 없이 그 곳으로 길을 찾는다
+            known = self._known_places()
+            for place in result.places:
+                navermap.remember(known, place.name, place)
+            self._save_places(known)
+            self.log("네이버 지도 길찾기 주소에서 곳 %d개를 기억했습니다" % len(result.places))
         for line in result.lines():
             self.log(line)
         return result

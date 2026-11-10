@@ -1254,6 +1254,7 @@ class TravelPage(QWidget):
         self._worker().find_routes(legs, folder, keys)
 
     def _on_routes(self, found) -> None:
+        failed = []
         for key, result in found:
             self._searching.discard(key)
             route = self._routes.get(key)
@@ -1270,6 +1271,8 @@ class TravelPage(QWidget):
                     # 목적지가 검색되지 않으면 그 출장자의 출장목적지를 묻는다(담당자 2026-11-10)
                     self._ask_reason[key[0]] = f"네이버 지도에서 '{result.need_place}' 를 찾지 못했습니다"
                     self._goal_of.pop(key[0], None)
+                else:
+                    failed.append(result.note or "까닭 모름")
         self._fill_route_table()
         self._sync_goal_box()
         if self._needs_goal() and self._stage == "files":
@@ -1277,6 +1280,13 @@ class TravelPage(QWidget):
             self._go("review")
             QMessageBox.information(self, "출장목적지", "네이버 지도에서 목적지를 찾지 못한 출장자가 있습니다.\n\n"
                                     "② 의 칸에 그 출장자의 출장목적지(기관 · 건물 이름)를 입력해 주세요 — 입력하면 다시 찾습니다.")
+        elif failed and self._stage == "files":
+            # 목적지 이름 탓이 아닌 실패(출발지부터 못 찾음 · 길찾기 화면이 안 뜸)는 목적지를 묻지 않고 사람이 할 길을 알린다(담당자 2026-11-10
+            # "목적지가 검색이 안된다고 하는데 둘다 검색이 됩니다" — 그때는 출발지부터 앱의 검색이 비어 왔는데 목적지를 물었다)
+            QMessageBox.information(self, "네이버 지도 최단거리", "앱이 네이버 지도 최단거리를 찾지 못했습니다.\n\n" + "\n".join(dict.fromkeys(failed))[:600] +
+                                    "\n\n[브라우저에서 직접] 으로 네이버 지도 길찾기에서 출발지 · 목적지를 넣고 '거리우선' 경로를 띄운 뒤, "
+                                    "자차 이동경로 표에서 그 줄을 고르고 [지금 화면 찍기 → 고른 줄] 을 누르세요.\n"
+                                    "그 길찾기의 출발지 · 목적지는 앱이 기억해 다음부터는 저절로 찾습니다.")
         self._sync()
 
     def _capture_route(self) -> None:

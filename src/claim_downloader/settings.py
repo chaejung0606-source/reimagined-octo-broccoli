@@ -90,6 +90,9 @@ class Settings:
     travel_fuels: str = ""
     # 연료 보기 — ERP 출장명령부(국내)교통비 창의 '연비/전비/수소' 보기를 화면 구조 기록에서 찾아 '|' 로 이어 남긴 것(travel/fuels.py)
     travel_fuel_options: str = ""
+    # 네이버 지도에서 찾은 곳(이름 · 좌표 · id) — 한 번 찾은 곳(늘 같은 출발지 등)은 다시 검색하지 않는다. 사람이 브라우저에서 띄운 길찾기 화면의
+    # 주소에서도 배운다(travel/navermap.py). JSON {'찾은 이름(띄어쓰기 · 문장부호 뺌)': {name, x, y, id, address}}
+    travel_places: str = ""
     # 주차등록 사이트(parking.py) — 담당자 요청 2026-10-21. 로그인 정보는 여기가 아니라 _주차로그인.json(비밀번호는 윈도우 DPAPI 로 감쌈)에
     parking_url: str = "https://traffic.kangwon.ac.kr/login"
     parking_auto_login: bool = True        # 로그인 정보가 있으면 사이트를 열 때 한 번 자동 로그인(담당자 허락 2026-10-21)

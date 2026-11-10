@@ -380,7 +380,8 @@ def _mock_naver(page, places: dict):
     page.route("https://map.naver.com/**", handle)
 
 
-def test_find_route_in_mock_naver_map(browser_page, tmp_path):
+def test_find_route_in_mock_naver_map(browser_page, tmp_path, monkeypatch):
+    monkeypatch.setattr(navermap, "SEARCH_POLLS", 4)
     page = browser_page
     places = {"강원대학교 춘천캠퍼스": {"id": "11591563", "name": "강원대학교 춘천캠퍼스", "x": "127.7432", "y": "37.8687"},
               "연세대학교 원주캠퍼스": {"id": "11622019", "name": "연세대학교 미래캠퍼스", "x": "127.9030", "y": "37.2777"}}
@@ -397,6 +398,91 @@ def test_find_route_in_mock_naver_map(browser_page, tmp_path):
                                   wait=lambda s: page.wait_for_timeout(int(s * 300)))
     assert not missing.ok and missing.need_place == "원주" and "찾지 못했습니다" in missing.note
     assert navermap.shot_path(tmp_path, "홍길동 가는 길(오는 길도 같은 거리)").name.endswith("_2.png")     # 덮어쓰지 않는다
+
+
+SEARCH_PAGE = """<!doctype html><html><body><div id="list">검색 중</div><script>
+const q = decodeURIComponent(location.pathname.split('/p/search/')[1] || '');
+fetch('/p/api/mockgraphql?q=' + encodeURIComponent(q)).then(r => r.json()).then(j => {
+  document.getElementById('list').textContent = JSON.stringify(j).length + '';
+});
+</script></body></html>"""
+
+
+def _mock_naver_new(page, places: dict, calls: list):
+    """2026-11-10 담당자 PC 처럼 검색 주소(allSearch)의 답에 곳이 없고, 지도 검색 화면은 다른 꼴(GraphQL 같은)의 답을 스스로 받는다."""
+    from urllib.parse import parse_qs, urlparse
+
+    def handle(route):
+        url = route.request.url
+        calls.append(urlparse(url).path)
+        if "/p/api/search/allSearch" in url:
+            route.fulfill(status=200, content_type="application/json; charset=utf-8",
+                          body=json.dumps({"result": {"type": "place", "metaInfo": {"searchedQuery": "x"}, "place": None, "address": None}}))
+        elif "/p/api/mockgraphql" in url:
+            query = parse_qs(urlparse(url).query)["q"][0]
+            near = {"id": "1", "name": "춘천 닭갈비 골목", "x": "127.72", "y": "37.88"}         # 이름이 다른 곳이 먼저 와도
+            items = [near, places[query]] if query in places else []
+            route.fulfill(status=200, content_type="application/json; charset=utf-8",
+                          body=json.dumps({"data": {"businesses": {"total": len(items), "items": items}}}))
+        elif "/p/search/" in url:
+            route.fulfill(status=200, content_type="text/html; charset=utf-8", body=SEARCH_PAGE)
+        else:
+            route.fulfill(status=200, content_type="text/html; charset=utf-8", body=MOCK_PAGE)
+    page.route("https://map.naver.com/**", handle)
+
+
+def test_find_route_reads_what_the_search_screen_receives(browser_page, tmp_path, monkeypatch):
+    """담당자 2026-11-10 "목적지가 검색이 안된다고 하는데 둘다 검색이 됩니다" — 앱의 검색 주소는 '강원대학교 춘천캠퍼스' 도 비어 왔다.
+    이제 답의 꼴을 짐작하지 않고, 안 되면 지도 검색 화면이 받는 답에서 이름이 맞는 곳을 읽고, 찾은 곳은 기억한다."""
+    monkeypatch.setattr(navermap, "SEARCH_POLLS", 6)
+    page = browser_page
+    places = {"강원대학교 춘천캠퍼스": {"id": "11591476", "name": "강원대학교 춘천캠퍼스", "x": "127.7445", "y": "37.8690"},
+              "강원가명정보활용지원센터 (원주)": {"id": "2008011046", "name": "강원 가명정보 활용지원센터", "x": "127.9550", "y": "37.3260"}}
+    calls: list = []
+    _mock_naver_new(page, places, calls)
+    known: dict = {}
+    logs: list = []
+    wait = lambda s: page.wait_for_timeout(int(s * 300))  # noqa: E731
+    result = navermap.find_route(page, "강원대학교 춘천캠퍼스", "강원가명정보활용지원센터 (원주)", tmp_path / "a.png", logs.append,
+                                 wait=wait, label="가는 길", known=known)
+    assert result.ok and result.km == 76, result.lines()
+    assert "/p/search/" in " ".join(calls) and "PLACE_POI" in page.url and "2008011046" in page.url and "11591476" in page.url
+    assert any("곳 없음" in step and "place=null" in step for step in result.steps)          # 검색 주소의 답 모양을 기록에
+    assert any("강원 가명정보 활용지원센터 (이름이 같은 곳)" in step for step in result.steps)
+    assert known[navermap.norm("강원가명정보활용지원센터")]["id"] == "2008011046"
+    # 두 번째부터는 기억한 곳 — 검색하지 않는다
+    calls.clear()
+    again = navermap.find_route(page, "강원대학교 춘천캠퍼스", "강원가명정보활용지원센터 (원주)", tmp_path / "b.png", logs.append,
+                                wait=wait, label="가는 길", known=known)
+    assert again.ok and not any("search" in c for c in calls)
+    # 출발지부터 못 찾으면 목적지를 묻지 않는다(그때 화면이 목적지를 물었다)
+    lost = navermap.find_route(page, "없는 곳", "강원가명정보활용지원센터 (원주)", tmp_path / "c.png", logs.append, wait=wait, known={})
+    assert not lost.ok and lost.need_place == "" and lost.note.startswith("출발지 '없는 곳'")
+
+
+def test_places_in_any_shape_and_ranking():
+    data = {"result": {"place": {"list": [{"id": "9", "name": "<b>강원대학교</b> 춘천캠퍼스", "x": "127.74", "y": "37.86"}]}},
+            "other": [{"title": "주소", "mapx": "1279550000", "mapy": "373260000"}, {"name": "바다 위", "x": "10", "y": "10"}]}
+    found = navermap.places_in(data)
+    assert [(p.name, p.id) for p in found] == [("강원대학교 춘천캠퍼스", "9"), ("주소", "")] and found[1].x == pytest.approx(127.955)
+    near = navermap.Place("춘천 닭갈비 골목", 127.72, 37.88, "1")
+    center = navermap.Place("강원 가명정보 활용지원센터", 127.955, 37.326, "2008011046")
+    assert navermap.rank("강원가명정보활용지원센터 (원주)", [near, center])[0] is center
+    assert navermap.rank("아무 곳", [near, center]) == (near, "첫 결과(이름이 같은 곳 없음)")
+    assert navermap.rank("아무 곳", [near, center], prefer_id="2008011046")[0] is center
+    assert navermap.shape({"result": {"type": "place", "place": None}}) == "{result:{type,place=null}}"
+
+
+def test_places_from_directions_url_learns_both_ends():
+    start = navermap.Place("강원대학교 춘천캠퍼스", 127.7445, 37.8690, "11591476")
+    goal = navermap.Place("강원 가명정보 활용지원센터", 127.955, 37.326, "2008011046")
+    learned = navermap.places_from_url(navermap.directions_url(start, goal) + "?c=15.00,0,0,0,dh")
+    assert [(p.name, p.id) for p in learned] == [("강원대학교 춘천캠퍼스", "11591476"), ("강원 가명정보 활용지원센터", "2008011046")]
+    assert learned[0].x == pytest.approx(127.7445, abs=1e-6) and learned[1].y == pytest.approx(37.326, abs=1e-6)
+    known: dict = {}
+    navermap.remember(known, "강원가명정보활용지원센터 (원주)", learned[1])
+    assert navermap.search_place(None, "강원가명정보활용지원센터 (원주)", known=known)[0].id == "2008011046"
+    assert navermap.places_from_url("https://map.naver.com/p/entry/place/1") == []
 
 
 # ── 화면 ─────────────────────────────────────────────────────────────
@@ -633,6 +719,37 @@ def test_route_check_turns_on_after_fuel_is_picked(qapp, tmp_path, isolated_home
     # 연료를 다시 비우면 확인도 풀린다
     box.setCurrentIndex(0)
     assert not page.route_ok.isEnabled() and not page.route_ok.isChecked() and not page.info_next.isEnabled()
+
+
+def test_origin_search_failure_does_not_ask_for_destination(qapp, tmp_path, isolated_home, monkeypatch):
+    """담당자 2026-11-10 "목적지가 검색이 안된다고 하는데 둘다 검색이 됩니다" — 출발지부터 앱의 검색이 비어 왔는데 화면은 목적지를 물었다.
+    이제 목적지 이름 탓이 아니면 ③ 에 남아 사람이 할 길([브라우저에서 직접] → [지금 화면 찍기])을 알린다."""
+    from PySide6.QtWidgets import QMessageBox
+
+    from claim_downloader import settings
+    from claim_downloader.ui.pages import travel as travel_page
+    told = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: told.append(a[2]))
+    settings.update(travel_fuels="홍길동=휘발유")
+    folder = tmp_path / "출장비 지급(26.10.20. 협의)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(GONGMUN, encoding="utf-8")
+    for name in ("홍길동_체류 증빙.png", "홍길동_하이패스 증빙.png"):
+        _image(folder / name)
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.show()
+    page.load_folder(str(folder))
+    page.route_ok.click()
+    page.info_next.click()
+    qapp.processEvents()
+    assert page._stage == "files"
+    key = ("홍길동", 0)
+    page._routes[key].update(km=None, image="", status="")
+    note = "출발지 '강원대학교 춘천캠퍼스' 를 네이버 지도에서 찾지 못했습니다 (검색 결과 없음)"
+    page._on_routes([(key, navermap.RouteResult("강원대학교 춘천캠퍼스", "가나다라정보활용지원센터 (원주)", "가는 길", note=note))])
+    assert page._stage == "files" and not page._needs_goal() and page.goal_box.isHidden()
+    assert told and "[브라우저에서 직접]" in told[-1] and note in told[-1]
+    assert page._routes[key]["status"] == "못 찾음 — " + note
 
 
 def test_several_folders_one_after_another(qapp, tmp_path, isolated_home, monkeypatch):
