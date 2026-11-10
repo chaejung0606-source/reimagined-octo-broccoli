@@ -71,6 +71,69 @@ CLICK_SHORTEST_JS = """(word) => {
 }"""
 
 
+# 찍을 때 지도를 가리는 '거리우선' 세부 경로 창을 잠깐 숨긴다(담당자 2026-11-10 "이경로로찍기 클릭하면 쓸데없이 세부경로가 자꾸 지도를 가리는데
+# 지도 가리지 않게 해서 캡쳐할 수 있도록" — 그림: 왼쪽 경로 목록의 '거리우선' 을 고르면 지도 위에 같은 '거리우선' 머리의 세부 경로 창이 뜬다).
+# 창의 [X] 를 누르면 고른 경로가 풀릴 수 있어 누르지 않고, 찍는 동안만 보이지 않게 했다가 되돌린다(HIDE_DETAIL_JS · SHOW_DETAIL_JS).
+# 고르는 법: 보이는 '거리우선' 글자 둘 중 오른쪽(지도 위) 것에서 위로 올라가되, 왼쪽 목록의 것을 품거나 · 지도 그림(canvas)을 품거나 ·
+# 창 폭의 60% 를 넘는 조상 앞에서 멈춘다 — 세부 창은 통째로, 지도는 숨기지 않게.
+HIDE_DETAIL_JS = """(word) => {
+  const named = el => { const t = (el.textContent || '').replace(/\\s+/g, ''); return t === word || (t.length <= word.length + 3 && t.endsWith(word)); };
+  const hits = [...document.querySelectorAll('body *')].filter(el => {
+    if (!named(el)) return false;
+    if ([...el.children].some(named)) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }).map(el => [el, el.getBoundingClientRect()]).sort((a, b) => a[1].left - b[1].left);
+  if (hits.length < 2) return 0;
+  const list = hits[0], detail = hits[hits.length - 1];
+  if (detail[1].left < list[1].right + 20) return 0;
+  let panel = detail[0];
+  while (panel.parentElement && panel.parentElement !== document.body) {
+    const up = panel.parentElement;
+    if (up.contains(list[0]) || up.querySelector('canvas')) break;
+    if (up.getBoundingClientRect().width > window.innerWidth * 0.6) break;
+    panel = up;
+  }
+  if (panel.querySelector('canvas') || panel.contains(list[0])) return 0;
+  panel.setAttribute('data-coss-hidden', panel.style.visibility || '-');
+  panel.style.visibility = 'hidden';
+  return 1;
+}"""
+SHOW_DETAIL_JS = """() => {
+  let n = 0;
+  for (const el of document.querySelectorAll('[data-coss-hidden]')) {
+    const was = el.getAttribute('data-coss-hidden');
+    el.style.visibility = was === '-' ? '' : was;
+    el.removeAttribute('data-coss-hidden');
+    n++;
+  }
+  return n;
+}"""
+
+
+def screenshot_clear(page, out: Path, wait: Callable[[float], None] | None = None) -> int:
+    """지도를 가리는 세부 경로 창을 잠깐 숨기고 찍은 뒤 되돌린다 — 숨긴 창 수(없으면 0, 그대로 찍는다)."""
+    hidden = 0
+    for frame in list(page.frames):
+        try:
+            hidden += int(frame.evaluate(HIDE_DETAIL_JS, SHORTEST) or 0)
+        except Exception:  # noqa: BLE001 — 닫히는 프레임
+            continue
+    if hidden and wait is not None:
+        wait(0.3)                       # 다시 그려질 때까지
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        page.screenshot(path=str(out))
+    finally:
+        if hidden:
+            for frame in list(page.frames):
+                try:
+                    frame.evaluate(SHOW_DETAIL_JS)
+                except Exception:  # noqa: BLE001
+                    continue
+    return hidden
+
+
 @dataclass
 class Place:
     name: str
@@ -582,8 +645,7 @@ def find_route(page, origin: str, goal: str, out: Path, log: Callable[[str], Non
     if clicked == 1:
         wait(2.0)                       # 지도에 그 경로가 그려질 때까지
         km = route_km(page_text(page)) or km
-    out.parent.mkdir(parents=True, exist_ok=True)
-    page.screenshot(path=str(out))
+    screenshot_clear(page, out, wait)
     result.km, result.image, result.ok = km, str(out), True
     # 그림 이름(out.name)에는 출장자 이름이 든다 — 기록에는 남기지 않는다(28절, 그림 경로는 화면 · result.image 에)
     log(f"네이버 지도 최단거리 {label}: {km:g}km — 지도 그림 저장")
@@ -649,8 +711,8 @@ def capture(page, out: Path, label: str = "", wait: Callable[[float], None] | No
     result.places = places_from_url(page.url)
     if result.places:
         result.origin, result.goal = result.places[0].name, result.places[-1].name
-    out.parent.mkdir(parents=True, exist_ok=True)
-    page.screenshot(path=str(out))
+    if screenshot_clear(page, out, wait):
+        result.steps.append("지도를 가리는 세부 경로 창을 숨기고 찍음")
     result.image, result.ok = str(out), True
     if result.km is None:
         result.note = "화면에서 경로 km 를 읽지 못했습니다 — km 를 직접 적으세요"

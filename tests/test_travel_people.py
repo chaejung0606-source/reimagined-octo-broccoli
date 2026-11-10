@@ -343,11 +343,26 @@ def test_directions_url_uses_web_mercator():
     assert "PLACE_POI" in url and "%EA%B0%95" in url
 
 
-MOCK_PAGE = """<!doctype html><html><body><div id="panel"></div><script>
+MOCK_PAGE = """<!doctype html><html><body style="margin:0">
+<div id="panel" style="position:absolute;left:0;top:0;width:400px"></div>
+<div id="mapArea" style="position:absolute;left:420px;top:0;width:900px;height:800px"><canvas id="map" width="900" height="800"></canvas></div>
+<script>
+// 2026-11-10 담당자 그림 — '거리우선' 을 고르면 지도 위에 같은 머리의 세부 경로 창이 뜬다(지도를 가림)
+window.vislog = [];
+function showDetail() {
+  if (document.getElementById('detail')) return;
+  const d = document.createElement('div');
+  d.id = 'detail';
+  d.style.cssText = 'position:absolute;right:10px;top:10px;width:380px;height:600px;background:#fff';
+  d.innerHTML = '<div><h3><span>4</span><span>거리우선</span></h3> 1시간 10분 76km</div><ol><li>출발 강원대</li><li>우회전 26m</li></ol>'
+              + '<button onclick="this.parentNode.remove()"><span class="blind">닫기</span></button>';
+  document.getElementById('mapArea').appendChild(d);
+  new MutationObserver(() => window.vislog.push(d.style.visibility || 'visible')).observe(d, {attributes: true, attributeFilter: ['style']});
+}
 const routes = location.pathname.includes('/-/car');
 document.getElementById('panel').innerHTML = routes ? `
   <ul><li>1 <b>추천</b> 1시간 8분 79km</li><li>2 <b>큰길우선</b> 1시간 7분 83km</li>
-  <li><a href="#" onclick="document.body.dataset.picked='1';return false;"><span>거리우선</span></a> 1시간 10분 76km</li></ul>` : '<input placeholder="출발지를 입력하세요">';
+  <li><a href="#" onclick="document.body.dataset.picked='1';showDetail();return false;"><span>거리우선</span></a> 1시간 10분 76km</li></ul>` : '<input placeholder="출발지를 입력하세요">';
 </script></body></html>"""
 
 
@@ -1246,10 +1261,18 @@ def test_confirm_mode_opens_route_and_waits_then_capture_picks_shortest(browser_
     assert pending.pending and not pending.ok and not shot.exists()                 # 찍지 않고 기다린다
     assert "/-/car" in page.url and "11622019" in page.url and navermap.CONFIRM_NOTE == pending.note
     assert page.evaluate("document.body.dataset.picked") == "1"                    # '거리우선' 을 골라 둔다
-    # 사람이 확인(또는 그 창에서 목적지를 고쳐 길찾기)한 뒤 [이 경로로 찍기]
-    page.evaluate("document.body.dataset.picked = ''")
+    assert page.evaluate("!!document.getElementById('detail')")                     # 세부 경로 창이 지도를 가린 채
+    # 사람이 확인한 뒤 [이 경로로 찍기] — 지도를 가리는 세부 경로 창은 찍는 동안만 숨기고 되돌린다(담당자 2026-11-10)
     got = navermap.capture(page, shot, "가는 길", wait=lambda s: page.wait_for_timeout(int(s * 300)))
-    assert got.ok and got.km == 76 and shot.exists() and page.evaluate("document.body.dataset.picked") == "1"
+    assert got.ok and got.km == 76 and shot.exists()
+    assert page.evaluate("window.vislog") == ["hidden", "visible"], page.evaluate("window.vislog")
+    assert page.evaluate("document.getElementById('detail').style.visibility") == ""
+    assert page.evaluate("getComputedStyle(document.getElementById('map')).visibility") == "visible"   # 지도는 숨기지 않는다
+    assert any("세부 경로 창을 숨기고" in step for step in got.steps)
+    # 사람이 세부 창을 닫고 다른 경로를 보고 있었으면 '거리우선' 을 다시 골라 찍는다
+    page.evaluate("document.getElementById('detail').remove(); document.body.dataset.picked = ''")
+    got = navermap.capture(page, shot, "가는 길", wait=lambda s: page.wait_for_timeout(int(s * 300)))
+    assert got.ok and got.km == 76 and page.evaluate("document.body.dataset.picked") == "1"
     assert [p.id for p in got.places] == ["11591476", "11622019"] and got.goal == "연세대학교 미래캠퍼스"
     # 목적지를 못 찾으면 출발지만 넣어 띄우고 사람이 그 창에서 목적지를 넣는다 — ② 로 되돌려 묻지 않는다
     missing = navermap.find_route(page, "강원대학교 춘천캠퍼스", "없는 곳", tmp_path / "x.png", logs.append,
