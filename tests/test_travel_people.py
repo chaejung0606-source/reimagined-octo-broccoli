@@ -367,99 +367,179 @@ def browser_page():
     pw.stop()
 
 
-def _mock_naver(page, places: dict):
+def _apollo(items: list, ad: dict | None = None) -> dict:
+    """네이버 장소 목록 프레임의 Apollo 상태 꼴 — 곳마다 'PlaceSummary:번호', 보이는 차례는 ROOT_QUERY 의 목록(상태 사전의 차례는 뒤섞여 있다).
+    맨 위 광고는 따로('AdBusiness')."""
+    state: dict = {}
+    refs = []
+    for item in items:
+        key = f"PlaceSummary:{item['id']}"
+        state[key] = {"__typename": "PlaceSummary", **item}
+        refs.append({"__ref": key})
+    root: dict = {"__typename": "Query"}
+    if ad is not None:
+        state[f"AdBusiness:{ad['id']}"] = {"__typename": "AdBusiness", **ad}
+        root['adBusinesses({"input":{}})'] = {"items": [{"__ref": f"AdBusiness:{ad['id']}"}]}
+    root['places({"input":{"query":"q"}})'] = {"total": len(items), "items": refs}
+    state = dict(reversed(list(state.items())))
+    state["ROOT_QUERY"] = root
+    return state
+
+
+def _naver_world(page, places: dict, calls: list, *, entry_state: bool = True, direct: tuple = (), ad: dict | None = None):
+    """네이버 지도를 흉내 낸다(2026-11-10 19:34 담당자 PC 의 꼴) — 검색 화면 · 장소 화면의 내용은 pcmap.place.naver.com 프레임이 HTML 로 받아
+    그 프레임의 Apollo 상태에 있고, 지도 화면이 받는 JSON 답(주변 가게 · 광고 표시)에는 검색 결과가 없다.
+    places = {검색어: [곳, …]}(목록 차례). direct 의 검색어는 곳 하나를 바로 연다(주소 /place/번호 + 장소 화면).
+    장소 화면의 [출발] · [도착] 은 그 곳을 넣은 길찾기 주소로 바꾼다. entry_state=False 면 장소 화면에 상태가 없다(좌표는 [출발] · [도착] 으로만)."""
+    import re as _re
+    from urllib.parse import parse_qs, quote, unquote, urlparse
+    by_id = {p["id"]: p for items in places.values() for p in items}
+    by_id.update({p["id"]: p for p in places.get("@ids", [])})
+
+    def directions(place: dict, word: str) -> str:
+        spot = navermap.Place(place["name"], float(place["x"]), float(place["y"]), place["id"])
+        url = navermap.directions_url(spot, None) if word == "출발" else navermap.directions_url(None, spot)
+        return url.replace("/car", "/transit") + "?c=15.00,0,0,0,dh"
+
+    def html(body: str) -> dict:
+        return {"status": 200, "content_type": "text/html; charset=utf-8", "body": "<!doctype html><html><body>" + body + "</body></html>"}
+
+    def entry_html(place: dict) -> str:
+        state = {"ROOT_QUERY": {"placeDetail": {"__ref": f"PlaceDetailBase:{place['id']}"}},
+                 f"PlaceDetailBase:{place['id']}": {"__typename": "PlaceDetailBase", "id": place["id"], "name": place["name"],
+                                                    "roadAddress": place.get("roadAddress", ""),
+                                                    "coordinate": {"x": place["x"], "y": place["y"], "mapZoomLevel": 17}},
+                 "PlaceSummary:1": {"__typename": "PlaceSummary", "id": "1", "name": "춘천 닭갈비 골목", "x": "127.72", "y": "37.88"}}
+        script = f"<script>window.__APOLLO_STATE__ = {json.dumps(state, ensure_ascii=False)};</script>" if entry_state else ""
+        buttons = "".join(f"<a href='#' onclick='parent.postMessage({json.dumps(directions(place, w))}, \"*\");return false;'><span>{w}</span></a>"
+                          for w in ("출발", "도착"))
+        return f"<h1>{place['name']}</h1>{buttons}{script}"
+
+    top_script = "<script>window.addEventListener('message', e => location.assign(e.data));fetch('/p/api/ads/brand-marker');</script>"
+
     def handle(route):
         url = route.request.url
-        if "/p/api/search/allSearch" in url:
-            from urllib.parse import parse_qs, urlparse
-            query = parse_qs(urlparse(url).query)["query"][0]
-            found = [places[query]] if query in places else []
-            route.fulfill(status=200, content_type="application/json; charset=utf-8", body=json.dumps({"result": {"place": {"list": found}}}))
+        parsed = urlparse(url)
+        path = unquote(parsed.path)
+        calls.append(parsed.netloc + path)
+        if parsed.netloc == "pcmap.place.naver.com":
+            if path == "/place/list":
+                query = parse_qs(parsed.query)["query"][0]
+                state = _apollo(places.get(query, []), ad)
+                route.fulfill(**html(f"<ul>목록</ul><script>window.__APOLLO_STATE__ = {json.dumps(state, ensure_ascii=False)};</script>"))
+                return
+            hit = _re.match(r"/place/(\d+)/home", path)
+            place = by_id.get(hit.group(1)) if hit else None
+            route.fulfill(**html(entry_html(place) if place else "없는 곳"))
+        elif "/p/api/ads/brand-marker" in path:
+            route.fulfill(status=200, content_type="application/json; charset=utf-8", body=json.dumps(
+                {"markers": [{"id": "1821854896", "name": "포랑 춘천점", "x": "127.7417", "y": "37.8747"}]}))
+        elif path.startswith("/p/search/") and "/place/" not in path:
+            query = path[len("/p/search/"):]
+            if query in direct and places.get(query):
+                place = places[query][0]
+                route.fulfill(**html(f"<script>history.replaceState(null, '', location.pathname + '/place/{place['id']}');</script>"
+                                     f'<iframe id="entryIframe" src="https://pcmap.place.naver.com/place/{place["id"]}/home"></iframe>' + top_script))
+            else:
+                route.fulfill(**html(f'<iframe id="searchIframe" src="https://pcmap.place.naver.com/place/list?query={quote(query)}"></iframe>' + top_script))
+        elif path.startswith("/p/entry/place/"):
+            place_id = path.rsplit("/", 1)[-1]
+            route.fulfill(**html(f'<iframe id="entryIframe" src="https://pcmap.place.naver.com/place/{place_id}/home"></iframe>' + top_script))
         else:
             route.fulfill(status=200, content_type="text/html; charset=utf-8", body=MOCK_PAGE)
     page.route("https://map.naver.com/**", handle)
+    page.route("https://pcmap.place.naver.com/**", handle)
 
 
-def test_find_route_in_mock_naver_map(browser_page, tmp_path, monkeypatch):
-    monkeypatch.setattr(navermap, "SEARCH_POLLS", 4)
+@pytest.fixture
+def fast_naver(monkeypatch):
+    """시험에서는 기다림을 줄인다 — wait 는 초 × 300ms."""
+    monkeypatch.setattr(navermap, "LOOK_POLLS", 12)
+    monkeypatch.setattr(navermap, "CLICK_AFTER", 5)
+    monkeypatch.setattr(navermap, "ROUTE_POLLS", 20)
+
+
+CAMPUS = {"id": "11591476", "name": "강원대학교 춘천캠퍼스", "x": "127.7445", "y": "37.8690", "roadAddress": "강원 춘천시 강원대학길 1"}
+CENTER = {"id": "2008011046", "name": "강원 가명정보 활용지원센터", "x": "127.9550", "y": "37.3260", "roadAddress": "강원 원주시 혁신로 19"}
+NEAR = {"id": "1", "name": "춘천 닭갈비 골목", "x": "127.72", "y": "37.88", "roadAddress": "강원 춘천시 금강로"}
+AD = {"id": "777", "name": "원주 맛집 광고", "x": "127.95", "y": "37.33"}
+
+
+def test_find_route_in_mock_naver_map(browser_page, tmp_path, fast_naver):
     page = browser_page
-    places = {"강원대학교 춘천캠퍼스": {"id": "11591563", "name": "강원대학교 춘천캠퍼스", "x": "127.7432", "y": "37.8687"},
-              "연세대학교 원주캠퍼스": {"id": "11622019", "name": "연세대학교 미래캠퍼스", "x": "127.9030", "y": "37.2777"}}
-    _mock_naver(page, places)
+    calls: list = []
+    _naver_world(page, {"연세대학교 원주캠퍼스": [{"id": "11622019", "name": "연세대학교 미래캠퍼스", "x": "127.9030", "y": "37.2777"}],
+                        "@ids": [CAMPUS]}, calls)
     logs = []
     out = navermap.shot_path(tmp_path, "홍길동 가는 길(오는 길도 같은 거리)")
     result = navermap.find_route(page, "강원대학교 춘천캠퍼스", "연세대학교 원주캠퍼스", out, logs.append,
                                  wait=lambda s: page.wait_for_timeout(int(s * 300)), label="가는 길")
-    assert result.ok and result.km == 76 and Path(result.image).exists() and Path(result.image).stat().st_size > 1000
+    assert result.ok and result.km == 76 and Path(result.image).exists() and Path(result.image).stat().st_size > 1000, result.lines()
     assert page.evaluate("document.body.dataset.picked") == "1"           # '거리우선' 을 눌렀다
-    assert "/-/car" in page.url and "PLACE_POI" in page.url
+    assert "/-/car" in page.url and "PLACE_POI" in page.url and "11591476" in page.url and "11622019" in page.url
     # 목적지가 검색되지 않으면 그 곳을 돌려준다 — 화면이 그 출장자의 출장목적지를 묻는다
     missing = navermap.find_route(page, "강원대학교 춘천캠퍼스", "원주", tmp_path / "x.png", logs.append,
                                   wait=lambda s: page.wait_for_timeout(int(s * 300)))
     assert not missing.ok and missing.need_place == "원주" and "찾지 못했습니다" in missing.note
+    assert any("화면에서 곳을 읽지 못했습니다" in step and "pcmap.place.naver.com/place/list" in step for step in missing.steps)
     assert navermap.shot_path(tmp_path, "홍길동 가는 길(오는 길도 같은 거리)").name.endswith("_2.png")     # 덮어쓰지 않는다
-    # 그림 이름에는 출장자 이름이 들지만 기록에는 남기지 않는다(28절)
-    assert logs and not any("홍길동" in line for line in logs), logs
 
 
-SEARCH_PAGE = """<!doctype html><html><body><div id="list">검색 중</div><script>
-const q = decodeURIComponent(location.pathname.split('/p/search/')[1] || '');
-fetch('/p/api/mockgraphql?q=' + encodeURIComponent(q)).then(r => r.json()).then(j => {
-  document.getElementById('list').textContent = JSON.stringify(j).length + '';
-});
-</script></body></html>"""
-
-
-def _mock_naver_new(page, places: dict, calls: list):
-    """2026-11-10 담당자 PC 처럼 검색 주소(allSearch)의 답에 곳이 없고, 지도 검색 화면은 다른 꼴(GraphQL 같은)의 답을 스스로 받는다."""
-    from urllib.parse import parse_qs, urlparse
-
-    def handle(route):
-        url = route.request.url
-        calls.append(urlparse(url).path)
-        if "/p/api/search/allSearch" in url:
-            route.fulfill(status=200, content_type="application/json; charset=utf-8",
-                          body=json.dumps({"result": {"type": "place", "metaInfo": {"searchedQuery": "x"}, "place": None, "address": None}}))
-        elif "/p/api/mockgraphql" in url:
-            query = parse_qs(urlparse(url).query)["q"][0]
-            near = {"id": "1", "name": "춘천 닭갈비 골목", "x": "127.72", "y": "37.88"}         # 이름이 다른 곳이 먼저 와도
-            items = [near, places[query]] if query in places else []
-            route.fulfill(status=200, content_type="application/json; charset=utf-8",
-                          body=json.dumps({"data": {"businesses": {"total": len(items), "items": items}}}))
-        elif "/p/search/" in url:
-            route.fulfill(status=200, content_type="text/html; charset=utf-8", body=SEARCH_PAGE)
-        else:
-            route.fulfill(status=200, content_type="text/html; charset=utf-8", body=MOCK_PAGE)
-    page.route("https://map.naver.com/**", handle)
-
-
-def test_find_route_reads_what_the_search_screen_receives(browser_page, tmp_path, monkeypatch):
-    """담당자 2026-11-10 "목적지가 검색이 안된다고 하는데 둘다 검색이 됩니다" — 앱의 검색 주소는 '강원대학교 춘천캠퍼스' 도 비어 왔다.
-    이제 답의 꼴을 짐작하지 않고, 안 되면 지도 검색 화면이 받는 답에서 이름이 맞는 곳을 읽고, 찾은 곳은 기억한다."""
-    monkeypatch.setattr(navermap, "SEARCH_POLLS", 6)
+def test_one_search_reads_the_result_list_and_picks_similar_or_first(browser_page, tmp_path, fast_naver):
+    """담당자 2026-11-10 19:34 — 화면에는 결과가 바로 떴는데 앱은 읽지 못해 검색어를 바꿔 네 번 다시 찾았다("똑같은 목적지를 계속 검색해봤자
+    똑같은 결과만 · 처음 검색했을 때 가장 유사한 … 맨 처음에 뜬 장소를 선택 · 너무 느립니다"). 이제 곳마다 한 번 열고 그 화면의 결과 목록에서
+    이름이 같은(비슷한) 곳, 없으면 맨 위(광고 빼고) — 출발지는 장소 번호의 장소 화면. 찾은 곳은 기억해 다음에는 열지 않는다."""
     page = browser_page
-    places = {"강원대학교 춘천캠퍼스": {"id": "11591476", "name": "강원대학교 춘천캠퍼스", "x": "127.7445", "y": "37.8690"},
-              "강원가명정보활용지원센터 (원주)": {"id": "2008011046", "name": "강원 가명정보 활용지원센터", "x": "127.9550", "y": "37.3260"}}
     calls: list = []
-    _mock_naver_new(page, places, calls)
+    _naver_world(page, {"원주 강원가명정보활용지원센터": [NEAR, CENTER], "원주 인터불고호텔": [
+        {"id": "55", "name": "원주 시내 주차장", "x": "127.94", "y": "37.34"}, {"id": "56", "name": "호텔인터불고 원주", "x": "127.95", "y": "37.33"}],
+        "삼척 어딘가": [{"id": "88", "name": "삼척 첫 결과", "x": "129.16", "y": "37.44"}, {"id": "89", "name": "둘째", "x": "129.1", "y": "37.4"}],
+        "@ids": [CAMPUS]}, calls, ad=AD)
     known: dict = {}
     logs: list = []
     wait = lambda s: page.wait_for_timeout(int(s * 300))  # noqa: E731
-    result = navermap.find_route(page, "강원대학교 춘천캠퍼스", "강원가명정보활용지원센터 (원주)", tmp_path / "a.png", logs.append,
-                                 wait=wait, label="가는 길", known=known)
-    assert result.ok and result.km == 76, result.lines()
-    assert "/p/search/" in " ".join(calls) and "PLACE_POI" in page.url and "2008011046" in page.url and "11591476" in page.url
-    assert any("곳 없음" in step and "place=null" in step for step in result.steps)          # 검색 주소의 답 모양을 기록에
-    assert any("강원 가명정보 활용지원센터 (이름이 같은 곳)" in step for step in result.steps)
+    pending = navermap.find_route(page, "강원대학교 춘천캠퍼스", "강원가명정보활용지원센터 (원주)", tmp_path / "a.png", logs.append,
+                                  wait=wait, label="출장자 1 가는 길", known=known, confirm=True)
+    assert pending.pending and "11591476" in page.url and "2008011046" in page.url and "/-/car" in page.url, pending.lines()
+    assert sum(c.startswith("map.naver.com/p/search/") for c in calls) == 1                    # 목적지 검색은 한 번
+    assert "map.naver.com/p/search/원주 강원가명정보활용지원센터" in calls                       # 괄호 속 지역을 앞에 둔 검색어로
+    assert not any(c.startswith("map.naver.com/p/search/강원대학교") for c in calls)           # 출발지는 검색하지 않는다
+    assert any("네이버 장소 11591476" in step for step in pending.steps)
+    assert any("강원 가명정보 활용지원센터 (이름이 같은 곳)" in step for step in pending.steps)
     assert known[navermap.norm("강원가명정보활용지원센터")]["id"] == "2008011046"
-    # 두 번째부터는 기억한 곳 — 검색하지 않는다
+    assert known[navermap.norm("강원대학교 춘천캠퍼스")]["id"] == "11591476"
+    # 이름이 조금 다른 곳은 가장 비슷한 것, 이름이 하나도 안 맞으면 맨 위 결과(광고는 빼고)
+    place, _, steps = navermap.search_place(page, "인터불고호텔 (원주)", wait, {}, None)
+    assert place.id == "56" and "가장 비슷한" in steps[-1]
+    place, _, steps = navermap.search_place(page, "삼척 어딘가", wait, {}, None)
+    assert place.id == "88" and "첫 결과" in steps[-1]
+    # 두 번째부터는 기억한 곳 — 열지 않는다
     calls.clear()
     again = navermap.find_route(page, "강원대학교 춘천캠퍼스", "강원가명정보활용지원센터 (원주)", tmp_path / "b.png", logs.append,
-                                wait=wait, label="가는 길", known=known)
-    assert again.ok and not any("search" in c for c in calls)
-    # 출발지부터 못 찾으면 목적지를 묻지 않는다(그때 화면이 목적지를 물었다)
-    lost = navermap.find_route(page, "없는 곳", "강원가명정보활용지원센터 (원주)", tmp_path / "c.png", logs.append, wait=wait, known={})
-    assert not lost.ok and lost.need_place == "" and lost.note.startswith("출발지 '없는 곳'")
+                                wait=wait, label="출장자 1 가는 길", known=known, confirm=True)
+    assert again.pending and not any("search" in c or "entry" in c or "pcmap" in c for c in calls)
+
+
+def test_search_that_opens_one_place_and_place_screen_buttons(browser_page, tmp_path, fast_naver):
+    """검색이 곳 하나를 바로 열면(주소 /place/번호) 그 곳. 장소 화면에서 좌표를 못 읽으면 그 화면의 [출발] · [도착] 을 눌러(담당자 "검색하면 바로 뜨고
+    출발을 누르면 경로 탐색이 됩니다") 네이버가 여는 길찾기 주소에서 읽는다."""
+    page = browser_page
+    calls: list = []
+    _naver_world(page, {"원주시청": [{"id": "3100031", "name": "원주시청", "x": "127.92", "y": "37.34", "roadAddress": "강원 원주시 시청로 1"}],
+                        "@ids": [CAMPUS]}, calls, entry_state=False, direct=("원주시청",))
+    wait = lambda s: page.wait_for_timeout(int(s * 300))  # noqa: E731
+    known: dict = {}
+    origin, why, steps = navermap.search_place(page, "강원대학교 춘천캠퍼스", wait, known, None, "출발지")
+    assert origin is not None and origin.id == "11591476" and origin.x == pytest.approx(127.7445), (why, steps)
+    assert "[출발]" in steps[-1]
+    goal, why, steps = navermap.search_place(page, "원주시청", wait, known, None, "목적지")
+    assert goal is not None and goal.id == "3100031" and "[도착]" in steps[-1], (why, steps)
+    # 장소 화면에 상태가 있으면 누르지 않고 읽는다
+    page.unroute("https://map.naver.com/**")
+    page.unroute("https://pcmap.place.naver.com/**")
+    _naver_world(page, {"원주시청": [{"id": "3100031", "name": "원주시청", "x": "127.92", "y": "37.34"}], "@ids": [CAMPUS]}, calls, direct=("원주시청",))
+    goal, why, steps = navermap.search_place(page, "원주시청", wait, {}, None, "목적지")
+    assert goal.id == "3100031" and "/directions/" not in page.url and "네이버가 연 곳" in steps[-1], steps
 
 
 def test_places_in_any_shape_and_ranking():
@@ -473,6 +553,19 @@ def test_places_in_any_shape_and_ranking():
     assert navermap.rank("아무 곳", [near, center]) == (near, "첫 결과(이름이 같은 곳 없음)")
     assert navermap.rank("아무 곳", [near, center], prefer_id="2008011046")[0] is center
     assert navermap.shape({"result": {"type": "place", "place": None}}) == "{result:{type,place=null}}"
+
+
+def test_apollo_state_order_ads_and_place_screen_coordinate():
+    """네이버 결과 목록 · 장소 화면 프레임의 Apollo 상태 — 보이는 차례는 ROOT_QUERY 의 목록, 맨 위 광고는 빼고, 장소 화면은 이름 곁의 좌표 묶음."""
+    state = _apollo([NEAR, CENTER], AD)
+    assert list(state)[0] != "ROOT_QUERY" and list(state)[1].startswith("PlaceSummary:2008")       # 상태 사전 차례는 뒤섞여 있다
+    found = navermap.places_in(navermap.apollo_tree(state), limit=200)
+    assert [p.id for p in found] == ["1", "2008011046"]                                              # 광고(777)는 없다 · 목록 차례
+    entry = {"PlaceDetailBase:9": {"__typename": "PlaceDetailBase", "id": "9", "name": "원주시청", "roadAddress": "강원 원주시 시청로 1",
+                                   "coordinate": {"x": "127.92", "y": "37.34", "mapZoomLevel": 17}}}
+    (place,) = navermap.places_in(entry)
+    assert (place.id, place.x, place.y, place.address) == ("9", 127.92, 37.34, "강원 원주시 시청로 1")
+    assert navermap.similarity("인터불고호텔", "호텔인터불고원주") > 0.6 > navermap.similarity("삼척어딘가", "삼척첫결과")
 
 
 def test_places_from_directions_url_learns_both_ends():
@@ -792,6 +885,34 @@ def test_origin_search_failure_does_not_ask_for_destination(qapp, tmp_path, isol
     assert page._routes[key]["status"] == "못 찾음 — " + note
 
 
+def test_folder_dialog_opens_in_the_travel_folder(qapp, tmp_path, isolated_home, monkeypatch):
+    """담당자 2026-11-10 "…\\Desktop\\★★지출진행\\3. 출장비 및 프로그램참여지원비 — 출장비 폴더추가할 때는 바로 이폴더가 뜨도록" —
+    바탕화면의 '…지출진행' 안 '…출장비…' 폴더(설정 travel_root 가 있으면 그것)에서 고르기 창이 열린다."""
+    from PySide6.QtWidgets import QFileDialog
+
+    from claim_downloader import settings
+    from claim_downloader.ui.pages import travel as travel_page
+    desk = tmp_path / "Desktop"
+    root = desk / "★★지출진행" / "3. 출장비 및 프로그램참여지원비"
+    (desk / "★★지출진행" / "2. 카드").mkdir(parents=True)
+    root.mkdir(parents=True)
+    assert model.trip_root("", [tmp_path / "없음", desk]) == str(root)
+    assert model.trip_root(str(tmp_path), [desk]) == str(tmp_path)                 # 설정이 먼저
+    assert model.trip_root(str(tmp_path / "지운 폴더"), [desk]) == str(root)       # 설정한 폴더가 없어졌으면 찾는다
+    assert model.trip_root("", [tmp_path / "없음"]) == ""
+    monkeypatch.setattr(travel_page.Path, "home", staticmethod(lambda: tmp_path))
+    asked: list = []
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: asked.append(a[2]) or "")
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.folder_edit.setText(str(tmp_path / "하던 폴더"))
+    page._pick_folder()
+    page._pick_parent()
+    assert asked == [str(root), str(root)]
+    settings.update(travel_root=str(desk))
+    page._pick_folder()
+    assert asked[-1] == str(desk)
+
+
 def test_several_folders_one_after_another(qapp, tmp_path, isolated_home, monkeypatch):
     """담당자 2026-11-10 "여러 폴더를 선택할 수 있도록" — ① 에 폴더 여럿, 차례로 ② → ③ → ④, 만든 뒤 [다음 폴더]."""
     from PySide6.QtWidgets import QFileDialog
@@ -943,12 +1064,6 @@ def test_step_five_preview_in_the_page(qapp, tmp_path, isolated_home):
     assert not any(f.startswith("가맹점") for f in panel._flagged.get(stay.ref, []))
 
 
-@pytest.fixture(autouse=True)
-def _naver_api_fresh(monkeypatch):
-    """검색 주소가 보안문자를 물으면 앱을 다시 켤 때까지 부르지 않는다(navermap._API_BLOCKED) — 시험마다 새로."""
-    monkeypatch.setattr(navermap, "_API_BLOCKED", False)
-
-
 CAPTCHA_PAGE = """<!doctype html><html><body><div id="list">검색 중</div><script>
 const q = decodeURIComponent(location.pathname.split('/p/search/')[1] || '');
 fetch('/p/api/ads/brand-marker').then(r => r.json());
@@ -962,22 +1077,18 @@ search();
 </script></body></html>"""
 
 
-def test_naver_captcha_waits_for_the_person(browser_page, tmp_path, monkeypatch):
+def test_naver_captcha_waits_for_the_person(browser_page, tmp_path, monkeypatch, fast_naver):
     """2026-11-10 담당자 PC — 네이버가 자동 검색에 보안문자(ncaptcha)를 요구했다. 앱은 풀거나 피하지 않고, 앱 브라우저 창에서 사람이 풀 때까지 기다린다.
     여기서는 보안문자 답이 한 번 온 뒤 (사람이 풀어) 화면이 다시 검색하면 곳이 온다."""
     from urllib.parse import parse_qs, urlparse
-    monkeypatch.setattr(navermap, "SEARCH_POLLS", 4)
     page = browser_page
-    places = {"강원대학교 춘천캠퍼스": {"id": "11591476", "name": "강원대학교 춘천캠퍼스", "x": "127.7445", "y": "37.8690"},
-              "원주시청": {"id": "1", "name": "원주시청", "x": "127.92", "y": "37.34", "roadAddress": "강원 원주시 시청로 1"}}
+    places = {"원주시청": {"id": "1", "name": "원주시청", "x": "127.92", "y": "37.34", "roadAddress": "강원 원주시 시청로 1"}}
     asked: dict = {}
     captcha = {"result": {"place": None, "ncaptcha": {"uuid": "x", "ip": "x", "confirmRules": [], "timestamp": 1}}}
 
     def handle(route):
         url = route.request.url
-        if "/p/api/search/allSearch" in url:
-            route.fulfill(status=200, content_type="application/json; charset=utf-8", body=json.dumps(captcha))
-        elif "/p/api/ads/brand-marker" in url:
+        if "/p/api/ads/brand-marker" in url:
             # 2026-11-10 담당자 PC — 지도 화면이 함께 받는 주변 가게 표시. 앱이 이것을 검색 결과로 집어 '포랑 춘천점' → '호담' 길을 찾았다
             route.fulfill(status=200, content_type="application/json; charset=utf-8", body=json.dumps(
                 {"markers": [{"id": "1821854896", "name": "포랑 춘천점", "x": "127.7417", "y": "37.8747"},
@@ -994,14 +1105,13 @@ def test_naver_captcha_waits_for_the_person(browser_page, tmp_path, monkeypatch)
     page.route("https://map.naver.com/**", handle)
     logs: list = []
     known: dict = {}
+    navermap.remember(known, "강원대학교 춘천캠퍼스", navermap.Place("강원대학교 춘천캠퍼스", 127.7445, 37.8690, "11591476"))
     result = navermap.find_route(page, "강원대학교 춘천캠퍼스", "원주시청", tmp_path / "a.png", logs.append,
                                  wait=lambda s: page.wait_for_timeout(int(s * 300)), label="가는 길", known=known)
     assert result.ok and result.km == 76, result.lines()
     assert "1821854896" not in page.url and "%ED%98%B8%EB%8B%B4" not in page.url      # 주변 가게(포랑 춘천점 · 호담)를 고르지 않았다
     assert "11591476" in page.url
-    assert sum("검색 '" in step and "보안문자" in step for step in result.steps) == 1  # 검색 주소는 한 번 묻고 그 뒤로는 부르지 않는다
     assert any(navermap.CAPTCHA_NOTE in line for line in logs)                       # 사람에게 알렸다
-    assert any(navermap.CAPTCHA_NOTE in step for step in result.steps)
     assert known[navermap.norm("원주시청")]["address"] == "강원 원주시 시청로 1"
     # 2분 안에 풀지 않으면 그 곳만 그만두고 다른 검색어로 되풀이하지 않는다(목적지를 묻지 않는다 — 곳 이름 탓이 아니므로)
     monkeypatch.setattr(navermap, "CAPTCHA_POLLS", 6)
@@ -1020,7 +1130,7 @@ def test_naver_captcha_waits_for_the_person(browser_page, tmp_path, monkeypatch)
     stuck = navermap.find_route(page, "강원 가명정보 (원주)", "원주시청", tmp_path / "b.png", logs.append,
                                 wait=lambda s: page.wait_for_timeout(int(s * 300)), known={})
     assert not stuck.ok and stuck.need_place == "" and navermap.CAPTCHA_NOTE in stuck.note
-    assert sum("지도 화면 검색" in step for step in stuck.steps) == 1
+    assert sum("검색 '" in step for step in stuck.steps) == 1
 
 
 def test_route_km_reads_meters_and_divider():
@@ -1035,48 +1145,6 @@ def test_places_from_directions_url_with_encoded_commas():
     goal = navermap.Place("강원 가명정보 활용지원센터", 127.955, 37.326, "2008011046")
     url = navermap.directions_url(start, goal).replace(",", "%2C")
     assert [p.id for p in navermap.places_from_url(url)] == ["11591476", "2008011046"]
-
-
-ENTRY_PAGE = """<!doctype html><html><body><div id="place">장소</div><script>
-const id = location.pathname.split('/p/entry/place/')[1];
-fetch('/p/api/ads/brand-marker').then(r => r.json());
-fetch('/p/api/place/summary/' + id).then(r => r.json());
-</script></body></html>"""
-
-
-def test_fixed_origin_is_read_from_its_place_page_without_search(browser_page, tmp_path, monkeypatch):
-    """담당자 2026-11-10 "출발지는 항상 강원대학교 춘천캠퍼스인데 이건 고정이잖아요 출발지라도 제대로 검색이 가능해야" —
-    검색을 거치지 않고 네이버 장소 번호(11591476)의 장소 화면에서 좌표를 읽고, 기억해 다음에는 열지도 않는다."""
-    monkeypatch.setattr(navermap, "SEARCH_POLLS", 6)
-    page = browser_page
-    calls: list = []
-
-    def handle(route):
-        url = route.request.url
-        calls.append(url)
-        if "/p/api/place/summary/11591476" in url:
-            route.fulfill(status=200, content_type="application/json; charset=utf-8", body=json.dumps(
-                {"id": "11591476", "name": "강원대학교 춘천캠퍼스", "x": "127.7445", "y": "37.8690", "roadAddress": "강원 춘천시 강원대학길 1"}))
-        elif "/p/api/ads/brand-marker" in url:
-            route.fulfill(status=200, content_type="application/json; charset=utf-8", body=json.dumps(
-                {"markers": [{"id": "1821854896", "name": "포랑 춘천점", "x": "127.7417", "y": "37.8747"}]}))
-        elif "/p/api/" in url:
-            route.fulfill(status=200, content_type="application/json; charset=utf-8",
-                          body=json.dumps({"result": {"place": None, "ncaptcha": {"uuid": "x"}}}))
-        elif "/p/entry/place/" in url:
-            route.fulfill(status=200, content_type="text/html; charset=utf-8", body=ENTRY_PAGE)
-        else:
-            route.fulfill(status=200, content_type="text/html; charset=utf-8", body=MOCK_PAGE)
-    page.route("https://map.naver.com/**", handle)
-    known: dict = {}
-    place, why, steps = navermap.search_place(page, "강원대학교 춘천캠퍼스", lambda s: page.wait_for_timeout(int(s * 300)), known, None)
-    assert place is not None and place.id == "11591476" and place.x == pytest.approx(127.7445) and why == ""
-    assert not any("allSearch" in c or "/p/search/" in c for c in calls)            # 검색을 부르지 않았다
-    assert "네이버 장소 11591476" in steps[0]
-    navermap.remember(known, "강원대학교 춘천캠퍼스", place)
-    calls.clear()
-    again, _, steps = navermap.search_place(page, "강원대학교 춘천캠퍼스", lambda s: page.wait_for_timeout(int(s * 300)), known, None)
-    assert again.id == "11591476" and not calls and "전에 찾은 곳" in steps[0]
 
 
 def test_remembered_places_drop_wrong_picks_but_keep_found_destinations(isolated_home):
@@ -1098,14 +1166,12 @@ def test_remembered_places_drop_wrong_picks_but_keep_found_destinations(isolated
     assert navermap.search_place(None, "강원가명정보활용지원센터 (원주)", known=bad)[0] is None
 
 
-def test_confirm_mode_opens_route_and_waits_then_capture_picks_shortest(browser_page, tmp_path, monkeypatch):
+def test_confirm_mode_opens_route_and_waits_then_capture_picks_shortest(browser_page, tmp_path, fast_naver):
     """담당자 2026-11-10 "네이버 브라우저 열어서 경로 검색하고 사용자가 목적지를 확인하거나 틀리면 재설정해가지고 그 상태를 어플에서
     캡쳐하고 이동거리를 자동입력" — 앱은 길찾기를 띄워 두고(찍지 않음) 기다리고, [이 경로로 찍기] 가 '거리우선' 을 골라 찍고 km 를 읽는다."""
-    monkeypatch.setattr(navermap, "SEARCH_POLLS", 4)
     page = browser_page
-    places = {"강원대학교 춘천캠퍼스": {"id": "11591476", "name": "강원대학교 춘천캠퍼스", "x": "127.7445", "y": "37.8690"},
-              "연세대학교 원주캠퍼스": {"id": "11622019", "name": "연세대학교 미래캠퍼스", "x": "127.9030", "y": "37.2777"}}
-    _mock_naver(page, places)
+    _naver_world(page, {"연세대학교 원주캠퍼스": [{"id": "11622019", "name": "연세대학교 미래캠퍼스", "x": "127.9030", "y": "37.2777"}],
+                        "@ids": [CAMPUS]}, [])
     logs: list = []
     shot = tmp_path / "가는 길.png"
     pending = navermap.find_route(page, "강원대학교 춘천캠퍼스", "연세대학교 원주캠퍼스", shot, logs.append,

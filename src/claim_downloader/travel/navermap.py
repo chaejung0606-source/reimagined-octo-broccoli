@@ -4,16 +4,15 @@
 (그림: 왼쪽 길찾기 칸에 경로 목록 — 추천 · 큰길우선 · 무료우선 · 거리우선 '1시간 10분 76km' — 과 오른쪽 지도) ·
 "네이버지도 경로검색은 백그라운드에서 자동으로 돌아가기" · "목적지가 불분명해서 검색이 되지 않을경우 … 해당 출장자의 출장목적지를 입력해달라고 입력하는 박스".
 
-그래서 앱 브라우저의 네이버 지도 탭(session._map_page — 처음엔 보이지 않는 브라우저였으나 네이버가 보안문자를 요구해 바꿈)에서 한다: ① 출발지 · 목적지를 네이버 지도 검색(지도 화면이 쓰는 검색 주소를 그 화면 안에서 부름)으로 찾아
-② 자동차 길찾기 주소로 열고 ③ '거리우선' 이 하나 보이면 그것을 눌러 ④ 화면을 찍고 ⑤ 화면 글자에서 거리우선 km 를 읽는다(model.route_km).
-목적지가 검색되지 않으면 need_place 로 돌려 화면이 그 출장자의 출장목적지를 묻는다.
+그래서 앱 브라우저의 네이버 지도 탭(session._map_page — 처음엔 보이지 않는 브라우저였으나 네이버가 보안문자를 요구해 바꿈)에서 한다: ① 사람이 하듯
+출발지 · 목적지마다 네이버 지도 검색(늘 같은 출발지는 장소 번호로 장소 화면)을 한 번 열고 그 화면이 보여 주는 결과(프레임의 Apollo 상태 · 검색 답)에서
+이름이 같거나 가장 비슷한 곳, 없으면 맨 위 결과를 고른다 — 좌표를 못 읽으면 장소 화면의 [출발] · [도착] 을 눌러 네이버가 여는 길찾기 주소에서 읽는다(look_up)
+② 자동차 길찾기 주소로 열고 '거리우선' 을 골라 둔 채 사람이 판단하게 기다린다(confirm) ③ [이 경로로 찍기] 가 화면을 찍고 거리우선 km 를 읽는다(capture · model.route_km).
+한 번 찾은 곳 · 사람이 띄운 길찾기 주소의 곳은 기억한다(settings.travel_places — 늘 같은 출발지는 다시 찾지 않는다). 못 찾으면 그 화면의 프레임 · 답 모양을 기록에.
 
-**네이버 지도 화면은 실측 전이다**(이 클라우드 환경은 네이버에 닿지 않는다 — CLAUDE.md 28절). 검색 주소 · 길찾기 주소 꼴 · 화면 글자는 공개된 웹 화면의
-일반적인 모양으로 짐작했다. 어느 단계든 안 되면 그 까닭을 돌려주고(지어내지 않는다), 화면은 [브라우저에서 직접](보이는 브라우저) · [지도 찍기] 로 사람이 한다.
-2026-11-10 담당자 PC: 검색 주소(allSearch)의 답에서 '강원대학교 춘천캠퍼스' 도 곳이 안 나왔다(사람은 네이버 지도에서 둘 다 찾음) — 그래서 답의 꼴을 짐작하지 않고
-JSON 어디서든 '이름 + 경도 · 위도' 를 읽고(places_in), 그래도 없으면 지도 검색 화면을 열어 그 화면이 스스로 받는 답에서 읽는다(search_on_page).
-한 번 찾은 곳 · 사람이 띄운 길찾기 주소의 곳은 기억한다(settings.travel_places — 늘 같은 출발지는 다시 찾지 않는다). 못 찾으면 답의 모양(열쇠 이름)을 기록에.
-누르는 것은 '거리우선'(글자가 정확히 같은 것이 하나일 때) 하나뿐이고 값을 넣지 않는다(주소로 연다). 네이버 지도는 로그인이 없다.
+**네이버 지도 화면은 실측 전이다**(이 클라우드 환경은 네이버에 닿지 않는다 — CLAUDE.md 28절). 어느 단계든 안 되면 그 까닭을 돌려주고(지어내지 않는다),
+사람이 그 창에서 고친 뒤 [이 경로로 찍기] 를 누른다. 누르는 것은 '거리우선' 과 장소 화면의 '출발' · '도착'(글자가 정확히 같은 것이 하나일 때)뿐이고
+값을 넣지 않는다(주소로 연다). 네이버 지도는 로그인이 없다. 보안문자는 풀거나 피하지 않는다 — 사람이 그 창에서 푼다.
 """
 from __future__ import annotations
 
@@ -31,31 +30,33 @@ BASE = "https://map.naver.com"
 DIRECTIONS_URL = BASE + "/p/directions"
 SHORTEST = "거리우선"
 VIEWPORT = {"width": 1400, "height": 900}        # 담당자 그림처럼 왼쪽 경로 목록과 지도가 한 화면에
-SEARCH_NEAR = "127.7300;37.8700"                   # 강원대학교 춘천캠퍼스 둘레부터 — 같은 이름이 여럿이면 가까운 곳이 먼저
 
-# 지도 화면 안에서 부르는 장소 검색 — 같은 출처라 쿠키 · 머리글이 화면과 같다. 답의 모양을 짐작하지 않고 글 그대로 돌려 파이썬이 읽는다(places_in).
-# 2026-11-10 담당자 PC 에서 이 검색이 '강원대학교 춘천캠퍼스' 까지 빈 결과였다 — 그래서 이것은 첫 시도일 뿐이고, 안 되면 지도 화면의 검색(search_on_page)으로.
-SEARCH_JS = """async ([q, near]) => {
-  try {
-    const url = '/p/api/search/allSearch?query=' + encodeURIComponent(q) + '&type=all&searchCoord=' + encodeURIComponent(near) + '&boundary=';
-    const r = await fetch(url, {credentials: 'include', headers: {'Accept': 'application/json'}});
-    const text = await r.text();
-    return {ok: r.ok, status: r.status, text: text.slice(0, 400000)};
-  } catch (e) { return {ok: false, status: 0, text: '', why: String(e).slice(0, 120)}; }
-}"""
-SEARCH_POLLS = 24                                  # 지도 화면 검색 — 0.5초씩, 결과가 오면 바로 멈춘다
-CAPTCHA_POLLS = 240                                # 네이버가 보안문자를 물으면 사람이 풀 때까지(2분) 기다린다
+# 곳 찾기 — 사람이 하듯 네이버 지도에서 한 번 검색하고(또는 장소 번호로 장소 화면을 열고), 그 화면이 보여 주는 결과를 읽는다(담당자 2026-11-10
+# "똑같은 목적지를 계속 검색해봤자 똑같은 결과만 나옵니다 · 처음 검색했을 때 가장 유사한 … 맨 처음에 뜬 장소를 선택해서 자동차 경로탐색 · 사용자가 판단하게 ·
+# 지금은 너무 느립니다" · "강원대학교 춘천캠퍼스 검색하면 바로 뜨고 출발을 누르면 경로 탐색이 됩니다" · "가장 효율적인 방법과 루트").
+# 19:34 담당자 PC: 화면에는 결과가 바로 떴는데 앱은 화면이 받는 JSON 만 보아 곳을 못 읽고, 검색어를 바꿔 네 번(한 번에 12초) 다시 찾았다 —
+# 결과 목록 · 장소 화면은 pcmap.place.naver.com 프레임이고 그 내용은 프레임의 Apollo 상태(window.__APOLLO_STATE__)에 이미 들어 있다(HTML 로 와서 JSON 답이 아니다).
+POLL = 0.3                                         # 0.3초마다 본다 — 고를 수 있게 되면 바로 멈춘다
+LOOK_POLLS = 25                                    # 한 번 찾는 데 ≈7.5초까지
+CLICK_AFTER = 8                                    # ≈2.4초가 지나도 장소 화면에서 좌표를 못 읽으면 그 화면의 [출발] · [도착] 을 눌러 네이버가 여는 길찾기 주소에서 읽는다
+ROUTE_POLLS = 34                                   # 길찾기 결과(경로 km)를 ≈10초까지 기다린다
+CAPTCHA_POLLS = 400                                # 네이버가 보안문자를 물으면 사람이 풀 때까지(2분) 기다린다
 CAPTCHA_NOTE = "네이버가 보안문자(자동 입력 방지)를 물었습니다"
-_API_BLOCKED = False                               # 검색 주소가 보안문자를 물으면 앱을 다시 켤 때까지 지도 검색 화면으로만
 # 늘 쓰는 곳 — 검색하지 않고 네이버 장소 번호로 장소 화면을 열어 좌표를 읽는다(담당자 2026-11-10 "출발지는 항상 강원대학교 춘천캠퍼스인데
 # 이건 고정이잖아요"). 장소 번호는 담당자가 보낸 네이버 지도 화면(map.naver.com/p/entry/place/11591476 · 강원 춘천시 강원대학길 1)에서.
-# 좌표는 적어 두지 않는다 — 네이버가 그 장소에 매긴 좌표를 읽어 기억한다(짐작한 좌표로 길을 찾으면 km 가 달라질 수 있다).
+# 좌표는 적어 두지 않는다 — 네이버가 그 장소에 매긴 좌표를 읽어 기억한다(짐작한 좌표로 길을 찾으면 km 가 달라질 수 있다). 한 번 읽으면 다시 열지 않는다.
 FIXED_PLACES = {"강원대학교춘천캠퍼스": ("강원대학교 춘천캠퍼스", "11591476")}
 JSON_LIMIT = 3_000_000
 
 TEXT_JS = "() => (document.body && document.body.innerText) || ''"
 
-# 글자가 정확히 '거리우선' 인 보이는 요소가 하나면 그 항목을 누른다 — 여럿이거나 없으면 누르지 않고 수만 돌려준다
+# 프레임의 Apollo 상태(네이버 장소 화면 · 검색 목록이 그린 내용) — 읽기만 한다
+STATE_JS = """() => {
+  try { const s = window.__APOLLO_STATE__; return s ? JSON.stringify(s) : ''; } catch (e) { return ''; }
+}"""
+STATE_LIMIT = 8_000_000
+
+# 글자가 정확히 word('거리우선' · 장소 화면의 '출발' · '도착') 인 보이는 요소가 하나면 그 항목을 누른다 — 여럿이거나 없으면 누르지 않고 수만 돌려준다
 CLICK_SHORTEST_JS = """(word) => {
   const hits = [...document.querySelectorAll('body *')].filter(el => {
     if ((el.textContent || '').trim() !== word) return false;
@@ -181,7 +182,7 @@ def _first(d: dict, keys) -> object:
 
 
 def places_in(data, limit: int = 60) -> list[Place]:
-    """JSON 어디에 있든 '이름 + 경도 · 위도(우리나라)' 가 함께 든 것 — 나온 차례대로. 검색 답의 꼴(result.place.list · GraphQL …)이 바뀌어도 읽힌다."""
+    """JSON 어디에 있든 '이름 + 경도 · 위도(우리나라)' 가 함께 든 것(이름 곁의 좌표 묶음도) — 나온 차례대로. 답의 꼴이 바뀌어도 읽힌다."""
     out: list[Place] = []
     seen: set = set()
 
@@ -191,6 +192,17 @@ def places_in(data, limit: int = 60) -> list[Place]:
         if isinstance(node, dict):
             x, y = _coord(_first(node, _X_KEYS)), _coord(_first(node, _Y_KEYS))
             name = _first(node, _NAME_KEYS)
+            kind = str(node.get("__typename") or "")
+            if kind.startswith("Ad") or "Advert" in kind or node.get("isAd") is True or node.get("isAdPlace") is True:
+                name = None              # 검색 목록 맨 위의 광고 — 맨 위 결과로 고르지 않는다
+            if (x is None or y is None) and isinstance(name, str):
+                # 장소 화면의 꼴 — 이름 곁에 좌표 묶음(coordinate: {x, y})
+                for value in node.values():
+                    if isinstance(value, dict) and len(value) <= 8:
+                        cx, cy = _coord(_first(value, _X_KEYS)), _coord(_first(value, _Y_KEYS))
+                        if cx is not None and cy is not None:
+                            x, y = cx, cy
+                            break
             if x is not None and y is not None and 124 <= x <= 132 and 33 <= y <= 39.5 and isinstance(name, str):
                 name = _TAG.sub("", name).strip()
                 key = (norm(name), round(x, 5), round(y, 5))
@@ -250,7 +262,7 @@ def rank(query: str, places: list[Place], prefer_id: str = "", allow_first: bool
     if prefer_id:
         for place in places:
             if place.id == prefer_id:
-                return place, "지도 화면이 고른 곳"
+                return place, "네이버가 연 곳"
     whole = norm(query)
     bare = norm(re.sub(r"\([^)]*\)", " ", query or ""))
     for place in places:
@@ -262,29 +274,31 @@ def rank(query: str, places: list[Place], prefer_id: str = "", allow_first: bool
             return place, "이름이 비슷한 곳"
     if not allow_first:
         return None, ""
+    best = max(places, key=lambda p: similarity(bare or whole, norm(p.name)))
+    if similarity(bare or whole, norm(best.name)) >= 0.5:
+        return best, "이름이 가장 비슷한 곳"
+    region = norm(" ".join(re.findall(r"\(([^)]*)\)", query or "")))
+    if region:
+        for place in places:
+            if region in norm(place.address):
+                return place, f"주소에 '{region}' 이 든 첫 결과"
     return places[0], "첫 결과(이름이 같은 곳 없음)"
 
 
-def search_api(page, query: str) -> tuple[list[Place], str]:
-    """지도 화면 안에서 검색 주소를 불러 — (찾은 곳들, 못 찾았으면 까닭과 답의 모양)."""
-    try:
-        got = page.evaluate(SEARCH_JS, [query, SEARCH_NEAR])
-    except Exception as error:  # noqa: BLE001
-        return [], "검색을 부르지 못함: " + (str(error).splitlines()[0][:100] if str(error) else type(error).__name__)
-    if not isinstance(got, dict):
-        return [], "검색 답의 모양이 다름"
-    if got.get("why"):
-        return [], "검색을 부르지 못함: " + str(got["why"])
-    text = got.get("text") or ""
-    try:
-        data = json.loads(text)
-    except ValueError:
-        head = re.sub(r"\s+", " ", text[:80])
-        return [], f"HTTP {got.get('status')} · JSON 아님({head!r})"
-    found = places_in(data)
-    if not found and has_captcha(data):
-        return [], CAPTCHA_NOTE
-    return found, "" if found else f"HTTP {got.get('status')} · 곳 없음 · 답 {shape(data)[:240]}"
+def similarity(a: str, b: str) -> float:
+    """두 이름이 얼마나 비슷한지(0~1) — 두 글자 묶음이 겹치는 정도('인터불고호텔원주' ↔ '호텔인터불고원주')."""
+    def pairs(text: str) -> list[str]:
+        return [text[i:i + 2] for i in range(len(text) - 1)]
+    left, right = pairs(a), pairs(b)
+    if not left or not right:
+        return 1.0 if a and a == b else 0.0
+    rest = list(right)
+    common = 0
+    for pair in left:
+        if pair in rest:
+            rest.remove(pair)
+            common += 1
+    return 2 * common / (len(left) + len(right))
 
 
 def _search_answer(url: str) -> bool:
@@ -293,11 +307,83 @@ def _search_answer(url: str) -> bool:
     return any(w in low for w in ("allsearch", "instant-search", "graphql")) and not any(w in low for w in ("ads", "bubble", "brand"))
 
 
-def search_on_page(page, query: str, wait: Callable[[float], None],
-                   log: Callable[[str], None] | None = None) -> tuple[list[Place], str, str]:
-    """네이버 지도 검색 화면(/p/search/검색어)을 열고, 그 화면이 스스로 받는 답(JSON)에서 곳을 읽는다 — 화면에 결과가 보이면 좌표도 그 답에 있다.
-    네이버가 보안문자를 물으면 사람이 그 창에서 풀 때까지(CAPTCHA_POLLS) 기다린다 — 풀면 화면이 다시 검색하고 그 답에서 읽는다.
-    (찾은 곳들, 화면이 하나를 골랐으면 그 id, 못 찾았으면 까닭)."""
+_ENTRY = re.compile(r"place\.naver\.com/(?:[a-z]+/)?(\d{4,})(?:[/?#]|$)")
+_CHOSEN = re.compile(r"/place/(\d{4,})")
+
+
+def apollo_tree(state: dict):
+    """Apollo 상태(정규화된 캐시) — ROOT_QUERY 부터 '__ref' 를 풀어 화면에 보이는 차례(검색 목록의 첫 결과가 먼저)로, 그다음 나머지 그대로."""
+    budget = [200_000]
+
+    def resolve(node, depth: int, path: frozenset):
+        budget[0] -= 1
+        if depth > 12 or budget[0] < 0:
+            return None
+        if isinstance(node, dict):
+            ref = node.get("__ref")
+            if isinstance(ref, str):
+                target = state.get(ref)
+                return resolve(target, depth + 1, path | {ref}) if isinstance(target, dict) and ref not in path else None
+            return {k: resolve(v, depth + 1, path) for k, v in node.items()}
+        if isinstance(node, list):
+            return [resolve(v, depth + 1, path) for v in node]
+        return node
+
+    root = state.get("ROOT_QUERY")
+    return [resolve(root, 0, frozenset()), state] if isinstance(root, dict) else state
+
+
+def _short(url: str) -> str:
+    return (url or "").split("?")[0].split("://", 1)[-1][:60]
+
+
+def read_frames(page, states: dict) -> None:
+    """프레임마다 Apollo 상태의 곳들 → states[프레임 주소] = (곳들, 기록용 한 줄). 곳을 이미 읽은 프레임은 다시 읽지 않는다."""
+    for frame in list(page.frames):
+        url = frame.url or ""
+        if not url.startswith("http") or states.get(url, ([], ""))[0]:
+            continue
+        try:
+            text = frame.evaluate(STATE_JS) or ""
+        except Exception:  # noqa: BLE001 — 닫히는 · 다시 그리는 프레임
+            continue
+        if not text:
+            states[url] = ([], "상태 없음")
+            continue
+        if len(text) > STATE_LIMIT:
+            states[url] = ([], f"상태가 너무 큼({len(text)}자)")
+            continue
+        try:
+            data = json.loads(text)
+        except ValueError:
+            states[url] = ([], "상태를 읽지 못함")
+            continue
+        found = places_in(apollo_tree(data) if isinstance(data, dict) else data, limit=200)
+        kinds = sorted({str(k).split(":")[0] for k in data} if isinstance(data, dict) else set())[:8]
+        states[url] = (found, f"상태 {len(data)}개({', '.join(kinds)}) · 곳 {len(found)}")
+
+
+def press_in_place_screen(page, word: str) -> int:
+    """네이버 장소 화면(pcmap.place.naver.com 프레임)의 '출발' · '도착' — 글자가 정확히 같은 보이는 것이 하나일 때만 누른다(사람이 하는 길,
+    담당자 2026-11-10 "검색하면 바로 뜨고 출발을 누르면 경로 탐색이 됩니다"). 누르면 네이버가 그 곳을 넣은 길찾기 주소로 바꾼다. 누른 수."""
+    for frame in list(page.frames):
+        if not _ENTRY.search(frame.url or ""):
+            continue
+        try:
+            if frame.evaluate(CLICK_SHORTEST_JS, word) == 1:
+                return 1
+        except Exception:  # noqa: BLE001
+            continue
+    return 0
+
+
+def look_up(page, url: str, query: str, role: str, wait: Callable[[float], None], log: Callable[[str], None] | None = None,
+            prefer_id: str = "", strict: bool = False) -> tuple[Place | None, str, str]:
+    """네이버 지도 화면 하나(검색 화면 · 장소 화면)를 열고 그 화면이 보여 주는 곳을 고른다 — (곳, 고른 까닭, 못 찾았으면 까닭).
+    고르는 차례: 그 화면의 결과(검색 목록 · 장소 화면의 Apollo 상태, 검색 답) 중 네이버가 연 곳(주소의 /place/번호) · 이름이 같은 곳 · 비슷한 곳 ·
+    주소가 맞는 곳 · 맨 위 결과(strict 면 이름이 맞을 때만). 주변 가게 · 광고 표시 같은 다른 답의 곳은 이름이 맞을 때만.
+    장소 화면인데 좌표를 못 읽으면 그 화면의 [출발](출발지) · [도착](목적지)을 눌러 네이버가 여는 길찾기 주소에서 읽는다.
+    네이버가 보안문자를 물으면 사람이 그 창에서 풀 때까지(CAPTCHA_POLLS) 기다린다 — 앱은 풀거나 피하지 않는다."""
     seen: list = []
 
     def keep(response) -> None:          # 알림 자리에서는 담아만 둔다 — 여기서 Playwright 를 부르지 않는다(21절)
@@ -305,16 +391,18 @@ def search_on_page(page, query: str, wait: Callable[[float], None],
 
     page.on("response", keep)
     read = 0
-    found: list[Place] = []          # 그 검색어의 검색 답(allSearch · GraphQL …)에서 읽은 곳
+    answers: list[Place] = []        # 그 검색어의 검색 답(allSearch · GraphQL …)
     nearby: list[Place] = []         # 지도 화면이 함께 받은 다른 답(주변 가게 · 광고 표시 …) — 이름이 맞을 때만 쓴다
+    states: dict = {}
     paths: list[str] = []
-    captcha = False
+    captcha = pressed = False
+    word = "출발" if role == "출발지" else "도착"
     try:
-        page.goto(f"{BASE}/p/search/{quote(query, safe='')}", wait_until="domcontentloaded")
+        page.goto(url, wait_until="domcontentloaded")
         polls = 0
-        while polls < (CAPTCHA_POLLS if captcha else SEARCH_POLLS):
+        while polls < (CAPTCHA_POLLS if captcha else LOOK_POLLS):
             polls += 1
-            wait(0.5)
+            wait(POLL)
             while read < len(seen):
                 response = seen[read]
                 read += 1
@@ -327,8 +415,8 @@ def search_on_page(page, query: str, wait: Callable[[float], None],
                     data = json.loads(body.decode("utf-8", "replace"))
                 except Exception:  # noqa: BLE001 — JSON 이 아닌 답 · 이미 사라진 답
                     continue
-                paths.append(response.url.split("?")[0].split("naver.com", 1)[-1][:60])
-                bucket = found if _search_answer(response.url) else nearby
+                paths.append(_short(response.url))
+                bucket = answers if _search_answer(response.url) else nearby
                 bucket += [p for p in places_in(data) if all((p.name, p.x, p.y) != (q.name, q.x, q.y) for q in bucket)]
                 if not captcha and has_captcha(data):
                     captcha = True
@@ -338,65 +426,41 @@ def search_on_page(page, query: str, wait: Callable[[float], None],
                         pass
                     if log is not None:
                         log(f"{CAPTCHA_NOTE} — 앱 브라우저의 네이버 지도 창에서 입력해 주세요(2분 기다립니다)")
-            if found or rank(query, nearby, allow_first=False)[0] is not None:
-                break
+            read_frames(page, states)
+            chosen = _CHOSEN.search(page.url or "")
+            entry = next((m.group(1) for m in (_ENTRY.search(u) for u in states) if m), "")
+            want = prefer_id or (chosen.group(1) if chosen else "") or entry
+            shown = [p for u, (found, _) in states.items() if "place.naver.com" in u for p in found] + answers
+            others = nearby + [p for u, (found, _) in states.items() if "place.naver.com" not in u for p in found]
+            if want and polls < CLICK_AFTER and not any(p.id == want for p in shown):
+                continue                 # 네이버가 곳 하나를 열었다 — 그 곳의 좌표가 올 때까지 조금 더
+            place, how = rank(query, shown, want, allow_first=not strict)
+            if place is None:
+                place, how = rank(query, others, want, allow_first=False)
+            if place is not None:
+                return place, how, ""
+            if pressed:
+                got = places_from_url(page.url)
+                if got:
+                    place = got[0] if role == "출발지" else got[-1]
+                    place.id = place.id or want
+                    return place, f"장소 화면의 [{word}] 로 연 길찾기", ""
+            elif polls >= CLICK_AFTER and press_in_place_screen(page, word):
+                pressed = True
     finally:
         page.remove_listener("response", keep)
-    chosen = re.search(r"/place/(\d+)", page.url or "")
-    named = rank(query, nearby, chosen.group(1) if chosen else "", allow_first=False)[0]
-    if not found and named is not None:
-        found = [named]
-    if not found and captcha:
-        return [], "", CAPTCHA_NOTE + " — 2분 안에 풀지 않아 그만두었습니다"
-    why = "" if found else (f"검색 화면이 받은 답 {len(paths)}개에 곳 없음" + (f" ({', '.join(dict.fromkeys(paths))[:200]})" if paths else ""))
-    return found, chosen.group(1) if chosen else "", why
-
-
-def place_by_id(page, place_id: str, name: str, wait: Callable[[float], None],
-                log: Callable[[str], None] | None = None) -> tuple[Place | None, str]:
-    """네이버 장소 화면(/p/entry/place/번호)을 열어 그 장소의 좌표를 읽는다 — 검색을 거치지 않는다. (곳, 못 읽었으면 까닭)."""
-    seen: list = []
-
-    def keep(response) -> None:          # 알림 자리에서는 담아만 둔다
-        seen.append(response)
-
-    page.on("response", keep)
-    read, found, captcha = 0, [], False
-    try:
-        page.goto(f"{BASE}/p/entry/place/{place_id}", wait_until="domcontentloaded")
-        polls = 0
-        while polls < (CAPTCHA_POLLS if captcha else SEARCH_POLLS):
-            polls += 1
-            wait(0.5)
-            while read < len(seen):
-                response = seen[read]
-                read += 1
-                try:
-                    if response.request.resource_type not in ("xhr", "fetch") or "naver" not in response.url:
-                        continue
-                    body = response.body()
-                    if len(body) > JSON_LIMIT:
-                        continue
-                    data = json.loads(body.decode("utf-8", "replace"))
-                except Exception:  # noqa: BLE001
-                    continue
-                found += places_in(data)
-                if not captcha and has_captcha(data):
-                    captcha = True
-                    if log is not None:
-                        log(f"{CAPTCHA_NOTE} — 앱 브라우저의 네이버 지도 창에서 입력해 주세요(2분 기다립니다)")
-            hit = next((p for p in found if p.id == place_id), None) or rank(name, found, allow_first=False)[0]
-            if hit is not None:
-                hit.id = hit.id or place_id
-                return hit, ""
-    finally:
-        page.remove_listener("response", keep)
-    return None, (CAPTCHA_NOTE if captcha else f"장소 화면(번호 {place_id})에서 좌표를 읽지 못했습니다")
+    if captcha:
+        return None, "", CAPTCHA_NOTE + " — 2분 안에 풀지 않아 그만두었습니다"
+    frames = "; ".join(f"{_short(u)} {note}" for u, (_, note) in states.items()) or "프레임 없음"
+    answered = f"받은 답 {len(paths)}개" + (f"({', '.join(dict.fromkeys(paths))[:160]})" if paths else "")
+    return None, "", f"화면에서 곳을 읽지 못했습니다 — {frames[:400]} · {answered}" + (f" · [{word}] 누름" if pressed else "")
 
 
 def search_place(page, query: str, wait: Callable[[float], None] | None = None,
-                 known: dict | None = None, log: Callable[[str], None] | None = None) -> tuple[Place | None, str, list[str]]:
-    """네이버 지도에서 곳 하나 — (곳, 못 찾았으면 '검색 결과 없음' 등, 한 일). known 은 전에 찾은 곳(settings.travel_places)."""
+                 known: dict | None = None, log: Callable[[str], None] | None = None,
+                 role: str = "목적지") -> tuple[Place | None, str, list[str]]:
+    """네이버 지도에서 곳 하나 — (곳, 못 찾았으면 까닭, 한 일). known 은 전에 찾은 곳(settings.travel_places).
+    한 곳에 검색은 한 번 — 같은 곳을 검색어만 바꿔 다시 찾아도 같은 결과다(담당자 2026-11-10). 늘 쓰는 곳(FIXED_PLACES)은 장소 번호로 장소 화면을 연다."""
     steps: list[str] = []
     for attempt in search_queries(query):
         hit = (known or {}).get(norm(attempt)) or (known or {}).get(norm(re.sub(r"\([^)]*\)", " ", attempt)))
@@ -407,36 +471,25 @@ def search_place(page, query: str, wait: Callable[[float], None] | None = None,
         if hit:
             steps.append(f"'{attempt}' → 전에 찾은 곳 '{hit['name']}'")
             return Place(**{k: hit[k] for k in ("name", "x", "y", "id", "address") if k in hit}), "", steps
+    if wait is None:
+        return None, "검색 결과 없음", steps
     fixed = FIXED_PLACES.get(norm(query))
-    if fixed and wait is not None:
-        place, why = place_by_id(page, fixed[1], fixed[0], wait, log)
+    if fixed:
+        place, how, why = look_up(page, f"{BASE}/p/entry/place/{fixed[1]}", fixed[0], role, wait, log, prefer_id=fixed[1], strict=True)
         if place is not None:
-            steps.append(f"'{query}' → 네이버 장소 {fixed[1]} 의 좌표 ({place.name})")
+            steps.append(f"'{query}' → 네이버 장소 {fixed[1]} ({place.name} · {how})")
             return place, "", steps
-        steps.append(f"'{query}' → 네이버 장소 {fixed[1]}: {why} — 검색으로 찾아 봅니다")
-    global _API_BLOCKED
-    why = ""
-    for attempt in search_queries(query):          # 괄호 든 곳('…센터 (원주)')은 괄호를 빼고 · 괄호 속 지역을 앞에 두고 한 번 더
-        if not _API_BLOCKED:
-            found, why = search_api(page, attempt)
-            place, how = rank(attempt, found)
-            if place is not None:
-                steps.append(f"검색 '{attempt}' → {place.name} ({how})")
-                return place, "", steps
-            steps.append(f"검색 '{attempt}' → {why}")
-            if why == CAPTCHA_NOTE:
-                _API_BLOCKED = True          # 이번 실행에서는 검색 주소를 더 부르지 않는다 — 부를수록 보안문자를 더 묻는다
-        if wait is None:
-            continue
-        found, chosen, why = search_on_page(page, attempt, wait, log)
-        place, how = rank(attempt, found, chosen)
-        if place is not None:
-            steps.append(f"지도 화면 검색 '{attempt}' → {place.name} ({how})")
-            return place, "", steps
-        steps.append(f"지도 화면 검색 '{attempt}' → {why}")
+        steps.append(f"'{query}' → 네이버 장소 {fixed[1]}: {why}")
         if why.startswith(CAPTCHA_NOTE):
-            return None, why, steps          # 사람이 보안문자를 풀지 않았으면 다른 검색어로 되풀이하지 않는다
-    return None, "검색 결과 없음", steps
+            return None, why, steps
+    words = search_queries(query)[-1]          # 괄호 속 지역은 앞에('강원가명정보활용지원센터 (원주)' → '원주 강원가명정보활용지원센터')
+    place, how, why = look_up(page, f"{BASE}/p/search/{quote(words, safe='')}", query, role, wait, log,
+                              prefer_id=fixed[1] if fixed else "", strict=bool(fixed))
+    if place is not None:
+        steps.append(f"검색 '{words}' → {place.name} ({how})")
+        return place, "", steps
+    steps.append(f"검색 '{words}' → {why}")
+    return None, why if why.startswith(CAPTCHA_NOTE) else "검색 결과 없음", steps
 
 
 def same_place(query: str, name: str) -> bool:
@@ -497,12 +550,9 @@ def find_route(page, origin: str, goal: str, out: Path, log: Callable[[str], Non
         result.need_place = goal if not goal.strip() else ""
         result.note = "출발지 · 목적지가 비어 있습니다"
         return result
-    if not page.url.startswith(BASE):
-        page.goto(DIRECTIONS_URL, wait_until="domcontentloaded")
-        wait(1.5)
     places = []
     for role, query in (("출발지", origin), ("목적지", goal)):
-        place, why, steps = search_place(page, query, wait, known, log)
+        place, why, steps = search_place(page, query, wait, known, log, role)
         result.steps += steps
         if place is None:
             result.note = f"{role} '{query}' 를 네이버 지도에서 찾지 못했습니다 ({why})"
@@ -515,8 +565,8 @@ def find_route(page, origin: str, goal: str, out: Path, log: Callable[[str], Non
     url = directions_url(*places)
     page.goto(url, wait_until="domcontentloaded")
     km = None
-    for _ in range(30):                 # 경로 목록이 뜰 때까지(최대 15초)
-        wait(0.5)
+    for _ in range(ROUTE_POLLS):        # 경로 목록이 뜰 때까지
+        wait(POLL)
         km = route_km(page_text(page))
         if km is not None:
             break
@@ -549,7 +599,7 @@ def _open_for_confirm(page, origin: str, goal: str, log: Callable[[str], None], 
     for role, query in (("출발지", origin), ("목적지", goal)):
         place = None
         if query.strip():
-            place, why, steps = search_place(page, query, wait, known, log)
+            place, why, steps = search_place(page, query, wait, known, log, role)
             result.steps += steps
             if place is not None:
                 remember(known, query, place)
@@ -561,8 +611,8 @@ def _open_for_confirm(page, origin: str, goal: str, log: Callable[[str], None], 
     url = directions_url(*places)
     page.goto(url, wait_until="domcontentloaded")
     if not missing:
-        for _ in range(30):             # 경로 목록이 뜰 때까지(최대 15초) — 뜨면 '거리우선' 을 골라 둔다
-            wait(0.5)
+        for _ in range(ROUTE_POLLS):    # 경로 목록이 뜰 때까지 — 뜨면 '거리우선' 을 골라 둔다
+            wait(POLL)
             if route_km(page_text(page)) is not None:
                 break
         try:

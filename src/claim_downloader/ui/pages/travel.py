@@ -459,6 +459,14 @@ class TravelPage(QWidget):
         return step
 
     # ── 여러 폴더 ──────────────────────────────────────────────────────────
+    @staticmethod
+    def _trip_root() -> str:
+        """폴더 고르기 창이 처음 여는 곳 — 출장비 폴더(model.trip_root). 하던 폴더 안이 아니라 늘 그 폴더에서(담당자 2026-11-10)."""
+        from ..report_dialog import desktop_dir
+        home = Path.home()
+        desks = [desktop_dir(), home / "Desktop", home / "바탕 화면", home / "OneDrive" / "Desktop", home / "OneDrive" / "바탕 화면"]
+        return model.trip_root(settings.load().travel_root, list(dict.fromkeys(desks)))
+
     def _add_folders(self, paths, start: bool = False) -> int:
         """폴더들을 목록에 더한다(체크된 채, 이미 있으면 그대로). start 면 넣은 것이 하나뿐이고 하던 폴더가 없을 때 바로 시작."""
         known = {self.folder_list.item(i).data(Qt.UserRole) for i in range(self.folder_list.count())}
@@ -488,7 +496,7 @@ class TravelPage(QWidget):
                 if not checked or self.folder_list.item(i).checkState() == Qt.Checked]
 
     def _pick_parent(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "출장 폴더들이 든 상위 폴더", self.folder_edit.text() or "")
+        path = QFileDialog.getExistingDirectory(self, "출장 폴더들이 든 상위 폴더", self._trip_root())
         if not path:
             return
         found = [d for d in sorted(Path(path).iterdir()) if d.is_dir() and model.looks_like_trip(d)]
@@ -958,7 +966,7 @@ class TravelPage(QWidget):
 
     # ── ① 폴더 → ② 출장신청서 검토 ─────────────────────────────────────────
     def _pick_folder(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "출장증빙을 만들 폴더(출장비 지급 폴더)", self.folder_edit.text() or "")
+        path = QFileDialog.getExistingDirectory(self, "출장증빙을 만들 폴더(출장비 지급 폴더)", self._trip_root())
         if path:
             self._add_folders([path], start=True)
 
