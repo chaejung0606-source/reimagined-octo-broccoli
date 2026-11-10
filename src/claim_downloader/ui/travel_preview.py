@@ -113,13 +113,15 @@ class PageView(QWidget):
             self.clicked.emit(hit)
 
 
-class TravelPreview(QDialog):
-    """source 는 출장증빙 화면(TravelPage) — trips() · year() · apply_edit(ref, 값) · route_rows(사람) · apply_route(사람, km, 연료) · fuel_of(사람)."""
+class PreviewPanel(QWidget):
+    """미리 보기 본문 — 쪽 그림 · 확인할 것 · 고치는 칸. 출장증빙 화면의 ⑤ 단계에 그대로 들어가고(담당자 2026-11-10 "5단계로 미리보기를"),
+    만들기 전 확인 창(TravelPreview)도 이것을 쓴다.
+    source 는 출장증빙 화면(TravelPage) — trips() · apply_edit(ref, 값) · route_rows(사람) · apply_route(사람, km, 연료) · fuel_of(사람)."""
 
-    def __init__(self, parent: QWidget | None, source, name: str = "", make_text: str = "이대로 만들기"):
+    edited = Signal()
+
+    def __init__(self, source, name: str = "", parent: QWidget | None = None, side_width: int = SIDE_WIDTH):
         super().__init__(parent)
-        self.setWindowTitle("출장증빙 미리 보기")
-        self.setSizeGripEnabled(True)
         self.source = source
         self._cache: dict = {}            # 증빙 파일 → 쪽 그림(고칠 때마다 다시 읽지 않게)
         self._needs: dict = {}
@@ -131,16 +133,19 @@ class TravelPreview(QDialog):
         self._trip: model.Trip | None = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 16, 20, 14)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
         head = QHBoxLayout()
-        head.addWidget(Pill("미리 보기", "info"), 0, Qt.AlignVCenter)
-        title = QLabel("출장증빙 미리 보기 — 칠한 곳을 눌러 바로 고치세요")
-        title.setObjectName("cardTitle")
-        head.addWidget(title, 1)
+        self.person_label = QLabel("출장자")
+        self.person_label.setObjectName("muted")
+        head.addWidget(self.person_label)
         self.person_box = QComboBox()
         self.person_box.currentIndexChanged.connect(lambda _i: self.refresh(keep=False))
         head.addWidget(self.person_box)
+        head.addStretch(1)
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("muted")
+        head.addWidget(self.status_label)
         layout.addLayout(head)
 
         body = QHBoxLayout()
@@ -157,7 +162,7 @@ class TravelPreview(QDialog):
         body.addWidget(self.scroll, 1)
 
         side = QWidget()
-        side.setFixedWidth(SIDE_WIDTH)
+        side.setFixedWidth(side_width)
         side_layout = QVBoxLayout(side)
         side_layout.setContentsMargins(0, 0, 0, 0)
         side_layout.setSpacing(8)
@@ -180,42 +185,24 @@ class TravelPreview(QDialog):
         side_layout.addStretch(1)
         body.addWidget(side)
         layout.addLayout(body, 1)
+        self.set_people(name)
 
-        foot = QHBoxLayout()
-        self.status_label = QLabel("")
-        self.status_label.setObjectName("muted")
-        foot.addWidget(self.status_label, 1)
-        self.make_button = QPushButton(make_text)
-        self.make_button.setObjectName("primary")
-        self.make_button.setAutoDefault(False)
-        self.make_button.clicked.connect(lambda: self.done(MAKE))
-        self.make_button.setVisible(bool(make_text))
-        close = QPushButton("닫기")
-        close.setAutoDefault(False)
-        close.clicked.connect(self.reject)
-        foot.addWidget(self.make_button)
-        foot.addWidget(close)
-        layout.addLayout(foot)
-
-        trips = source.trips()
-        self.person_box.blockSignals(True)
-        for trip in trips:
-            self.person_box.addItem(trip.name or "출장자")
-        index = next((i for i, t in enumerate(trips) if t.name == name), 0)
-        self.person_box.setCurrentIndex(index)
-        self.person_box.blockSignals(False)
+    def set_people(self, name: str = "") -> None:
+        """출장자 고르기 칸을 지금 출장자들로 — 고른 사람은 그대로(없으면 name, 그것도 없으면 첫 사람)."""
+        trips = self.source.trips()
+        names = [t.name or "출장자" for t in trips]
+        old = self.person_box.currentText()
+        if names != [self.person_box.itemText(i) for i in range(self.person_box.count())]:
+            self.person_box.blockSignals(True)
+            self.person_box.clear()
+            self.person_box.addItems(names)
+            want = name or old
+            self.person_box.setCurrentIndex(names.index(want) if want in names else 0)
+            self.person_box.blockSignals(False)
         self.person_box.setVisible(len(trips) > 1)
-        self._fit_to_screen()
-        self.refresh(keep=False)
+        self.person_label.setVisible(len(trips) > 1)
 
     # ── 크기 ────────────────────────────────────────────────────────────
-    def _fit_to_screen(self) -> None:
-        screen = self.screen() or (self.parent().screen() if self.parent() is not None else None)
-        area = screen.availableGeometry() if screen is not None else None
-        width = min(1280, int(area.width() * 0.92)) if area else 1180
-        height = min(980, int(area.height() * 0.88)) if area else 820
-        self.resize(width, height)
-
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         QTimer.singleShot(0, self._fit_pages)          # 자식들의 자리가 정해진 뒤에
@@ -257,6 +244,7 @@ class TravelPreview(QDialog):
         """출장증빙 화면의 지금 값으로 쪽을 다시 짜 그린다 — keep 이면 보던 자리 · 고른 증빙을 그대로."""
         from ..travel import render
         position = self.scroll.verticalScrollBar().value() if keep else 0
+        self.set_people()
         trip = self.trip()
         self._trip = trip
         for view in self._views:
@@ -424,6 +412,11 @@ class TravelPreview(QDialog):
             nights.setValue(max(1, ev.nights))
             form.addRow("박 수", nights)
             self._editor_fields["nights"] = nights
+        want = model.stay_regions(trip, ev) if kind == model.STAY and trip is not None else []
+        if kind == model.STAY:
+            # 체류 영수증은 출장지와 같은 시 · 군의 가맹점이어야 한다(담당자 2026-11-10 — '강원도 원주시 인터불고호텔' 이면 원주시 안의 영수증)
+            line("shop_region", "가맹점 지역", ev.shop_region, "영수증 가맹점 주소의 시 · 군 — 예: " + (want[0] if want else "원주"),
+                 ("가맹점 지역", "가맹점 지역(다름)"))
         if kind in (model.STAY, model.LODGING) and trip is not None and len(trip.places) > 1:
             place = QComboBox()
             place.addItems([""] + trip.places)
@@ -433,6 +426,17 @@ class TravelPreview(QDialog):
             form.addRow("출장지", place)
             self._editor_fields["place"] = place
         self.editor_layout.addLayout(form)
+        if kind == model.STAY:
+            note = WrapLabel(f"출장지의 시 · 군: {', '.join(want)} — 영수증 가맹점 주소가 그 안이어야 합니다." if want else
+                             "출장지 글에서 시 · 군을 못 찾았습니다 — 출장지에 '원주시' 처럼 시 · 군을 넣거나, 네이버 지도에서 찾은 곳이면 그 주소로 봅니다.")
+            note.setObjectName("muted")
+            self.editor_layout.addWidget(note)
+            if len(want) == 1 and ev.shop_region != want[0]:
+                same = QPushButton(f"영수증 가맹점이 {want[0]} 안입니다")
+                same.setAutoDefault(False)
+                same.setToolTip("원본 영수증의 가맹점 주소를 보고 출장지와 같은 시 · 군이면 누르세요")
+                same.clicked.connect(lambda: (self._editor_fields["shop_region"].setText(want[0]), self._apply()))
+                self.editor_layout.addWidget(same)
         self._editor_buttons(ev.path)
 
     def _build_route_editor(self, ref: tuple, flagged: list[str]) -> None:
@@ -509,11 +513,61 @@ class TravelPreview(QDialog):
         else:
             self.source.apply_edit(self._selected, values)
         self.refresh(keep=True)
+        self.edited.emit()
         # 고친 증빙이 더는 확인할 것이 아니면 다음 확인할 것으로
         if self._selected not in self._flagged:
             nxt = self._first_flagged()
             if nxt:
                 self._select(nxt, scroll=True)
+
+
+class TravelPreview(QDialog):
+    """만들기 전 확인 창 — 미리 보기 본문(PreviewPanel) + [이대로 만들기] · [닫기]. 본문의 값 · 함수는 이 창에서도 그대로 부른다."""
+
+    def __init__(self, parent: QWidget | None, source, name: str = "", make_text: str = "이대로 만들기"):
+        super().__init__(parent)
+        self.setWindowTitle("출장증빙 미리 보기")
+        self.setSizeGripEnabled(True)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 14)
+        layout.setSpacing(10)
+        head = QHBoxLayout()
+        head.addWidget(Pill("미리 보기", "info"), 0, Qt.AlignVCenter)
+        title = QLabel("출장증빙 미리 보기 — 칠한 곳을 눌러 바로 고치세요")
+        title.setObjectName("cardTitle")
+        head.addWidget(title, 1)
+        layout.addLayout(head)
+        self.panel = PreviewPanel(source, name, self)
+        layout.addWidget(self.panel, 1)
+        foot = QHBoxLayout()
+        foot.addStretch(1)
+        self.make_button = QPushButton(make_text)
+        self.make_button.setObjectName("primary")
+        self.make_button.setAutoDefault(False)
+        self.make_button.clicked.connect(lambda: self.done(MAKE))
+        self.make_button.setVisible(bool(make_text))
+        close = QPushButton("닫기")
+        close.setAutoDefault(False)
+        close.clicked.connect(self.reject)
+        foot.addWidget(self.make_button)
+        foot.addWidget(close)
+        layout.addLayout(foot)
+        self._fit_to_screen()
+        self.panel.refresh(keep=False)
+
+    def __getattr__(self, name):
+        # 본문의 값 · 함수(trip · values · _select · todo_list …)를 창에서 그대로 — 전 판과 같은 이름으로
+        panel = self.__dict__.get("panel")
+        if panel is None:
+            raise AttributeError(name)
+        return getattr(panel, name)
+
+    def _fit_to_screen(self) -> None:
+        screen = self.screen() or (self.parent().screen() if self.parent() is not None else None)
+        area = screen.availableGeometry() if screen is not None else None
+        width = min(1280, int(area.width() * 0.92)) if area else 1180
+        height = min(980, int(area.height() * 0.88)) if area else 820
+        self.resize(width, height)
 
 
 def _km(text: str) -> float | None:

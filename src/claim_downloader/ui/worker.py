@@ -162,7 +162,7 @@ class SessionWorker(QObject):
         self._put("open_site", (site,), "structure")
 
     def find_routes(self, legs: list, folder: str, keys: list, owner: str = "travel") -> None:
-        """출장증빙 — 구간마다 네이버 지도 최단거리를 보이지 않는 브라우저에서(담당자 2026-11-10 "백그라운드에서 자동으로"). keys 는 화면이 줄을 찾는 열쇠."""
+        """출장증빙 — 구간마다 네이버 지도 최단거리를 앱 브라우저의 네이버 지도 탭에서(담당자 2026-11-10 "백그라운드에서 자동으로"). keys 는 화면이 줄을 찾는 열쇠."""
         self._put("find_routes", (legs, folder, keys), owner)
 
     def capture_route(self, folder: str, label: str, key, owner: str = "travel") -> None:

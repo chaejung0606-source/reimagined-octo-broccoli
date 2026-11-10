@@ -56,6 +56,7 @@ class Evidence:
     goal: str = ""          # 대중교통 증빙의 목적지
     ref: tuple = ()         # 화면 표의 어느 줄인지((항목, 줄)) — 미리 보기에서 고친 값을 그 줄에 적는다
     label: str = ""         # 기타 증빙의 내용(파일 이름에서 이름을 뗀 것 — '참가확인서')
+    shop_region: str = ""   # 체류 영수증 가맹점 주소의 시 · 군 — 출장지와 같아야 한다(담당자 2026-11-10, stay_regions)
 
 
 @dataclass
@@ -78,6 +79,7 @@ class Trip:
     route_maps: list = field(default_factory=list)   # 구간마다 네이버 지도 최단거리 그림(legs 와 같은 차례) — 있으면 route_map 대신 이것들
     route_stops: list = field(default_factory=list)  # 자차 경유지 + 목적지(차례대로) — 경유지가 있을 때만(담당자 2026-11-10). 비면 출장지로
     fuel: str = ""          # 자차 연료 종류(휘발유 · 경유 · LPG …) — 자차 쪽 머리 줄에 적는다(담당자 2026-11-10)
+    place_regions: dict = field(default_factory=dict)   # 출장지 글 → 시 · 군(출장지 글에 시 · 군이 없을 때 네이버에서 찾은 그곳 주소로 — 화면이 채움)
 
     @property
     def days(self) -> int:
@@ -253,19 +255,56 @@ def pdf_text(path: Path, pages: int = 2) -> str:
         return ""
 
 
-def guess(path: Path, year: int, route: bool = False) -> Evidence:
+def guess(path: Path, year: int, route: bool = False, stay: bool = False) -> Evidence:
     """파일 이름 → (PDF 면) 글자 차례로 일자 · 금액을 짐작한다. 그림 영수증은 이름에 적힌 것만 — 화면에서 고친다.
-    route 면(대중교통) 출발지 · 목적지도 — 파일 이름 '…_춘천-서울_…' · '춘천→서울', 승차권 글자의 '출발 … 도착 …'."""
+    route 면(대중교통) 출발지 · 목적지도 — 파일 이름 '…_춘천-서울_…' · '춘천→서울', 승차권 글자의 '출발 … 도착 …'.
+    stay 면(체류) 가맹점 주소의 시 · 군도 — 파일 이름에 적힌 시 · 군, 영수증 글자의 주소 줄(그림 영수증은 앱이 못 읽는다)."""
     stem = path.stem
     day, amount = guess_day(stem, year), guess_amount(stem)
     origin, goal = guess_route(stem) if route else ("", "")
-    if (day is None or amount is None or (route and not (origin and goal))) and path.suffix.lower() == ".pdf":
+    shop = region_of(stem) if stay else ""
+    if (day is None or amount is None or (route and not (origin and goal)) or (stay and not shop)) and path.suffix.lower() == ".pdf":
         text = pdf_text(path)
         day = day or guess_day(text, year)
         amount = amount or guess_amount(text)
         if route and not (origin and goal):
             origin, goal = guess_route(text)
-    return Evidence(path=path, day=day, amount=amount, origin=origin, goal=goal)
+        if stay and not shop:
+            shop = shop_region_of(text)
+    return Evidence(path=path, day=day, amount=amount, origin=origin, goal=goal, shop_region=shop)
+
+
+# ── 체류 영수증의 가맹점 지역 — 출장지와 같은 시 · 군이어야 한다 ───────────────────
+# 담당자 2026-11-10 "체류증빙은 영수증 가맹점의 주소지와 출장 목적지가 같아야" · "강원도 춘천시가 출장지면 강원도 춘천시까지만 동일하면" ·
+# "강원도 원주시 인터불고호텔이 출장지이면 체류증빙은 강원도 원주시 내 영수증이면 됩니다". 시 · 군 이름표는 카드 회의비의 지역 규칙(claims/card.py)과 같은 것.
+def region_of(text: str) -> str:
+    """글에 나온 첫 시 · 군('강원도 원주시 인터불고호텔' → 원주, '강원가명정보활용지원센터 (원주)' → 원주). 모르면 ''."""
+    from ..claims.card import regions_in
+    found = regions_in(text or "")
+    return found[0] if found else ""
+
+
+def shop_region_of(text: str) -> str:
+    """영수증 글자 → 가맹점 주소의 시 · 군. 주소 줄이 있으면 그것, 없으면 글에 시 · 군이 하나만 나올 때."""
+    from ..claims.card import address_region, read_receipt, regions_in
+    receipt = read_receipt(text or "")
+    found = address_region(receipt.address) if receipt.address else ""
+    if found:
+        return found
+    regions = regions_in(text or "")
+    return regions[0] if len(regions) == 1 else ""
+
+
+def stay_regions(trip: Trip, ev: Evidence) -> list[str]:
+    """그 체류 영수증이 있어야 할 시 · 군들 — 증빙에 출장지를 적었으면(출장지가 여럿일 때) 그곳, 아니면 출장지 모두.
+    출장지 글에 시 · 군이 없으면 네이버에서 찾은 그곳 주소의 시 · 군(trip.place_regions)."""
+    own = trip.place_of(ev) if len(trip.places) > 1 else ""
+    out: list[str] = []
+    for place in [own] if own else trip.places:
+        region = region_of(place) or trip.place_regions.get(place, "")
+        if region and region not in out:
+            out.append(region)
+    return out
 
 
 # 대중교통 출발지 · 목적지 — '춘천→서울' · '춘천-서울' · '춘천~서울', 또는 '출발(역 · 지) 춘천 … 도착(역 · 지) 서울'
@@ -493,6 +532,12 @@ def unclear(trip: Trip, kind: str, e: Evidence) -> list[str]:
         out += [label for label, value in (("이동편", e.mode), ("출발지", e.origin), ("목적지", e.goal)) if not value.strip()]
     if kind in (STAY, LODGING) and len(trip.places) > 1 and not trip.place_of(e):
         out.append("출장지")
+    if kind == STAY:
+        want = stay_regions(trip, e)
+        if want and not e.shop_region.strip():
+            out.append("가맹점 지역")
+        elif want and region_of(e.shop_region) not in want:
+            out.append("가맹점 지역(다름)")
     return out
 
 
@@ -529,6 +574,11 @@ def problems(trip: Trip) -> list[str]:
                 out.append(f"{KIND_NAMES[kind]} · {e.path.name}: 일자가 없습니다.")
             if kind != STAY and e.amount is None:
                 out.append(f"{KIND_NAMES[kind]} · {e.path.name}: 금액이 없습니다.")
+            if kind == STAY and e.shop_region.strip():
+                want = stay_regions(trip, e)
+                if want and region_of(e.shop_region) not in want:
+                    out.append(f"체류 · {e.path.name}: 영수증 가맹점({e.shop_region.strip()})이 출장지({', '.join(want)})와 다른 시 · 군입니다 — "
+                               "출장지 시 · 군 안의 영수증이어야 합니다.")
             if kind == PUBLIC and not e.mode.strip():
                 out.append(f"대중교통 · {e.path.name}: 이동편(열차 · 고속버스 …)이 없습니다.")
             if kind == PUBLIC and not (e.origin.strip() and e.goal.strip()):
@@ -667,6 +717,17 @@ def review(trip: Trip) -> list[str]:
             out.append(f"숙박 {nights}박 — 출장 {trip.days}일(최대 {max(0, trip.days - 1)}박)보다 많습니다")
     if not trip.public and not trip.tolls:
         out.append("교통비 증빙(대중교통 · 하이패스)이 없습니다")
+    if trip.stay:
+        wants = {r for e in trip.stay for r in stay_regions(trip, e)}
+        other = [e for e in trip.stay if e.shop_region.strip() and stay_regions(trip, e)
+                 and region_of(e.shop_region) not in stay_regions(trip, e)]
+        unknown = [e for e in trip.stay if not e.shop_region.strip()]
+        if other:
+            out.append(f"체류 증빙 {len(other)}건 — 영수증 가맹점이 출장지와 다른 시 · 군입니다")
+        if unknown and wants:
+            out.append(f"체류 증빙 {len(unknown)}건 — 영수증 가맹점이 {', '.join(sorted(wants))} 안인지 확인해 주세요(그림 영수증은 앱이 주소를 못 읽습니다)")
+        elif not wants:
+            out.append("출장지의 시 · 군을 몰라 체류 영수증의 가맹점 지역을 견주지 못했습니다 — 출장지에 '원주시' 처럼 시 · 군을 넣어 주세요")
     unclear = [e for e in trip.public if not (e.origin.strip() and e.goal.strip()) or e.amount is None]
     if unclear:
         out.append(f"대중교통 증빙 {len(unclear)}건 — 출발지 · 목적지 · 금액을 확인해 주세요")

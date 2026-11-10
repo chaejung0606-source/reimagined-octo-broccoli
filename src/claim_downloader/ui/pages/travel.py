@@ -9,7 +9,7 @@
     ③ 출장자별 증빙(출장자마다 확인 표 · 항목별 증빙 표에 출장자 칸 · 하이패스가 있는 출장자의 네이버 지도 최단거리 가는 길 · 오는 길 · 총 km) →
     ④ 출장자마다 만들기.
 신청서 읽기는 travel/application.py, 쪽 짜임 · 확인은 travel/model.py(Qt 없음), 그리기는 travel/render.py, 네이버 지도는 travel/navermap.py
-(브라우저 스레드의 보이지 않는 브라우저 — ui/worker.py). ERP 는 쓰지 않는다. 덮어쓰지 않는다.
+(브라우저 스레드 · 앱 브라우저의 네이버 지도 탭 — ui/worker.py). ERP 는 쓰지 않는다. 덮어쓰지 않는다.
 """
 from __future__ import annotations
 
@@ -43,12 +43,12 @@ from PySide6.QtWidgets import (
 )
 
 from ... import settings
-from ...travel import application, fuels, model
+from ...travel import application, fuels, model, navermap
 from ..art import Art
 from ..tokens import COLORS
 from ..travel_fuel_card import fuel_box
 from ..travel_preview import MAKE as PREVIEW_MAKE
-from ..travel_preview import TravelPreview
+from ..travel_preview import PreviewPanel, TravelPreview
 from ..flow import CURRENT, DONE, HIDDEN, OPEN, FlowArea, FlowStep
 from ..log_button import LogSendButton
 from ..widgets import Pill, WrapLabel, muted_label
@@ -59,7 +59,7 @@ REGIONS = ("자동(출장지로)",) + tuple(model.LODGING_CAPS)
 # 항목마다 표의 칸 — 마지막 칸 '출장자' 는 출장자가 둘 이상일 때만 보인다(담당자 2026-11-10 "출장자 구분하고")
 # 체류 · 숙박의 '출장지' 칸은 출장지가 여러 곳일 때만 보인다(담당자 2026-10-27 "출장지가 한군데가 아닌 경우도 있습니다")
 COLUMNS = {
-    model.STAY: ("파일", "일자", "출장지", "출장자"),
+    model.STAY: ("파일", "일자", "출장지", "가맹점 지역", "출장자"),
     model.PUBLIC: ("파일", "일자", "금액(원)", "이동편", "출발지", "목적지", "출장자"),
     model.TOLL: ("파일", "이용일자", "금액(원)", "출장자"),
     model.LODGING: ("파일", "입실일", "결제금액(원)", "박 수", "출장지", "출장자"),
@@ -68,6 +68,8 @@ COLUMNS = {
 PLACE_COL = {model.STAY: 2, model.LODGING: 4}
 # 대중교통 증빙마다 꼭 있어야 할 칸 — 비어 있으면 칸을 칠해 확인을 부탁한다(담당자 2026-11-10 "불분명한 경우 확인요청하기")
 PUBLIC_NEEDED = {2: "금액", 3: "이동편", 4: "출발지", 5: "목적지"}
+SHOP_COL = 3              # 체류 영수증 가맹점의 시 · 군 — 출장지와 같아야 한다(담당자 2026-11-10)
+NEEDED = {model.PUBLIC: PUBLIC_NEEDED, model.STAY: {SHOP_COL: "가맹점 지역"}}
 UNCLEAR_ROLE = Qt.UserRole + 7
 
 
@@ -84,7 +86,8 @@ class _UnclearDelegate(QStyledItemDelegate):
             painter.restore()
         super().paint(painter, option, index)
 HINTS = {
-    model.STAY: "일자별 체류 영수증 — 출장이 7일 이하면 한 쪽부터 칸으로 나눠 담되, 영수증 글자가 작아지면 다음 쪽으로 넘겨 크게 둡니다. 8일 이상이면 일자마다 한 쪽.",
+    model.STAY: "일자별 체류 영수증 — 출장이 7일 이하면 한 쪽부터 칸으로 나눠 담되, 영수증 글자가 작아지면 다음 쪽으로 넘겨 크게 둡니다. 8일 이상이면 일자마다 한 쪽. "
+                "'가맹점 지역' 은 영수증 가맹점 주소의 시 · 군 — 출장지와 같은 시 · 군이어야 합니다(그림 영수증은 앱이 못 읽어 칠해 둡니다).",
     model.PUBLIC: "승차권 · 영수증 하나가 증빙 하나 — 일자별로 묶어 증빙마다 이동편 · 출발지 → 목적지 · 금액, 일자 합계와 실비 합계를 적습니다. "
                   "칠해진 칸은 앱이 못 읽은 것이니 확인해 적어 주세요.",
     model.TOLL: "하이패스 이용내역 — 하이패스가 있으면 자차입니다. 이용일자별로 묶어 그날 금액을 적고, 아래(자리가 모자라면 다음 쪽)에 네이버 지도 최단거리가 붙습니다.",
@@ -137,9 +140,9 @@ class EvidenceTable(QTableWidget):
         self.setAcceptDrops(True)
         self.setMinimumHeight(110)
         self.setColumnHidden(self.person_col, True)
-        if kind == model.PUBLIC:
+        if kind in NEEDED:
             self.setItemDelegate(_UnclearDelegate(self))
-            for col in PUBLIC_NEEDED:                  # 비어 있어도 '확인 필요' 가 보이는 폭
+            for col in NEEDED[kind]:                   # 비어 있어도 '확인 필요' 가 보이는 폭
                 self.horizontalHeader().setSectionResizeMode(col, QHeaderView.Interactive)
                 self.setColumnWidth(col, 104)
         self.itemChanged.connect(self._on_item)
@@ -149,14 +152,14 @@ class EvidenceTable(QTableWidget):
         self.changed.emit()
 
     def mark_unclear(self) -> int:
-        """대중교통 증빙의 빈 금액 · 출발지 · 목적지 칸을 칠한다 — 칠한 줄 수."""
-        if self.kind != model.PUBLIC:
+        """대중교통 증빙의 빈 금액 · 출발지 · 목적지 칸, 체류 증빙의 빈 가맹점 지역 칸을 칠한다 — 칠한 줄 수."""
+        if self.kind not in NEEDED:
             return 0
         rows = 0
         self.blockSignals(True)
         for row in range(self.rowCount()):
             missing = False
-            for col, label in PUBLIC_NEEDED.items():
+            for col, label in NEEDED[self.kind].items():
                 item = self.item(row, col)
                 if item is None:
                     item = QTableWidgetItem("")
@@ -188,7 +191,7 @@ class EvidenceTable(QTableWidget):
                 from ...travel import render
                 if len(render.load_images(path)) == len(found):
                     return [model.Evidence(path=path, day=day, amount=amount, part=i) for i, (day, amount) in enumerate(found)]
-        return [model.guess(path, year, route=self.kind == model.PUBLIC)]
+        return [model.guess(path, year, route=self.kind == model.PUBLIC, stay=self.kind == model.STAY)]
 
     def _add_row(self, ev: model.Evidence) -> None:
         path = ev.path
@@ -213,6 +216,8 @@ class EvidenceTable(QTableWidget):
             self.setItem(row, 5, QTableWidgetItem(ev.goal))
         elif self.kind == model.LODGING:
             self.setItem(row, 3, QTableWidgetItem("1"))
+        elif self.kind == model.STAY:
+            self.setItem(row, SHOP_COL, QTableWidgetItem(ev.shop_region))
         self.setItem(row, self.person_col, QTableWidgetItem(model.person_of(path, self.people())))
 
     def show_places(self, places: list[str]) -> None:
@@ -268,6 +273,8 @@ class EvidenceTable(QTableWidget):
                 ev.origin, ev.goal = cell(4).strip(), cell(5).strip()
             elif self.kind == model.LODGING:
                 ev.nights = max(1, _parse_int(cell(3)) or 1)
+            elif self.kind == model.STAY:
+                ev.shop_region = cell(SHOP_COL).strip()
             out.append(ev)
         return out
 
@@ -348,11 +355,13 @@ class TravelPage(QWidget):
         self.step_info = self._build_info()
         self.step_files = self._build_files()
         self.step_make = self._build_make()
+        self.step_preview = self._build_preview()
         self.area = FlowArea()
         self.area.add(self.step_folder)
         self.area.add(self.step_info)
         self.area.add(self.step_files, 1)
         self.area.add(self.step_make)
+        self.area.add(self.step_preview)
         layout.addWidget(self.area, 1)
         if self.browser is not None:
             self.browser.routes_found.connect(self._on_routes)
@@ -815,7 +824,7 @@ class TravelPage(QWidget):
         return self.lodging_box
 
     def _build_route(self) -> QWidget:
-        """자차(하이패스가 있는 출장자) — 네이버 지도 최단거리(거리우선) 그림과 가는 길 · 오는 길 km. 앱이 보이지 않는 브라우저에서 저절로 찾는다."""
+        """자차(하이패스가 있는 출장자) — 네이버 지도 최단거리(거리우선) 그림과 가는 길 · 오는 길 km. 앱이 앱 브라우저의 네이버 지도 탭에서 저절로 찾는다(네이버가 보안문자를 물으면 그 창에서 사람이 입력)."""
         self.route_box = QWidget()
         rows = QVBoxLayout(self.route_box)
         rows.setContentsMargins(0, 0, 0, 6)
@@ -838,7 +847,7 @@ class TravelPage(QWidget):
         rows.addWidget(self.route_table)
         buttons = QHBoxLayout()
         self.route_find = QPushButton("최단거리 다시 찾기")
-        self.route_find.setToolTip("못 찾은 구간(또는 고른 줄)을 네이버 지도에서 다시 찾습니다 — 보이지 않는 브라우저에서")
+        self.route_find.setToolTip("못 찾은 구간(또는 고른 줄)을 네이버 지도에서 다시 찾습니다 — 앱 브라우저의 네이버 지도 탭에서")
         self.route_find.clicked.connect(lambda: self._find_routes(force=True))
         manual = QPushButton("브라우저에서 직접")
         manual.setToolTip("자동으로 못 찾으면 — 앱 브라우저에 네이버 지도 길찾기를 열어 거리우선 경로를 직접 띄운 뒤 [지금 화면 찍기]")
@@ -868,10 +877,6 @@ class TravelPage(QWidget):
         self.problem_label.setObjectName("muted")
         step.add(self.problem_label)
         row = QHBoxLayout()
-        # 만들 PDF 와 같은 쪽을 앱 안에서 — 확인할 곳을 칠하고 눌러 고친다(담당자 2026-11-10, ui/travel_preview.py)
-        self.preview_button = QPushButton("미리 보기 · 고치기")
-        self.preview_button.clicked.connect(lambda: self.open_preview(make=False))
-        row.addWidget(self.preview_button)
         self.make_button = QPushButton("출장증빙 PDF 만들기")
         self.make_button.setObjectName("primary")
         self.make_button.clicked.connect(lambda: self._make())
@@ -893,6 +898,33 @@ class TravelPage(QWidget):
         self.result_label.setObjectName("body")
         step.add(self.result_label)
         return step
+
+    def _build_preview(self) -> FlowStep:
+        """⑤ 미리 보기 — 만들 PDF 와 같은 쪽을 앱 안에서(담당자 2026-11-10 "5단계로 미리보기를 넣어주세요"). 확인할 곳을 칠하고 눌러 고친다(ui/travel_preview.py)."""
+        step = FlowStep("5", "미리 보기 · 고치기", "만들 출장증빙(PDF 와 같은 쪽)입니다. 확인이 필요한 곳은 칠해져 있습니다 — 눌러서 오른쪽 칸에서 고치세요.")
+        self.preview_panel = PreviewPanel(self)
+        self.preview_panel.setMinimumHeight(780)
+        self.preview_panel.edited.connect(self._on_preview_edit)
+        step.add(self.preview_panel)
+        self.preview_note = WrapLabel("")
+        self.preview_note.setObjectName("muted")
+        self.preview_note.hide()
+        step.add(self.preview_note)
+        # 표를 고칠 때마다 다시 그리면 느리다 — 잠깐 모아서 한 번
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(350)
+        self._preview_timer.timeout.connect(self._refresh_preview)
+        return step
+
+    def _refresh_preview(self) -> None:
+        if self._stage == "files" and not self.step_preview.isHidden():
+            self.preview_panel.refresh(keep=True)
+
+    def _on_preview_edit(self) -> None:
+        if self._made:
+            self.preview_note.setText("고친 내용은 ④ [출장증빙 PDF 만들기] 를 다시 눌러야 PDF 에 들어갑니다.")
+            self.preview_note.show()
 
     # ── ① 폴더 → ② 출장신청서 검토 ─────────────────────────────────────────
     def _pick_folder(self) -> None:
@@ -1226,7 +1258,7 @@ class TravelPage(QWidget):
         return None
 
     def _find_routes(self, force: bool = False) -> None:
-        """찾지 못한 구간(force 면 고른 줄 또는 그림 · km 가 빈 구간 모두)을 보이지 않는 브라우저에서 찾는다(담당자 2026-11-10 "백그라운드에서 자동으로")."""
+        """찾지 못한 구간(force 면 고른 줄 또는 그림 · km 가 빈 구간 모두)을 앱 브라우저의 네이버 지도 탭에서 찾는다(담당자 2026-11-10 "백그라운드에서 자동으로" — 보이지 않는 브라우저는 네이버가 보안문자로 막았다)."""
         folder = self.folder_edit.text().strip()
         if not folder or not Path(folder).is_dir() or not self._routes:
             return
@@ -1250,7 +1282,7 @@ class TravelPage(QWidget):
         legs = [(self._routes[k]["origin"], self._routes[k]["goal"], f"{k[0]} {self._routes[k]['label']}") for k in keys]
         self._searching.update(keys)
         self._fill_route_table()
-        self.log(f"네이버 지도 최단거리 찾기 {len(keys)}구간 (보이지 않는 브라우저)")
+        self.log(f"네이버 지도 최단거리 찾기 {len(keys)}구간 (앱 브라우저의 네이버 지도 탭 — 보안문자가 뜨면 그 창에서 입력해 주세요)")
         self._worker().find_routes(legs, folder, keys)
 
     def _on_routes(self, found) -> None:
@@ -1349,7 +1381,30 @@ class TravelPage(QWidget):
             stay=self.tables[model.STAY].evidence(year), public=self.tables[model.PUBLIC].evidence(year),
             tolls=self.tables[model.TOLL].evidence(year), lodging=self.tables[model.LODGING].evidence(year),
             other=self.tables[model.OTHER].evidence(year),
+            place_regions=self._place_regions(model.split_places(self.dest_edit.text())),
         )
+
+    @staticmethod
+    def _place_regions(places: list[str]) -> dict:
+        """출장지 글에 시 · 군이 없으면 네이버 지도에서 찾아 기억해 둔 그곳 주소의 시 · 군(settings.travel_places) — 체류 가맹점 지역을 견주려고."""
+        missing = [p for p in places if not model.region_of(p)]
+        if not missing:
+            return {}
+        import json
+        import re
+        try:
+            known = json.loads(settings.load().travel_places or "{}")
+        except ValueError:
+            return {}
+        out = {}
+        for place in missing:
+            for key in (navermap.norm(place), navermap.norm(re.sub(r"\([^)]*\)", " ", place))):
+                hit = known.get(key) if isinstance(known, dict) else None
+                region = model.region_of(hit.get("address", "")) if isinstance(hit, dict) else ""
+                if region:
+                    out[place] = region
+                    break
+        return out
 
     def trips(self) -> list[model.Trip]:
         """출장자마다 출장 — 그 사람 증빙 · '공통' 증빙과, 자차면 그 사람 구간의 지도 · km."""
@@ -1409,6 +1464,9 @@ class TravelPage(QWidget):
         files = stage == "files"
         self.step_files.set_state(OPEN if files else HIDDEN)
         self.step_make.set_state(OPEN if files else HIDDEN)
+        self.step_preview.set_state(OPEN if files else HIDDEN)
+        if files and hasattr(self, "_preview_timer"):
+            self._preview_timer.start()
         self.lodging_box.setVisible(bool(self.tables[model.LODGING].paths))
         self.route_find.setEnabled(bool(self._routes))
         trips = self.trips()
@@ -1426,7 +1484,6 @@ class TravelPage(QWidget):
         self.problem_label.setText("\n".join(f"· {p}" for p in problems[:14]) + (f"\n· … 외 {len(problems) - 14}개" if len(problems) > 14 else ""))
         self.make_button.setText(f"출장증빙 PDF 만들기 ({len(ready)}명)" if len(ready) > 1 else "출장증빙 PDF 만들기")
         self.make_button.setEnabled(files and bool(ready))
-        self.preview_button.setEnabled(files and bool(ready))
         after = self._next_folder() if folder else ""
         self.next_button.setVisible(bool(after))
         self.next_button.setText(f"다음 폴더 — {Path(after).name}" if after else "")
@@ -1482,6 +1539,8 @@ class TravelPage(QWidget):
             cols.update(mode=3, origin=4, goal=5)
         if kind == model.LODGING:
             cols["nights"] = 3
+        if kind == model.STAY:
+            cols["shop_region"] = SHOP_COL
         if kind in PLACE_COL:
             cols["place"] = PLACE_COL[kind]
         changed = []
@@ -1569,6 +1628,7 @@ class TravelPage(QWidget):
             self.log(f"출장증빙 만듦: {out.name} — {count}쪽")
         self._made = made
         if made:
+            self.preview_note.hide()
             lines.append(f"저장한 곳: {folder}")
             self.state_pill.set_status("만듦", "success")
             self._done_folders.add(str(folder))

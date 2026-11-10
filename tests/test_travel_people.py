@@ -581,6 +581,12 @@ def test_page_reviews_application_and_checks_per_traveler(qapp, tmp_path, isolat
     review_kim = page.people_table.item(1, 7).text()
     assert "체류 증빙이 없는 날" in review_kim
     # ④ 출장자마다 만든다 — 확인할 것이 있으면 묻는 글 대신 미리 보기가 뜬다(여기서는 [이대로 만들기])
+    # 체류 영수증은 출장지(원주)와 같은 시 · 군이어야 한다 — 그림 영수증은 앱이 못 읽어 확인할 것으로 남는다(담당자 2026-11-10)
+    assert any("가맹점이 원주 안인지" in r for r in model.review(page.trips()[0]))
+    for ev in page.tables["stay"].evidence(2026):
+        if ev.person == "홍길동":
+            page.apply_edit(ev.ref, {"shop_region": "원주"})
+    assert not any("가맹점" in r for r in model.review(page.trips()[0]))
     opened = []
     monkeypatch.setattr(travel_page.TravelPreview, "exec", lambda self: opened.append(self.trip().name) or travel_page.PREVIEW_MAKE)
     page._make()
@@ -834,3 +840,143 @@ def test_settings_fuel_card(qapp, isolated_home):
     card._add_row("김철수", "")
     card.table.cellWidget(1, 1).setCurrentIndex(card.table.cellWidget(1, 1).findData("경유"))
     assert model.parse_fuels(settings.load().travel_fuels) == {"홍길동": "휘발유", "김철수": "경유"}
+
+
+def test_stay_receipt_must_be_in_the_destination_city(tmp_path):
+    """담당자 2026-11-10 "체류증빙은 영수증 가맹점의 주소지와 출장 목적지가 같아야" · "강원도 원주시 인터불고호텔이 출장지이면
+    체류증빙은 강원도 원주시 내 영수증이면 됩니다" — 시 · 군까지만 견준다."""
+    day = date(2026, 10, 20)
+    assert model.region_of("강원도 원주시 인터불고호텔") == "원주" and model.region_of("가나다라정보활용지원센터 (원주)") == "원주"
+    assert model.region_of("연세대학교 원주캠퍼스") == "원주" and model.region_of("강원 춘천시 강원대학길 1") == "춘천"
+    assert model.shop_region_of("상호: 원주식당\n주소: 강원 원주시 혁신로 19\n합계 9,000원") == "원주"
+    same = model.Evidence(_image(tmp_path / "홍길동_체류증빙_원주.png"), day)
+    other = model.Evidence(_image(tmp_path / "홍길동_체류증빙 강릉.png"), day)
+    unread = model.Evidence(_image(tmp_path / "홍길동_체류증빙.png"), day)
+    for ev in (same, other, unread):
+        ev.shop_region = model.guess(ev.path, 2026, stay=True).shop_region
+    assert (same.shop_region, other.shop_region, unread.shop_region) == ("원주", "강릉", "")
+    trip = model.Trip(name="홍길동", start=day, end=day, destination="강원도 원주시 인터불고호텔", stay=[same, other, unread])
+    assert model.stay_regions(trip, same) == ["원주"]
+    assert model.unclear(trip, model.STAY, same) == []
+    assert model.unclear(trip, model.STAY, other) == ["가맹점 지역(다름)"]
+    assert model.unclear(trip, model.STAY, unread) == ["가맹점 지역"]
+    assert any("강릉" in p and "원주" in p for p in model.problems(trip))
+    review = model.review(trip)
+    assert any("다른 시 · 군" in r for r in review) and any("1건 — 영수증 가맹점이 원주 안인지" in r for r in review)
+    # 출장지 글에 시 · 군이 없으면 네이버에서 찾은 주소의 시 · 군으로
+    trip.destination = "가나다라 연구소"
+    assert model.stay_regions(trip, same) == [] and not model.unclear(trip, model.STAY, unread)
+    trip.place_regions = {"가나다라 연구소": "원주"}
+    assert model.stay_regions(trip, same) == ["원주"] and model.unclear(trip, model.STAY, other) == ["가맹점 지역(다름)"]
+
+
+def test_bar_drops_star_and_empty_right_cell():
+    """담당자 2026-11-10 — 체류 증빙 머리 줄 오른쪽은 들어갈 것이 없어 칸 나누기가 필요 없다 · 엑셀식 '*' 대신 앱 디자인으로."""
+    pytest.importorskip("PySide6")
+    from claim_downloader.travel import render
+    assert render._bar_cells(["* 체류 증빙", ""]) == ["체류 증빙"]
+    assert render._bar_cells(["* 교통비 증빙 (자차)", "연료 경유", "8,200원"]) == ["교통비 증빙 (자차)", "연료 경유", "8,200원"]
+    assert render._bar_cells(["2026년 10월 20일", "", "하이패스 8,200원"]) == ["2026년 10월 20일", "", "하이패스 8,200원"]
+
+
+def test_step_five_preview_in_the_page(qapp, tmp_path, isolated_home):
+    """담당자 2026-11-10 "5단계로 미리보기를 넣어주세요" — ③ 증빙 확인 · ④ 만들기 아래 ⑤ 에 PDF 와 같은 쪽, 눌러서 고친다."""
+    from claim_downloader import settings
+    from claim_downloader.ui.pages import travel as travel_page
+    settings.update(travel_fuels="홍길동=휘발유")
+    folder = tmp_path / "출장비 지급(26.10.20. 협의)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(GONGMUN, encoding="utf-8")
+    for name in ("홍길동_체류 증빙.png", "홍길동_하이패스 증빙 4,100원.png"):
+        _image(folder / name)
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.show()
+    page.load_folder(str(folder))
+    assert page.step_preview.isHidden()                      # ② 에서는 아직
+    page.route_ok.click()
+    page.info_next.click()
+    qapp.processEvents()
+    assert page._stage == "files" and not page.step_preview.isHidden()
+    page._refresh_preview()
+    panel = page.preview_panel
+    assert panel._views and panel.todo_list.count() >= 1
+    stay = next(ev for ev in page.tables["stay"].evidence(2026))
+    assert "가맹점 지역" in panel._flagged.get(stay.ref, [])          # 출장지는 원주 — 그림 영수증이라 앱이 못 읽음
+    panel._select(stay.ref)
+    panel._editor_fields["shop_region"].setText("원주")
+    panel._apply()
+    assert page.tables["stay"].item(0, travel_page.SHOP_COL).text() == "원주"
+    assert not any(f.startswith("가맹점") for f in panel._flagged.get(stay.ref, []))
+
+
+CAPTCHA_PAGE = """<!doctype html><html><body><div id="list">검색 중</div><script>
+const q = decodeURIComponent(location.pathname.split('/p/search/')[1] || '');
+function search() {
+  fetch('/p/api/mockgraphql?q=' + encodeURIComponent(q)).then(r => r.json()).then(j => {
+    if (j.result && j.result.ncaptcha) { document.getElementById('list').textContent = '보안문자'; setTimeout(search, 400); }
+    else document.getElementById('list').textContent = 'ok';
+  });
+}
+search();
+</script></body></html>"""
+
+
+def test_naver_captcha_waits_for_the_person(browser_page, tmp_path, monkeypatch):
+    """2026-11-10 담당자 PC — 네이버가 자동 검색에 보안문자(ncaptcha)를 요구했다. 앱은 풀거나 피하지 않고, 앱 브라우저 창에서 사람이 풀 때까지 기다린다.
+    여기서는 보안문자 답이 한 번 온 뒤 (사람이 풀어) 화면이 다시 검색하면 곳이 온다."""
+    from urllib.parse import parse_qs, urlparse
+    monkeypatch.setattr(navermap, "SEARCH_POLLS", 4)
+    page = browser_page
+    places = {"강원대학교 춘천캠퍼스": {"id": "11591476", "name": "강원대학교 춘천캠퍼스", "x": "127.7445", "y": "37.8690"},
+              "원주시청": {"id": "1", "name": "원주시청", "x": "127.92", "y": "37.34", "roadAddress": "강원 원주시 시청로 1"}}
+    asked: dict = {}
+    captcha = {"result": {"place": None, "ncaptcha": {"uuid": "x", "ip": "x", "confirmRules": [], "timestamp": 1}}}
+
+    def handle(route):
+        url = route.request.url
+        if "/p/api/search/allSearch" in url:
+            route.fulfill(status=200, content_type="application/json; charset=utf-8", body=json.dumps(captcha))
+        elif "/p/api/mockgraphql" in url:
+            query = parse_qs(urlparse(url).query)["q"][0]
+            asked[query] = asked.get(query, 0) + 1
+            body = captcha if asked[query] == 1 else {"data": {"items": [places[query]] if query in places else []}}
+            route.fulfill(status=200, content_type="application/json; charset=utf-8", body=json.dumps(body))
+        elif "/p/search/" in url:
+            route.fulfill(status=200, content_type="text/html; charset=utf-8", body=CAPTCHA_PAGE)
+        else:
+            route.fulfill(status=200, content_type="text/html; charset=utf-8", body=MOCK_PAGE)
+    page.route("https://map.naver.com/**", handle)
+    logs: list = []
+    known: dict = {}
+    result = navermap.find_route(page, "강원대학교 춘천캠퍼스", "원주시청", tmp_path / "a.png", logs.append,
+                                 wait=lambda s: page.wait_for_timeout(int(s * 300)), label="가는 길", known=known)
+    assert result.ok and result.km == 76, result.lines()
+    assert any(navermap.CAPTCHA_NOTE in line for line in logs)                       # 사람에게 알렸다
+    assert any(navermap.CAPTCHA_NOTE in step for step in result.steps)
+    assert known[navermap.norm("원주시청")]["address"] == "강원 원주시 시청로 1"
+    # 2분 안에 풀지 않으면 그 곳만 그만두고 다른 검색어로 되풀이하지 않는다(목적지를 묻지 않는다 — 곳 이름 탓이 아니므로)
+    monkeypatch.setattr(navermap, "CAPTCHA_POLLS", 6)
+    asked.clear()
+    page.unroute("https://map.naver.com/**")
+
+    def always_captcha(route):
+        url = route.request.url
+        if "/p/api/" in url:
+            route.fulfill(status=200, content_type="application/json; charset=utf-8", body=json.dumps(captcha))
+        elif "/p/search/" in url:
+            route.fulfill(status=200, content_type="text/html; charset=utf-8", body=CAPTCHA_PAGE)
+        else:
+            route.fulfill(status=200, content_type="text/html; charset=utf-8", body=MOCK_PAGE)
+    page.route("https://map.naver.com/**", always_captcha)
+    stuck = navermap.find_route(page, "강원 가명정보 (원주)", "원주시청", tmp_path / "b.png", logs.append,
+                                wait=lambda s: page.wait_for_timeout(int(s * 300)), known={})
+    assert not stuck.ok and stuck.need_place == "" and navermap.CAPTCHA_NOTE in stuck.note
+    assert sum("지도 화면 검색" in step for step in stuck.steps) == 1
+
+
+def test_places_from_directions_url_with_encoded_commas():
+    """2026-11-10 담당자가 앱 브라우저에서 띄운 길찾기(82km)를 찍었는데 곳을 못 배웠다 — 주소의 쉼표가 %2C 로 적힌 꼴도 읽는다."""
+    start = navermap.Place("강원대학교 춘천캠퍼스", 127.7445, 37.8690, "11591476")
+    goal = navermap.Place("강원 가명정보 활용지원센터", 127.955, 37.326, "2008011046")
+    url = navermap.directions_url(start, goal).replace(",", "%2C")
+    assert [p.id for p in navermap.places_from_url(url)] == ["11591476", "2008011046"]

@@ -4,7 +4,7 @@
 (그림: 왼쪽 길찾기 칸에 경로 목록 — 추천 · 큰길우선 · 무료우선 · 거리우선 '1시간 10분 76km' — 과 오른쪽 지도) ·
 "네이버지도 경로검색은 백그라운드에서 자동으로 돌아가기" · "목적지가 불분명해서 검색이 되지 않을경우 … 해당 출장자의 출장목적지를 입력해달라고 입력하는 박스".
 
-그래서 보이지 않는 브라우저(session._map_page)에서 한다: ① 출발지 · 목적지를 네이버 지도 검색(지도 화면이 쓰는 검색 주소를 그 화면 안에서 부름)으로 찾아
+그래서 앱 브라우저의 네이버 지도 탭(session._map_page — 처음엔 보이지 않는 브라우저였으나 네이버가 보안문자를 요구해 바꿈)에서 한다: ① 출발지 · 목적지를 네이버 지도 검색(지도 화면이 쓰는 검색 주소를 그 화면 안에서 부름)으로 찾아
 ② 자동차 길찾기 주소로 열고 ③ '거리우선' 이 하나 보이면 그것을 눌러 ④ 화면을 찍고 ⑤ 화면 글자에서 거리우선 km 를 읽는다(model.route_km).
 목적지가 검색되지 않으면 need_place 로 돌려 화면이 그 출장자의 출장목적지를 묻는다.
 
@@ -44,6 +44,8 @@ SEARCH_JS = """async ([q, near]) => {
   } catch (e) { return {ok: false, status: 0, text: '', why: String(e).slice(0, 120)}; }
 }"""
 SEARCH_POLLS = 24                                  # 지도 화면 검색 — 0.5초씩, 결과가 오면 바로 멈춘다
+CAPTCHA_POLLS = 240                                # 네이버가 보안문자를 물으면 사람이 풀 때까지(2분) 기다린다
+CAPTCHA_NOTE = "네이버가 보안문자(자동 입력 방지)를 물었습니다"
 JSON_LIMIT = 3_000_000
 
 TEXT_JS = "() => (document.body && document.body.innerText) || ''"
@@ -191,6 +193,22 @@ def places_in(data, limit: int = 60) -> list[Place]:
     return out
 
 
+def has_captcha(data, depth: int = 0) -> bool:
+    """네이버 답에 보안문자 요구(ncaptcha)가 들었는지 — 2026-11-10 담당자 PC: 보이지 않는 브라우저의 검색에 result.ncaptcha 가 오고 곳은 비었다.
+    앱은 보안문자를 풀거나 피하지 않는다 — 사람이 앱 브라우저 창에서 풀게 기다린다."""
+    if depth > 3:
+        return False
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if "captcha" in str(key).lower() and value:
+                return True
+            if isinstance(value, (dict, list)) and has_captcha(value, depth + 1):
+                return True
+    elif isinstance(data, list):
+        return any(has_captcha(v, depth + 1) for v in data[:5])
+    return False
+
+
 def shape(data, depth: int = 0) -> str:
     """답의 모양(열쇠 이름만) — 못 찾았을 때 기록에 남겨 다음에 고친다. 값은 적지 않는다."""
     if depth > 2:
@@ -243,11 +261,15 @@ def search_api(page, query: str) -> tuple[list[Place], str]:
         head = re.sub(r"\s+", " ", text[:80])
         return [], f"HTTP {got.get('status')} · JSON 아님({head!r})"
     found = places_in(data)
+    if not found and has_captcha(data):
+        return [], CAPTCHA_NOTE
     return found, "" if found else f"HTTP {got.get('status')} · 곳 없음 · 답 {shape(data)[:240]}"
 
 
-def search_on_page(page, query: str, wait: Callable[[float], None]) -> tuple[list[Place], str, str]:
+def search_on_page(page, query: str, wait: Callable[[float], None],
+                   log: Callable[[str], None] | None = None) -> tuple[list[Place], str, str]:
     """네이버 지도 검색 화면(/p/search/검색어)을 열고, 그 화면이 스스로 받는 답(JSON)에서 곳을 읽는다 — 화면에 결과가 보이면 좌표도 그 답에 있다.
+    네이버가 보안문자를 물으면 사람이 그 창에서 풀 때까지(CAPTCHA_POLLS) 기다린다 — 풀면 화면이 다시 검색하고 그 답에서 읽는다.
     (찾은 곳들, 화면이 하나를 골랐으면 그 id, 못 찾았으면 까닭)."""
     seen: list = []
 
@@ -258,9 +280,12 @@ def search_on_page(page, query: str, wait: Callable[[float], None]) -> tuple[lis
     read = 0
     found: list[Place] = []
     paths: list[str] = []
+    captcha = False
     try:
         page.goto(f"{BASE}/p/search/{quote(query, safe='')}", wait_until="domcontentloaded")
-        for _ in range(SEARCH_POLLS):
+        polls = 0
+        while polls < (CAPTCHA_POLLS if captcha else SEARCH_POLLS):
+            polls += 1
             wait(0.5)
             while read < len(seen):
                 response = seen[read]
@@ -276,17 +301,27 @@ def search_on_page(page, query: str, wait: Callable[[float], None]) -> tuple[lis
                     continue
                 paths.append(response.url.split("?")[0].split("naver.com", 1)[-1][:60])
                 found += [p for p in places_in(data) if all((p.name, p.x, p.y) != (q.name, q.x, q.y) for q in found)]
+                if not captcha and has_captcha(data):
+                    captcha = True
+                    try:
+                        page.bring_to_front()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    if log is not None:
+                        log(f"{CAPTCHA_NOTE} — 앱 브라우저의 네이버 지도 창에서 입력해 주세요(2분 기다립니다)")
             if found:
                 break
     finally:
         page.remove_listener("response", keep)
     chosen = re.search(r"/place/(\d+)", page.url or "")
+    if not found and captcha:
+        return [], "", CAPTCHA_NOTE + " — 2분 안에 풀지 않아 그만두었습니다"
     why = "" if found else (f"검색 화면이 받은 답 {len(paths)}개에 곳 없음" + (f" ({', '.join(dict.fromkeys(paths))[:200]})" if paths else ""))
     return found, chosen.group(1) if chosen else "", why
 
 
 def search_place(page, query: str, wait: Callable[[float], None] | None = None,
-                 known: dict | None = None) -> tuple[Place | None, str, list[str]]:
+                 known: dict | None = None, log: Callable[[str], None] | None = None) -> tuple[Place | None, str, list[str]]:
     """네이버 지도에서 곳 하나 — (곳, 못 찾았으면 '검색 결과 없음' 등, 한 일). known 은 전에 찾은 곳(settings.travel_places)."""
     steps: list[str] = []
     for attempt in search_queries(query):
@@ -304,12 +339,14 @@ def search_place(page, query: str, wait: Callable[[float], None] | None = None,
         steps.append(f"검색 '{attempt}' → {why}")
         if wait is None:
             continue
-        found, chosen, why = search_on_page(page, attempt, wait)
+        found, chosen, why = search_on_page(page, attempt, wait, log)
         place, how = rank(attempt, found, chosen)
         if place is not None:
             steps.append(f"지도 화면 검색 '{attempt}' → {place.name} ({how})")
             return place, "", steps
         steps.append(f"지도 화면 검색 '{attempt}' → {why}")
+        if why.startswith(CAPTCHA_NOTE):
+            return None, why, steps          # 사람이 보안문자를 풀지 않았으면 다른 검색어로 되풀이하지 않는다
     return None, "검색 결과 없음", steps
 
 
@@ -335,7 +372,7 @@ def places_from_url(url: str) -> list[Place]:
         return []
     out = []
     for part in url.split("?")[0].split("/directions/", 1)[1].split("/"):
-        bits = part.split(",")
+        bits = unquote(part).split(",")          # 쉼표가 %2C 로 적힌 주소도
         if len(bits) < 3:
             continue
         try:
@@ -343,7 +380,7 @@ def places_from_url(url: str) -> list[Place]:
         except ValueError:
             continue
         lon, lat = mercator_back(x, y) if abs(x) > 1000 else (x, y)
-        name = unquote(bits[2]).strip()
+        name = bits[2].strip()
         if name and 124 <= lon <= 132 and 33 <= lat <= 39.5:
             out.append(Place(name=name, x=lon, y=lat, id=bits[3] if len(bits) > 3 else ""))
     return out
@@ -363,7 +400,7 @@ def find_route(page, origin: str, goal: str, out: Path, log: Callable[[str], Non
         wait(1.5)
     places = []
     for role, query in (("출발지", origin), ("목적지", goal)):
-        place, why, steps = search_place(page, query, wait, known)
+        place, why, steps = search_place(page, query, wait, known, log)
         result.steps += steps
         if place is None:
             result.note = f"{role} '{query}' 를 네이버 지도에서 찾지 못했습니다 ({why})"
@@ -405,6 +442,8 @@ def capture(page, out: Path, label: str = "") -> RouteResult:
     result = RouteResult(label=label)
     result.km = route_km(page_text(page))
     result.places = places_from_url(page.url)
+    if result.places:
+        result.origin, result.goal = result.places[0].name, result.places[-1].name
     out.parent.mkdir(parents=True, exist_ok=True)
     page.screenshot(path=str(out))
     result.image, result.ok = str(out), True

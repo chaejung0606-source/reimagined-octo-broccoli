@@ -12,8 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QMarginsF, QRectF, QSizeF, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPageLayout, QPageSize, QPainter, QPdfWriter, QPen, QTransform
+from PySide6.QtGui import (QColor, QFont, QFontMetrics, QImage, QPageLayout, QPageSize, QPainter, QPainterPath, QPdfWriter, QPen,
+                           QTransform)
 
+from ..ui.tokens import COLORS
 from .model import Block, Page, rows_for
 
 DPI = 150
@@ -28,10 +30,19 @@ TRIM_INK = 232       # 이보다 어두운(0~255) 점이 내용
 TRIM_MIN_DOTS = 2    # 한 줄에 내용 점이 이만큼 있어야 내용 줄 — 먼지 한 점으로 여백을 남기지 않게
 TRIM_PAD = 0.015     # 잘라 낸 둘레에 남길 여백(긴 변 비율)
 
-INK = QColor("#111111")
-LINE = QColor("#222222")
-SOFT = QColor("#F2F2F2")
-MUTED = QColor("#555555")
+# 색은 앱 디자인 토큰(ui/tokens.py)에서 — 엑셀로 만들던 검은 칸 양식 대신 앱과 같은 맑은 바탕 · 라벤더 강조색(담당자 2026-11-10
+# "어플 디자인에서 메인디자인 및 색상을 가져와서 서식을 수정"). 출력해도 읽히게 글자는 진하게, 면은 옅게.
+INK = QColor(COLORS["text"])
+MUTED = QColor(COLORS["text_muted"])
+ACCENT = QColor(COLORS["primary"])            # 머리 띠 아래 선 · 묶음 줄 왼쪽 선
+ACCENT_TEXT = QColor(COLORS["primary_hover"])  # 칩 글자(옅은 바탕 위 대비)
+BAND = QColor(COLORS["lavender_bg"])          # 머리 띠
+BAR_BG = QColor(COLORS["surface_alt"])        # 묶음 줄 · 칸 이름표
+CHIP_BG = QColor(COLORS["surface"])
+RULE = QColor(COLORS["border"])               # 얇은 선
+FRAME = QColor(COLORS["border_strong"])       # 쪽 틀
+FRAME_RADIUS = 14
+ACCENT_W = 5
 
 
 def _font(px: int, bold: bool = False) -> QFont:
@@ -457,48 +468,75 @@ def _allot(slots: list[_Slot], cells_of: list[list[_Cell]], titles: list[list[st
                 done.add(id(s))
 
 
-def _draw_bar(p: QPainter, rect: QRectF, cells: list[str], px: int, fill: QColor | None = None) -> None:
-    """칸 나뉜 한 줄 — 첫 칸이 남는 폭을 받고 나머지 칸은 글자만큼. 칸이 많아(출장지 여러 곳의 이동경로) 넘치면 글자를 줄인다.
-    칸이 하나뿐인 줄(출장지 줄 '삼척 출장 증빙')은 가운데."""
-    first_need = QFontMetrics(_font(px, True)).horizontalAdvance(cells[0]) + 28
+def _bar_cells(cells: list[str]) -> list[str]:
+    """그릴 칸 — 맨 앞 '* ' 는 엑셀 양식의 흔적이라 떼고, 끝의 빈 칸은 그리지 않는다(체류 증빙 머리 줄 오른쪽 — 담당자 2026-11-10 그림)."""
+    out = list(cells) or [""]
+    out[0] = out[0][2:] if out[0].startswith("* ") else out[0]
+    while len(out) > 1 and not out[-1].strip():
+        out.pop()
+    return out
+
+
+def _draw_bar(p: QPainter, rect: QRectF, cells: list[str], px: int, head: bool = False) -> None:
+    """틀에 붙은 띠 한 줄 — 첫 칸은 왼쪽 제목, 나머지 칸(금액 · 연료 · 구간 km …)은 오른쪽에 둥근 칩으로.
+    head 면 쪽 머리 띠(연보라 · 아래 강조선), 아니면 묶음 줄(옅은 면 · 위아래 얇은 선 · 왼쪽 강조선). 칩이 넘치면 글자를 줄인다."""
+    cells = _bar_cells(cells)
+    title, chips = cells[0], cells[1:]
+    chip_h = rect.height() - (16 if head else 12)
+    pad, space = 14, 8
     while px > 11:
         fm = QFontMetrics(_font(px, True))
-        widths = [fm.horizontalAdvance(c) + 28 for c in cells[1:]]
-        if sum(widths) + min(first_need, rect.width() * 0.25) <= rect.width():
+        widths = [fm.horizontalAdvance(c) + 2 * pad for c in chips]
+        need = sum(widths) + space * len(chips) + min(fm.horizontalAdvance(title), rect.width() * 0.25) + 40
+        if need <= rect.width():
             break
         px -= 1
-        first_need = fm.horizontalAdvance(cells[0]) + 28
     fm = QFontMetrics(_font(px, True))
-    widths = [fm.horizontalAdvance(c) + 28 for c in cells[1:]]
-    first = max(rect.width() - sum(widths), min(first_need, rect.width() * 0.25))
+    widths = [fm.horizontalAdvance(c) + 2 * pad for c in chips]
+    if head:
+        p.fillRect(rect, BAND)
+        p.fillRect(QRectF(rect.left(), rect.bottom() - 3, rect.width(), 3), ACCENT)
+    else:
+        p.fillRect(rect, BAR_BG)
+        p.setPen(QPen(RULE, 1.5))
+        p.drawLine(rect.topLeft(), rect.topRight())
+        p.drawLine(rect.bottomLeft(), rect.bottomRight())
+        p.fillRect(QRectF(rect.left(), rect.top(), ACCENT_W, rect.height()), ACCENT)
     p.setFont(_font(px, True))
-    x = rect.left()
-    for i, text in enumerate(cells):
-        w = first if i == 0 else widths[i - 1]
-        cell = QRectF(x, rect.top(), w, rect.height())
-        if fill is not None:
-            p.fillRect(cell, fill)
-        p.setPen(QPen(LINE, 2))
-        p.drawRect(cell)
-        p.setPen(INK)
-        align = (Qt.AlignLeft if i == 0 and len(cells) > 1 else Qt.AlignCenter) | Qt.AlignVCenter
-        p.drawText(cell.adjusted(10, 0, -10, 0), align, fm.elidedText(text, Qt.ElideRight, int(cell.width() - 20)))
-        x += w
+    right = rect.right() - 12
+    for text, w in reversed(list(zip(chips, widths))):
+        chip = QRectF(right - w, rect.center().y() - chip_h / 2, w, chip_h)
+        p.setPen(QPen(RULE, 1.5))
+        p.setBrush(CHIP_BG)
+        p.drawRoundedRect(chip, chip_h / 2, chip_h / 2)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(ACCENT_TEXT)
+        p.drawText(chip, Qt.AlignCenter, text)
+        right -= w + space
+    left = rect.left() + (20 if head else ACCENT_W + 14)
+    p.setPen(INK)
+    room = max(10, right - left - 8)
+    p.drawText(QRectF(left, rect.top(), room, rect.height()), Qt.AlignLeft | Qt.AlignVCenter, fm.elidedText(title, Qt.ElideRight, int(room)))
 
 
 def _draw_cell(p: QPainter, rect: QRectF, cell: _Cell, cap_h: float) -> None:
     if cap_h:
         if cell.caption:
-            cap = QRectF(rect.left(), rect.top(), rect.width(), cap_h)
-            p.fillRect(cap, SOFT)
-            p.setPen(QPen(LINE, 1))
-            p.drawRect(cap)
+            # 칸 이름표 — 칸 폭을 다 채운 상자 대신 글자만큼의 둥근 이름표를 가운데에
+            room = rect.width() - 2 * CELL_PAD
             px = 17          # 긴 설명(대중교통 '열차 · 춘천 → 서울 · 8,000원')은 칸 폭에 맞게 글자를 줄인다
-            while px > 11 and QFontMetrics(_font(px, True)).horizontalAdvance(cell.caption) > cap.width() - 12:
+            while px > 11 and QFontMetrics(_font(px, True)).horizontalAdvance(cell.caption) + 28 > room:
                 px -= 1
+            fm = QFontMetrics(_font(px, True))
+            w = min(room, fm.horizontalAdvance(cell.caption) + 28)
+            cap = QRectF(rect.center().x() - w / 2, rect.top() + 3, w, cap_h - 6)
+            p.setPen(QPen(RULE, 1.5))
+            p.setBrush(BAR_BG)
+            p.drawRoundedRect(cap, 8, 8)
+            p.setBrush(Qt.NoBrush)
             p.setFont(_font(px, True))
             p.setPen(INK)
-            p.drawText(cap, Qt.AlignCenter, QFontMetrics(_font(px, True)).elidedText(cell.caption, Qt.ElideRight, int(cap.width() - 12)))
+            p.drawText(cap, Qt.AlignCenter, fm.elidedText(cell.caption, Qt.ElideRight, int(cap.width() - 16)))
         rect = rect.adjusted(0, cap_h, 0, 0)
     box = rect.adjusted(CELL_PAD, CELL_PAD, -CELL_PAD, -CELL_PAD)
     if cell.image is None:
@@ -626,13 +664,18 @@ def _paint(pages: list[Page], target, hits: list | None = None, cache: dict | No
         if count:
             painter = target.next()
         count += 1
-        painter.setPen(QPen(LINE, 3))
-        painter.drawRect(frame)
         head = list(page.head)
         if cont:
             head[0] += " (계속)"
         head_rect = QRectF(frame.left(), frame.top(), frame.width(), HEAD_H)
-        _draw_bar(painter, head_rect, head, 21)
+        rounded = QPainterPath()
+        rounded.addRoundedRect(frame, FRAME_RADIUS, FRAME_RADIUS)
+        painter.save()
+        painter.setClipPath(rounded)               # 머리 띠가 둥근 틀 모서리를 따라가게
+        _draw_bar(painter, head_rect, head, 21, head=True)
+        painter.restore()
+        painter.setPen(QPen(FRAME, 2.5))
+        painter.drawRoundedRect(frame, FRAME_RADIUS, FRAME_RADIUS)
         mark(head_rect, page.head_ref, "head")
         y = frame.top() + HEAD_H + GAP
         if not cont:
@@ -659,8 +702,8 @@ def _paint(pages: list[Page], target, hits: list | None = None, cache: dict | No
                 block = page.blocks[slot.block]
                 if block.title:
                     title = block.title if slot.start == 0 else [block.title[0] + " (계속)"] + block.title[1:]
-                    bar = QRectF(inner_left, y, inner_w, TITLE_H)
-                    _draw_bar(painter, bar, title, 17, SOFT)
+                    bar = QRectF(frame.left() + 1, y, frame.width() - 2, TITLE_H)      # 틀 양끝에 붙인 띠
+                    _draw_bar(painter, bar, title, 17)
                     mark(bar, block.title_ref, "bar")
                     y += TITLE_H + GAP
                 if slot.count:
