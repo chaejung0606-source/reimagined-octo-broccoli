@@ -398,10 +398,13 @@ def test_page_reviews_application_and_checks_per_traveler(qapp, tmp_path, isolat
     hong, kim = page.trips()
     assert hong.name == "홍길동" and len(hong.stay) == 3 and hong.legs == [76.0] and hong.fuel == "휘발유" and len(hong.route_maps) == 1
     assert kim.name == "김철수" and len(kim.public) == 1 and kim.lodging and not kim.tolls and not kim.route_maps
-    review_kim = page.people_table.item(1, 6).text()
+    review_kim = page.people_table.item(1, 7).text()
     assert "체류 증빙이 없는 날" in review_kim
-    # ④ 출장자마다 만든다
+    # ④ 출장자마다 만든다 — 확인할 것이 있으면 묻는 글 대신 미리 보기가 뜬다(여기서는 [이대로 만들기])
+    opened = []
+    monkeypatch.setattr(travel_page.TravelPreview, "exec", lambda self: opened.append(self.trip().name) or travel_page.PREVIEW_MAKE)
     page._make()
+    assert opened == ["김철수"]                       # 확인할 것이 있는 사람부터
     made = sorted(p.name for p in folder.glob("* 출장증빙_26.11.10.pdf"))
     assert made == ["김철수 출장증빙_26.11.10.pdf", "홍길동 출장증빙_26.11.10.pdf"]
     # 목적지를 못 찾으면 다시 그 출장자의 출장목적지를 묻는다
@@ -447,6 +450,108 @@ def test_public_table_has_route_columns_and_marks_unclear(qapp, tmp_path):
     table.item(1, 4).setText("용산")
     table.item(1, 5).setText("원주")
     assert table.mark_unclear() == 0 and table.evidence(2026)[1].goal == "원주"
+
+
+def test_preview_marks_unclear_and_edits_in_place(qapp, tmp_path, isolated_home):
+    """담당자 2026-11-10 "확인필요한 건은 어플내에서 증빙양식 미리보기 처럼 나오는데 확인이 필요한 부분을 직접 편집할 수 있게"."""
+    from claim_downloader.ui.pages import travel as travel_page
+    from claim_downloader.ui.travel_preview import TravelPreview
+    folder = tmp_path / "출장비 지급(26.11.10. 원주)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(LABELED.replace("홍길동, 연구원 김철수", "홍길동"), encoding="utf-8")
+    for name in ("홍길동_체류증빙 1110.png", "홍길동_체류증빙 1111.png", "홍길동_대중교통 증빙_1110_춘천-원주_8,400원.png",
+                 "홍길동_대중교통 증빙 1112.png", "홍길동_하이패스 증빙 1110 3,100원.png"):
+        _image(folder / name)
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.load_folder(str(folder))
+    page._go("files")
+    dialog = TravelPreview(page, page, make_text="이대로 만들기")
+    flagged = dialog._flagged
+    public = {e.path.name: e.ref for e in page.trip().public}
+    assert flagged[public["홍길동_대중교통 증빙_1110_춘천-원주_8,400원.png"]] == ["이동편"]
+    assert flagged[public["홍길동_대중교통 증빙 1112.png"]] == ["금액", "이동편", "출발지", "목적지"]
+    assert set(flagged[("route", "홍길동")]) >= {"km", "지도 그림"}
+    hits = {h.ref for h in dialog._hits}
+    assert public["홍길동_대중교통 증빙 1112.png"] in hits and ("route", "홍길동") in hits          # 칸 · 이동경로 줄을 누를 수 있다
+    assert dialog._selected and dialog.todo_list.count() == len(flagged)
+    # 칠한 칸을 누르면 그 증빙의 값을 고치는 칸 — 고치면 증빙 표에 적고 다시 그린다
+    dialog._select(public["홍길동_대중교통 증빙 1112.png"])
+    fields = dialog._editor_fields
+    fields["amount"].setText("3300")
+    fields["mode"].setCurrentText("시외버스")
+    fields["origin"].setText("원주")
+    fields["goal"].setText("춘천")
+    dialog._apply()
+    row = public["홍길동_대중교통 증빙 1112.png"][1]
+    table = page.tables["public"]
+    assert [table.item(row, c).text() for c in (2, 3, 4, 5)] == ["3,300", "시외버스", "원주", "춘천"]
+    assert public["홍길동_대중교통 증빙 1112.png"] not in dialog._flagged
+    assert dialog._selected != public["홍길동_대중교통 증빙 1112.png"]                     # 다음 확인할 것으로 넘어간다
+    # 이동경로 줄 — 구간 km · 연료
+    dialog._select(("route", "홍길동"))
+    kms = dialog._editor_fields["kms"]
+    next(iter(kms.values())).setText("76")
+    dialog._editor_fields["fuel"].setCurrentIndex(dialog._editor_fields["fuel"].findData("경유"))
+    dialog._apply()
+    assert page.trip().legs == [76.0] and page.trip().fuel == "경유"
+    assert "km" not in dialog._flagged.get(("route", "홍길동"), [])
+    dialog.close()
+
+
+def test_page_puts_named_other_files_into_other_table(qapp, tmp_path, isolated_home):
+    from claim_downloader.ui.pages import travel as travel_page
+    folder = tmp_path / "출장비 지급(26.11.10. 원주)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(LABELED, encoding="utf-8")
+    for name in ("홍길동_체류증빙 1110.png", "김철수_체류증빙 1110.png", "홍길동_참가확인서.png", "김철수 교육 수료증.png"):
+        _image(folder / name)
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.load_folder(str(folder))
+    table = page.tables["other"]
+    rows = {table.item(r, 0).text(): (table.item(r, 2).text(), table.item(r, table.person_col).text()) for r in range(table.rowCount())}
+    assert rows == {"김철수 교육 수료증.png": ("교육 수료증", "김철수"), "홍길동_참가확인서.png": ("참가확인서", "홍길동")}
+    hong, kim = page.trips()
+    assert [e.label for e in hong.other] == ["참가확인서"] and [e.label for e in kim.other] == ["교육 수료증"]
+    assert model.pages(hong)[-1].head[0] == "* 기타 증빙"
+    page.apply_edit(hong.other[0].ref, {"label": "학회 참가확인서"})
+    assert page.trips()[0].other[0].label == "학회 참가확인서"
+
+
+def test_several_folders_one_after_another(qapp, tmp_path, isolated_home, monkeypatch):
+    """담당자 2026-11-10 "여러 폴더를 선택할 수 있도록" — ① 에 폴더 여럿, 차례로 ② → ③ → ④, 만든 뒤 [다음 폴더]."""
+    from PySide6.QtWidgets import QFileDialog
+
+    from claim_downloader.ui.pages import travel as travel_page
+    parent = tmp_path / "★완료"
+    for name, day in (("출장비 지급(26.11.03. 삼척)", "1103"), ("출장비 지급(26.11.10. 원주)", "1110")):
+        folder = parent / name
+        folder.mkdir(parents=True)
+        (folder / "국내 출장신청서.txt").write_text(TWO_FORMS, encoding="utf-8")
+        _image(folder / f"홍길동_체류증빙 {day}.png")
+    (parent / "빈 폴더").mkdir()
+    assert model.looks_like_trip(parent / "출장비 지급(26.11.03. 삼척)") and not model.looks_like_trip(parent / "빈 폴더")
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.show()
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(parent))
+    page._pick_parent()
+    assert page.folder_list.count() == 2 and "2개" in page.folder_note.text()
+    assert page._stage == "folder" and page.start_button.text() == "2개 폴더 차례로 시작"
+    page.start_button.click()
+    first, second = (str(parent / n) for n in ("출장비 지급(26.11.03. 삼척)", "출장비 지급(26.11.10. 원주)"))
+    assert page.folder_edit.text() == first and page.start_edit.date().toPython() == date(2026, 11, 3)   # 폴더 날짜로 그 출장
+    assert "지금" in page.folder_list.item(0).text() and page.next_button.text() == "다음 폴더 — 출장비 지급(26.11.10. 원주)"
+    page._go("files")
+    monkeypatch.setattr(travel_page.TravelPreview, "exec", lambda self: travel_page.PREVIEW_MAKE)
+    page._make()
+    assert list(Path(first).glob("홍길동 출장증빙_26.11.03.pdf")) and page.folder_list.item(0).text().startswith("✓")
+    assert "다음 폴더" in page.result_label.text()
+    page.next_button.click()
+    assert page.folder_edit.text() == second and page._stage == "review" and page.start_edit.date().toPython() == date(2026, 11, 10)
+    page._go("files")
+    page._make()
+    assert list(Path(second).glob("홍길동 출장증빙_26.11.10.pdf")) and page.next_button.isHidden()
+    page._go("folder")
+    assert page.start_button.text() == "모두 만들었습니다" and not page.start_button.isEnabled()
 
 
 def test_settings_fuel_card(qapp, isolated_home):

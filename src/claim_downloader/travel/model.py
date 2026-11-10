@@ -29,7 +29,11 @@ LODGING_CAPS = {"서울특별시": 100_000, "광역시": 80_000, "그 밖의 지
 METROS = ("부산", "대구", "인천", "광주", "대전", "울산")
 
 STAY, PUBLIC, TOLL, LODGING = "stay", "public", "toll", "lodging"
-KIND_NAMES = {STAY: "체류", PUBLIC: "대중교통", TOLL: "자차(하이패스)", LODGING: "숙박"}
+# 출장비 증빙 넷 밖의 파일 중 이름이 앞에 붙은 것(참가확인서 등) — 출장증빙 끝에 붙인다(담당자 2026-11-10 "출장비증빙 서류파일외 파일명 앞에
+# 이름이 붙어있는 파일은 기타증빙으로 넣기")
+OTHER = "other"
+KINDS = (STAY, PUBLIC, TOLL, LODGING, OTHER)
+KIND_NAMES = {STAY: "체류", PUBLIC: "대중교통", TOLL: "자차(하이패스)", LODGING: "숙박", OTHER: "기타"}
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
 FILE_SUFFIXES = IMAGE_SUFFIXES | {".pdf"}
 
@@ -50,6 +54,8 @@ class Evidence:
     person: str = ""        # 출장자가 여럿일 때 누구 증빙인지 — SHARED('공통')면 모두의 출장증빙에 넣는다
     origin: str = ""        # 대중교통 증빙(승차권 하나)의 출발지 — 담당자 2026-11-10 "증빙별로 출발지와 목적지 및 금액 작성"
     goal: str = ""          # 대중교통 증빙의 목적지
+    ref: tuple = ()         # 화면 표의 어느 줄인지((항목, 줄)) — 미리 보기에서 고친 값을 그 줄에 적는다
+    label: str = ""         # 기타 증빙의 내용(파일 이름에서 이름을 뗀 것 — '참가확인서')
 
 
 @dataclass
@@ -66,6 +72,7 @@ class Trip:
     public: list[Evidence] = field(default_factory=list)
     tolls: list[Evidence] = field(default_factory=list)
     lodging: list[Evidence] = field(default_factory=list)
+    other: list[Evidence] = field(default_factory=list)    # 기타 증빙(이름이 붙은 그 밖의 파일)
     route_map: Path | None = None
     legs: list = field(default_factory=list)   # 구간 km — 출발지→출장지1 → … → 마지막 출장지→출발지. 출장지가 하나면 [가는 길, 오는 길(비면 가는 길)]
     route_maps: list = field(default_factory=list)   # 구간마다 네이버 지도 최단거리 그림(legs 와 같은 차례) — 있으면 route_map 대신 이것들
@@ -307,6 +314,8 @@ class Block:
     cols: int = 3
     fill: bool = False      # 남은 높이를 다 쓴다(체류 한 쪽 · 지도)
     parts: list = field(default_factory=list)            # 그림마다 PDF 의 몇 번째 영수증 상자인지(Evidence.part) — 없으면 파일 전체
+    refs: list = field(default_factory=list)             # 그림마다 어느 증빙인지(Evidence.ref) — 앱 미리 보기에서 눌러 고친다
+    title_ref: tuple = ()                                # 묶음 줄을 누르면 고칠 것(이동경로 km · 연료)
 
 
 @dataclass
@@ -314,6 +323,7 @@ class Page:
     head: list[str]         # 머리 줄 칸 — 첫 칸은 왼쪽 '* … 증빙'
     blocks: list[Block] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    head_ref: tuple = ()    # 머리 줄을 누르면 고칠 것(숙박 영수증 · 자차 연료)
 
 
 def grid_cols(n: int) -> int:
@@ -349,13 +359,14 @@ def stay_pages(trip: Trip) -> list[Page]:
         for place in order:
             group = groups[place]
             captions = [korean_date(e.day) if e.day else e.path.stem for e in group]
-            blocks.append(Block([e.path for e in group], captions, title=_place_title(place), cols=grid_cols(len(group)), fill=True))
+            blocks.append(Block([e.path for e in group], captions, title=_place_title(place), cols=grid_cols(len(group)), fill=True,
+                                refs=[e.ref for e in group]))
         return [Page(head, blocks)]
     pages = []
     for (day, place), group in _group(items, lambda e: (e.day, trip.place_of(e))):
         caption = korean_date(day) if day else "일자 없음"
         pages.append(Page(head, [Block([e.path for e in group], [caption] + [""] * (len(group) - 1), title=_place_title(place),
-                                       cols=grid_cols(len(group)), fill=True)]))
+                                       cols=grid_cols(len(group)), fill=True, refs=[e.ref for e in group])]))
     return pages
 
 
@@ -388,7 +399,7 @@ def public_pages(trip: Trip) -> list[Page]:
     for day, group in _group(items, lambda e: e.day):
         blocks.append(Block([e.path for e in group], [public_caption(e) for e in group],
                             title=[korean_date(day) if day else "일자 없음", f"증빙 {len(group)}건", f"일자 합계 {_sum_text(group)}"],
-                            cols=grid_cols(len(group)), fill=True))
+                            cols=grid_cols(len(group)), fill=True, refs=[e.ref for e in group]))
     if len(blocks) > 1:
         blocks.append(Block([], title=["* 실비 합계", f"{len(blocks)}일 · 증빙 {len(items)}건", total]))
     return [Page(["* 교통비 증빙 (대중교통)", f"실비 합계 {total}"], blocks)]
@@ -409,7 +420,7 @@ def car_pages(trip: Trip) -> list[Page]:
     blocks = []
     for day, group in _group(tolls, lambda e: e.day):
         subtotal = sum(e.amount or 0 for e in group)
-        blocks.append(Block([e.path for e in group], parts=[e.part for e in group],
+        blocks.append(Block([e.path for e in group], parts=[e.part for e in group], refs=[e.ref for e in group],
                             title=[korean_date(day) if day else "일자 없음", f"하이패스 {won(subtotal)}"],
                             cols=grid_cols(len(group))))
     if route:
@@ -419,9 +430,16 @@ def car_pages(trip: Trip) -> list[Page]:
         title = ["* 이동경로", *(f"{name} {km(v)}" for name, v in legs), f"총 이동경로 {km(total)}"]
         maps = trip.maps()
         # 네이버 지도 최단거리 그림 — 구간마다 찍었으면 칸마다 그 구간 이름 · km(담당자 2026-11-10 "가는거 오는거 총합 KM")
-        blocks.append(Block([p for _, p in maps], [c for c, _ in maps] if len(maps) > 1 else [], title=title, cols=1, fill=True))
+        route_ref = route_key(trip)
+        blocks.append(Block([p for _, p in maps], [c for c, _ in maps] if len(maps) > 1 else [], title=title, cols=1, fill=True,
+                            refs=[route_ref] * len(maps), title_ref=route_ref))
     head = ["* 교통비 증빙 (자차)"] + ([f"연료 {trip.fuel}"] if trip.fuel else []) + ([won(toll_total)] if tolls else [])
-    return [Page(head, blocks)]
+    return [Page(head, blocks, head_ref=route_key(trip))]
+
+
+def route_key(trip: Trip) -> tuple:
+    """자차 이동경로 · 연료를 가리키는 표시 — 미리 보기에서 이동경로 줄 · 지도 · 머리 줄을 누르면 km · 연료를 고친다."""
+    return ("route", trip.name or "출장자")
 
 
 def lodging_pages(trip: Trip) -> list[Page]:
@@ -435,13 +453,67 @@ def lodging_pages(trip: Trip) -> list[Page]:
             notes.append(f"결제 {won(ev.amount)} — 공무원 여비 기준 숙박비 상한({trip.cap_region(ev)} 1박 {won(cap)} × {ev.nights}박{people}"
                          f" = {won(limit)})을 넘어 상한금액으로 지원")
         pages.append(Page(["* 숙박비 증빙", f"숙박기간 {stay_period(ev)}", f"지원금액 {won(support)}"],
-                          [Block([ev.path], cols=1, fill=True)], notes))
+                          [Block([ev.path], cols=1, fill=True, refs=[ev.ref])], notes, head_ref=ev.ref))
     return pages
 
 
+def other_caption(e: Evidence) -> str:
+    return (e.label.strip() or e.path.stem) + (f" · {short_date(e.day)}" if e.day else "")
+
+
+def other_pages(trip: Trip) -> list[Page]:
+    """기타 증빙 — 파일마다 칸(위에 내용), 넣은 차례대로. 확인할 칸은 없다(일자 · 금액을 따지지 않는다)."""
+    items = list(trip.other)
+    if not items:
+        return []
+    return [Page(["* 기타 증빙", f"{len(items)}건"],
+                 [Block([e.path for e in items], [other_caption(e) for e in items], cols=grid_cols(len(items)), fill=True,
+                        refs=[e.ref for e in items])])]
+
+
 def pages(trip: Trip) -> list[Page]:
-    """체류 → 교통비(대중교통 · 자차) → 숙박."""
-    return stay_pages(trip) + public_pages(trip) + car_pages(trip) + lodging_pages(trip)
+    """체류 → 교통비(대중교통 · 자차) → 숙박 → 기타."""
+    return stay_pages(trip) + public_pages(trip) + car_pages(trip) + lodging_pages(trip) + other_pages(trip)
+
+
+def unclear(trip: Trip, kind: str, e: Evidence) -> list[str]:
+    """증빙 하나에서 확인이 필요한 칸 — 앱 미리 보기가 그 칸을 칠하고 고치게 한다(담당자 2026-11-10 "확인이 필요한 부분을 직접 편집")."""
+    if kind == OTHER:
+        return []
+    out = []
+    if not e.day:
+        out.append("일자")
+    elif trip.start and trip.end:
+        last = trip.end - timedelta(days=1) if kind == LODGING and trip.end > trip.start else trip.end
+        if not (trip.start <= e.day <= last):
+            out.append("일자(출장기간 밖)")
+    if kind != STAY and e.amount is None:
+        out.append("금액")
+    if kind == PUBLIC:
+        out += [label for label, value in (("이동편", e.mode), ("출발지", e.origin), ("목적지", e.goal)) if not value.strip()]
+    if kind in (STAY, LODGING) and len(trip.places) > 1 and not trip.place_of(e):
+        out.append("출장지")
+    return out
+
+
+def route_unclear(trip: Trip) -> list[str]:
+    """자차 이동경로에서 확인이 필요한 것 — km · 지도 · 연료."""
+    if not trip.tolls:
+        return []
+    out = []
+    if any(v is None for _, v in trip.route_legs()) or not any(v for v in trip.legs):
+        out.append("km")
+    if not trip.maps():
+        out.append("지도 그림")
+    if not trip.fuel:
+        out.append("연료")
+    return out
+
+
+def evidence_of(trip: Trip) -> list[tuple[str, Evidence]]:
+    """출장의 증빙 모두 — (항목, 증빙), 쪽 차례(체류 → 대중교통 → 자차 → 숙박)."""
+    return ([(STAY, e) for e in trip.stay] + [(PUBLIC, e) for e in trip.public] + [(TOLL, e) for e in trip.tolls]
+            + [(LODGING, e) for e in trip.lodging] + [(OTHER, e) for e in trip.other])
 
 
 def problems(trip: Trip) -> list[str]:
@@ -449,7 +521,7 @@ def problems(trip: Trip) -> list[str]:
     out = []
     if not trip.name.strip():
         out.append("출장자 이름을 넣어 주세요.")
-    if not (trip.stay or trip.public or trip.tolls or trip.lodging or trip.route_map):
+    if not (trip.stay or trip.public or trip.tolls or trip.lodging or trip.other or trip.route_map):
         out.append("증빙 파일이 하나도 없습니다.")
     for kind, items in ((STAY, trip.stay), (PUBLIC, trip.public), (TOLL, trip.tolls), (LODGING, trip.lodging)):
         for e in items:
@@ -547,6 +619,7 @@ def for_traveler(trip: Trip, name: str, names: list[str]) -> Trip:
     out = Trip(**{**trip.__dict__})
     out.name = name
     out.stay, out.public, out.tolls, out.lodging = mine(trip.stay), mine(trip.public), mine(trip.tolls), mine(trip.lodging)
+    out.other = mine(trip.other)
     if not single and not out.tolls:
         out.route_map, out.route_maps, out.legs, out.route_stops, out.fuel = None, [], [], [], ""
     return out
@@ -692,14 +765,59 @@ class Scan:
     unsorted: list[Path] = field(default_factory=list)
 
 
-def scan_folder(folder: Path) -> Scan:
-    """출장 폴더를 훑어 항목별 파일을 고른다. 파일 이름이 먼저, 없으면 위 폴더 이름(출장 폴더 아래 몇 단계든)."""
-    out = Scan(files={k: [] for k in (STAY, PUBLIC, TOLL, LODGING)})
+APPLICATION_WORDS = ("출장신청", "출장명령", "출장계획", "출장품의", "출장신고")   # 출장신청서(travel/application.py 가 읽는다)
+
+
+def name_prefix(path: Path, names: list[str] | None = None) -> str:
+    """파일 이름 앞에 붙은 사람 이름 — '홍길동_참가확인서' · (출장자를 알면) '홍길동 참가확인서'. 없으면 ''."""
+    stem = path.stem.strip()
+    for name in names or []:
+        if name and re.match(rf"{re.escape(name)}(?:[\s_\-]|$)", stem):
+            return name
+    head = stem.split("_", 1)[0].strip() if "_" in stem else ""
+    if _NAME.fullmatch(head) and not any(w in head for w in _NOT_PERSON) and not kind_of(head):
+        return head
+    return ""
+
+
+def other_label(path: Path, names: list[str] | None = None) -> str:
+    """기타 증빙의 내용 — 파일 이름에서 앞 이름을 떼고 밑줄은 띄어쓰기로('홍길동_참가확인서' → '참가확인서')."""
+    stem = path.stem.strip()
+    name = name_prefix(path, names)
+    if name:
+        stem = stem[len(name):]
+    return re.sub(r"[\s_]+", " ", stem).strip(" -") or path.stem
+
+
+def looks_like_trip(folder: Path, depth: int = 3) -> bool:
+    """출장 폴더처럼 보이는지 — 아래(depth 단계까지)에 출장신청서나 증빙 파일(항목 낱말 · 이름_ 이 붙은 파일)이 있으면."""
+    try:
+        for path in folder.rglob("*"):
+            if len(path.relative_to(folder).parts) > depth or not path.is_file():
+                continue
+            squashed = re.sub(r"\s+", "", path.stem)
+            if any(w in squashed for w in APPLICATION_WORDS):
+                return True
+            if path.suffix.lower() in FILE_SUFFIXES and (kind_of(path.stem) or name_prefix(path)) and "출장증빙" not in squashed:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def scan_folder(folder: Path, names: list[str] | None = None) -> Scan:
+    """출장 폴더를 훑어 항목별 파일을 고른다. 파일 이름이 먼저, 없으면 위 폴더 이름(출장 폴더 아래 몇 단계든).
+    출장비 증빙 넷이 아닌데 이름이 앞에 붙은 파일(참가확인서 · 공문 등)은 기타 증빙 — 출장신청서 · 만든 출장증빙은 빼고(담당자 2026-11-10)."""
+    out = Scan(files={k: [] for k in KINDS})
     for path in sorted(folder.rglob("*")):
         if not path.is_file() or path.suffix.lower() not in FILE_SUFFIXES:
             continue
         rel = path.relative_to(folder)
-        if any(w in path.stem for w in SKIP_WORDS):
+        squashed = re.sub(r"\s+", "", path.stem)
+        if "출장증빙" in squashed or any(w in squashed for w in APPLICATION_WORDS):
+            continue
+        named = name_prefix(path, names)
+        if any(w in path.stem for w in SKIP_WORDS) and not named:
             continue
         if path.suffix.lower() in IMAGE_SUFFIXES and any(w in path.stem.lower() for w in MAP_WORDS):
             back = any(w in path.stem for w in BACK_WORDS)
@@ -718,6 +836,8 @@ def scan_folder(folder: Path) -> Scan:
                 kind = kind_of(part)
                 if kind:
                     break
+        if not kind and named:
+            kind = OTHER
         if kind:
             out.files[kind].append(path)
         else:

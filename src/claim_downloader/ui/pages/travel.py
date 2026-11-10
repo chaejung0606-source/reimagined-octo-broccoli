@@ -30,6 +30,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QSpinBox,
@@ -44,6 +46,8 @@ from ... import settings
 from ...travel import application, model
 from ..art import Art
 from ..tokens import COLORS
+from ..travel_preview import MAKE as PREVIEW_MAKE
+from ..travel_preview import TravelPreview
 from ..flow import CURRENT, DONE, HIDDEN, OPEN, FlowArea, FlowStep
 from ..log_button import LogSendButton
 from ..widgets import Pill, WrapLabel, muted_label
@@ -58,6 +62,7 @@ COLUMNS = {
     model.PUBLIC: ("파일", "일자", "금액(원)", "이동편", "출발지", "목적지", "출장자"),
     model.TOLL: ("파일", "이용일자", "금액(원)", "출장자"),
     model.LODGING: ("파일", "입실일", "결제금액(원)", "박 수", "출장지", "출장자"),
+    model.OTHER: ("파일", "일자", "내용", "출장자"),
 }
 PLACE_COL = {model.STAY: 2, model.LODGING: 4}
 # 대중교통 증빙마다 꼭 있어야 할 칸 — 비어 있으면 칸을 칠해 확인을 부탁한다(담당자 2026-11-10 "불분명한 경우 확인요청하기")
@@ -83,8 +88,9 @@ HINTS = {
                   "칠해진 칸은 앱이 못 읽은 것이니 확인해 적어 주세요.",
     model.TOLL: "하이패스 이용내역 — 하이패스가 있으면 자차입니다. 이용일자별로 묶어 그날 금액을 적고, 아래(자리가 모자라면 다음 쪽)에 네이버 지도 최단거리가 붙습니다.",
     model.LODGING: "숙박 영수증 — 숙박기간과 지원금액을 적습니다. 상한을 넘으면 지원금액은 상한금액입니다.",
+    model.OTHER: "출장비 증빙 넷이 아닌데 파일 이름 앞에 이름이 붙은 것(참가확인서 · 공문 등) — 출장증빙 끝에 '기타 증빙' 으로 붙습니다. 일자는 없어도 됩니다.",
 }
-PEOPLE_COLUMNS = ("출장자", "체류", "대중교통", "하이패스", "숙박", "자차 최단거리", "확인할 것")
+PEOPLE_COLUMNS = ("출장자", "체류", "대중교통", "하이패스", "숙박", "기타", "자차 최단거리", "확인할 것")
 ROUTE_COLUMNS = ("출장자", "구간", "출발 → 목적지", "km", "지도 그림", "상태")
 NAMING = "'이름_체류증빙' · '이름_하이패스 증빙' · '이름_숙박비 증빙' · '이름_대중교통 증빙'"
 FUELS = model.FUELS
@@ -194,7 +200,9 @@ class EvidenceTable(QTableWidget):
         name.setToolTip(str(path))
         self.setItem(row, 0, name)
         self.setItem(row, 1, QTableWidgetItem(ev.day.isoformat() if ev.day else ""))
-        if self.kind != model.STAY:
+        if self.kind == model.OTHER:
+            self.setItem(row, 2, QTableWidgetItem(model.other_label(path, self.people())))
+        elif self.kind != model.STAY:
             self.setItem(row, 2, QTableWidgetItem(f"{ev.amount:,}" if ev.amount is not None else ""))
         if self.kind in PLACE_COL:
             self.setItem(row, PLACE_COL[self.kind], QTableWidgetItem(model.match_place(str(path), self.places())))
@@ -246,8 +254,11 @@ class EvidenceTable(QTableWidget):
         out = []
         for row, path in enumerate(self.paths):
             cell = lambda col, row=row: (self.item(row, col).text() if self.item(row, col) else "")  # noqa: E731
-            ev = model.Evidence(path=path, day=_parse_day(cell(1), year), part=self.parts[row], person=cell(self.person_col).strip())
-            if self.kind != model.STAY:
+            ev = model.Evidence(path=path, day=_parse_day(cell(1), year), part=self.parts[row], person=cell(self.person_col).strip(),
+                                ref=(self.kind, row))
+            if self.kind == model.OTHER:
+                ev.label = cell(2).strip()
+            elif self.kind != model.STAY:
                 ev.amount = _parse_int(cell(2))
             if self.kind in PLACE_COL:
                 ev.place = cell(PLACE_COL[self.kind]).strip()
@@ -280,6 +291,32 @@ class EvidenceTable(QTableWidget):
         event.acceptProposedAction()
 
 
+class FolderList(QListWidget):
+    """① 의 폴더 목록 — 폴더 여러 개를 끌어다 놓을 수 있다. 체크한 폴더를 차례로 한다."""
+
+    dropped = Signal(list)
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.setMinimumHeight(84)
+        self.setMaximumHeight(200)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls()]
+        self.dropped.emit([p for p in paths if p.is_dir()])
+        event.acceptProposedAction()
+
+
 class TravelPage(QWidget):
     def __init__(self, parent: QWidget | None = None, worker=None):
         super().__init__(parent)
@@ -290,6 +327,7 @@ class TravelPage(QWidget):
         self._made: list[Path] = []
         self._apps: list[Path] = []              # 읽은 출장신청서 파일
         self._scan = model.Scan()
+        self._done_folders: set[str] = set()     # 출장증빙을 만든 폴더(여러 폴더를 차례로 할 때)
         self._review: application.Application | None = None
         self._goal_of: dict[str, str] = {}       # 출장자마다 출장목적지(신청서 목적지가 분명하지 않아 사람이 적은 것)
         self._ask_reason: dict[str, str] = {}    # 출장자마다 목적지를 묻는 까닭(네이버 지도에서 못 찾음 등)
@@ -352,18 +390,118 @@ class TravelPage(QWidget):
         return head
 
     def _build_folder(self) -> FlowStep:
-        """① 폴더만 — 담당자 2026-11-10 "1단계에는 출장증빙을 만들 폴더만 선택하고"."""
+        """① 폴더만 — 담당자 2026-11-10 "1단계에는 출장증빙을 만들 폴더만 선택하고" · "여러 폴더를 선택할 수 있도록".
+        넣은 폴더들은 차례로 하나씩 ② → ③ → ④ 를 거친다(폴더마다 출장신청서 · 출장자 · 증빙이 다르다)."""
         step = FlowStep("1", "출장증빙을 만들 폴더를 고르세요",
-                        f"보통 '출장비 지급(…)' 폴더 — 출장신청서와 증빙 파일({NAMING})이 든 폴더. 만든 출장증빙도 여기에 둡니다.")
-        self.folder_edit = QLineEdit()
-        self.folder_edit.setPlaceholderText("출장비 지급 폴더")
-        self.folder_edit.returnPressed.connect(lambda: self.load_folder(self.folder_edit.text().strip()))
-        folder_button = QPushButton("폴더 고르기")
-        folder_button.setObjectName("primary")
-        folder_button.clicked.connect(self._pick_folder)
-        step.add(self._pair(self.folder_edit, folder_button))
+                        f"보통 '출장비 지급(…)' 폴더 — 출장신청서와 증빙 파일({NAMING})이 든 폴더. 여러 개면 모두 넣으세요(끌어다 놓아도 됩니다) — "
+                        "차례로 하나씩 만들고, 만든 출장증빙은 그 폴더에 둡니다.")
+        self.folder_edit = QLineEdit()           # 지금 하는 폴더(화면에는 목록으로 보인다)
+        self.folder_edit.hide()
+        self.folder_list = FolderList()
+        self.folder_list.dropped.connect(lambda paths: self._add_folders(paths, start=True))
+        self.folder_list.itemChanged.connect(lambda _item: self._sync())
+        self.folder_list.itemDoubleClicked.connect(lambda item: self.load_folder(item.data(Qt.UserRole)))
+        step.add(self.folder_list)
+        row = QHBoxLayout()
+        add = QPushButton("폴더 추가")
+        add.setObjectName("primary")
+        add.clicked.connect(self._pick_folder)
+        parent = QPushButton("상위 폴더에서 여러 개")
+        parent.setToolTip("고른 폴더 바로 아래에서 출장신청서나 증빙 파일이 든 폴더를 모두 넣습니다")
+        parent.clicked.connect(self._pick_parent)
+        drop = QPushButton("고른 줄 빼기")
+        drop.setObjectName("ghost")
+        drop.clicked.connect(self._drop_folders)
+        self.start_button = QPushButton("")
+        self.start_button.setObjectName("primary")
+        self.start_button.clicked.connect(self._start_folders)
+        row.addWidget(add)
+        row.addWidget(parent)
+        row.addWidget(drop)
+        row.addStretch(1)
+        row.addWidget(self.start_button)
+        step.add_layout(row)
+        self.folder_note = muted_label("")
+        step.add(self.folder_note)
         step.edit.connect(lambda: self._go("folder"))
         return step
+
+    # ── 여러 폴더 ──────────────────────────────────────────────────────────
+    def _add_folders(self, paths, start: bool = False) -> int:
+        """폴더들을 목록에 더한다(체크된 채, 이미 있으면 그대로). start 면 넣은 것이 하나뿐이고 하던 폴더가 없을 때 바로 시작."""
+        known = {self.folder_list.item(i).data(Qt.UserRole) for i in range(self.folder_list.count())}
+        added = 0
+        self.folder_list.blockSignals(True)
+        for path in paths:
+            path = Path(path)
+            if not path.is_dir() or str(path) in known:
+                continue
+            item = QListWidgetItem(path.name)
+            item.setToolTip(str(path))
+            item.setData(Qt.UserRole, str(path))
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            self.folder_list.addItem(item)
+            known.add(str(path))
+            added += 1
+        self.folder_list.blockSignals(False)
+        self._mark_folders()
+        if start and len(self._folders()) == 1 and not self.folder_edit.text().strip():
+            self.load_folder(self._folders()[0])
+        self._sync()
+        return added
+
+    def _folders(self, checked: bool = True) -> list[str]:
+        return [self.folder_list.item(i).data(Qt.UserRole) for i in range(self.folder_list.count())
+                if not checked or self.folder_list.item(i).checkState() == Qt.Checked]
+
+    def _pick_parent(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "출장 폴더들이 든 상위 폴더", self.folder_edit.text() or "")
+        if not path:
+            return
+        found = [d for d in sorted(Path(path).iterdir()) if d.is_dir() and model.looks_like_trip(d)]
+        added = self._add_folders(found)
+        self.folder_note.setText(f"'{Path(path).name}' 아래에서 출장 폴더 {added}개를 넣었습니다 — 만들지 않을 폴더는 체크를 푸세요."
+                                 if found else f"'{Path(path).name}' 바로 아래에 출장신청서나 증빙 파일이 든 폴더가 없습니다.")
+
+    def _drop_folders(self) -> None:
+        current = self.folder_edit.text().strip()
+        for item in self.folder_list.selectedItems():
+            if item.data(Qt.UserRole) == current:
+                continue                          # 지금 하는 폴더는 빼지 않는다
+            self.folder_list.takeItem(self.folder_list.row(item))
+        self._sync()
+
+    def _start_folders(self) -> None:
+        current = self.folder_edit.text().strip()
+        if current and current not in self._done_folders:
+            self._go("review")
+            return
+        nxt = self._next_folder(from_start=not current)
+        if nxt:
+            self.load_folder(nxt)
+
+    def _next_folder(self, from_start: bool = False) -> str:
+        """다음에 할 폴더 — 체크된 것 중 아직 만들지 않은 것, 지금 폴더 다음부터(없으면 처음부터)."""
+        folders = self._folders()
+        current = self.folder_edit.text().strip()
+        if not from_start and current in folders:
+            folders = folders[folders.index(current) + 1:] + folders[:folders.index(current)]
+        return next((f for f in folders if f not in self._done_folders and (from_start or f != current)), "")
+
+    def _mark_folders(self) -> None:
+        """목록에 지금 하는 폴더(굵게) · 만든 폴더(✓)를 표시."""
+        current = self.folder_edit.text().strip()
+        self.folder_list.blockSignals(True)
+        for i in range(self.folder_list.count()):
+            item = self.folder_list.item(i)
+            path = item.data(Qt.UserRole)
+            name = Path(path).name
+            item.setText(("✓ " if path in self._done_folders else "") + name + ("  — 지금" if path == current else ""))
+            font = item.font()
+            font.setBold(path == current)
+            item.setFont(font)
+        self.folder_list.blockSignals(False)
 
     def _build_info(self) -> FlowStep:
         """② 출장신청서 검토 · 출장자 정리."""
@@ -541,7 +679,7 @@ class TravelPage(QWidget):
             self.fuel_rows.addWidget(holder, self.fuel_rows.rowCount(), 0)
             self.fuel_boxes[name] = box
 
-    def _set_fuel(self, name: str, fuel: str) -> None:
+    def _set_fuel(self, name: str, fuel: str, recheck: bool = True) -> None:
         self._fuel_of[name] = fuel
         if fuel and name != "출장자":
             # 고른 연료는 설정에도 남긴다 — 다음 출장에 그 사람이 자차면 미리 골라 둔다
@@ -549,7 +687,8 @@ class TravelPage(QWidget):
             if fuels.get(name) != fuel:
                 fuels[name] = fuel
                 settings.update(travel_fuels=model.format_fuels(fuels))
-        self._uncheck_route()
+        if recheck:
+            self._uncheck_route()
         self._sync()
 
     def _uncheck_route(self) -> None:
@@ -635,7 +774,7 @@ class TravelPage(QWidget):
         self.scan_note = muted_label("")
         top.addWidget(self.scan_note, 1)
         step.add_layout(top)
-        for kind in (model.STAY, model.PUBLIC, model.TOLL, model.LODGING):
+        for kind in model.KINDS:
             table = EvidenceTable(kind)
             table.changed.connect(self._on_evidence)
             table.year = self._year
@@ -659,7 +798,8 @@ class TravelPage(QWidget):
             step.add(table)
             if kind == model.TOLL:
                 step.add(self._build_route())
-        step.add(self._build_lodging())
+            if kind == model.LODGING:
+                step.add(self._build_lodging())
         self._on_places()
         return step
 
@@ -729,9 +869,13 @@ class TravelPage(QWidget):
         self.problem_label.setObjectName("muted")
         step.add(self.problem_label)
         row = QHBoxLayout()
+        # 만들 PDF 와 같은 쪽을 앱 안에서 — 확인할 곳을 칠하고 눌러 고친다(담당자 2026-11-10, ui/travel_preview.py)
+        self.preview_button = QPushButton("미리 보기 · 고치기")
+        self.preview_button.clicked.connect(lambda: self.open_preview(make=False))
+        row.addWidget(self.preview_button)
         self.make_button = QPushButton("출장증빙 PDF 만들기")
         self.make_button.setObjectName("primary")
-        self.make_button.clicked.connect(self._make)
+        self.make_button.clicked.connect(lambda: self._make())
         self.open_button = QPushButton("파일 열기")
         self.open_button.clicked.connect(lambda: self._made and QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._made[0]))))
         self.folder_button = QPushButton("폴더 열기")
@@ -741,6 +885,10 @@ class TravelPage(QWidget):
         row.addWidget(self.open_button)
         row.addWidget(self.folder_button)
         row.addStretch(1)
+        # 여러 폴더를 넣었으면 — 이 폴더를 만든 뒤 다음 폴더로(담당자 2026-11-10 "여러 폴더를 선택할 수 있도록")
+        self.next_button = QPushButton("")
+        self.next_button.clicked.connect(lambda: self._next_folder() and self.load_folder(self._next_folder()))
+        row.addWidget(self.next_button)
         step.add_layout(row)
         self.result_label = WrapLabel("")
         self.result_label.setObjectName("body")
@@ -751,7 +899,7 @@ class TravelPage(QWidget):
     def _pick_folder(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "출장증빙을 만들 폴더(출장비 지급 폴더)", self.folder_edit.text() or "")
         if path:
-            self.load_folder(path)
+            self._add_folders([path], start=True)
 
     def load_folder(self, folder: str) -> None:
         """폴더를 고르면 — 출장신청서를 먼저 검토하고(출장자 · 기간 · 출장지) 증빙 파일을 출장자 · 항목별로 나눈다(담당자 2026-11-10)."""
@@ -760,12 +908,14 @@ class TravelPage(QWidget):
             QMessageBox.warning(self, "출장증빙", f"폴더가 없습니다:\n{folder}")
             return
         self.folder_edit.setText(str(path))
+        self._add_folders([path])
+        self._mark_folders()
         self._apps = application.find(path)
         apps = [application.read(p) for p in self._apps]
         # 신청서에 출장이 여럿이면 저장 폴더 이름의 날짜로 고른다(담당자 2026-11-10)
         merged = application.select(application.merge(apps), path)
         self._review = merged
-        scan = model.scan_folder(path)
+        scan = model.scan_folder(path, merged.travelers if merged else None)
         self._scan = scan
         self._made = []
         self.result_label.setText("")
@@ -989,7 +1139,7 @@ class TravelPage(QWidget):
     def _rescan(self) -> None:
         folder = self.folder_edit.text().strip()
         if folder and Path(folder).is_dir():
-            self._fill_from_scan(model.scan_folder(Path(folder)))
+            self._fill_from_scan(model.scan_folder(Path(folder), self._names()))
             self._on_route_inputs()
 
     def _on_evidence(self) -> None:
@@ -1183,6 +1333,7 @@ class TravelPage(QWidget):
             people=self.people_spin.value(),
             stay=self.tables[model.STAY].evidence(year), public=self.tables[model.PUBLIC].evidence(year),
             tolls=self.tables[model.TOLL].evidence(year), lodging=self.tables[model.LODGING].evidence(year),
+            other=self.tables[model.OTHER].evidence(year),
         )
 
     def trips(self) -> list[model.Trip]:
@@ -1216,7 +1367,22 @@ class TravelPage(QWidget):
             self._stage = "folder"
         names = self._names()
         stage = self._stage
-        self.step_folder.set_state(DONE if stage != "folder" else CURRENT, Path(folder).name if folder else "")
+        folders = self._folders()
+        many = len(folders) > 1
+        where = f" ({folders.index(folder) + 1}/{len(folders)})" if many and folder in folders else ""
+        self.step_folder.set_state(DONE if stage != "folder" else CURRENT,
+                                   (f"폴더 {len(folders)}개 · 지금 " if many else "") + (Path(folder).name if folder else "") + where)
+        nxt = self._next_folder(from_start=not folder)
+        if not folder:
+            label = f"{len(folders)}개 폴더 차례로 시작" if many else "이 폴더로 시작"
+        elif folder not in self._done_folders:
+            label = f"계속 — {Path(folder).name}"           # ① 로 돌아와 폴더를 더 넣었으면 하던 폴더부터 마친다
+        else:
+            label = f"다음 폴더로 — {Path(nxt).name}" if nxt else "모두 만들었습니다"
+        self.start_button.setVisible(bool(folders))
+        self.start_button.setEnabled(bool(folders) and label != "모두 만들었습니다")
+        self.start_button.setText(label)
+        self.folder_list.setToolTip("체크한 폴더를 차례로 합니다 — 두 번 누르면 그 폴더로 바로 갑니다" if many else "")
         start, end = self.start_edit.date().toPython(), self.end_edit.date().toPython()
         who = names[0] + (f" 외 {len(names) - 1}명" if len(names) > 1 else "") if names else "출장자 없음"
         self.step_info.set_state(HIDDEN if stage == "folder" else CURRENT if stage == "review" else DONE,
@@ -1245,6 +1411,13 @@ class TravelPage(QWidget):
         self.problem_label.setText("\n".join(f"· {p}" for p in problems[:14]) + (f"\n· … 외 {len(problems) - 14}개" if len(problems) > 14 else ""))
         self.make_button.setText(f"출장증빙 PDF 만들기 ({len(ready)}명)" if len(ready) > 1 else "출장증빙 PDF 만들기")
         self.make_button.setEnabled(files and bool(ready))
+        self.preview_button.setEnabled(files and bool(ready))
+        after = self._next_folder() if folder else ""
+        self.next_button.setVisible(bool(after))
+        self.next_button.setText(f"다음 폴더 — {Path(after).name}" if after else "")
+        self.next_button.setObjectName("primary" if folder in self._done_folders else "")
+        self.next_button.style().unpolish(self.next_button)
+        self.next_button.style().polish(self.next_button)
         self.open_button.setVisible(bool(self._made))
         self.folder_button.setVisible(bool(self._made))
         if not self._made:
@@ -1265,14 +1438,92 @@ class TravelPage(QWidget):
                 route = (f"{len([m for m in trip.route_maps if m])}장 · {model.km(sum(kms))}" if kms else "아직") if trip.tolls else "—"
             review = model.review(trip)
             cells = [trip.name or "(이름 없음)", f"{len(trip.stay)}개", f"{len(trip.public)}개", f"{len(trip.tolls)}개",
-                     f"{nights}박" if trip.lodging else "—", route, " / ".join(review) or "확인할 것 없음"]
+                     f"{nights}박" if trip.lodging else "—", f"{len(trip.other)}개" if trip.other else "—", route,
+                     " / ".join(review) or "확인할 것 없음"]
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 item.setToolTip(text)
                 table.setItem(row, col, item)
 
+    # ── 미리 보기에서 고치기(ui/travel_preview.py 가 부른다) ────────────────
+    def open_preview(self, make: bool = False, name: str = "") -> int:
+        dialog = TravelPreview(self, self, name=name, make_text="이대로 만들기" if make else "")
+        result = dialog.exec()
+        self._sync()
+        return result
+
+    def apply_edit(self, ref: tuple, values: dict) -> None:
+        """미리 보기에서 고친 값을 그 증빙의 표 줄에 적는다 — 표가 원본이다."""
+        kind, row = ref
+        table = self.tables.get(kind)
+        if table is None or row >= table.rowCount():
+            return
+        cols = {"day": 1}
+        if kind == model.OTHER:
+            cols["label"] = 2
+        elif kind != model.STAY:
+            cols["amount"] = 2
+        if kind == model.PUBLIC:
+            cols.update(mode=3, origin=4, goal=5)
+        if kind == model.LODGING:
+            cols["nights"] = 3
+        if kind in PLACE_COL:
+            cols["place"] = PLACE_COL[kind]
+        changed = []
+        table.blockSignals(True)
+        for key, value in values.items():
+            col = cols.get(key)
+            if col is None:
+                continue
+            text = str(value).strip()
+            if key == "day" and text:
+                day = _parse_day(text, self._year())
+                text = day.isoformat() if day else text
+            elif key == "amount":
+                number = _parse_int(text)
+                text = f"{number:,}" if number is not None else ""
+            item = table.item(row, col)
+            if item is None:
+                item = QTableWidgetItem("")
+                table.setItem(row, col, item)
+            if item.text() != text:
+                item.setText(text)
+                changed.append(key)
+        table.blockSignals(False)
+        table.mark_unclear()
+        if changed:
+            self.log(f"미리 보기에서 고침: {model.KIND_NAMES.get(kind, kind)} {row + 1}번째 줄 — {', '.join(changed)}")
+        self._sync()
+
+    def route_rows(self, driver: str) -> list[tuple]:
+        """자차 출장자의 구간들 — (열쇠, 구간 이름, '출발 → 목적지', km)."""
+        return [(key, route["label"], f"{route['origin'] or '?'} → {route['goal'] or '?'}", route["km"])
+                for key, route in sorted(self._routes.items()) if key[0] == driver]
+
+    def fuel_of(self, driver: str) -> str:
+        return self._fuel_of.get(driver, "")
+
+    def apply_route(self, driver: str, kms: dict, fuel: str) -> None:
+        """미리 보기에서 고친 구간 km · 연료 — 사람이 미리 보기를 보고 고친 것이라 자차 경로 확인은 풀지 않는다."""
+        for key, value in kms.items():
+            route = self._routes.get(key)
+            if route is not None and route["km"] != value:
+                route["km"] = value
+                route["status"] = "직접 적음" if value is not None else route["status"]
+        if fuel and fuel != self._fuel_of.get(driver, ""):
+            box = self.fuel_boxes.get(driver)
+            if box is not None:
+                box.blockSignals(True)
+                if box.findData(fuel) < 0:
+                    box.addItem(fuel, fuel)
+                box.setCurrentIndex(box.findData(fuel))
+                box.blockSignals(False)
+            self._set_fuel(driver, fuel, recheck=False)
+        self._fill_route_table()
+        self._sync()
+
     # ── ④ 만들기 ────────────────────────────────────────────────────────
-    def _make(self) -> None:
+    def _make(self, confirmed: bool = False) -> None:
         folder = Path(self.folder_edit.text().strip())
         if not folder.is_dir():
             QMessageBox.warning(self, "출장증빙 만들기", f"저장할 폴더가 없습니다:\n{folder}")
@@ -1282,11 +1533,12 @@ class TravelPage(QWidget):
         problems = model.traveler_problems(self.base_trip(), names)
         for trip in trips:
             problems += [(f"{trip.name}: " if len(trips) > 1 else "") + p for p in model.problems(trip) + model.review(trip)]
-        if problems:
-            answer = QMessageBox.question(self, "출장증빙 만들기", "확인할 것이 있습니다:\n\n" + "\n".join(dict.fromkeys(problems[:14]))
-                                          + "\n\n그래도 만들까요?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if answer != QMessageBox.Yes:
+        if problems and not confirmed:
+            # 확인할 것이 있으면 묻는 글 대신 미리 보기 — 칠한 곳을 눌러 고친 뒤 [이대로 만들기](담당자 2026-11-10)
+            first = next((t.name for t in trips if model.problems(t) or model.review(t)), "")
+            if self.open_preview(make=True, name=first) != PREVIEW_MAKE:
                 return
+            trips = [t for t in self.trips() if not model.blocking(t)]
         from ...travel import render
         made, lines = [], []
         for trip in trips:
@@ -1304,6 +1556,11 @@ class TravelPage(QWidget):
         if made:
             lines.append(f"저장한 곳: {folder}")
             self.state_pill.set_status("만듦", "success")
+            self._done_folders.add(str(folder))
+            self._mark_folders()
+            after = self._next_folder()
+            if after:
+                lines.append(f"다음 폴더: {Path(after).name} — 아래 [다음 폴더] 를 누르세요")
         self.result_label.setText("\n".join(lines))
         self._sync()
 

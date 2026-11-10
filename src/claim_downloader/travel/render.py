@@ -252,6 +252,7 @@ class _Cell:
     need: float          # 잘 보일 배율
     w: float
     h: float
+    ref: tuple = ()      # 어느 증빙인지(model.Evidence.ref) — 미리 보기에서 눌러 고칠 때
 
 
 def _cells(block: Block, cache: dict, needs: dict) -> list[_Cell]:
@@ -259,16 +260,17 @@ def _cells(block: Block, cache: dict, needs: dict) -> list[_Cell]:
     out = []
     for i, path in enumerate(block.images):
         caption = block.captions[i] if i < len(block.captions) else ""
+        ref = block.refs[i] if i < len(block.refs) else ()
         images = cache.setdefault(path, load_images(path))
         part = block.parts[i] if i < len(block.parts) else None
         if part is not None and part < len(images):
             images = [images[part]]
         if not images:
-            out.append(_Cell(None, caption or path.name, 1.0, 600, 260))
+            out.append(_Cell(None, caption or path.name, 1.0, 600, 260, ref))
         for j, image in enumerate(images):
             if id(image) not in needs:
                 needs[id(image)] = legible_scale(image)
-            out.append(_Cell(image, caption if j == 0 else "", needs[id(image)], image.width(), image.height()))
+            out.append(_Cell(image, caption if j == 0 else "", needs[id(image)], image.width(), image.height(), ref))
     return out
 
 
@@ -513,8 +515,8 @@ def _draw_cell(p: QPainter, rect: QRectF, cell: _Cell, cap_h: float) -> None:
     p.drawImage(target, image)
 
 
-def _draw_grid(p: QPainter, rect: QRectF, cells: list[_Cell], grid: _Grid) -> None:
-    """줄마다 실제 높이로 위에서부터 — 설명 글 바로 아래에 증빙. 줄 안에서는 가운데."""
+def _draw_grid(p: QPainter, rect: QRectF, cells: list[_Cell], grid: _Grid, mark=None) -> None:
+    """줄마다 실제 높이로 위에서부터 — 설명 글 바로 아래에 증빙. 줄 안에서는 가운데. mark(칸, ref) 는 미리 보기가 칸 자리를 받는다."""
     col_w = rect.width() / grid.cols
     cap_h = _caption_h(cells)
     heights = _row_heights(cells, rect.width(), rect.height(), grid)
@@ -524,34 +526,114 @@ def _draw_grid(p: QPainter, rect: QRectF, cells: list[_Cell], grid: _Grid) -> No
         # 마지막 줄이 덜 차면 그 줄을 가운데로
         left = rect.left() + (grid.cols - len(row)) * col_w / 2
         for c, cell in enumerate(row):
-            _draw_cell(p, QRectF(left + c * col_w, y, col_w, row_h), cell, cap_h)
+            box = QRectF(left + c * col_w, y, col_w, row_h)
+            _draw_cell(p, box, cell, cap_h)
+            if mark is not None and cell.ref:
+                mark(box, cell.ref, "cell")
         y += row_h
+
+
+PAGE_SIZE = QSizeF(QPageSize(QPageSize.A4).sizePixels(DPI))      # 쪽 크기(점) — PDF 와 미리 보기가 같은 자리에 그린다
+
+
+@dataclass
+class Hit:
+    """미리 보기에서 누를 자리 — 몇째 쪽(0부터)의 어느 칸이 어느 증빙(또는 이동경로 · 연료)인지. rect 는 쪽 좌표(PAGE_SIZE)."""
+    page: int
+    rect: QRectF
+    ref: tuple
+    where: str           # cell(증빙 칸) · bar(묶음 줄) · head(머리 줄)
+
+
+class _PdfTarget:
+    def __init__(self, out: Path):
+        self.writer = QPdfWriter(str(out))
+        self.writer.setResolution(DPI)
+        self.writer.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Portrait, QMarginsF(0, 0, 0, 0)))
+        self.writer.setTitle(out.stem)
+        self.painter: QPainter | None = None
+
+    def begin(self) -> QPainter:
+        self.painter = QPainter(self.writer)
+        return self.painter
+
+    def next(self) -> QPainter:
+        self.writer.newPage()
+        return self.painter
+
+    def end(self) -> None:
+        self.painter.end()
+
+
+class _ImageTarget:
+    """미리 보기 — 쪽마다 그림 하나(PAGE_SIZE × scale)에 PDF 와 같은 좌표로 그린다."""
+
+    def __init__(self, scale: float):
+        self.scale = scale
+        self.images: list[QImage] = []
+        self.painter: QPainter | None = None
+
+    def _new(self) -> QPainter:
+        image = QImage(int(PAGE_SIZE.width() * self.scale), int(PAGE_SIZE.height() * self.scale), QImage.Format_RGB32)
+        image.fill(QColor("white"))
+        self.images.append(image)
+        self.painter = QPainter(image)
+        self.painter.setRenderHint(QPainter.Antialiasing)
+        self.painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        self.painter.scale(self.scale, self.scale)
+        return self.painter
+
+    def begin(self) -> QPainter:
+        return self._new()
+
+    def next(self) -> QPainter:
+        self.painter.end()
+        return self._new()
+
+    def end(self) -> None:
+        if self.painter is not None:
+            self.painter.end()
 
 
 def render(pages: list[Page], out: Path) -> int:
     """쪽들을 out 에 쓰고 실제 쪽 수를 돌려준다. 쪽 짜임 하나가 증빙이 잘 보이게 한 쪽에 안 들어가면 같은 머리 줄 '(계속)' 으로 다음 쪽에 이어 그린다."""
-    writer = QPdfWriter(str(out))
-    writer.setResolution(DPI)
-    writer.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Portrait, QMarginsF(0, 0, 0, 0)))
-    writer.setTitle(out.stem)
-    painter = QPainter(writer)
-    size = QSizeF(writer.width(), writer.height())
+    return _paint(pages, _PdfTarget(out))
+
+
+def preview(pages: list[Page], scale: float = 0.6, cache: dict | None = None, needs: dict | None = None) -> tuple[list[QImage], list[Hit]]:
+    """앱 안 미리 보기 — PDF 와 똑같이 짠 쪽 그림들과 누를 자리(Hit)들. 담당자 2026-11-10 "확인필요한 건은 어플내에서 증빙양식 미리보기 처럼".
+    cache · needs 를 넘기면 증빙 그림 · 글자 높이를 다시 읽지 않는다(고칠 때마다 다시 그리므로)."""
+    target = _ImageTarget(scale)
+    hits: list[Hit] = []
+    _paint(pages, target, hits, cache, needs)
+    return target.images, hits
+
+
+def _paint(pages: list[Page], target, hits: list | None = None, cache: dict | None = None, needs: dict | None = None) -> int:
+    painter = target.begin()
+    size = PAGE_SIZE
     frame = QRectF(MARGIN, MARGIN, size.width() - 2 * MARGIN, size.height() - 2 * MARGIN)
-    cache: dict = {}
-    needs: dict = {}
+    cache = {} if cache is None else cache
+    needs = {} if needs is None else needs
     count = 0
 
+    def mark(rect: QRectF, ref: tuple, where: str) -> None:
+        if hits is not None and ref:
+            hits.append(Hit(count - 1, QRectF(rect), ref, where))
+
     def new_page(page: Page, cont: bool) -> float:
-        nonlocal count
+        nonlocal count, painter
         if count:
-            writer.newPage()
+            painter = target.next()
         count += 1
         painter.setPen(QPen(LINE, 3))
         painter.drawRect(frame)
         head = list(page.head)
         if cont:
             head[0] += " (계속)"
-        _draw_bar(painter, QRectF(frame.left(), frame.top(), frame.width(), HEAD_H), head, 21)
+        head_rect = QRectF(frame.left(), frame.top(), frame.width(), HEAD_H)
+        _draw_bar(painter, head_rect, head, 21)
+        mark(head_rect, page.head_ref, "head")
         y = frame.top() + HEAD_H + GAP
         if not cont:
             painter.setFont(_font(17, True))
@@ -577,12 +659,14 @@ def render(pages: list[Page], out: Path) -> int:
                 block = page.blocks[slot.block]
                 if block.title:
                     title = block.title if slot.start == 0 else [block.title[0] + " (계속)"] + block.title[1:]
-                    _draw_bar(painter, QRectF(inner_left, y, inner_w, TITLE_H), title, 17, SOFT)
+                    bar = QRectF(inner_left, y, inner_w, TITLE_H)
+                    _draw_bar(painter, bar, title, 17, SOFT)
+                    mark(bar, block.title_ref, "bar")
                     y += TITLE_H + GAP
                 if slot.count:
                     cells = cells_of[slot.block][slot.start:slot.start + slot.count]
-                    _draw_grid(painter, QRectF(inner_left, y, inner_w, slot.room_h), cells, best_grid(cells, inner_w, slot.room_h))
+                    _draw_grid(painter, QRectF(inner_left, y, inner_w, slot.room_h), cells, best_grid(cells, inner_w, slot.room_h), mark)
                     y += slot.room_h
                 y += GAP
-    painter.end()
+    target.end()
     return count

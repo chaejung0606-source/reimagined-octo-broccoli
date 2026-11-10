@@ -158,9 +158,30 @@ def test_scan_folder_sorts_by_item_and_skips_others(tmp_path):
         path.write_bytes(b"x")
     scan = model.scan_folder(tmp_path)
     names = {k: [p.name for p in v] for k, v in scan.files.items()}
-    assert names == {"stay": ["0528.png"], "public": ["KTX 0528.pdf"], "toll": ["0528.png"], "lodging": ["호텔.pdf"]}
+    assert names == {"stay": ["0528.png"], "public": ["KTX 0528.pdf"], "toll": ["0528.png"], "lodging": ["호텔.pdf"], "other": []}
     assert scan.route_map.name == "경로 지도.png"
     assert [p.name for p in scan.unsorted] == ["기타.png"]
+
+
+def test_named_files_outside_the_four_go_to_other(tmp_path):
+    """담당자 2026-11-10 "출장비증빙 서류파일외 파일명 앞에 이름이 붙어있는 파일은 기타증빙으로 넣기"."""
+    for rel in ("홍길동_체류증빙 1110.png", "홍길동_참가확인서.pdf", "홍길동_출장 공문.pdf", "김철수 교육 수료증.png",
+                "홍길동_국내 출장신청서.pdf", "홍길동 출장증빙_26.11.10.pdf", "참가확인서.pdf", "체류/홍길동_1111.png"):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    scan = model.scan_folder(tmp_path, ["홍길동", "김철수"])
+    assert sorted(p.name for p in scan.files["other"]) == ["김철수 교육 수료증.png", "홍길동_참가확인서.pdf", "홍길동_출장 공문.pdf"]
+    assert sorted(p.name for p in scan.files["stay"]) == ["홍길동_1111.png", "홍길동_체류증빙 1110.png"]   # 체류 폴더 안이면 체류
+    assert not scan.unsorted                                       # 이름 없는 참가확인서 · 출장신청서 · 만든 출장증빙은 넣지 않는다
+    assert model.scan_folder(tmp_path).files["other"] and "김철수 교육 수료증.png" not in [p.name for p in model.scan_folder(tmp_path).files["other"]]
+    assert model.other_label(Path("홍길동_참가 확인서.pdf")) == "참가 확인서"
+    assert model.other_label(Path("김철수 교육 수료증.png"), ["김철수"]) == "교육 수료증"
+    other = [Evidence(Path("홍길동_참가확인서.pdf"), date(2026, 11, 12), label="참가확인서", ref=("other", 0))]
+    trip = Trip(name="홍길동", start=date(2026, 11, 10), end=date(2026, 11, 12), stay=[ev("s.png", date(2026, 11, 10))], other=other)
+    pages = model.pages(trip)
+    assert pages[-1].head == ["* 기타 증빙", "1건"] and pages[-1].blocks[0].captions == ["참가확인서 · 11월 12일(목)"]
+    assert model.unclear(trip, "other", other[0]) == [] and not model.blocking(Trip(name="가", other=other))
 
 
 def test_output_path_has_trip_date_and_never_overwrites(tmp_path):

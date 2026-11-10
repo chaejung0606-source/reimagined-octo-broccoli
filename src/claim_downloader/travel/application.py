@@ -16,10 +16,9 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from .model import _FULL_DATE, _make, pdf_text, split_places
+from .model import _FULL_DATE, APPLICATION_WORDS, _make, pdf_text, split_places
 
-# 파일 이름에 이 글자(띄어쓰기 무시)가 있으면 출장신청서로 본다 — 국내 출장신청서(MMDD).pdf · 출장명령서 · 출장계획서
-APPLICATION_WORDS = ("출장신청", "출장명령", "출장계획", "출장품의", "출장신고")
+# 파일 이름에 APPLICATION_WORDS(model — 띄어쓰기 무시)가 있으면 출장신청서로 본다 — 국내 출장신청서(MMDD).pdf · 출장명령서 · 출장계획서
 READABLE = (".pdf", ".hwpx", ".txt")
 UNREADABLE = (".hwp", ".doc", ".docx", ".jpg", ".jpeg", ".png")
 
