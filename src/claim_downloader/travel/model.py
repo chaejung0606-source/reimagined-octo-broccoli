@@ -458,31 +458,48 @@ def _place_title(place: str) -> list[str]:
 
 
 def stay_pages(trip: Trip) -> list[Page]:
-    """머리 줄 오른쪽 칸은 비운다 — 체류 증빙에는 금액을 적지 않는다(담당자 2026-10-27 그림). 그 아래 출장지 줄('삼척 출장 증빙').
+    """머리 줄 오른쪽 칸은 비운다 — 체류 증빙에는 금액을 적지 않는다(담당자 2026-10-27 그림). 그 아래 출장지 줄('삼척 출장 증빙') 맨 오른쪽에 일자 칩
+    (담당자 2026-11-10 "체류증빙 일자는 장소와 같은 행 맨 오른쪽에 · 색상은 다른 증빙서식과 동일하게" — 하이패스의 '하이패스 8,200원' 같은 칩).
+    그 출장지의 날이 여럿이면 칩은 기간이고 칸마다 그날 일자 이름표(같은 칩 색) — 영수증을 나란히 놓아야 7일도 몇 쪽에 들어간다.
     출장지가 여러 곳이면 출장지마다 줄 하나와 그곳의 날들 — 7일 이하면 한 쪽에 차례로, 8일 이상이면 일자마다 한 쪽."""
     items = _sorted(trip.stay)
     if not items:
         return []
     head = ["* 체류 증빙", ""]
     places = trip.places
+
+    def block(place: str, group: list[Evidence]) -> Block:
+        days = sorted({e.day for e in group if e.day})
+        one_day = len({e.day for e in group}) == 1
+        if one_day:
+            when = korean_date(days[0]) if days else "일자 없음"
+            title = [*_place_title(place), when] if place else [when]
+            captions: list[str] = []
+        else:
+            when = days_period(days)
+            title = [*_place_title(place), when] if place and when else _place_title(place)
+            captions = [korean_date(e.day) if e.day else e.path.stem for e in group]
+        return Block([e.path for e in group], captions, title=title, cols=grid_cols(len(group)), fill=True,
+                     refs=[e.ref for e in group], title_ref=group[0].ref if one_day else ())
+
     if trip.days <= ONE_PAGE_STAY_DAYS:
         groups: dict[str, list[Evidence]] = {}
         for e in items:
             groups.setdefault(trip.place_of(e), []).append(e)
         order = [p for p in places if p in groups] + [p for p in groups if p not in places]
-        blocks = []
-        for place in order:
-            group = groups[place]
-            captions = [korean_date(e.day) if e.day else e.path.stem for e in group]
-            blocks.append(Block([e.path for e in group], captions, title=_place_title(place), cols=grid_cols(len(group)), fill=True,
-                                refs=[e.ref for e in group]))
-        return [Page(head, blocks)]
-    pages = []
-    for (day, place), group in _group(items, lambda e: (e.day, trip.place_of(e))):
-        caption = korean_date(day) if day else "일자 없음"
-        pages.append(Page(head, [Block([e.path for e in group], [caption] + [""] * (len(group) - 1), title=_place_title(place),
-                                       cols=grid_cols(len(group)), fill=True, refs=[e.ref for e in group])]))
-    return pages
+        return [Page(head, [block(place, groups[place]) for place in order])]
+    return [Page(head, [block(place, group)]) for (_day, place), group in _group(items, lambda e: (e.day, trip.place_of(e)))]
+
+
+def days_period(days: list) -> str:
+    """체류 날들의 기간 — '2026년 5월 28일 ~ 5월 30일'(해가 다르면 해까지). 날을 모르면 ''."""
+    if not days:
+        return ""
+    first, last = days[0], days[-1]
+    if first == last:
+        return korean_date(first)
+    tail = f"{last.month}월 {last.day}일" if last.year == first.year else f"{last.year}년 {last.month}월 {last.day}일"
+    return f"{first.year}년 {first.month}월 {first.day}일 ~ {tail}"
 
 
 def _group(items, key):

@@ -34,7 +34,8 @@ def test_stay_one_page_up_to_seven_days_then_page_per_day():
     trip.end = date(2026, 5, 8)
     trip.stay.append(ev("8.png", date(2026, 5, 8)))
     pages = model.stay_pages(trip)
-    assert len(pages) == 8 and pages[0].blocks[0].captions == ["2026년 5월 1일 금요일"]
+    # 하루짜리 묶음은 일자가 묶음 줄 맨 오른쪽(출장지가 없으면 줄 제목) — 칸 이름표는 없다(담당자 2026-11-10)
+    assert len(pages) == 8 and pages[0].blocks[0].title == ["2026년 5월 1일 금요일"] and pages[0].blocks[0].captions == []
 
 
 def test_stay_head_has_no_amount_and_place_bar():
@@ -43,7 +44,12 @@ def test_stay_head_has_no_amount_and_place_bar():
                 stay=[ev("a.png", date(2026, 5, 28)), ev("b.png", date(2026, 5, 29))])
     page = model.stay_pages(trip)[0]
     assert page.head == ["* 체류 증빙", ""]
-    assert [b.title for b in page.blocks] == [["삼척 출장 증빙"]]
+    # 담당자 2026-11-10 "체류증빙 일자는 장소와 같은 행 맨 오른쪽에" — 날이 여럿이면 기간 칩 + 칸마다 일자, 하루면 그날 칩만
+    assert [b.title for b in page.blocks] == [["삼척 출장 증빙", "2026년 5월 28일 ~ 5월 29일"]]
+    assert page.blocks[0].captions == ["2026년 5월 28일 목요일", "2026년 5월 29일 금요일"]
+    trip.end, trip.stay = trip.start, trip.stay[:1]
+    one = model.stay_pages(trip)[0].blocks[0]
+    assert one.title == ["삼척 출장 증빙", "2026년 5월 28일 목요일"] and one.captions == [] and one.title_ref == trip.stay[0].ref
 
 
 def test_several_destinations():
@@ -58,8 +64,8 @@ def test_several_destinations():
                 lodging=[ev("h1.png", date(2026, 5, 28), 90000, place="삼척"), ev("h2.png", date(2026, 5, 29), 90000, place="부산")],
                 tolls=[ev("t.png", date(2026, 5, 28), 2000)], legs=[120, 300, 330])
     page = model.stay_pages(trip)[0]
-    assert [(b.title, [p.name for p in b.images]) for b in page.blocks] == [(["삼척 출장 증빙"], ["a.png", "b.png"]),
-                                                                          (["부산 출장 증빙"], ["c.png"])]
+    assert [(b.title, [p.name for p in b.images]) for b in page.blocks] == [
+        (["삼척 출장 증빙", "2026년 5월 28일 ~ 5월 29일"], ["a.png", "b.png"]), (["부산 출장 증빙", "2026년 5월 30일 토요일"], ["c.png"])]
     route = model.car_pages(trip)[-1].blocks[-1].title
     assert route == ["2026년 5월 28일 목요일", "출발지→삼척 120km", "삼척→부산 300km", "부산→출발지 330km", "총 이동경로 750km"]
     assert [p.head[2] for p in model.lodging_pages(trip)] == ["지원금액 70,000원", "지원금액 80,000원"]   # 그 밖의 지역 · 광역시

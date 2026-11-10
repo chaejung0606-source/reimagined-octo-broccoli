@@ -68,7 +68,8 @@ def test_small_text_stay_moves_to_next_pages_evenly(qapp, tmp_path):
     out = tmp_path / "small.pdf"
     assert render.render(model.pages(trip), out) == 3
     texts = _pages_text(out)
-    assert [sum(f"5월{d.day}일" in t for d in days) for t in texts] == [3, 2, 2]
+    # 칸마다 그날 일자 이름표(요일까지) — 묶음 줄의 기간 칩('5월 1일 ~ 5월 7일')은 세지 않는다
+    assert [sum(f"5월{d.day}일{model.WEEKDAYS[d.weekday()]}요일" in t for d in days) for t in texts] == [3, 2, 2]
     assert "(계속)" in texts[1] and "삼척출장증빙(계속)" in texts[2]
 
 
