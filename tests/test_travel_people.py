@@ -398,6 +398,8 @@ def test_find_route_in_mock_naver_map(browser_page, tmp_path, monkeypatch):
                                   wait=lambda s: page.wait_for_timeout(int(s * 300)))
     assert not missing.ok and missing.need_place == "원주" and "찾지 못했습니다" in missing.note
     assert navermap.shot_path(tmp_path, "홍길동 가는 길(오는 길도 같은 거리)").name.endswith("_2.png")     # 덮어쓰지 않는다
+    # 그림 이름에는 출장자 이름이 들지만 기록에는 남기지 않는다(28절)
+    assert logs and not any("홍길동" in line for line in logs), logs
 
 
 SEARCH_PAGE = """<!doctype html><html><body><div id="list">검색 중</div><script>
@@ -520,7 +522,7 @@ class FakeWorker:
     def find_routes(self, legs, folder, keys, owner="travel"):
         self.calls.append(legs)
         out = []
-        for (origin, goal, label), key in zip(legs, keys):
+        for (origin, goal, label, *_shot), key in zip(legs, keys):
             if goal == "원주":
                 out.append((key, navermap.RouteResult(origin, goal, label, need_place="원주", note="'원주' 를 네이버 지도에서 찾지 못했습니다")))
             else:
@@ -572,6 +574,9 @@ def test_page_reviews_application_and_checks_per_traveler(qapp, tmp_path, isolat
     qapp.processEvents()
     # ③ 들어가면 보이지 않는 브라우저에서 최단거리를 저절로 찾는다
     assert worker.calls and worker.calls[-1][0][1] == "연세대학교 원주캠퍼스"
+    # 기록용 이름표에는 출장자 이름이 없고(출장자 N), 지도 그림 이름표에만 있다
+    leg = worker.calls[-1][0]
+    assert leg[2].startswith("출장자 1 가는 길") and "홍길동" not in leg[2] and leg[3].startswith("홍길동 가는 길")
     assert page._routes[("홍길동", 0)]["km"] == 76.0 and page.route_table.rowCount() == 1
     assert not page.tables["stay"].isColumnHidden(page.tables["stay"].person_col)
     assert page.people_table.rowCount() == 2
@@ -593,10 +598,39 @@ def test_page_reviews_application_and_checks_per_traveler(qapp, tmp_path, isolat
     assert opened == ["김철수"]                       # 확인할 것이 있는 사람부터
     made = sorted(p.name for p in folder.glob("* 출장증빙_26.11.10.pdf"))
     assert made == ["김철수 출장증빙_26.11.10.pdf", "홍길동 출장증빙_26.11.10.pdf"]
+    # 기록(_실행로그.txt)에는 출장자 이름을 남기지 않는다 — 파일 이름은 화면에만(28절)
+    assert "홍길동 출장증빙_26.11.10.pdf" in page.result_label.text()
+    page.log("출장신청서 없음: 김철수 원주 출장")          # 그래도 섞인 이름은 가린다(신청서 · 폴더 이름)
+    written = settings.log_path().read_text(encoding="utf-8")
+    assert "출장증빙 만듦: 출장자 1 · 26.11.10 —" in written and "출장증빙 만듦: 출장자 2 · 26.11.10 —" in written
+    assert "출장신청서 없음: 김○○ 원주 출장" in written
+    for secret in ("홍길동", "김철수"):
+        assert secret not in written, secret
     # 목적지를 못 찾으면 다시 그 출장자의 출장목적지를 묻는다
     page._set_goal("홍길동", "원주")
     page._find_routes(force=True)
     assert "홍길동" in page._needs_goal() and "찾지 못했습니다" in page._needs_goal()["홍길동"]
+
+
+def test_session_find_routes_keeps_names_out_of_the_log(tmp_path, isolated_home, monkeypatch):
+    """구간 이름표는 (출발지, 목적지, 기록용, 그림용) — 기록에는 '출장자 N', 그림 파일 이름에는 출장자 이름. 옛 3칸 꼴도 받는다."""
+    from claim_downloader import session as session_mod
+    shots = []
+
+    def fake_find_route(page, origin, goal, out, log, wait, label="", known=None, **_kw):
+        shots.append(out.name)
+        log(f"네이버 지도 최단거리 {label}: 76km — 지도 그림 저장")
+        return navermap.RouteResult(origin=origin, goal=goal, label=label, km=76.0, image=str(out), ok=True)
+    monkeypatch.setattr(navermap, "find_route", fake_find_route)
+    logs: list = []
+    s = session_mod.ErpSession(logs.append, lambda m: True)
+    s._map_page = lambda: object()
+    found = s.find_routes([("강원대학교 춘천캠퍼스", "연세대학교 원주캠퍼스", "출장자 1 가는 길", "홍길동 가는 길"),
+                           ("강원대학교 춘천캠퍼스", "원주시청", "출장자 2 구간 1")], tmp_path)
+    assert [r.ok for r in found] == [True, True]
+    assert shots == ["네이버지도 최단거리_홍길동 가는 길.png", "네이버지도 최단거리_출장자 2 구간 1.png"]
+    assert any("✓ 네이버 지도 최단거리 출장자 1 가는 길" in line for line in logs)
+    assert not any("홍길동" in line for line in logs), logs
 
 
 def test_page_picks_trip_by_folder_date_and_can_switch(qapp, tmp_path, isolated_home):
@@ -1103,7 +1137,7 @@ def test_page_waits_for_confirmation_then_continues(qapp, tmp_path, isolated_hom
         _image(folder / name)
     worker = FakeWorker(tmp_path)
     captured = []
-    worker.capture_route = lambda folder, label, key, owner="travel": captured.append(key)
+    worker.capture_route = lambda folder, label, key, owner="travel", shot="": captured.append((key, label, shot))
     page = travel_page.TravelPage(worker=worker)
     page.show()
     page.load_folder(str(folder))
@@ -1121,7 +1155,9 @@ def test_page_waits_for_confirmation_then_continues(qapp, tmp_path, isolated_hom
     assert page._routes[first]["status"].startswith("확인 기다림") and page._routes[second]["status"] == "차례 기다림"
     assert not page._searching & {first, second}
     page.route_shoot.click()                                           # 표에서 줄을 고르지 않아도 기다리는 구간에
-    assert captured == [first]
+    assert [key for key, _label, _shot in captured] == [first]
+    # 기록에 남는 이름표는 '출장자 N …', 출장자 이름은 지도 그림 파일 이름에만(28절)
+    assert captured[0][1].startswith("출장자 1 ") and "홍길동" not in captured[0][1] and captured[0][2].startswith("홍길동 ")
     calls_before = len(worker.calls)
     page._on_routes([(first, navermap.RouteResult("강원대학교 춘천캠퍼스", "원주시청", "구간 1", km=82.0, image=str(_image(tmp_path / "m.png")), ok=True))])
     qapp.processEvents()

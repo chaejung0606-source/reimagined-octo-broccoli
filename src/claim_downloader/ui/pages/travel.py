@@ -370,10 +370,31 @@ class TravelPage(QWidget):
 
     # ── 기록 · 브라우저 ────────────────────────────────────────────────────
     def log(self, message: str) -> None:
+        """기록에는 출장자 이름을 남기지 않는다(28절) — 글에 이름을 넣지 않고, 그래도 섞이면(신청서 · 폴더 이름) 아는 이름을 가린다."""
         if self._log is None:
             from ...session import file_logger
             self._log = file_logger(lambda _m: None)
-        self._log(message)
+        self._log(self._mask_names(str(message)))
+
+    def _known_names(self) -> set[str]:
+        names = set(self._names())
+        app = self._review
+        if app is not None:
+            names.update(app.travelers)
+            for trip in app.trips:
+                names.update(trip.travelers)
+        return {n.strip() for n in names if n and len(n.strip()) >= 2 and n.strip() != "출장자"}
+
+    def _mask_names(self, text: str) -> str:
+        from ...share_log import mask_name
+        for name in sorted(self._known_names(), key=len, reverse=True):      # '김민수' 를 '김민' 보다 먼저
+            text = text.replace(name, mask_name(name))
+        return text
+
+    def _who(self, name: str) -> str:
+        """기록에 쓰는 출장자 표시 — '출장자 N'(② 의 출장자 칸 차례). 이름 대신 쓴다."""
+        names = self._names()
+        return f"출장자 {names.index(name) + 1}" if name in names else "출장자"
 
     def _worker(self):
         if self.browser is None:
@@ -1288,7 +1309,9 @@ class TravelPage(QWidget):
             keys.append(key)
         if not keys:
             return
-        legs = [(self._routes[k]["origin"], self._routes[k]["goal"], f"{k[0]} {self._routes[k]['label']}") for k in keys]
+        # 기록에 남는 이름표는 '출장자 N 가는 길'(이름 없음), 지도 그림 파일 이름에는 출장자 이름을 넣는다(폴더에 출장자가 여럿일 때 가리게)
+        legs = [(self._routes[k]["origin"], self._routes[k]["goal"], f"{self._who(k[0])} {self._routes[k]['label']}",
+                 f"{k[0]} {self._routes[k]['label']}") for k in keys]
         self._searching.update(keys)
         self._fill_route_table()
         self.log(f"네이버 지도 최단거리 찾기 {len(keys)}구간 (앱 브라우저의 네이버 지도 탭 — 보안문자가 뜨면 그 창에서 입력해 주세요)")
@@ -1364,7 +1387,8 @@ class TravelPage(QWidget):
             return
         self._searching.add(key)
         self._fill_route_table()
-        self._worker().capture_route(folder, f"{key[0]} {self._routes[key]['label']}", key)
+        self._worker().capture_route(folder, f"{self._who(key[0])} {self._routes[key]['label']}", key,
+                                     shot=f"{key[0]} {self._routes[key]['label']}")
 
     def _pick_map(self) -> None:
         key = self._selected_route()
@@ -1660,7 +1684,9 @@ class TravelPage(QWidget):
             made.append(out)
             support = sum(model.lodging_support(e, trip.cap(e), trip.people)[0] for e in trip.lodging)
             lines.append(f"✓ {out.name} — {count}쪽" + (f" · 숙박 지원금액 {model.won(support)}" if trip.lodging else ""))
-            self.log(f"출장증빙 만듦: {out.name} — {count}쪽")
+            # 파일 이름(<이름> 출장증빙_…)은 화면에만 — 기록에는 출장자 차례 · 출장 시작일 · 쪽 수(28절 '기록에는 이름을 남기지 않는다')
+            day = f"{trip.start:%y.%m.%d}" if trip.start else "날짜 없음"
+            self.log(f"출장증빙 만듦: {self._who(trip.name)} · {day} — {count}쪽")
         self._made = made
         if made:
             self.preview_note.hide()

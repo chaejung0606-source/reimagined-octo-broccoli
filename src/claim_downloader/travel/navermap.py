@@ -83,7 +83,7 @@ class Place:
 class RouteResult:
     origin: str = ""
     goal: str = ""
-    label: str = ""                 # 가는 길 · 오는 길 · 구간 N
+    label: str = ""                 # 기록에 남는 이름표 — '출장자 N 가는 길' · '출장자 N 구간 N'(출장자 이름은 넣지 않는다, 28절)
     km: float | None = None
     image: str = ""                 # 찍은 그림 파일
     ok: bool = False
@@ -535,7 +535,8 @@ def find_route(page, origin: str, goal: str, out: Path, log: Callable[[str], Non
     out.parent.mkdir(parents=True, exist_ok=True)
     page.screenshot(path=str(out))
     result.km, result.image, result.ok = km, str(out), True
-    log(f"네이버 지도 최단거리 {label}: {km:g}km — {out.name}")
+    # 그림 이름(out.name)에는 출장자 이름이 든다 — 기록에는 남기지 않는다(28절, 그림 경로는 화면 · result.image 에)
+    log(f"네이버 지도 최단거리 {label}: {km:g}km — 지도 그림 저장")
     return result
 
 

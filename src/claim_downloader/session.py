@@ -767,14 +767,16 @@ class ErpSession:
         return page
 
     def find_routes(self, legs: list, folder: Path) -> list:
-        """legs = [(출발지, 목적지, 이름표)] — 구간마다 네이버 지도 거리우선 경로를 앱 브라우저의 네이버 지도 탭에서 찾아 folder 에 그림을 남긴다.
+        """legs = [(출발지, 목적지, 이름표[, 그림 이름표])] — 구간마다 네이버 지도 거리우선 경로를 앱 브라우저의 네이버 지도 탭에서 찾아 folder 에 그림을 남긴다.
+        이름표는 기록에 남는 것이라 출장자 이름이 없고('출장자 1 가는 길'), 그림 이름표(없으면 이름표)는 그림 파일 이름 — 출장자 이름이 들어도 된다(28절).
         못 하면 그 구간의 RouteResult.note(목적지를 못 찾으면 need_place). 사람에게 묻지 않는다 — 화면이 묻는다."""
         from .travel import navermap
         out = []
         known = self._known_places()
         before = dict(known)
         waiting = False
-        for origin, goal, label in legs:
+        for origin, goal, label, *rest in legs:
+            shot = rest[0] if rest and rest[0] else label
             if waiting:
                 # 네이버 지도 창은 하나 — 앞 구간을 사람이 확인하고 찍은 뒤에 다음 구간을 띄운다
                 out.append(navermap.RouteResult(origin=origin, goal=goal, label=label, deferred=True))
@@ -783,7 +785,7 @@ class ErpSession:
                 page = self._map_page()
                 # 찍지 않고 길찾기를 띄워 둔 채 사람의 확인을 기다린다(담당자 2026-11-10 "사용자가 목적지를 확인하거나 틀리면 재설정해가지고
                 # 그 상태를 어플에서 캡쳐") — [이 경로로 찍기] 가 capture_route 로 찍는다
-                result = navermap.find_route(page, origin, goal, navermap.shot_path(Path(folder), label), self.log,
+                result = navermap.find_route(page, origin, goal, navermap.shot_path(Path(folder), shot), self.log,
                                              wait=lambda s, page=page: page.wait_for_timeout(int(s * 1000)), label=label, known=known,
                                              confirm=True)
                 waiting = result.pending
@@ -816,13 +818,14 @@ class ErpSession:
         import json
         settings_mod.update(travel_places=json.dumps(known, ensure_ascii=False))
 
-    def capture_route(self, folder: Path, label: str):
-        """사람이 보이는 브라우저에 띄운 네이버 지도 길찾기 화면을 찍는다 — 자동 찾기가 안 될 때. 열린 지도 창이 없으면 note 만."""
+    def capture_route(self, folder: Path, label: str, shot: str = ""):
+        """사람이 보이는 브라우저에 띄운 네이버 지도 길찾기 화면을 찍는다 — 자동 찾기가 안 될 때. 열린 지도 창이 없으면 note 만.
+        label 은 기록에 남는 이름표(출장자 이름 없음), shot 은 그림 파일 이름표(없으면 label) — find_routes 와 같다."""
         from .travel import navermap
         page = next((p for p in self._pages() if _host(p.url) in NAVER_MAP_HOSTS), None) if self.browser_open else None
         if page is None:
             return navermap.RouteResult(label=label, note="네이버 지도 창이 없습니다 — [브라우저에서 직접] 으로 열고 거리우선 경로를 띄우세요")
-        result = navermap.capture(page, navermap.shot_path(Path(folder), label), label,
+        result = navermap.capture(page, navermap.shot_path(Path(folder), shot or label), label,
                                   wait=lambda s: page.wait_for_timeout(int(s * 1000)))
         if result.places:
             # 사람이 띄운 길찾기의 출발지 · 목적지를 기억한다 — 다음에는 앱이 검색 없이 그 곳으로 길을 찾는다

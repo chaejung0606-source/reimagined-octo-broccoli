@@ -165,9 +165,9 @@ class SessionWorker(QObject):
         """출장증빙 — 구간마다 네이버 지도 최단거리를 앱 브라우저의 네이버 지도 탭에서(담당자 2026-11-10 "백그라운드에서 자동으로"). keys 는 화면이 줄을 찾는 열쇠."""
         self._put("find_routes", (legs, folder, keys), owner)
 
-    def capture_route(self, folder: str, label: str, key, owner: str = "travel") -> None:
-        """출장증빙 — 사람이 보이는 브라우저에 띄운 네이버 지도 길찾기 화면을 찍는다."""
-        self._put("capture_route", (folder, label, key), owner)
+    def capture_route(self, folder: str, label: str, key, owner: str = "travel", shot: str = "") -> None:
+        """출장증빙 — 사람이 보이는 브라우저에 띄운 네이버 지도 길찾기 화면을 찍는다. label 은 기록용(출장자 이름 없음), shot 은 그림 파일 이름표."""
+        self._put("capture_route", (folder, label, key, shot), owner)
 
     @property
     def waiting(self) -> bool:
@@ -425,9 +425,9 @@ class SessionWorker(QObject):
         results = session.find_routes(legs, Path(folder))
         self.routes_found.emit(list(zip(keys, results)))
 
-    def _do_capture_route(self, session: ErpSession, folder: str, label: str, key) -> None:
+    def _do_capture_route(self, session: ErpSession, folder: str, label: str, key, shot: str = "") -> None:
         self.busy.emit(True, "네이버 지도 화면을 찍는 중…")
-        self.routes_found.emit([(key, session.capture_route(Path(folder), label))])
+        self.routes_found.emit([(key, session.capture_route(Path(folder), label, shot))])
 
     def _do_open_site(self, session: ErpSession, site: str) -> None:
         if site == "parking":
