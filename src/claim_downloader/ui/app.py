@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import ai, settings, shortcuts, updater
-from . import ai_status, placement
+from . import ai_status, placement, result_store
 from .log_button import send_log
 from .pages.home import HomePage
 from .shell import Dock, DockOverlay, TopBar, WorkTabs
@@ -49,6 +49,8 @@ COMPACT_BELOW = 800
 
 # 별도 스레드에서 오래 도는 업무 — 탭·앱을 닫기 전에 묻고, 홈의 '이어서 작업하기' 에 보인다
 RUNNING_WORDS = {"download": "청구서를 받는", "meeting": "회의록을 만드는", "claim": "일반청구 작업을 하는"}
+RESULT_PREFIX = "result:"          # 홈 '결과 확인' 에서 연 결과 탭의 id 머리(뒤는 result_store 의 id)
+RESULT_ICON = "document-check"
 
 ASSETS = Path(__file__).parent / "assets"
 log = logging.getLogger(__name__)
@@ -154,6 +156,7 @@ class MainWindow(QMainWindow):
 
         self.home = HomePage()
         self.home.open_task.connect(self.open)
+        self.home.open_result.connect(self.open_result)
         self.home.apply_update.connect(self._apply_update)
         self.home.restart_requested.connect(self.restart)
         # AI 플랫폼 로그인 상태 — 위쪽 바 단추와 홈 띠가 같은 것을 본다(ui/ai_status.py)
@@ -255,6 +258,31 @@ class MainWindow(QMainWindow):
                 self.tabs.set_busy(task_id, page.is_running())     # 닫았던 탭을 다시 열어도 작업 중 점이 그대로
         self.show_task(task_id)
 
+    def open_result(self, result_id: str) -> None:
+        """홈 '결과 확인' 목록의 한 건 — 새 탭에 그 결과 창의 내용(담당자 2026-11-11). 같은 결과를 다시 누르면 그 탭으로."""
+        tab_id = RESULT_PREFIX + result_id
+        if tab_id not in self._pages:
+            entry = result_store.find(result_id)
+            if entry is None:
+                self.statusBar().showMessage("그 결과는 더 남아 있지 않습니다(최근 10건만 남깁니다).", 5000)
+                self.home.refresh_results()
+                return
+            from .pages.result import ResultPage, tab_name
+            try:
+                page = ResultPage(entry)
+            except Exception as error:  # noqa: BLE001 — 옛 판이 남긴 모양이 달라도 앱은 그대로
+                QMessageBox.warning(self, "결과 확인", "남겨 둔 결과를 띄우지 못했습니다: "
+                                    + (str(error).splitlines()[0][:120] if str(error) else type(error).__name__))
+                return
+            page.close_requested.connect(lambda tid=tab_id: self.close_task(tid))
+            page.setProperty("tab_name", tab_name(entry))
+            self._pages[tab_id] = page
+            self.stack.addWidget(page)
+            self.dock_overlay.raise_()
+        if not self.tabs.has(tab_id):
+            self.tabs.add(tab_id, self._pages[tab_id].property("tab_name") or "결과", RESULT_ICON)
+        self.show_task(tab_id)
+
     def show_task(self, task_id: str) -> None:
         page = self._pages.get(task_id)
         if page is None:
@@ -279,6 +307,11 @@ class MainWindow(QMainWindow):
         was_current = self.stack.currentWidget() is page
         target = self.tabs.neighbour(task_id)
         self.tabs.remove(task_id)
+        if task_id.startswith(RESULT_PREFIX):
+            # 결과 탭은 남겨 둘 입력이 없다 — 화면을 없앤다(다시 누르면 새로 만든다)
+            self._pages.pop(task_id, None)
+            self.stack.removeWidget(page)
+            page.deleteLater()
         # 화면은 없애지 않는다 — 입력값과 진행 상태가 남아 있어야 다시 열었을 때 이어진다
         if was_current:
             self.show_task(target)
@@ -332,6 +365,7 @@ class MainWindow(QMainWindow):
                 task = find(task_id)
                 items.append((task.id, task.art, task.name, text))
         self.home.set_resumable(items)
+        self.home.refresh_results()
         self.home.refresh_status()
         self.home.refresh_welcome()
 
@@ -398,7 +432,8 @@ class MainWindow(QMainWindow):
     def _send_log(self) -> None:
         """사용자 메뉴 '로그 보내기' — 지금 보는 업무 이름을 붙여 보낸다(업무 화면 머리의 단추와 같다, log_button.py)."""
         current = self.stack.currentWidget()
-        task = next((find(tid).name for tid, page in self._pages.items() if page is current and tid != HOME_ID), "앱")
+        task = next(("결과 확인" if tid.startswith(RESULT_PREFIX) else find(tid).name
+                     for tid, page in self._pages.items() if page is current and tid != HOME_ID), "앱")
         send_log(self, task)
 
     def _search(self, text: str) -> None:

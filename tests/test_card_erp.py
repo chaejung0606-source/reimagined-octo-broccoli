@@ -553,6 +553,57 @@ def test_internal_attendee_is_checked_with_the_mouse_and_never_confirmed_with_an
         raise
 
 
+def _arrow_window(down_name: str, up_name: str) -> str:
+    """체크만으로는 '고른 사람' 표가 비고 ⬇ 를 눌러야 담기는 인적정보조회(담당자 그림 2026-11-11 — 목록과 표 사이 오른쪽에 글자 없는 ⬇ · ⬆)."""
+    arrows = ('<div style="text-align:right">'
+              f'<a href="#none" onclick="{down_name}()" style="display:inline-block;width:20px;height:20px;background:#e33"></a> '
+              f'<a href="#none" onclick="{up_name}()" style="display:inline-block;width:20px;height:20px;background:#33e"></a></div>')
+    script = (f"function {down_name}() {{ setTimeout(() => {{ for (const r of document.querySelectorAll('.jgrid-row')) {{"
+              " if (!r.querySelector('input').checked) continue; const p = shown[+r.getAttribute('r')]; const tr = document.createElement('tr');"
+              " tr.innerHTML = '<td>' + p[1] + '<input type=\"hidden\" name=\"CFRC_IN_EMP_NO\" value=\"' + p[0] + '\"></td><td>' + p[3] + '</td>';"
+              " document.getElementById('basket').appendChild(tr); } }, 200); }\n"
+              f"function {up_name}() {{ document.querySelectorAll('#basket tr:not(:first-child)').forEach(tr => tr.remove()); }}\n")
+    window = MULTI_WINDOW.replace("onclick=\"pick(' + i + ', this)\"", "")
+    window = window.replace('<table id="basket">', arrows + '<table id="basket">', 1)
+    return window.replace("draw();\n</script>", script + "draw();\n</script>", 1)
+
+
+def test_internal_attendee_is_moved_down_into_the_basket_with_the_arrow():
+    """2026-11-11 담당자 그림: 줄은 체크됐는데 '고른 사람' 표가 비어 있었다 — 목록과 표 사이의 ⬇ 로 담는다. 이름으로 '내림' 을 알면 그것,
+    모르면 왼쪽부터(그림에서 ⬇ 이 왼쪽). '올림' 으로 보이는 것은 누르지 않는다."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    executable = os.environ.get("CHROMIUM_PATH", "/opt/pw-browsers/chromium")
+    try:
+        with sync_api.sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=executable if os.path.exists(executable) else None)
+            for down, up in (("fn_moveDown", "fn_moveUp"), ("fnA", "fnB"), ("fnA", "fn_up")):
+                window = _arrow_window(down, up)
+                assert "pick(' + i" not in window and down + "()" in window
+                pages = {"http://erp.test/minutes": MINUTES_WITH_FINDERS, "http://erp.test/part": PART_WINDOW, "http://erp.test/multi": window}
+                context = browser.new_context()
+                context.route("http://erp.test/**", _server(pages))
+                alerts: list[str] = []
+                context.on("dialog", lambda d: (alerts.append(d.message), d.dismiss()))
+                minutes = context.new_page()
+                minutes.goto("http://erp.test/minutes")
+                wait = lambda s, m=minutes: m.wait_for_timeout(int(s * 1000))  # noqa: E731
+                lines: list[str] = []
+                names = lambda m=minutes: [x["name"] for x in card_erp._inside_names(m)]  # noqa: E731
+                report = attendees.add(minutes, [participants.Attendee("라", "", "internal", "202400001", no_from="서명부.pdf")],
+                                       lines.append, wait, names)
+                assert report.added == ["라"] and alerts == [], (down, up, lines)
+                assert any("⬇ 로 '고른 사람' 표에 담음" in line for line in lines)
+                assert not any("202400001" in line for line in lines)       # 기록에 번호 없음
+                on = card_erp._inside_names(minutes)
+                assert [(x["kind"], x["no"]) for x in on if x["name"] == "라"] == [("internal", "202400001")]
+                context.close()
+            browser.close()
+    except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
+        if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):
+            pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
+        raise
+
+
 # ── 회의비 · 다과비 1인 한도와 다과비 칸 (담당자 2026-11-11) ─────────────────────────────────────────────
 def test_need_heads_is_cost_over_the_per_person_limit_rounded_up():
     """16만원이면 4명 이상(1인 5만원). 한도가 없으면 따지지 않는다."""

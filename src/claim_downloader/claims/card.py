@@ -1020,7 +1020,10 @@ def _texts_for_numbers(path: str, read_text) -> str:
     """번호를 찾을 글 — PDF 는 글자, 엑셀은 줄마다 칸을 띄어 이은 것, .hwpx · .docx 는 칸 글자를 줄마다."""
     lower = path.lower()
     if lower.endswith(".pdf"):
-        return read_text(path)
+        try:
+            return read_text(path, pages=NUMBER_PAGES)     # 붙임 명단은 공문 뒤쪽에 있기도 하다
+        except TypeError:                                    # 쪽 수를 받지 않는 읽기(시험)
+            return read_text(path)
     if lower.endswith((".hwpx", ".docx")):
         return "\n".join(minutes_texts(path))
     if lower.endswith((".xlsx", ".xlsm")):
@@ -1047,16 +1050,37 @@ def _texts_for_numbers(path: str, read_text) -> str:
 
 
 NUMBER_FILES = 12                 # 결제 건 폴더에서 번호를 찾아볼 파일 수(영수증 · 공문 · 서명부 · 회의록 …)
+CLAIM_NUMBER_FILES = 8            # 청구서 폴더 바로 아래에서(신청 엑셀 · 참여 학생 명단 · 공문) — 증빙으로 붙이지는 않는다
+NUMBER_PAGES = 8                  # 번호를 찾을 PDF 쪽 수 — 공문의 붙임 명단까지
+NUMBER_SUFFIXES = (".pdf", ".hwpx", ".docx", ".xlsx", ".xlsm")
 
 
-def attendee_numbers(minutes: Minutes, files: list[str], read_text=pdf_text) -> None:
-    """회의록 참석자 가운데 번호가 없는 사람 — 결제 건 폴더의 다른 서류(서명부 · 학생이 낸 회의록 PDF · 참석자 명단 엑셀 …)에서
-    그 이름과 같은 줄에 적힌 학번 · 사번(idnums.numbers_for_names — 한 사람에 번호가 둘이면 쓰지 않는다). 회의록 생성의 .hwpx 자체는 minutes_rows 가 봤다."""
+def claim_number_files(folder: str) -> list[str]:
+    """청구서 폴더 바로 아래 파일 가운데 번호를 찾아볼 것(담당자 2026-11-11 그림 — 학생 회의비는 회의록 · 영수증에 학번이 없고
+    청구서 폴더의 신청 엑셀 · 명단에 팀원의 학번이 있다). 이 파일들은 증빙으로 붙이지 않는다(19절 — 청구서 폴더 바로 아래 파일은 보지 않음)."""
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        return []
+    return [os.path.join(folder, n) for n in names
+            if n.lower().endswith(NUMBER_SUFFIXES) and not n.startswith(("~$", ".")) and os.path.isfile(os.path.join(folder, n))][:CLAIM_NUMBER_FILES]
+
+
+def attendee_numbers(minutes: Minutes, files: list[str], read_text=pdf_text, extra: list[str] = (), cache: dict | None = None) -> None:
+    """회의록 참석자 가운데 번호가 없는 사람 — 결제 건 폴더의 다른 서류(서명부 · 학생이 낸 회의록 PDF · 참석자 명단 엑셀 …)와
+    청구서 폴더의 신청 엑셀 · 명단(extra)에서 그 이름과 같은 줄에 적힌 학번 · 사번(idnums.numbers_for_names — 한 사람에 번호가 둘이면 쓰지 않는다).
+    회의록 생성의 .hwpx 자체는 minutes_rows 가 봤다. cache 는 청구서 폴더 파일의 글(결제 건마다 다시 읽지 않게)."""
     names = [name for _org, name in minutes.attendees if _squash(name) not in minutes.numbers]
     if not names:
         return
-    paths = [p for p in files if p != minutes.path and p.lower().endswith((".pdf", ".hwpx", ".docx", ".xlsx", ".xlsm"))][:NUMBER_FILES]
-    texts = {p: _texts_for_numbers(p, read_text) for p in paths}
+    paths = [p for p in files if p != minutes.path and p.lower().endswith(NUMBER_SUFFIXES)][:NUMBER_FILES]
+    paths += [p for p in extra if p not in paths]
+    cache = {} if cache is None else cache
+    texts = {}
+    for path in paths:
+        if path not in cache:
+            cache[path] = _texts_for_numbers(path, read_text)
+        texts[path] = cache[path]
     found = idnums.numbers_for_names([t for t in texts.values() if t], names)
     for key, no in found.items():
         if key in minutes.numbers or no in minutes.numbers.values():
@@ -1066,7 +1090,8 @@ def attendee_numbers(minutes: Minutes, files: list[str], read_text=pdf_text) -> 
         minutes.numbers[key], minutes.number_from[key] = no, where
 
 
-def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: str = "", read_text=pdf_text, ai_lookup=None) -> CardItem:
+def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: str = "", read_text=pdf_text, ai_lookup=None,
+              number_files: list[str] = (), number_cache: dict | None = None) -> CardItem:
     """결제 건 폴더 하나 — 이름 · 영수증 · 회의록 · 물품 표 · 공문을 읽고 금액 출처 · 청구구분을 정한다.
     ai_lookup(폴더, 파일들) 이 주는 AI 결과(card_ai — 영수증 그림 · 회의록 PDF)는 글자로 읽은 것이 비운 자리만 채운다."""
     name = os.path.basename(os.path.normpath(folder))
@@ -1125,7 +1150,8 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
             minutes_files.append(ai_meeting.path)
     fill_end(minutes)                           # 회의록 · AI 어디에도 끝 시각이 없을 때만 — 그래서 AI 를 다시 부르지도 않는다
     if minutes is not None and minutes.attendees:
-        attendee_numbers(minutes, item.files, read_text)   # 서명부 · 회의록 PDF · 참석자 명단 엑셀의 '이름 학번' — ERP 에서 번호로 먼저 찾게
+        # 서명부 · 회의록 PDF · 참석자 명단 엑셀 · 청구서 폴더의 신청 엑셀의 '이름 학번' — ERP 에서 번호로 먼저 찾게
+        attendee_numbers(minutes, item.files, read_text, extra=number_files, cache=number_cache)
     if minutes_files:
         item.minutes = minutes.path if minutes and minutes.path else minutes_files[0]
         item.meeting = minutes
@@ -1317,6 +1343,8 @@ def _claim_sheet(folder: str, claim: ClaimName, period, job: CardJob, read_text,
     except OSError:
         job.notes.append(f"{title}: 폴더를 열지 못함")
         return sheet
+    number_files = claim_number_files(folder)      # 신청 엑셀 · 명단 — 학번 · 사번만 찾아본다(증빙 아님)
+    number_cache: dict = {}
     for name in names:
         path = os.path.join(folder, name)
         if name.startswith((".", "~$")) or name == "Thumbs.db":
@@ -1326,7 +1354,8 @@ def _claim_sheet(folder: str, claim: ClaimName, period, job: CardJob, read_text,
         if not parse_item_name(name, period).mmdd:
             job.skipped.append(f"{prefix}{name} (이름이 '사용일_(청구종류 번호)_건명' 꼴이 아님 — 예 '261012_(17)_회의')")
             continue
-        item = read_item(path, period, code_hint=claim.code, read_text=read_text, ai_lookup=ai_lookup)
+        item = read_item(path, period, code_hint=claim.code, read_text=read_text, ai_lookup=ai_lookup,
+                         number_files=number_files, number_cache=number_cache)
         if item.code != claim.code:
             if item.code:
                 item.notes.append(f"결제 건 이름의 비목({item.code})이 청구서 폴더의 비목({claim.code})과 다름 — 청구서 폴더의 비목으로 넣음")

@@ -336,14 +336,21 @@ def test_card_presses_only_inquiry_payment_category_evidence_and_saves():
 
 def test_attendees_press_only_row_add_search_row_check_and_confirm():
     """회의록등록 창의 참석자(claims/attendees.py, 실측 2026-11-11 · 담당자 허락 2026-10-20 의 카드청구 창들) — 누르는 것은 참여인력 · 내부참석자 [행 추가]
-    (그 창을 여는 것) · 두 사람 찾기 창의 [검색] · 하나로 정한 줄의 체크 · [확인](참여인력선택 #btnItem · 인적정보조회 글자 '확인') 뿐.
+    (그 창을 여는 것) · 두 사람 찾기 창의 [검색] · 하나로 정한 줄의 체크 · 인적정보조회의 ⬇ · [확인](참여인력선택 #btnItem · 인적정보조회 글자 '확인') 뿐.
     값을 넣는 칸은 두 창의 검색 칸뿐이고, '선택없음' · '외부인 등록' · 행 삭제 · 줄마다의 돋보기 · 회의록등록 [저장] 은 없다."""
     from claim_downloader.claims import attendees
     text = (SRC / "claims" / "attendees.py").read_text(encoding="utf-8")
-    assert text.count(".click(") == 2 and ".click()" in attendees.CHECK_ROW_JS and "if (!box.checked)" in attendees.CHECK_ROW_JS
+    assert ".click()" in attendees.CHECK_ROW_JS and "if (!box.checked)" in attendees.CHECK_ROW_JS
     # 다른 하나는 인적정보조회 줄의 체크 칸을 마우스로(2026-11-11 실제 — 스크립트 체크가 '고른 사람' 표에 안 쌓였다): BOX_JS 가 돌려주는 그 줄의 체크 칸뿐, 켜져 있지 않을 때만
     assert "box = where.evaluate_handle(BOX_JS, [index, r]).as_element()" in text and "if not box.is_checked():\n                    box.click(timeout=5000)" in text
     assert "input[type=checkbox]" in attendees.BOX_JS and "row.getAttribute('r') !== r" in attendees.BOX_JS
+    # 셋째는 인적정보조회의 ⬇(2026-11-11 담당자 그림 — 체크만으로는 '고른 사람' 표가 비었다): ARROW_JS 가 표시한 단추만, '올림' 으로 보이는 것은 빼고
+    # 줄을 체크한 뒤 표가 비었을 때만(_to_basket 은 [확인] 을 누르지 않는다)
+    assert text.count(".click(") == 3 and "popup.locator(ARROW_SELECTOR % item[\"n\"]).first.click(timeout=5000)" in text
+    arrow = text.split("def _to_basket(", 1)[1].split("\ndef ", 1)[0]
+    assert 'i["kind"] == "down"' in arrow and 'not i["kind"]' in arrow and "CONFIRM" not in arrow and "evaluate(CLICK" not in arrow
+    assert "data-coss-arrow" in attendees.ARROW_SELECTOR and "kind = 'up'" in attendees.ARROW_JS and ".click(" not in attendees.ARROW_JS
+    assert text.split("def _one(", 1)[1].index("_check(popup") < text.split("def _one(", 1)[1].index("_to_basket(")
     assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", text)) == {"SEARCH_ID", "PART_CONFIRM_ID"}
     assert re.findall(r"evaluate\(CLICK_TEXT_JS,\s*([A-Za-z_]+)\)", text) == ["CONFIRM_TEXT"] and attendees.CONFIRM_TEXT == "확인"
     assert re.findall(r"open_popup\(minutes, minutes, ([A-Za-z_]+),", text) == ["button", "PART_ADD_ID"]

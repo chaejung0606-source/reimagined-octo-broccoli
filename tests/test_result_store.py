@@ -11,19 +11,37 @@ import pytest
 from claim_downloader.ui import result_store
 
 
-def test_results_are_kept_per_folder_newest_first_and_survive_a_restart(tmp_path):
-    folder = str(tmp_path / "07_[기업지원협력활동비] WE-Meet 회의비")
-    for n in range(7):
-        assert result_store.save(folder, "카드청구", f"임시저장 결제 {n}건", {"heading": f"h{n}"},
+def test_only_the_ten_newest_results_are_kept_across_folders_and_survive_a_restart(tmp_path):
+    """담당자 2026-11-11 "최근 10건만 저장" — 모든 폴더를 합쳐 새것부터 열 건. 폴더마다 보기는 그중 그 폴더의 것."""
+    a = str(tmp_path / "07_[기업지원협력활동비] WE-Meet 회의비")
+    b = str(tmp_path / "7월")
+    for n in range(12):
+        assert result_store.save(a if n % 2 else b, "카드청구", f"임시저장 결제 {n}건", {"heading": f"h{n}", "tone": "success"},
                                  when=dt.datetime(2026, 11, 11, 16, n)) == ""
-    got = result_store.entries(folder)
-    assert [e["heading"] for e in got] == ["임시저장 결제 6건", "임시저장 결제 5건", "임시저장 결제 4건", "임시저장 결제 3건", "임시저장 결제 2건"]
-    assert got[0]["when"] == "2026-11-11 16:06" and got[0]["report"] == {"heading": "h6"}
+    got = result_store.recent()
+    assert len(got) == result_store.KEEP == 10 and [e["heading"] for e in got][:3] == ["임시저장 결제 11건", "임시저장 결제 10건", "임시저장 결제 9건"]
+    assert got[-1]["heading"] == "임시저장 결제 2건"                # 0 · 1 은 지워졌다
+    assert [e["heading"] for e in result_store.entries(a)] == [f"임시저장 결제 {n}건" for n in (11, 9, 7, 5, 3)]
+    assert got[0]["when"] == "2026-11-11 16:11" and got[0]["report"] == {"heading": "h11", "tone": "success"}
+    assert result_store.find(got[3]["id"]) == got[3] and result_store.find("없음") is None
+    assert len({e["id"] for e in got}) == 10
     result_store.forget_cache()                                     # 앱을 다시 켠 것처럼 — 파일에서 읽는다
-    assert len(result_store.entries(os.path.join(folder, ".", ""))) == 5     # 같은 폴더는 같은 열쇠
+    assert len(result_store.recent()) == 10 and len(result_store.entries(os.path.join(a, ".", ""))) == 5     # 같은 폴더는 같은 열쇠
     assert result_store.entries(str(tmp_path / "다른 폴더")) == [] and result_store.entries("") == []
-    assert json.loads(result_store.path().read_text(encoding="utf-8"))           # 사용자 폴더의 _청구결과.json
+    assert json.loads(result_store.path().read_text(encoding="utf-8"))["v"] == 2   # 사용자 폴더의 _청구결과.json
     assert result_store.path().name == "_청구결과.json"
+
+
+def test_the_old_per_folder_file_is_read_as_one_newest_first_list(tmp_path):
+    """같은 날 낮의 판은 폴더마다 다섯 {폴더: [결과…]} 이었다 — 합쳐 새것부터 열 건으로 읽는다."""
+    old = {os.path.normcase(str(tmp_path / f"f{f}")): [{"when": f"2026-11-11 1{f}:{m:02d}", "folder": str(tmp_path / f"f{f}"), "title": "카드청구",
+                                                     "heading": f"{f}-{m}", "report": {"heading": "x"}} for m in range(5)] for f in range(3)}
+    result_store.path().parent.mkdir(parents=True, exist_ok=True)
+    result_store.path().write_text(json.dumps(old, ensure_ascii=False), encoding="utf-8")
+    result_store.forget_cache()
+    got = result_store.recent()
+    assert len(got) == 10 and got[0]["heading"] == "2-4" and got[-1]["heading"] == "1-0" and all(e.get("id") for e in got)
+    assert result_store.find(got[0]["id"])["heading"] == "2-4"
 
 
 def _qt_app():
@@ -96,3 +114,60 @@ def test_claim_page_reopens_the_result_after_it_was_closed(tmp_path, monkeypatch
     finally:
         _close(page)
         app.processEvents()
+
+
+def test_home_lists_the_results_and_opens_one_in_a_new_tab(tmp_path):
+    """담당자 2026-11-11 "홈화면에 결과확인을 이어서 작업하기 오른쪽에 목록을 넣고 목록중 한건을 클릭하면 새탭에서 결과내용 확인하기"."""
+    app = _qt_app()
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    from claim_downloader.claims import checks
+    from claim_downloader.ui import app as app_module
+    from claim_downloader.ui.report_dialog import ReportRow, report_to_data
+
+    folder = tmp_path / "07_[기업지원협력활동비] WE-Meet 회의비"
+    folder.mkdir()
+    report = report_to_data({"title": "카드청구", "heading": "임시저장 결제 11건 · 신청 전 확인할 것 2건", "tone": "warning",
+                             "columns": [("상태", 90), ("건명", None)], "rows": [ReportRow("저장", "success", ["1012", "회의"], html="<b>회의</b>")],
+                             "notes": [checks.Note("참석자 확인", level=checks.CHECK, what="참석자", where="회의록등록", todo="고치세요")],
+                             "notes_title": "신청 전 확인할 것", "side_detail": True})
+    assert result_store.save(str(folder), "카드청구", "임시저장 결제 11건 · 신청 전 확인할 것 2건", report,
+                             when=dt.datetime(2026, 11, 11, 20, 20)) == ""
+    window = app_module.MainWindow()
+    try:
+        home = window.home
+        home.refresh_results()
+        assert not home._results_empty.isVisibleTo(home) and home._result_rows.count() == 1
+        row = home._result_rows.itemAt(0).widget()
+        QTest.mouseClick(row, Qt.LeftButton, Qt.NoModifier, QPoint(20, 10))      # 줄을 누르면 새 탭
+        entry = result_store.recent()[0]
+        tab_id = app_module.RESULT_PREFIX + entry["id"]
+        assert window.tabs.has(tab_id) and window.stack.currentWidget() is window._pages[tab_id]
+        page = window._pages[tab_id]
+        assert page.report.windowFlags() & Qt.Window != Qt.Window                 # 창이 아니라 탭 안
+        assert page.report.table.rowCount() == 1 and "참석자" in page.report.notes.toPlainText()
+        from claim_downloader.ui.pages.result import tab_name
+        assert page.property("tab_name") == tab_name(entry) and tab_name(entry, dt.date(2026, 11, 11)) == "결과 20:20"
+        assert tab_name(entry, dt.date(2026, 11, 12)) == "결과 11-11 20:20"
+        window.open_result(entry["id"])                                            # 같은 것을 다시 — 탭은 하나
+        assert [t for t in window._pages if t.startswith(app_module.RESULT_PREFIX)] == [tab_id]
+        QTest.keyClick(page.report, Qt.Key_Escape)                                 # Esc 로 탭 안의 내용이 숨지 않는다
+        assert page.report.isVisibleTo(page)
+        page.report.close_requested.emit()                                         # [탭 닫기]
+        app.processEvents()
+        assert not window.tabs.has(tab_id) and tab_id not in window._pages
+        window.open_result("없는 결과")                                             # 지워진 결과 — 탭을 만들지 않는다
+        assert not any(t.startswith(app_module.RESULT_PREFIX) for t in window._pages)
+    finally:
+        window._closing_for_restart = True
+        window.hide()
+        _close_window(window)
+        app.processEvents()
+
+
+def _close_window(window) -> None:
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)

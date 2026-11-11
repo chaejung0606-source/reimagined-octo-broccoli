@@ -4,6 +4,8 @@
 
   이어서 작업하기   실제로 재개할 수 있는 일만 — 지금은 청구서 받기가 중간에 멈춰 남은 건이
                     있을 때뿐이다. 준비 중 화면을 열어 봤다는 것은 여기에 넣지 않는다.
+  결과 확인         (그 오른쪽) 일반청구에서 ERP 에 넣은 결과 최근 열 건(ui/result_store.py) — 한 건을 누르면 새 탭에
+                    그 결과 창의 내용(담당자 2026-11-11 "홈화면에 결과확인을 이어서 작업하기 오른쪽에 목록을 넣고 …").
   (최근 받은 청구서는 담당자 요청 2026-10-21 로 걷어냈다.)
 
 가짜 통계나 자리 채우기용 카드는 두지 않는다. 빈 영역은 짧은 안내 한 줄로 끝낸다.
@@ -21,11 +23,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from ... import ai, archive, settings
+from .. import result_store
 from ..art import Art
 from ..shell import TaskCard
 from ..tasks import TASKS
@@ -33,8 +37,32 @@ from ..widgets import Pill, WrapLabel, muted_label
 
 
 
+class _ResultRow(QFrame):
+    """'결과 확인' 목록의 한 줄 — 어디를 눌러도 그 결과를 연다(키보드는 Enter · Space)."""
+
+    clicked = Signal()
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("recentRow")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.clicked.emit()
+            return
+        super().keyPressEvent(event)
+
+
 class HomePage(QWidget):
     open_task = Signal(str)
+    open_result = Signal(str)        # '결과 확인' 목록의 한 건(result_store id) — 새 탭에서
     apply_update = Signal()
     restart_requested = Signal()     # 업데이트를 받은 뒤 [새로고침]
     ai_login = Signal()              # AI 띠 [로그인]
@@ -130,6 +158,7 @@ class HomePage(QWidget):
         bottom = QHBoxLayout()
         bottom.setSpacing(18)
         bottom.addWidget(self._build_continue(), 1)
+        bottom.addWidget(self._build_results(), 1)
         layout.addLayout(bottom)
         layout.addStretch(1)
 
@@ -309,6 +338,69 @@ class HomePage(QWidget):
         for task_id, art, name, status in items:
             self._continue_rows.addWidget(self._row(art, name, status, task_id, "이어서"))
         self._continue_empty.setVisible(not items)
+
+    # ── 결과 확인 ─────────────────────────────────────────────────────
+    def _build_results(self) -> QWidget:
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        title = QLabel("결과 확인")
+        title.setObjectName("homeSection")
+        head.addWidget(title)
+        hint = QLabel(f"최근 {result_store.KEEP}건 — 누르면 새 탭에서")
+        hint.setObjectName("muted")
+        head.addWidget(hint, 0, Qt.AlignBottom)
+        head.addStretch(1)
+        layout.addLayout(head)
+        self._result_rows = QVBoxLayout()
+        self._result_rows.setSpacing(6)
+        layout.addLayout(self._result_rows)
+        self._results_empty = muted_label("아직 남은 결과가 없습니다. 일반청구에서 ERP 에 넣으면 그 결과 창이 여기에 남습니다.")
+        layout.addWidget(self._results_empty)
+        layout.addStretch(1)
+        self.refresh_results()
+        return box
+
+    def refresh_results(self) -> None:
+        """result_store 의 최근 열 건 — 탭을 바꿔 홈으로 올 때마다 다시 읽는다."""
+        while self._result_rows.count():
+            item = self._result_rows.takeAt(0)
+            if item.widget():
+                item.widget().hide()            # 지워지기 전까지 옛 자리에 남아 머리를 가리지 않게
+                item.widget().deleteLater()
+        entries = result_store.recent()
+        for entry in entries:
+            self._result_rows.addWidget(self._result_row(entry))
+        self._results_empty.setVisible(not entries)
+
+    def _result_row(self, entry: dict) -> QWidget:
+        report = entry.get("report") or {}
+        row = _ResultRow()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(12, 7, 10, 7)
+        layout.setSpacing(10)
+        layout.addWidget(Pill(str(entry.get("title") or "청구"), str(report.get("tone") or "info")), 0, Qt.AlignVCenter)
+        texts = QVBoxLayout()
+        texts.setSpacing(1)
+        heading = QLabel(str(entry.get("heading") or ""))
+        heading.setObjectName("fieldLabel")
+        texts.addWidget(heading)
+        folder = str(entry.get("folder", ""))
+        name = Path(folder).name or folder
+        detail = QLabel(f"{entry.get('when', '')} · {name}")
+        detail.setObjectName("muted")
+        texts.addWidget(detail)
+        for label in (heading, detail):
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)   # 긴 글이 홈 폭을 밀어내지 않게(전체는 말풍선)
+        layout.addLayout(texts, 1)
+        row.setToolTip(f"{entry.get('heading', '')}\n{folder}")
+        row.setAccessibleName(f"결과 보기 {entry.get('title', '')} {entry.get('when', '')}")
+        result_id = str(entry.get("id", ""))
+        row.clicked.connect(lambda: self.open_result.emit(result_id))
+        return row
 
     def refresh_status(self) -> None:
         """청구서 받기 타일의 말풍선 — 업로드 대기 수(비목 폴더 바로 아래의 PDF). 타일에는 숫자를 쓰지 않는다."""

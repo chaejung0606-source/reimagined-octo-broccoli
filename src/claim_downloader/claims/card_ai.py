@@ -82,7 +82,17 @@ def lookup(folder: str, files: list[str]) -> dict | None:
     if not isinstance(entry, dict) or entry.get("sig") != signature(folder, files):
         return None
     data = entry.get("data")
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict) or before_numbers(data):
+        return None
+    return data
+
+
+def before_numbers(data: dict) -> bool:
+    """참석자의 학번 · 사번(no)을 읽기 전 판(2026-11-11 전)의 결과 — 다시 읽는다(담당자 2026-11-11 "학번으로 검색해야 정확합니다":
+    그 판으로 읽은 학생 회의록은 참석자 이름만 남아 ERP 에서 이름으로 찾았다). 참석자가 없는 결과는 그대로 쓴다."""
+    meeting = data.get("meeting")
+    people = meeting.get("attendees") if isinstance(meeting, dict) else None
+    return bool(people) and all(isinstance(p, dict) and "no" not in p for p in people)
 
 
 def remember(folder: str, files: list[str], data: dict) -> None:

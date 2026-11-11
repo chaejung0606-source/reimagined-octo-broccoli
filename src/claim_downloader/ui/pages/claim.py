@@ -61,7 +61,7 @@ from ..log_button import LogSendButton, warn
 from ..flow import HIDDEN, ChoiceCard, FlowArea, FlowStep
 from ..flowlogic import CLAIM_ORDER, claim_stage, flow_states
 from .. import result_store
-from ..report_dialog import ReportRow, report_from_data, report_to_data, show_report
+from ..report_dialog import ReportRow, entry_report, report_to_data, show_report
 from ..widgets import Card, Pill, PillDelegate, WrapLabel, muted_label
 from ..worker import SessionWorker
 from .card import CardPanel, item_detail, item_html, review_of
@@ -1515,11 +1515,8 @@ class ClaimPage(QWidget):
         menu.exec(self.result_button.mapToGlobal(self.result_button.rect().bottomLeft()))
 
     def _open_result(self, entry: dict) -> None:
-        kwargs = report_from_data(entry["report"])
-        kwargs["summary"] = [f"{entry.get('when', '')} 에 넣은 결과입니다 — 그 뒤 ERP 에서 고친 것은 여기에 없습니다."] + list(kwargs.get("summary") or [])
-        kwargs["title"] = (kwargs.get("title") or entry.get("title") or "결과") + " — 다시 보기"
         try:
-            show_report(self, **kwargs)
+            show_report(self, **entry_report(entry))
         except Exception as error:  # noqa: BLE001 — 옛 판이 남긴 모양이 달라도 앱은 그대로
             QMessageBox.warning(self, "결과 다시 보기", "남겨 둔 결과를 띄우지 못했습니다: "
                                 + (str(error).splitlines()[0][:120] if str(error) else type(error).__name__))

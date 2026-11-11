@@ -18,7 +18,7 @@ import html
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PySide6.QtCore import QStandardPaths, Qt, QUrl
+from PySide6.QtCore import QStandardPaths, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -91,14 +91,21 @@ def notes_html(notes: list, keys: dict) -> str:
 
 
 class ReportDialog(QDialog):
-    """머리(배지 + 제목) · 요약 줄 · 확인할 것 · 표 · 자세히 · 단추. accept_text 를 주면 [그 글자] [취소] 를 묻는다."""
+    """머리(배지 + 제목) · 요약 줄 · 확인할 것 · 표 · 자세히 · 단추. accept_text 를 주면 [그 글자] [취소] 를 묻는다.
+    embedded 면 창이 아니라 화면 안에 놓이는 위젯 — 홈 '결과 확인' 목록에서 연 결과 탭(ui/pages/result.py). 그때 [닫기] 는 close_requested 만 보낸다."""
+
+    close_requested = Signal()
 
     def __init__(self, parent: QWidget | None, title: str, heading: str, tone: str = "info",
                  summary: list[str] | None = None, columns: list[tuple[str, int | None]] | None = None,
                  rows: list[ReportRow] | None = None, notes: list[str] | None = None, notes_title: str = "확인할 것",
                  footer: str = "", accept_text: str = "", close_text: str = "닫기",
-                 side_detail: bool = False, stretch: int | None = None, detail_title: str = "자세히 — 표에서 줄을 고르세요"):
+                 side_detail: bool = False, stretch: int | None = None, detail_title: str = "자세히 — 표에서 줄을 고르세요",
+                 embedded: bool = False):
         super().__init__(parent)
+        self._embedded = embedded
+        if embedded:
+            self.setWindowFlags(Qt.Widget)          # 창이 아니라 탭 안의 위젯
         self._side = side_detail
         self.setObjectName("reportDialog")
         self.setWindowTitle(title)
@@ -274,7 +281,18 @@ class ReportDialog(QDialog):
         layout.addLayout(buttons)
         if self.table is not None:
             self.table.setFocus()           # 첫 칸(확인할 것)이 초점을 받아 테두리가 강조돼 보이지 않게 — 표에서 위아래 키로 넘긴다
-        self._fit_to_screen(parent)
+        if embedded:
+            self.setSizeGripEnabled(False)
+        else:
+            self._fit_to_screen(parent)
+
+    def done(self, result: int) -> None:  # noqa: D401
+        """탭 안에 놓인 것은 숨지 않는다 — [닫기] 는 탭을 닫으라는 신호, Esc 는 아무것도 하지 않는다."""
+        if self._embedded:
+            if result == QDialog.Accepted:
+                self.close_requested.emit()
+            return
+        super().done(result)
 
     def _go_row(self, url: QUrl) -> None:
         """확인할 것의 [표에서 보기] — 그 사람 줄을 골라 보이게."""
@@ -341,6 +359,14 @@ def report_to_data(kwargs: dict) -> dict:
     out["notes"] = [{"text": str(n), **({k: getattr(n, k) for k in _NOTE_KEYS} if isinstance(n, checks.Note) else {})}
                     for n in kwargs.get("notes") or []]
     return out
+
+
+def entry_report(entry: dict) -> dict:
+    """result_store 의 결과 하나 → show_report · ReportDialog 에 넘길 값(다시 보기 — 언제 넣었는지 맨 위에)."""
+    kwargs = report_from_data(entry["report"])
+    kwargs["summary"] = [f"{entry.get('when', '')} 에 넣은 결과입니다 — 그 뒤 ERP 에서 고친 것은 여기에 없습니다."] + list(kwargs.get("summary") or [])
+    kwargs["title"] = (kwargs.get("title") or entry.get("title") or "결과") + " — 다시 보기"
+    return kwargs
 
 
 def report_from_data(data: dict) -> dict:

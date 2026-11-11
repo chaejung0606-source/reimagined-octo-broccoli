@@ -12,6 +12,8 @@
   결과는 학교 사람 전체라 같은 이름이 많다(한 이름에 12줄 — 제적 · 졸업한 옛 학생까지). 열 `k_USER_GB_NM` · `k_WORK_STS_NM` 재직상태 · `k_EMP_NO` ·
   `k_EMP_NM` · `k_DEPT_NM` 소속(`학과_입학년` 꼴도) · `k_UP_DEPT_NM` · `k_POS_NM` …. 행의 체크를 켜면 아래 '고른 사람' 표(성명 · 소속, 숨은 `CFRC_IN_EMP_NO`)에
   쌓이고(조금 뒤에), 다시 검색해도 남는다. [확인] 은 id 없는 링크 '확인'. 숨은 '선택없음' · '외부인 등록' 은 누르지 않는다.
+  **실제 ERP(2026-11-11 담당자 그림)에서는 체크만으로 '고른 사람' 표가 비어 있었다** — 결과 목록과 그 표 사이 오른쪽에 글자 없는 ⬇(빨강) · ⬆(파랑) 단추가 있다.
+  앱은 체크한 뒤 표가 비면 ⬇ 를 사람처럼 누른다(`ARROW_JS` 로 그 사이의 작은 단추를 찾아 '내림' 먼저, 못 가리면 왼쪽부터 둘까지 — '올림' 은 누르지 않음, 구조 저장 전).
   [확인] 뒤 내부참석자 표에 고른 사람마다 줄(사번 읽기전용 · 성명 · 돋보기 · 소속)이 생기고 `#EMP_COUNT` 가 는다.
 
 앱은 **한 사람씩** 창을 열어(검색이 앞 체크를 지울 수 있어서) 검색 → 맞는 줄이 **하나로 확실할 때만** 체크 → [확인] → 회의록등록 창에 그 이름이 생겼는지 본다.
@@ -24,7 +26,7 @@ AI 가 읽은 회의록)에서 그 이름 옆에 적힌 학번 · 사번(idnums.
 내부참석자는 이름이 같은 줄 가운데 — 회의록의 소속이 학과 같은 것이면 소속이 맞는 줄 → 여럿이면 재직 · 재학인 줄 — 하나. 소속을 모르면 재직 · 재학인 같은 이름이
 하나일 때만(그때는 '신청 전 확인할 것' 에 남긴다). 재직 · 재학이 아닌 줄(제적 · 졸업 · 퇴직 …)은 소속이 맞을 때만 고른다.
 
-누르는 것(tests/test_safety.py): 회의록등록 창의 두 [행 추가] · 두 창의 [검색] · 고른 줄의 체크 · [확인](`#btnItem` · 글자 '확인'). 값을 넣는 칸은 두 창의 검색 칸뿐.
+누르는 것(tests/test_safety.py): 회의록등록 창의 두 [행 추가] · 두 창의 [검색] · 고른 줄의 체크 · 인적정보조회의 ⬇ · [확인](`#btnItem` · 글자 '확인'). 값을 넣는 칸은 두 창의 검색 칸뿐.
 이 모듈은 Playwright 를 들여오지 않는다 — card_erp 가 넘겨준 창만 쓴다.
 """
 from __future__ import annotations
@@ -80,6 +82,59 @@ BOX_JS = "([index, r]) => {" + _ROWS_SNIPPET + """
 BASKET_STATE_JS = """() => ({checked: document.querySelectorAll('.jgrid-row input[type=checkbox]:checked').length,
   basket: document.querySelectorAll('input[name=CFRC_IN_EMP_NO]').length,
   rows: Array.from(document.querySelectorAll('table tr')).filter(tr => tr.querySelector('input[name=CFRC_IN_EMP_NO]')).length})"""
+# 결과 목록과 '고른 사람' 표 사이의 ⬇ · ⬆ 단추(담당자 그림 2026-11-11 — 오른쪽에 빨간 ⬇ · 파란 ⬆, 글자 없음, 구조 저장은 아직).
+# 체크만으로는 '고른 사람' 표가 비어 있었다 — ⬇ 로 체크한 줄을 내려 담는 것으로 보인다. 그 사이에 있는 글자 없는 작은 단추를 찾아
+# data-coss-arrow 표시를 붙이고(누르기는 Playwright 가 사람처럼) 모양을 돌려준다 — 이름 · id · class · onclick · 그림 주소로 '내림' · '올림' 을 가린다.
+# 올림(⬆ — 고른 사람을 빼는 것으로 보임)은 누르지 않는다. 읽기 · 표시만 하고 누르지 않는다.
+ARROW_JS = r"""() => {
+  const vis = e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
+  const txt = e => ((e.innerText || e.textContent || e.value || '') + '').replace(/\s+/g, ' ').trim();
+  document.querySelectorAll('[data-coss-arrow]').forEach(e => e.removeAttribute('data-coss-arrow'));
+  // 결과 목록 — 학번 칸(k_EMP_NO)이 든 줄들의 목록(아래 '고른 사람' 표도 JGM 일 수 있어 그것과 가린다)
+  const rows = Array.from(document.querySelectorAll('.jgrid-row')).filter(r => vis(r) && r.querySelector('.k_EMP_NO, .k_EMP_NM'));
+  if (!rows.length) return {ok: false, why: '결과 목록이 안 보임', items: []};
+  const boxes = rows.map(r => r.closest('.jgrid-viewport') || r);
+  const gridBottom = Math.max(...boxes.map(e => e.getBoundingClientRect().bottom));
+  // '고른 사람' 표의 위 — 숨은 CFRC_IN_EMP_NO 가 든 줄, 결과 목록 아래에서 '성명' · '소속' 이 함께 든 짧은 머리, 그것도 없으면 [확인]
+  let lower = Infinity;
+  for (const e of Array.from(document.querySelectorAll('tr, th, td, div, span')).filter(vis)) {
+    const top = e.getBoundingClientRect().top;
+    if (top <= gridBottom + 2) continue;
+    const t = txt(e);
+    if (e.querySelector('input[name=CFRC_IN_EMP_NO]') && t.length < 80 || /성명/.test(t) && /소속/.test(t) && t.length < 40)
+      lower = Math.min(lower, top);
+  }
+  if (lower === Infinity)
+    for (const a of Array.from(document.querySelectorAll('a, button, input[type=button]')).filter(vis))
+      if (txt(a) === '확인' && a.getBoundingClientRect().top > gridBottom) lower = Math.min(lower, a.getBoundingClientRect().top);
+  if (lower === Infinity) lower = gridBottom + 120;
+  const clickable = e => /^(A|BUTTON)$/.test(e.tagName) || e.tagName === 'INPUT' && /^(button|image|submit)$/i.test(e.type)
+    || e.hasAttribute('onclick') || getComputedStyle(e).cursor === 'pointer';
+  let cands = Array.from(document.querySelectorAll('a, button, input, img, span, i, em, div, li')).filter(e => {
+    if (!vis(e) || e.type === 'checkbox' || e.type === 'radio' || e.type === 'text' || e.type === 'hidden') return false;
+    const r = e.getBoundingClientRect();
+    if (r.width > 64 || r.height > 64 || r.top < gridBottom - 4 || r.bottom > lower + 4) return false;
+    return txt(e).length <= 2 && clickable(e);
+  });
+  cands = cands.filter(e => !cands.some(o => o !== e && o.contains(e)));       // a > img 이면 바깥 것 하나
+  const describe = e => [e.id, e.className && e.className.baseVal === undefined ? e.className : '', e.getAttribute('onclick'), e.title,
+    e.getAttribute('alt'), e.getAttribute('aria-label'), e.getAttribute('src'),
+    (e.querySelector('img') || {}).src, (e.querySelector('i,span') || {}).className, txt(e)].filter(x => x).join(' ').slice(0, 300);
+  const items = cands.map((e, n) => {
+    const d = describe(e);
+    const low = d.toLowerCase();
+    let kind = '';
+    if (/down|add|plus|insert|append|추가|아래|내리|↓|▼|⬇/.test(low)) kind = 'down';
+    else if (/(^|[^a-z])up|up(btn|_|-|\.|$)|remove|minus|delete|_del|del_|삭제|위로|올리|↑|▲|⬆/.test(low)) kind = 'up';
+    e.setAttribute('data-coss-arrow', String(n));
+    const r = e.getBoundingClientRect();
+    return {n, kind, x: Math.round(r.left), tag: e.tagName.toLowerCase(), shape: d.slice(0, 120)};
+  });
+  return {ok: true, why: '', items};
+}"""
+ARROW_SELECTOR = '[data-coss-arrow="%d"]'
+MAX_ARROWS = 2                           # 내림으로 못 가리면 왼쪽부터 두 개까지(그림에서 ⬇ 이 왼쪽)
 
 
 @dataclass
@@ -228,6 +283,30 @@ def _check(popup, key: str, tops: dict, wait: Callable[[float], None], mouse: bo
     return bool(done.get("ok")), str(done.get("why", ""))
 
 
+def _to_basket(popup, in_basket: Callable[[], bool], wait: Callable[[float], None], log: Callable[[str], None]) -> bool:
+    """체크한 줄을 '고른 사람' 표로 — 결과 목록과 그 표 사이의 ⬇ 를 사람처럼 누른다(담당자 그림 2026-11-11: 체크만으로는 표가 비어 있었다).
+    '내림' 으로 보이는 단추 먼저, 못 가리면 왼쪽부터 두 개까지. '올림'(⬆ — 빼기로 보임)은 누르지 않는다. 기록에는 단추 모양만(값 없음)."""
+    try:
+        found = popup.evaluate(ARROW_JS) or {}
+    except Exception as error:  # noqa: BLE001 — 창이 닫히는 등
+        log("  인적정보: ⬇ 단추를 찾지 못함 — " + (str(error).splitlines()[0][:80] if str(error) else type(error).__name__))
+        return False
+    items = list(found.get("items") or [])
+    log("  인적정보: 체크만으로는 '고른 사람' 표에 안 들어가 ⬇ 단추를 찾습니다 — 후보 %d개%s" % (
+        len(items), "".join(f" · [{i['kind'] or '?'}] {i['tag']} {i['shape']}" for i in items[:4])))
+    order = [i for i in items if i["kind"] == "down"] or sorted((i for i in items if not i["kind"]), key=lambda i: i["x"])[:MAX_ARROWS]
+    for item in order:
+        try:
+            popup.locator(ARROW_SELECTOR % item["n"]).first.click(timeout=5000)
+        except Exception as error:  # noqa: BLE001 — 가려짐 등 — 다음 후보
+            log("  인적정보: ⬇ 후보를 누르지 못함 — " + (str(error).splitlines()[0][:80] if str(error) else type(error).__name__))
+            continue
+        if wait_until(in_basket, wait, tries=10):
+            log(f"  인적정보: ⬇ 로 '고른 사람' 표에 담음 ({item['tag']} {item['shape'][:60]})")
+            return True
+    return False
+
+
 def _close(popup) -> None:
     """못 고른 창은 닫는다 — 창 닫기일 뿐 ERP 단추가 아니다. 사람이 [행 추가] 로 다시 연다."""
     try:
@@ -331,14 +410,14 @@ def _one(minutes, person: part_mod.Attendee, multi: bool, log: Callable[[str], N
             def in_basket() -> bool:
                 return want in [_digits(v) for v in (popup.evaluate(BASKET_JS) or [])]
 
-            if not wait_until(in_basket, wait, tries=20):
+            if not wait_until(in_basket, wait, tries=4) and not _to_basket(popup, in_basket, wait, log):
                 try:
                     state = popup.evaluate(BASKET_STATE_JS) or {}
                 except Exception:  # noqa: BLE001
                     state = {}
                 log("  인적정보: 줄을 체크했지만 '고른 사람' 표에 들어가지 않음 (체크된 줄 %s · 고른 사람 칸 %s)"
                     % (state.get("checked", "?"), state.get("basket", "?")))
-                return False, "줄을 체크했지만 '고른 사람' 표에 들어가지 않음 — 인적정보조회 창에서 직접 고르세요", ""
+                return False, "줄을 체크했지만 '고른 사람' 표에 들어가지 않음 — 인적정보조회 창에서 ⬇ 로 내려 담고 [확인] 하세요", ""
             clicked = popup.evaluate(CLICK_TEXT_JS, CONFIRM_TEXT)
         else:
             clicked = popup.evaluate(CLICK_ID_JS, PART_CONFIRM_ID)

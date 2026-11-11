@@ -354,3 +354,40 @@ def test_claim_page_explains_a_fully_saved_card_sheet_and_resets_it(tmp_path, mo
     assert not entry.get("saved") and entry["req_cnt"] == "" and entry["runs"][-1]["note"] == "저장 기록 지움"   # 언제 넣었는지는 남긴다
     page._reload_card()                                                                # 다시 읽어도 되살아나지 않는다
     assert not any(i.status == "saved" for i in page._cards[0].sheets[0].items)
+
+
+def test_results_read_before_numbers_are_read_again(tmp_path):
+    """2026-11-11 담당자 "학번으로 검색해야 정확합니다" — 참석자의 학번(no)을 읽기 전 판의 결과는 다시 읽는다(참석자가 없는 결과는 그대로)."""
+    _claim, folder = make_item_folder(tmp_path)
+    files = card._files_under(str(folder))
+    old = card_ai.clean(AI_DATA)
+    for person in old["meeting"]["attendees"]:
+        person.pop("no")                                         # 그 판의 모양
+    card_ai.remember(str(folder), files, old)
+    assert card_ai.before_numbers(old) and card_ai.lookup(str(folder), files) is None
+    no_people = card_ai.clean({**AI_DATA, "meeting": {**AI_DATA["meeting"], "attendees": []}})
+    card_ai.remember(str(folder), files, no_people)
+    assert card_ai.lookup(str(folder), files) is not None
+    card_ai.remember(str(folder), files, card_ai.clean(AI_DATA))
+    assert card_ai.lookup(str(folder), files)["meeting"]["attendees"][0]["no"] == "202400011"
+
+
+def test_claim_folder_sheets_give_student_numbers_but_are_not_evidence(tmp_path):
+    """학생 회의비는 회의록 · 영수증에 학번이 없고 청구서 폴더의 신청 엑셀에 팀원 학번이 있다 — 번호만 찾아보고 증빙으로 붙이지 않는다."""
+    openpyxl = pytest.importorskip("openpyxl")
+    claim, folder = make_item_folder(tmp_path)
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.append(["연번", "팀명", "소속", "성명", "학번"])
+    sheet.append([1, "가나다", "컴퓨터공학과", "학생일", 202600011])
+    sheet.append([2, "가나다", "AI융합학과", "학생이", 202600012])
+    book.save(claim / "WE-Meet 신청 명단.xlsx")
+    ai = card_ai.clean({**AI_DATA, "meeting": {**AI_DATA["meeting"], "attendees": [
+        {"org": "컴퓨터공학과", "name": "학생일"}, {"org": "AI융합학과", "name": "학생이"}]}})
+    job = card.load_job(str(claim), read_text=lambda path, pages=3: "", ai_lookup=lambda f, files: ai)
+    item = job.sheets[0].items[0]
+    assert item.meeting.numbers == {"학생일": "202600011", "학생이": "202600012"}
+    assert item.meeting.number_from["학생일"] == "WE-Meet 신청 명단.xlsx"
+    assert not any(p.endswith(".xlsx") for p in item.files)      # 증빙(첨부)은 결제 건 폴더 안의 것만
+    _values, plan, _missing = card_erp.meeting_plan(item, [])
+    assert [(a.kind, a.emp_no) for a in plan] == [("internal", "202600011"), ("internal", "202600012")]
