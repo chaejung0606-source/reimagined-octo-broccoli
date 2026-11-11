@@ -52,6 +52,7 @@ FORBIDDEN_IDS = ("btn_addEvid", "btn_addEvid3", "btn_gridCard", "btnRowDel", "bt
 ATTACH_SUFFIXES = (".pdf", ".jpg", ".jpeg", ".png", ".gif", ".bmp")
 WEEKEND_WORDS = ("토요일", "일요일")
 MIN_CONTENT = 20                         # 회의내용 20자 이상(#CFRC_CONTENT_LENGTH_LIMITED, 실측 ②)
+DEFAULT_LIMIT = 50000                    # 회의비 1인 한도 — 회의록등록 창의 숨은 #CFRC_LIMITED_AMT(실측 50000). 미리 보기에서만 이 값을 쓴다
 
 # 카드청구 작성 화면 — 일반청구(P10) 와 같은 칸 이름이 많아 #PROC_TYP_CD 로 가른다
 PROBE_JS = """() => { const p = document.querySelector('#PROC_TYP_CD');
@@ -146,6 +147,19 @@ EXTERNAL_FILL_JS = "([name, org]) => {" + EXTERNAL_ROWS_SNIPPET + """
 }"""
 EXTERNAL_NAMES_JS = "() => {" + EXTERNAL_ROWS_SNIPPET + """
   return rows.map(tr => { const n = tr.querySelector('input[name=CFRC_OUT_EMP_NM]'); return n ? n.value.trim() : ''; }).filter(x => x); }"""
+# 회의록등록 창의 식비청구(name=MEAL_REQ_YN, 머리글 '식비청구 | 예 아니오') — 다과비는 '아니오' 를 고르고 회의비(다과)(B) #SNACK_COST 에 금액
+# (담당자 2026-11-11). ERP 는 결제 금액을 회의비(식비)(A) #MEAL_COST 에 넣어 둔다(실측). '아니오' 가 하나로 정해질 때만 고르고, 이미 켜져 있으면 그대로
+MEAL_NO_JS = """() => {
+  const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const label = r => { const l = r.id && document.querySelector('label[for="' + r.id + '"]');
+    if (l) return l.textContent || ''; const n = r.nextSibling; return n ? (n.textContent || '') : ''; };
+  const radios = Array.from(document.querySelectorAll('input[type=radio][name=MEAL_REQ_YN]')).filter(vis);
+  let no = radios.filter(r => /아니/.test(label(r)));
+  if (!no.length) no = radios.filter(r => r.id === 'MEAL_REQ_YN_2');
+  if (no.length !== 1) return {ok: false, why: "식비청구 '아니오' 가 " + no.length + '개'};
+  if (!no[0].checked) no[0].click();
+  return {ok: no[0].checked, why: no[0].checked ? '' : "'아니오' 가 골라지지 않음"};
+}"""
 # 회의록등록 창의 참여인력(#rtaskTb) · 내부참석자(#rtaskTb1) 줄에 들어 있는 사람(실측 2026-11-11 11:34) — 읽기만.
 # 참여인력 줄: 사번 #CFRC_IN_EMP_NO · 성명 #CFRC_IN_EMP_NM(둘 다 읽기전용) · 소속 · 참여기간. 내부참석자 줄: 사번(읽기전용) · 성명 #CFRC_OUT_EMP_NM
 # (외부참석자와 같은 이름) · 돋보기 · 소속. 두 표 모두 숨은 본뜸 줄이 하나 있어 보이는 줄만 센다. id 가 없으면 머리글로 표를 찾는다.
@@ -261,6 +275,16 @@ def plan_item(item: card.CardItem, index: int, members: list[part_mod.Member] | 
                 lines.append(f"  {part_mod.Attendee('', kind=kind).kind_name}: " + ", ".join(who)
                              + {"external": " — 앱이 넣음", "part": " — 앱이 [행 추가] 창에서 고름(직번 · 이름이 하나일 때)",
                                   "internal": " — 앱이 [행 추가] 창에서 고름(이름 · 소속이 하나일 때)"}[kind])
+        if item.snack:
+            lines.append(f"다과비({item.snack_from}) — 회의록등록 창에서 식비청구 '아니오' · 회의비(다과)(B) "
+                         + (f"{item.amount:,}원" if item.amount else "결제 금액"))
+        need = need_heads(item.amount or 0, DEFAULT_LIMIT)
+        if need > len(people):
+            short = need - len(people)
+            lines.append(f"  1인 {DEFAULT_LIMIT:,}원 한도로 {need}명 이상 필요 — 회의록 {len(people)}명, {short}명은 참여인력에서 임의로 넣고 저장(확인 필요)")
+            result.review.append(f"회의록 참석자 {len(people)}명 — 1인 {DEFAULT_LIMIT:,}원 한도로 {need}명이 필요해 {short}명을 참여인력에서 임의로 넣음")
+            if "참석자 이름" in missing:
+                missing.remove("참석자 이름")
         lines.append(f"청구내역: ERP 가 회의록에서 채운 글 앞에 {item.line_code or '?'}_")
         if missing:
             result.review.append("회의록에서 못 읽음: " + " · ".join(missing))
@@ -880,8 +904,14 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
         if total_out and parse_amount(out_count) != total_out:
             _set(popup, "text", "OUT_COUNT", str(total_out))
 
+        # 다과비 — 식비청구 '아니오' · 회의비(식비)(A) 0 · 회의비(다과)(B) 에 금액(담당자 2026-11-11). 사람 수를 셈하기 전에(합계가 바뀐다)
+        snack_amount, snack_trouble = 0, ""
+        if item.snack:
+            snack_amount, snack_trouble = _snack(popup, item, log, wait)
+            if not snack_trouble:
+                result.lines.append(f"다과비({item.snack_from}) — 식비청구 '아니오' · 회의비(다과) {snack_amount:,}원")
+
         # 참여인력 · 내부참석자 — 두 표에 아직 없는 사람만, 그 [행 추가] 의 사람 찾기 창에서 하나로 확실할 때만 앱이 고른다(attendees, 실측 2026-11-11).
-        # 못 고른 사람은 아래 노란 띠에 이름과 까닭으로. 다 들었는지는 두 표의 이름으로 본다.
         inside = [p for p in people if p.kind in ("part", "internal")]
         reasons: dict[str, str] = {}
         left = _missing_inside(inside, _inside_names(popup))
@@ -892,10 +922,36 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
             reasons = picked.left
             left = _missing_inside(inside, _inside_names(popup))
 
+        # 사람 수 — 회의비 · 다과비는 1인 한도(#CFRC_LIMITED_AMT 5만원)로 나눈 수 이상이어야 저장된다(담당자 2026-11-11: 16만원이면 4명 이상).
+        # 회의록의 사람을 다 못 넣었거나 그 수에 모자라면 참여인력선택에서 아무나 골라 채우고 일단 저장 — 못 정한 사람 · 임의로 넣은 사람은 확인할 것으로
+        cost, limit = _meeting_cost(popup, item)
+        need = need_heads(cost, limit)
+        heads = before = _heads(popup)
+        target = max(need, heads + len(left), 1)           # 아무도 없으면 저장되지 않는다
+        arbitrary: list[str] = []
+        if target > heads:
+            day = _day(s["CFRC_DT"]) or item.used
+            filled = attendees.fill_up(popup, target - heads, log, wait, lambda: [x["name"] for x in _inside_names(popup)],
+                                       avoid=[p.name for p in left], taken_nos=[x.get("no", "") for x in _inside_names(popup)], day=day)
+            arbitrary = filled.added
+            result.lines += filled.lines
+            heads = _heads(popup)
+            if heads and "참석자 이름" in missing:          # 회의록에 참석자가 없었다 — 임의로 채우고 확인할 것으로(묻지 않는다)
+                missing.remove("참석자 이름")
+        if left:
+            why = ", ".join(p.label() + (f" ({reasons.get(p.name) or p.note})" if reasons.get(p.name) or p.note else "") for p in left)
+            result.review.append(f"회의록에서 못 정한 사람(확인 필요): {why} — 회의록등록에서 실제 참석자로 고치세요")
+            log(f"  회의록에서 못 정한 사람 {len(left)}명 — 확인 필요로 남김")
+        if arbitrary:
+            because = " · ".join(x for x in (f"회의록에서 못 정한 사람 {len(left)}명" if left else "",
+                                             "회의록에 참석자가 없음" if not people else "",
+                                             f"1인 {limit:,}원 한도로 {need}명 이상 필요" if need > before else "") if x)
+            result.review.append(f"임의로 넣은 참여인력(확인 필요): {', '.join(arbitrary)} — {because or '사람이 모자라서'}. "
+                                 "회의에 없었으면 회의록등록에서 빼고 실제 참석자로 바꾸세요")
+            result.lines.append(f"참여인력 임의로 {len(arbitrary)}명 넣음 — 확인 필요")
+
     weekend = s["WEEKEND"] in WEEKEND_WORDS
-    asks = []
-    if left:
-        asks.append(_inside_request(left, reasons))
+    asks = [snack_trouble] if snack_trouble else []
     if weekend:
         asks.append(f"회의일이 {s['WEEKEND']} — 비고에 휴일 집행 사유")
     if missing:
@@ -904,18 +960,18 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
     def inside_ok() -> tuple[bool, str]:
         if popup.is_closed():
             return True, ""                # 사람이 창의 [저장] 까지 눌렀다 — 아래에서 작성 화면을 본다
-        c = _state(popup, ["IN_COUNT", "EMP_COUNT", "OUT_COUNT", "RMK", "CFRC_CONT", "CFRC_ST_DTM", "CFRC_END_DTM", "CFRC_PLCE", "CFRC_PURS"])
+        c = _state(popup, ["RMK", "CFRC_CONT", "CFRC_ST_DTM", "CFRC_END_DTM", "CFRC_PLCE", "CFRC_PURS"])
         bad = []
-        on = _inside_names(popup)
-        have = max((parse_amount(c["IN_COUNT"]) or 0) + (parse_amount(c["EMP_COUNT"]) or 0), len(on))
-        if on:
-            still = _missing_inside(inside, on)
-            if still:
-                bad.append("아직 없는 사람 " + ", ".join(p.name for p in still))
-        elif have < len(inside):           # 표에서 이름을 못 읽으면(화면 모양이 다름) 전처럼 수로
-            bad.append(f"참여인력 · 내부참석자 {have}/{len(inside)}명")
-        if not have and not (parse_amount(c["OUT_COUNT"]) or 0) and not _external_names(popup):
+        now_cost, now_limit = _meeting_cost(popup, item)
+        now_need, now_heads = need_heads(now_cost, now_limit), _heads(popup)
+        if not now_heads:
             bad.append("참석자가 없음")
+        elif now_heads < now_need:
+            bad.append(f"참석자 {now_heads}명 — 회의비 {now_cost:,}원은 {now_need}명 이상(1인 {now_limit:,}원)")
+        if item.snack and snack_amount:
+            snack_ok, snack_why = _snack_ok(popup, snack_amount)
+            if not snack_ok:
+                bad.append(snack_why)
         if weekend and not c["RMK"].strip():
             bad.append("휴일 사유가 빔")
         if len(_squash(c["CFRC_CONT"])) < MIN_CONTENT:
@@ -935,13 +991,11 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
         # 사람이 창의 [저장] 까지 눌렀다 — 작성 화면에 증빙이 붙었는지만 본다
         return _evidence_attached(frame, item, ask, wait)
 
-    counts = _state(popup, ["IN_COUNT", "EMP_COUNT", "OUT_COUNT", "MEAL_COST", "CFRC_LIMITED_AMT"])
-    heads = sum(parse_amount(counts[k]) or 0 for k in ("IN_COUNT", "EMP_COUNT", "OUT_COUNT"))
-    limit = parse_amount(counts["CFRC_LIMITED_AMT"]) or 0
-    cost = parse_amount(counts["MEAL_COST"]) or item.amount or 0
+    cost, limit = _meeting_cost(popup, item)
+    heads = _heads(popup)
     if heads and limit and cost / heads > limit:
         result.review.append(f"1인당 회의비 {cost // heads:,}원 — 한도 {limit:,}원을 넘음")
-    known = {_squash(p.name) for p in people}
+    known = {_squash(p.name) for p in people} | {_squash(n) for n in arbitrary}
     for extra in _inside_names(popup):
         if _squash(extra["name"]) not in known:            # ERP 가 넣어 둔 사람(작성자 등) · 사람이 잘못 고른 사람
             kind = part_mod.Attendee("", kind=extra["kind"]).kind_name
@@ -994,19 +1048,67 @@ def _missing_inside(inside: list[part_mod.Attendee], on: list[dict]) -> list[par
     return [p for p in inside if _squash(p.name) not in names]
 
 
-def _inside_request(left: list[part_mod.Attendee], reasons: dict[str, str] | None = None) -> str:
-    def label(p: part_mod.Attendee) -> str:
-        why = (reasons or {}).get(p.name) or p.note
-        return p.label() + (f" ({why})" if why else "")
+def _heads(popup) -> int:
+    """회의록등록 창의 참석자 수 — 참여인력 · 내부참석자는 수 칸(IN_COUNT · EMP_COUNT)과 표의 이름 수 중 큰 것, 외부참석자는 이름이 든 줄 수."""
+    c = _state(popup, ["IN_COUNT", "EMP_COUNT", "OUT_COUNT"])
+    inside = max((parse_amount(c["IN_COUNT"]) or 0) + (parse_amount(c["EMP_COUNT"]) or 0), len(_inside_names(popup)))
+    try:
+        rows = int(popup.evaluate(EXTERNAL_COUNT_JS) or 0)
+    except Exception:  # noqa: BLE001
+        rows = 0
+    # 외부참석자는 이름이 든 줄만 — 빈 줄 하나를 두고 열리는 창이 있어(OUT_COUNT 1) 수 칸은 표를 못 읽을 때만 본다
+    outside = len(_external_names(popup)) if rows else (parse_amount(c["OUT_COUNT"]) or 0)
+    return inside + outside
 
-    parts = [label(p) for p in left if p.kind == "part"]
-    others = [label(p) for p in left if p.kind == "internal"]
-    out = []
-    if parts:
-        out.append("참여인력 [행 추가]: " + ", ".join(parts))
-    if others:
-        out.append("내부참석자 [행 추가] 의 사람 찾기 창에서(여러 명을 한 번에): " + ", ".join(others))
-    return " / ".join(out)
+
+def _meeting_cost(popup, item: card.CardItem) -> tuple[int, int]:
+    """(회의비 — 식비(A) + 다과(B), 1인 한도). 한도는 숨은 #CFRC_LIMITED_AMT(실측 50000), #CFRC_LIMITED_YN 이 'N' 이면 한도 없음(0)."""
+    c = _state(popup, ["MEAL_COST", "SNACK_COST", "MEAL_SNACK_COST", "CFRC_LIMITED_YN", "CFRC_LIMITED_AMT"])
+    cost = (parse_amount(c["MEAL_COST"]) or 0) + (parse_amount(c["SNACK_COST"]) or 0) or parse_amount(c["MEAL_SNACK_COST"]) \
+        or item.amount or 0
+    if item.amount and cost > item.amount:           # 다과로 옮기다 식비 칸이 남은 때 — 결제 금액보다 클 수는 없다
+        cost = item.amount
+    flag = str(c["CFRC_LIMITED_YN"]).strip().upper()
+    limit = 0 if flag == "N" else (parse_amount(c["CFRC_LIMITED_AMT"]) or (DEFAULT_LIMIT if flag == "Y" else 0))
+    return cost, limit
+
+
+def need_heads(cost: int, limit: int) -> int:
+    """1인 한도를 넘지 않으려면 있어야 할 사람 수 — 16만원 · 5만원이면 4명."""
+    return -(-int(cost) // int(limit)) if cost and limit else 0
+
+
+def _snack(popup, item: card.CardItem, log, wait) -> tuple[int, str]:
+    """다과비 — 식비청구 '아니오' → 회의비(식비)(A) 0 → 회의비(다과)(B) 금액. (금액, 못 한 까닭 — 되면 '')."""
+    before = _state(popup, ["MEAL_COST", "SNACK_COST"])
+    amount = parse_amount(before["MEAL_COST"]) or parse_amount(before["SNACK_COST"]) or item.amount or 0
+    if not amount:
+        return 0, "다과비 금액을 모름 — 회의비(다과)(B) 에 금액"
+    try:
+        picked = popup.evaluate(MEAL_NO_JS)
+    except Exception as error:  # noqa: BLE001
+        picked = {"ok": False, "why": str(error).splitlines()[0][:80] if str(error) else "오류"}
+    if not picked.get("ok"):
+        log("  ✗ 다과비: " + str(picked.get("why", "")))
+        return amount, f"다과비 — 식비청구 '아니오' 를 고르지 못함({picked.get('why', '')}). '아니오' · 회의비(다과)(B) {amount:,}원"
+    wait(0.4)
+    if parse_amount(_state(popup, ["MEAL_COST"])["MEAL_COST"]):
+        _set(popup, "text", "MEAL_COST", "0")
+    _set(popup, "text", "SNACK_COST", str(amount))
+    wait(0.3)
+    ok, why = _snack_ok(popup, amount)
+    log("  %s 다과비: 식비청구 '아니오' · 회의비(다과) %s원%s" % ("✓" if ok else "✗", f"{amount:,}", "" if ok else " — " + why))
+    return amount, "" if ok else f"다과비 — {why}. 식비청구 '아니오' · 회의비(식비)(A) 0 · 회의비(다과)(B) {amount:,}원"
+
+
+def _snack_ok(popup, amount: int) -> tuple[bool, str]:
+    c = _state(popup, ["MEAL_COST", "SNACK_COST"])
+    bad = []
+    if parse_amount(c["MEAL_COST"]):
+        bad.append(f"회의비(식비)(A) 가 {c['MEAL_COST']}")
+    if parse_amount(c["SNACK_COST"]) != amount:
+        bad.append(f"회의비(다과)(B) 가 {c['SNACK_COST'] or '빔'}")
+    return not bad, " · ".join(bad)
 
 
 def _add_externals(popup, externals: list[part_mod.Attendee], log, wait) -> int:

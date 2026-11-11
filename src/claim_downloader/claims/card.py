@@ -74,6 +74,13 @@ CLAIM_NAME_RE = re.compile(r"^\s*(\d{2})\s*[_.]\s*\[([^\]]{2,40})\]\s*\S")
 PERIOD_SHORT_RE = re.compile(r"\(\s*(\d{1,2})\s*\.\s*(\d{1,2})\s*\.?\s*[~∼-]\s*(\d{1,2})\s*\.\s*(\d{1,2})\s*\.?\s*\)")   # (10.09~10.27.)
 
 RECEIPT_NAME_WORDS = ("영수증", "매출전표", "전표", "카드", "결제", "receipt", "invoice")
+# 회의비가 식비가 아니라 다과비인지(담당자 2026-11-11 — 다과비는 회의록등록 창에서 식비청구 '아니오' · 회의비(다과) 칸에 금액).
+# 폴더 이름 · 회의록에 '다과' 가 있으면 다과, '식비' · '식대' 면 식비. 없으면 가맹점 이름이 카페 · 빵집 꼴일 때 다과로 보고 알린다.
+SNACK_WORDS = ("다과",)
+MEAL_WORDS = ("식비", "식대", "식사")
+SNACK_SHOP_WORDS = ("카페", "커피", "cafe", "coffee", "베이커리", "bakery", "제과", "디저트", "스타벅스", "starbucks", "투썸", "이디야",
+                    "메가커피", "메가엠지씨", "컴포즈", "빽다방", "할리스", "파스쿠찌", "엔제리너스", "탐앤탐스", "폴바셋", "파리바게",
+                    "뚜레쥬르", "던킨", "배스킨", "공차", "쥬씨", "더벤티")
 RECEIPT_TEXT_WORDS = ("승인번호", "카드번호", "가맹점", "결제금액", "승인금액", "매출전표", "영수증")
 MINUTES_NAME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\s+\S+\s+.+\.(hwpx|hwp|docx)$", re.I)
 MINUTES_SUFFIXES = (".hwpx", ".hwp", ".docx", ".pdf")
@@ -711,6 +718,8 @@ class CardItem:
     meeting: Minutes | None = None   # 회의록에서 읽은 것 — ERP 회의록등록 창에 넣는다(card_erp)
     meeting_region: str = ""       # 회의비 — 회의 장소의 시 · 군
     meeting_region_from: str = ""
+    snack: bool = False            # 회의비가 다과비 — 회의록등록 창의 식비청구 '아니오' · 회의비(다과)(B) 에 금액(card_erp)
+    snack_from: str = ""
     shop_address: str = ""         # 가맹점 주소(영수증 글자에서. 없으면 ERP 회의록등록 창의 #CARD_ADDR 로 — 넣을 때)
     receipts: list[str] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
@@ -943,11 +952,31 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
         conflict = region_conflict(item.meeting_region, item.shop_address)
         if conflict:
             item.notes.append(conflict)
+        item.snack, item.snack_from = snack_of(item.name, minutes, item.merchant)
+        if item.snack and item.snack_from.startswith("가맹점"):
+            item.notes.append(f"다과비로 봄({item.snack_from}) — 식비면 폴더 이름에 '식비' 를 넣으세요")
     if item.req_div == "85" and not item.goods:
         item.notes.append("소모성물품인데 물품 표(품명 · 수량 · 단가 · 금액 엑셀)가 없음")
     if not item.title:
         item.notes.append("건명이 없음 — 폴더 이름에 사용일 뒤로 적어 주세요")
     return item
+
+
+def snack_of(folder_name: str, minutes: Minutes | None, merchant: str) -> tuple[bool, str]:
+    """회의비가 다과비인지와 그 근거 — 폴더 이름(사람이 적은 것) → 회의록(사용처 · 안건 · 내용) → 가맹점 이름(카페 · 빵집 꼴, 약함)."""
+    name = re.sub(r"\s+", "", folder_name or "")
+    if any(w in name for w in SNACK_WORDS):
+        return True, "폴더 이름"
+    if any(w in name for w in MEAL_WORDS):
+        return False, "폴더 이름"
+    if minutes is not None:
+        text = re.sub(r"\s+", "", " ".join([minutes.merchant, minutes.agenda] + list(minutes.content)))
+        if any(w in text for w in SNACK_WORDS) and not any(w in text for w in MEAL_WORDS):
+            return True, "회의록"
+    shop = re.sub(r"\s+", "", merchant or "").lower()
+    if shop and any(w in shop for w in SNACK_SHOP_WORDS):
+        return True, f"가맹점 '{merchant.strip()}'"
+    return False, ""
 
 
 def load_job(folder: str, read_text=pdf_text) -> CardJob:

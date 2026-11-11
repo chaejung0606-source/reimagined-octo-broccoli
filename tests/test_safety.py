@@ -305,11 +305,17 @@ def test_scholarship_presses_only_tab_save_person_and_attach_buttons():
 def test_card_presses_only_inquiry_payment_category_evidence_and_saves():
     """카드청구(claims/card_erp.py) — 담당자 허락(2026-10-20 "네 눌러도 됩니다"): 미청구 카드내역 [조회] · 결제 건 라디오 · 청구구분 라디오 ·
     증빙 [신규등록] · 회의록등록 창의 [저장] 과 외부참석자 [행 추가] · 작성 화면 [저장] · 첨부. [신청] 은 사람.
-    (85) [등록] · 참여인력/내부참석자 [행 추가] · 돋보기 · [카드매출전표] · 결의서내역 [카드청구](#P11) 는 미실측 · 허락 전이라 누르지 않는다."""
+    다과비는 회의록등록 창의 식비청구 '아니오' 라디오(담당자 2026-11-11 — 그 하나만, 이미 켜져 있으면 누르지 않음).
+    참여인력/내부참석자 [행 추가] 는 attendees.py 가 · (85) [등록] · 돋보기 · [카드매출전표] 는 누르지 않는다."""
+    from claim_downloader.claims import card_erp
     text = (SRC / "claims" / "card_erp.py").read_text(encoding="utf-8")
-    assert text.count(".click(") == 2                       # 청구구분 라디오(REQ_DIV_CLICK_JS) · 결제 건 줄의 라디오(PICK_R_JS)
+    assert text.count(".click(") == 3                       # 청구구분 라디오(REQ_DIV_CLICK_JS) · 결제 건 줄의 라디오(PICK_R_JS) · 식비청구 '아니오'
     assert ".click(" in text.split("REQ_DIV_CLICK_JS = ", 1)[1].split('"""', 2)[1]
     assert ".click(" in text.split("PICK_R_JS = ", 1)[1].split('"""', 2)[1]
+    meal = card_erp.MEAL_NO_JS
+    assert meal.count(".click(") == 1 and "if (!no[0].checked) no[0].click()" in meal and "name=MEAL_REQ_YN]" in meal
+    assert "/아니/" in meal and "no.length !== 1" in meal
+    assert re.findall(r"evaluate\(MEAL_NO_JS\)", text) == ["evaluate(MEAL_NO_JS)"]
     assert re.findall(r"evaluate\(REQ_DIV_CLICK_JS,\s*([A-Za-z_.]+)\)", text) == ["item.req_div"]
     assert set(re.findall(r"_click\((?:frame|popup), ([A-Z_]+)\)", text)) == {"LIST_BUTTON_ID", "MINUTES_SAVE_ID", "EXTERNAL_ADD_ID"}
     assert re.findall(r"open_popup\(page, frame, ([A-Z_]+),", text) == ["MINUTES_BUTTON_ID"]
@@ -337,12 +343,16 @@ def test_attendees_press_only_row_add_search_row_check_and_confirm():
     assert text.count(".click(") == 1 and ".click()" in attendees.CHECK_ROW_JS and "if (!box.checked)" in attendees.CHECK_ROW_JS
     assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", text)) == {"SEARCH_ID", "PART_CONFIRM_ID"}
     assert re.findall(r"evaluate\(CLICK_TEXT_JS,\s*([A-Za-z_]+)\)", text) == ["CONFIRM_TEXT"] and attendees.CONFIRM_TEXT == "확인"
-    assert re.findall(r"open_popup\(minutes, minutes, ([a-z_]+),", text) == ["button"] and "assert button in ALLOWED_IDS" in text
+    assert re.findall(r"open_popup\(minutes, minutes, ([A-Za-z_]+),", text) == ["button", "PART_ADD_ID"]
+    assert "assert button in ALLOWED_IDS" in text and "assert PART_ADD_ID in ALLOWED_IDS" in text
     assert attendees.ALLOWED_IDS == {"btnRowAdd", "btnRowAdd1", "btn_search", "btnItem"}
     assert re.findall(r"evaluate\(SET_TEXT_JS,\s*\[([a-z_]+),", text) == ["field_id"]
     assert {attendees.PART_FIELD_ID, attendees.MULTI_FIELD_ID} == {"EMP_NM", "SEARCH_NM"}
     body = text.split("def _one(", 1)[1]
     assert body.index("if index is None:") < body.index("_check(popup")            # 줄은 하나로 정한 뒤에만 체크
+    fill = text.split("def fill_up(", 1)[1]                                         # 임의로 채우기 — choose_any 가 고른 줄만, [확인] 은 체크한 뒤
+    assert fill.index("choose_any(") < fill.index("_check(popup") < fill.index("PART_CONFIRM_ID")
+    assert "if not checked:" in fill and fill.index("if not checked:") < fill.index("PART_CONFIRM_ID")
     for word in ("btnRowDel", "btnEmpInfo", "#save", "MINUTES_SAVE", "set_input_files", ".fill(", ".type("):
         assert word not in text, word
     for line in text.splitlines():

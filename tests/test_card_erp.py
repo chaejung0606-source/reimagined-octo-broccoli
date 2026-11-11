@@ -273,9 +273,7 @@ def test_missing_inside_people_are_named_whichever_table_they_are_in():
     on = [{"kind": "internal", "name": "나", "no": "100002"}]
     left = card_erp._missing_inside(inside, on)
     assert [p.name for p in left] == ["가"]
-    assert card_erp._inside_request(left) == "참여인력 [행 추가]: 가(100001)"
     assert card_erp._missing_inside(inside, on + [{"kind": "internal", "name": "가 ", "no": ""}]) == []   # 내부참석자 표에 넣어도 든 것
-    assert "사람 찾기 창에서(여러 명을 한 번에): 나 · 가나다학과" in card_erp._inside_request(inside)
 
 
 def test_minutes_window_names_and_the_empty_external_row_in_a_browser():
@@ -417,7 +415,125 @@ def test_attendees_are_picked_in_the_two_finder_windows_only_when_certain():
             assert len(context.pages) == 1                             # 못 고른 사람의 창도 닫았다
             left = card_erp._missing_inside(people[:4], on)
             assert [x.name for x in left] == ["사"]
-            assert "사 (같은 이름 1명이 모두 재직 · 재학이 아님" in card_erp._inside_request(left, report.left)
+            browser.close()
+    except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
+        if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):
+            pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
+        raise
+
+
+# ── 회의비 · 다과비 1인 한도와 다과비 칸 (담당자 2026-11-11) ─────────────────────────────────────────────
+def test_need_heads_is_cost_over_the_per_person_limit_rounded_up():
+    """16만원이면 4명 이상(1인 5만원). 한도가 없으면 따지지 않는다."""
+    assert card_erp.need_heads(160000, 50000) == 4
+    assert card_erp.need_heads(150000, 50000) == 3 and card_erp.need_heads(150001, 50000) == 4
+    assert card_erp.need_heads(30000, 50000) == 1
+    assert card_erp.need_heads(0, 50000) == 0 and card_erp.need_heads(160000, 0) == 0
+
+
+def test_choose_any_skips_people_already_in_the_tables_inactive_rows_and_other_periods():
+    rows = [{"k_EMP_NO": "100001", "k_EMP_NM": "가", "k_WORK_STS_NM": "재직(직원)"},
+            {"k_EMP_NO": "100002", "k_EMP_NM": "나", "k_WORK_STS_NM": "퇴직"},
+            {"k_EMP_NO": "100003", "k_EMP_NM": "다", "k_PART_TRM_DT": "2025-03-01 ~ 2026-02-28"},
+            {"k_EMP_NO": "100004", "k_EMP_NM": "라", "k_PART_TRM_DT": "2026-03-01 ~ 2027-02-28"},
+            {"k_EMP_NO": "100004", "k_EMP_NM": "라"},                       # 같은 사람 두 줄
+            {"k_EMP_NO": "100005", "k_EMP_NM": "마"},
+            {"k_EMP_NO": "100006", "k_EMP_NM": "바"}]
+    day = D(2026, 10, 12)
+    assert attendees.choose_any(rows, 5, ["가"], day=day) == [3, 5, 6]          # 가: 이미 있음 · 나: 퇴직 · 다: 참여기간 밖 · 라 둘째 줄: 같은 사람
+    assert attendees.choose_any(rows, 2, [], taken_nos=["100001"], day=day) == [3, 5]
+    assert attendees.choose_any(rows, 9, [], day=None) == [0, 2, 3, 5, 6]      # 회의일을 모르면 참여기간은 안 본다
+    assert attendees.choose_any(rows, 0, []) == []
+
+
+def test_snack_is_read_from_folder_minutes_then_shop_name():
+    m = card.Minutes(merchant="가나다 식당", agenda="운영 회의", content=["다과를 곁들여 운영 현황을 논의하였음."])
+    assert card.snack_of("09_ 1015 다과 운영회의", None, "") == (True, "폴더 이름")
+    assert card.snack_of("09_ 1015 식비 운영회의", m, "스타벅스 춘천점") == (False, "폴더 이름")     # 사람이 적은 것이 먼저
+    assert card.snack_of("09_ 1015 운영회의", m, "가나다 식당") == (True, "회의록")
+    assert card.snack_of("09_ 1015 운영회의", card.Minutes(content=["식사와 다과"]), "") == (False, "")    # 둘 다 있으면 모름
+    assert card.snack_of("09_ 1015 운영회의", None, "스타벅스 춘천점") == (True, "가맹점 '스타벅스 춘천점'")
+    assert card.snack_of("09_ 1015 운영회의", None, "가나다 식당") == (False, "")
+
+
+def test_plan_says_snack_and_arbitrary_people_for_the_per_person_limit(tmp_path):
+    job, item = _meeting_item(tmp_path, attendees=[{"org": "강원대학교", "name": "가"}, {"org": "가나다학과", "name": "나"}],
+                              content=["운영 현황과 일정을 함께 논의하였음.", "다음 회의 날짜를 정하였음."])
+    item.amount, item.snack, item.snack_from = 160000, True, "폴더 이름"
+    plan = card_erp.plan_item(item, 0, [])
+    text = "\n".join(plan.lines)
+    assert "다과비(폴더 이름) — 회의록등록 창에서 식비청구 '아니오' · 회의비(다과)(B) 160,000원" in text
+    assert "1인 50,000원 한도로 4명 이상 필요 — 회의록 2명, 2명은 참여인력에서 임의로 넣고 저장(확인 필요)" in text
+    assert any("2명을 참여인력에서 임의로 넣음" in r for r in plan.review)
+
+
+CARD_FORM = """<html><body>
+<input id="REQ_PTCL" value=""><span id="REQ_DIV_LNK"></span>
+<input type="button" id="btn_addEvid2" value="신규등록" onclick="window.open('http://erp.test/minutes', 'mw', 'width=900,height=700')">
+<script>function fn_evidCallback(t) { document.getElementById('REQ_PTCL').value = t; document.getElementById('REQ_DIV_LNK').textContent = t; }</script>
+</body></html>"""
+
+MEETING_FIELDS = """
+<input id="CFRC_DT" class="text dis" value="2026-10-12" readonly><input id="WEEKEND" value="월요일" readonly>
+<input id="CFRC_PLCE" class="text"><textarea id="CFRC_PURS"></textarea><textarea id="CFRC_CONT"></textarea><input id="RMK" class="text">
+<input type="hidden" id="CARD_ADDR" value="강원 춘천시 가나다로 1">
+<label><input type="radio" id="MEAL_REQ_YN_1" name="MEAL_REQ_YN" class="radio" checked>예</label>
+<label><input type="radio" id="MEAL_REQ_YN_2" name="MEAL_REQ_YN" class="radio">아니오</label>
+<input id="MEAL_COST" class="text num" value="160,000" onkeyup="sum()"><input id="SNACK_COST" class="text num" onkeyup="sum()">
+<input id="MEAL_SNACK_COST" class="text num dis" value="160,000" readonly>
+<input type="hidden" id="CFRC_LIMITED_YN" value="Y"><input type="hidden" id="CFRC_LIMITED_AMT" value="50000">
+<a id="save" name="save" href="javascript:" onclick="save()">저장</a>
+"""
+MEETING_SCRIPT = """
+function num(v) { return parseInt(String(v || '').replace(/[^0-9]/g, '') || '0'); }
+function sum() { MEAL_SNACK_COST.value = (num(MEAL_COST.value) + num(SNACK_COST.value)).toLocaleString(); }
+function heads() { return document.querySelectorAll('#rtaskTb tr.generated, #rtaskTb1 tr.generated').length +
+  Array.from(document.querySelectorAll('#rtaskTb2 tr.generated input[name=CFRC_OUT_EMP_NM]')).filter(e => e.value.trim()).length; }
+function save() { if (!confirm('저장하시겠습니까?')) return;
+  if (num(MEAL_SNACK_COST.value) / heads() > num(CFRC_LIMITED_AMT.value)) { alert('1인당 회의비가 한도를 넘습니다.'); return; }
+  opener.saved = {heads: heads(), meal: num(MEAL_COST.value), snack: num(SNACK_COST.value), no: MEAL_REQ_YN_2.checked};
+  opener.fn_evidCallback('회의일자:20261012/ 회의장소:' + CFRC_PLCE.value); window.close(); }
+</script></body></html>"""
+MEETING_WINDOW = (MINUTES_WITH_FINDERS.replace('<input type="button" id="btnRowAdd2"', MEETING_FIELDS + '<input type="button" id="btnRowAdd2"', 1)
+                  .replace("</script></body></html>", MEETING_SCRIPT))
+
+
+def test_snack_and_per_person_limit_fill_arbitrary_participants_and_save_without_asking():
+    """다과비 16만원 · 회의록 참석자 넷 중 하나(졸업한 사람)를 못 정함 — 식비청구 '아니오' · 다과 칸에 금액, 참여인력에서 한 명을 임의로 채워
+    4명으로 저장하고, 못 정한 사람 · 임의로 넣은 사람을 '확인 필요' 로 남긴다. 노란 띠로 묻지 않는다."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    executable = os.environ.get("CHROMIUM_PATH", "/opt/pw-browsers/chromium")
+    pages = {"http://erp.test/card": CARD_FORM, "http://erp.test/minutes": MEETING_WINDOW, "http://erp.test/part": PART_WINDOW,
+             "http://erp.test/multi": MULTI_WINDOW}
+    item = card.CardItem(folder="x", name="09_ 1012 다과 운영회의", code="09", used=D(2026, 10, 12), amount=160000, req_div="17",
+                         snack=True, snack_from="폴더 이름", meeting_region="춘천",
+                         meeting=card.Minutes(start="10:00", end="11:00", place="사업단 회의실", agenda="운영 회의",
+                                              content=["사업단 운영 현황과 하반기 일정을 논의하였음."],
+                                              attendees=[("가나다학과", "가"), ("", "사"), ("한림대학교", "다")]))
+    members = [participants.Member("가", "100001", "가나다학과")]
+    try:
+        with sync_api.sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=executable if os.path.exists(executable) else None)
+            context = browser.new_context()
+            context.route("http://erp.test/**", lambda route: route.fulfill(status=200, content_type="text/html; charset=utf-8",
+                                                                            body=pages[route.request.url]))
+            page = context.new_page()
+            page.goto("http://erp.test/card")
+            wait = lambda s: page.wait_for_timeout(int(s * 1000))  # noqa: E731
+            logs: list[str] = []
+            asked: list[str] = []
+            result = card_erp.ItemResult(index=0, name=item.name)
+            ok, why = card_erp._minutes(page, page.main_frame, item, logs.append, lambda m: asked.append(m) or False, wait, [], result, members)
+            assert (ok, asked) == (True, []), (why, asked, logs)
+            saved = page.evaluate("window.saved")
+            assert saved == {"heads": 4, "meal": 0, "snack": 160000, "no": True}       # 나(창에 있던 사람) · 가 · 다 · 임의 1명
+            assert any("다과비(폴더 이름) — 식비청구 '아니오' · 회의비(다과) 160,000원" in line for line in result.lines)
+            assert any(r.startswith("회의록에서 못 정한 사람(확인 필요): 사") for r in result.review)
+            arbitrary = [r for r in result.review if r.startswith("임의로 넣은 참여인력(확인 필요): 바")]
+            assert arbitrary and "회의록에서 못 정한 사람 1명" in arbitrary[0]
+            assert not any("회의록에 없는 참여인력: 바" in r for r in result.review)            # 임의로 넣은 사람은 따로 알린다
+            assert not any(n in line for line in logs for n in ("100004", "바 ", "'바'"))      # 기록에 사번 · 이름 없음
+            assert any("임의로 1명 넣음" in line for line in logs)
             browser.close()
     except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
         if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):

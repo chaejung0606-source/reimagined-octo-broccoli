@@ -15,7 +15,9 @@
   [확인] 뒤 내부참석자 표에 고른 사람마다 줄(사번 읽기전용 · 성명 · 돋보기 · 소속)이 생기고 `#EMP_COUNT` 가 는다.
 
 앱은 **한 사람씩** 창을 열어(검색이 앞 체크를 지울 수 있어서) 검색 → 맞는 줄이 **하나로 확실할 때만** 체크 → [확인] → 회의록등록 창에 그 이름이 생겼는지 본다.
-못 정하면 그 창을 닫고(창 닫기 — ERP 단추가 아니다) 까닭을 돌려준다 — card_erp 가 노란 띠로 사람에게 그 이름을 알린다.
+못 정하면 그 창을 닫고(창 닫기 — ERP 단추가 아니다) 까닭을 돌려준다 — card_erp 가 '신청 전 확인할 것' 에 그 이름을 남긴다.
+회의록의 사람이 불분명하거나 1인 한도(회의비 · 다과비 5만원)로 사람이 모자라면 `fill_up` 이 참여인력선택에서 **아무나** 골라 채운다
+(담당자 2026-11-11 "참여인력에서 임의로 사람을 선택해서 넣고 일단 저장만하기 … 임의로 넣은 사람도 안내").
 고르는 규칙: 참여인력은 이름(명단에 직번이 있으면 직번도)이 같은 줄 하나. 참여인력선택 목록에 없으면 인적정보조회에서 직번으로 찾는다.
 내부참석자는 이름이 같은 줄 가운데 — 회의록의 소속이 학과 같은 것이면 소속이 맞는 줄 → 여럿이면 재직 · 재학인 줄 — 하나. 소속을 모르면 재직 · 재학인 같은 이름이
 하나일 때만(그때는 '신청 전 확인할 것' 에 남긴다). 재직 · 재학이 아닌 줄(제적 · 졸업 · 퇴직 …)은 소속이 맞을 때만 고른다.
@@ -25,6 +27,7 @@
 """
 from __future__ import annotations
 
+import datetime as dt
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -297,3 +300,95 @@ def add(minutes, people: list[part_mod.Attendee], log: Callable[[str], None], wa
             report.left[person.name] = why
             log(f"  ✗ {kind} {who}: {why}")
     return report
+
+
+DATE_IN_TEXT_RE = re.compile(r"(\d{4})[-./]?\s*(\d{1,2})[-./]?\s*(\d{1,2})")
+
+
+def _covers(text, day) -> bool | None:
+    """참여기간 글('2026-03-01 ~ 2027-02-28' 꼴 — 실측 전)에 회의일이 드는지. 날짜를 둘 못 읽거나 회의일을 모르면 None."""
+    found = []
+    for y, m, d in DATE_IN_TEXT_RE.findall(str(text or "")):
+        try:
+            found.append(dt.date(int(y), int(m), int(d)))
+        except ValueError:
+            continue
+    if day is None or len(found) < 2:
+        return None
+    return found[0] <= day <= found[-1]
+
+
+def choose_any(rows: list[dict], count: int, taken_names, taken_nos=(), day=None) -> list[int]:
+    """참여인력선택 목록에서 아무나 count 명(담당자 2026-11-11 — 회의록의 사람이 불분명하거나 1인 한도로 사람이 모자라면 임의로 넣고 일단 저장).
+    회의록등록 표에 이미 있는 사람 · 피할 이름은 빼고, 재직상태가 적혀 있으면 재직 · 재학만, 참여기간을 읽을 수 있으면 회의일이 든 사람만 — 목록 차례로."""
+    if count <= 0:
+        return []
+    names = {_squash(n) for n in taken_names if _squash(n)}
+    nos = {_digits(n) for n in taken_nos if _digits(n)}
+    out: list[int] = []
+    seen: set[str] = set()
+    for i, cells in enumerate(rows):
+        name, no = _squash(cells.get(COL_NAME)), _digits(cells.get(COL_NO))
+        if not name or name in names or (no and no in nos) or (no or name) in seen:
+            continue
+        if str(cells.get("k_WORK_STS_NM", "")).strip() and not _active(cells):
+            continue
+        if _covers(cells.get("k_PART_TRM_DT", ""), day) is False:
+            continue
+        seen.add(no or name)
+        out.append(i)
+        if len(out) >= count:
+            break
+    return out
+
+
+def fill_up(minutes, count: int, log: Callable[[str], None], wait: Callable[[float], None], names_now: Callable[[], list[str]],
+            avoid=(), taken_nos=(), day=None) -> AddReport:
+    """참여인력 [행 추가] 창을 한 번 열어 아무나 count 명을 체크하고 [확인] — 넣은 사람은 added(이름), 모자라면 lines 에 까닭.
+    누르는 것은 _one 과 같다(참여인력 [행 추가] · 줄 체크 · [확인] #btnItem). 기록에는 이름을 남기지 않는다."""
+    report = AddReport()
+    if count <= 0:
+        return report
+    assert PART_ADD_ID in ALLOWED_IDS
+    popup, why = open_popup(minutes, minutes, PART_ADD_ID, PART_PROBE_JS, log)
+    if popup is None:
+        report.lines.append("참여인력 [행 추가] 창을 열지 못해 임의로 넣지 못함: " + why)
+        return report
+    done = False
+    try:
+        if not wait_until(lambda: popup.evaluate(PART_PROBE_JS) is True, wait, tries=40):
+            report.lines.append("참여인력선택 창이 아니라 임의로 넣지 못함")
+            return report
+        rows, tops = _scan_all(popup, wait)
+        cells = [r["cells"] for r in rows]
+        picked = choose_any(cells, count, list(names_now()) + list(avoid), taken_nos, day)
+        log(f"  참여인력선택 목록 {len(rows)}줄 — 임의로 {len(picked)}명 고름(필요 {count}명)")
+        checked = []
+        for index in picked:
+            ok, note = _check(popup, rows[index]["key"], tops, wait)
+            if ok:
+                checked.append(cells[index])
+            else:
+                log("  ✗ 임의로 고른 줄을 체크하지 못함: " + note)
+        if not checked:
+            report.lines.append(f"참여인력선택 목록에서 더 넣을 사람을 찾지 못함(목록 {len(rows)}줄)")
+            return report
+        clicked = popup.evaluate(CLICK_ID_JS, PART_CONFIRM_ID)
+        if not clicked.get("ok"):
+            report.lines.append("참여인력선택 [확인] 을 누르지 못함: " + str(clicked.get("why", "")))
+            return report
+        if not wait_closed(popup, wait, seconds=10):
+            report.lines.append("참여인력선택 [확인] 을 눌렀지만 창이 닫히지 않음")
+            return report
+        done = True
+        want = [str(c.get(COL_NAME, "")).strip() for c in checked]
+        wait_until(lambda: {_squash(n) for n in want} <= {_squash(n) for n in names_now()}, wait, tries=12)
+        now = {_squash(n) for n in names_now()}
+        report.added = [n for n in want if _squash(n) in now]
+        log(f"  ✓ 참여인력 임의로 {len(report.added)}명 넣음")
+        if len(report.added) < count:
+            report.lines.append(f"참여인력을 임의로 {count}명 넣어야 하는데 {len(report.added)}명만 넣음")
+        return report
+    finally:
+        if not done:
+            _close(popup)
