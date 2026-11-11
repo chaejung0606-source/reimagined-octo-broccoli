@@ -59,18 +59,69 @@ def test_text_height_reads_line_height_and_ignores_borders(qapp, tmp_path):
     assert render.legible_scale(blank) == pytest.approx(render.MIN_TEXT / (600 / render.FALLBACK_CHARS))   # 못 재면 한 줄 40자 영수증으로
 
 
-def test_small_text_stay_moves_to_next_pages_evenly(qapp, tmp_path):
-    """글자가 작은 체류 영수증 7장 — 한 쪽에 7칸이면 안 읽히므로 잘 보이는 만큼씩(3 · 2 · 2) 다음 쪽으로."""
+def test_small_text_stay_moves_to_next_pages_evenly(qapp, tmp_path, monkeypatch):
+    """글자가 작은 체류 영수증 7장 — 한 쪽에 7칸이면 안 읽히므로 잘 보이는 만큼씩(3 · 2 · 2) 다음 쪽으로(세로 쪽만 쓸 때).
+    가로 쪽을 쓸 수 있으면 잘 보이는 채로 쪽이 줄어 가로 두 쪽(4 · 3) — 담당자 2026-11-11 "증빙에 따라서 … 용지를 세로,가로형 변경"."""
     from claim_downloader.travel import render
     days = [date(2026, 5, d) for d in range(1, 8)]
     trip = model.Trip(name="가", start=days[0], end=days[-1], destination="삼척",
                       stay=[model.Evidence(_receipt(tmp_path / f"s{d.day}.png", 1080, 2000, 30), d) for d in days])
+
+    def stays(out):
+        # 칸마다 그날 일자 이름표(요일까지) — 묶음 줄의 기간 칩('5월 1일 ~ 5월 7일')은 세지 않는다
+        return [sum(f"5월{d.day}일{model.WEEKDAYS[d.weekday()]}요일" in t for d in days) for t in _pages_text(out)]
+
     out = tmp_path / "small.pdf"
-    assert render.render(model.pages(trip), out) == 3
+    assert render.render(model.pages(trip), out) == 2 and stays(out) == [4, 3] and _orientations(out) == ["가로", "가로"]
+    monkeypatch.setattr(render, "LANDSCAPE_SIZE", render.PAGE_SIZE)          # 세로 쪽만
+    out = tmp_path / "small-portrait.pdf"
+    assert render.render(model.pages(trip), out) == 3 and stays(out) == [3, 2, 2]
     texts = _pages_text(out)
-    # 칸마다 그날 일자 이름표(요일까지) — 묶음 줄의 기간 칩('5월 1일 ~ 5월 7일')은 세지 않는다
-    assert [sum(f"5월{d.day}일{model.WEEKDAYS[d.weekday()]}요일" in t for d in days) for t in texts] == [3, 2, 2]
     assert "(계속)" in texts[1] and "삼척출장증빙(계속)" in texts[2]
+
+
+def _orientations(out: Path) -> list[str]:
+    from pypdf import PdfReader
+    return ["가로" if float(p.mediabox.width) > float(p.mediabox.height) else "세로" for p in PdfReader(str(out)).pages]
+
+
+def _map_picture(path: Path, w: int = 1600, h: int = 900) -> Path:
+    """네이버 지도 길찾기 화면처럼 가로로 긴 그림 — 왼쪽 경로 목록(글자 줄) · 오른쪽 지도(옅은 면 위 경로 선)."""
+    from PySide6.QtGui import QColor, QImage, QPainter, QPen
+    image = QImage(w, h, QImage.Format_RGB32)
+    image.fill(QColor("#e8efe4"))
+    painter = QPainter(image)
+    painter.fillRect(0, 0, 440, h, QColor("white"))
+    for i, y in enumerate(range(40, h - 40, 26)):
+        painter.fillRect(30, y, 180 + 120 * (i % 3), 12, QColor("#333333"))
+    painter.setPen(QPen(QColor("#2f6fe0"), 8))
+    painter.drawLine(520, 120, w - 80, h - 120)
+    painter.end()
+    image.save(str(path))
+    return path
+
+
+def test_wide_map_page_is_landscape_and_tall_receipts_stay_portrait(qapp, tmp_path):
+    """자차-이동경로 쪽의 네이버 지도 그림(가로로 긴 화면)은 가로 쪽에 크게(담당자 2026-11-11 "지도 경로가 잘렸습니다 … 이게 보통 가로로 긴 이미지인데
+    · 이 페이지는 가로로 변경해서"), 세로로 긴 영수증 한 장은 세로 쪽 그대로. 한 PDF 에 섞인다. 미리 보기도 쪽마다 같은 방향."""
+    from claim_downloader.travel import render
+    day = date(2026, 10, 20)
+    trip = model.Trip(name="가", start=day, end=day, destination="원주", origin="춘천",
+                      stay=[model.Evidence(_receipt(tmp_path / "stay.png", 1080, 2000, 60), day)],
+                      tolls=[model.Evidence(_receipt(tmp_path / "toll.png", 1080, 1900, 60), day, amount=4100)],
+                      route_map=_map_picture(tmp_path / "map.png"), legs=[81.0, 81.0], fuel="경유")
+    out = tmp_path / "trip.pdf"
+    count = render.render(model.pages(trip), out)
+    sides = _orientations(out)
+    texts = _pages_text(out)
+    assert count == len(sides) and "가로" in sides and "세로" in sides
+    route_page = next(i for i, t in enumerate(texts) if "자차-이동경로" in t)
+    stay_page = next(i for i, t in enumerate(texts) if "체류증빙" in t)
+    assert sides[route_page] == "가로" and sides[stay_page] == "세로"
+    images, hits = render.preview(model.pages(trip), scale=0.3)
+    assert [("가로" if im.width() > im.height() else "세로") for im in images] == sides
+    assert render.size_of(images[route_page]) == render.LANDSCAPE_SIZE
+    assert all(h.rect.right() <= render.size_of(images[h.page]).width() + 1 for h in hits)     # 누를 자리도 그 쪽 크기 안
 
 
 def test_big_text_stay_stays_on_one_page(qapp, tmp_path):

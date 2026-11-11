@@ -256,11 +256,20 @@ class PreviewPanel(QWidget):
         if self._zoom_mode == FIT_WIDTH:
             return width
         if self._zoom_mode == FIT_PAGE:
-            image = self._views[0].image if self._views else None
-            ratio = image.height() / max(1, image.width()) if image is not None else 297 / 210
-            label = self._views[0].label_height if self._views else 24
-            return max(160, min(width, int((port.height() - label - 12) / ratio)))
+            # 쪽마다 다 보이게 — 가로 쪽(지도 그림 등)은 같은 배율에서 세로 쪽보다 넓으므로 쪽마다 따져 가장 작은 배율로
+            fits = []
+            for view in self._views or [None]:
+                f = self._wide(view)
+                ratio = view.image.height() / max(1, view.image.width()) if view is not None else 297 / 210
+                label = view.label_height if view is not None else 24
+                fits.append(min(width / f, (port.height() - label - 12) / (ratio * f)))
+            return max(160, int(min(fits)))
         return max(120, int(ACTUAL_WIDTH * self._zoom))
+
+    @staticmethod
+    def _wide(view) -> float:
+        """세로 쪽 폭에 견준 그 쪽의 폭 — 세로 1, 가로 √2. 같은 배율이면 글자 크기가 같게."""
+        return view.page_size.width() / max(1.0, min(view.page_size.width(), view.page_size.height())) if view is not None else 1.0
 
     def set_zoom(self, mode: str, zoom: float | None = None) -> None:
         """배율을 바꾸고 보던 자리(세로 · 가로 비율)를 지킨다."""
@@ -301,7 +310,8 @@ class PreviewPanel(QWidget):
     def _fit_pages(self) -> None:
         width = self.page_width()
         for view in self._views:
-            view.set_width(width)
+            # 폭 맞춤은 쪽마다 칸 폭에, 그 밖은 같은 배율(가로 쪽은 그만큼 넓게)
+            view.set_width(width if self._zoom_mode == FIT_WIDTH else int(width * self._wide(view)))
         name = {FIT_PAGE: "쪽 맞춤 · ", FIT_WIDTH: "폭 맞춤 · "}.get(self._zoom_mode, "")
         self.zoom_label.setText(f"{round(width / ACTUAL_WIDTH * 100)}%")
         self.zoom_label.setToolTip(f"{name}{round(width / ACTUAL_WIDTH * 100)}% — Ctrl+휠로 확대 · 축소")
@@ -355,7 +365,7 @@ class PreviewPanel(QWidget):
             label = QLabel(f"{i + 1}쪽")
             label.setObjectName("muted")
             self.pages_layout.addWidget(label, 0, Qt.AlignHCenter)
-            view = PageView(image, [h for h in hits if h.page == i], self._flagged, render.PAGE_SIZE)
+            view = PageView(image, [h for h in hits if h.page == i], self._flagged, render.size_of(image))   # 가로 쪽은 가로 크기
             view.label_height = label.sizeHint().height() + PAGE_GAP
             view.selected = self._selected
             view.clicked.connect(lambda hit: self._select(hit.ref, scroll=False))

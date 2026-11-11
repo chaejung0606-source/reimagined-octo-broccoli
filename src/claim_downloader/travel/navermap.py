@@ -16,8 +16,12 @@
 """
 from __future__ import annotations
 
+import datetime as dt
+import glob
+import hashlib
 import json
 import math
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -30,6 +34,10 @@ BASE = "https://map.naver.com"
 DIRECTIONS_URL = BASE + "/p/directions"
 SHORTEST = "거리우선"
 VIEWPORT = {"width": 1400, "height": 900}        # 담당자 그림처럼 왼쪽 경로 목록과 지도가 한 화면에
+# 찍을 때의 화면 — 앱 브라우저 창 크기와 상관없이 가로로 긴 16:9(담당자 2026-11-11 "지도 경로가 잘렸습니다 … 이게 보통 가로로 긴 이미지인데" —
+# 창이 좁으면 지도도 좁아 경로가 오른쪽에서 잘렸다). 창은 그대로 두고 찍는 동안만 화면 크기를 흉내 낸다(CDP Emulation — 끝나면 되돌림)
+CAPTURE_SIZE = (1600, 900)
+MAP_DIR = "출장지도"                              # 찍은 지도 그림은 앱 사용자 폴더(~/.claim-downloader/출장지도)에 — 출장 폴더에는 남기지 않는다
 
 # 곳 찾기 — 사람이 하듯 네이버 지도에서 한 번 검색하고(또는 장소 번호로 장소 화면을 열고), 그 화면이 보여 주는 결과를 읽는다(담당자 2026-11-10
 # "똑같은 목적지를 계속 검색해봤자 똑같은 결과만 나옵니다 · 처음 검색했을 때 가장 유사한 … 맨 처음에 뜬 장소를 선택해서 자동차 경로탐색 · 사용자가 판단하게 ·
@@ -111,8 +119,68 @@ SHOW_DETAIL_JS = """() => {
 }"""
 
 
+# 넓힌 화면에서 경로 전체가 보이게 — 지도 오른쪽 아래의 '전체'(경로 전체 보기, 담당자 그림 2026-11-11) 단추가 하나 보이면 누른다.
+# 지도 보기만 바뀐다(값 · 경로는 그대로). 지도 쪽(창의 오른쪽 · 아래)에 있는 것만 — 목록의 '전체' 같은 거르기 글은 아니다
+FIT_ROUTE_JS = """() => {
+  const plain = el => (el.textContent || '').replace(/\\s+/g, '');
+  const hits = [...document.querySelectorAll('body *')].filter(el => {
+    if (plain(el) !== '전체') return false;
+    if ([...el.children].some(c => plain(c) === '전체')) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.left > innerWidth * 0.55 && r.top > innerHeight * 0.4;
+  });
+  if (hits.length !== 1) return hits.length;
+  (hits[0].closest('a, button, [role=button]') || hits[0]).click();
+  return 1;
+}"""
+
+
+def _wide_view(page) -> Callable[[], None] | None:
+    """찍는 동안 화면을 CAPTURE_SIZE 로 — 되돌리는 함수(못 하면 None — 창 그대로 찍는다). 앱 브라우저(창 크기를 따르는 화면, no_viewport)는
+    창은 그대로 두고 CDP 로 화면 크기만 흉내 냈다가 지우고, 화면 크기를 정해 둔 페이지(시험 · 옛 보이지 않는 브라우저)는 크기를 바꿨다가 되돌린다."""
+    width, height = CAPTURE_SIZE
+    try:
+        before = page.viewport_size
+    except Exception:  # noqa: BLE001
+        before = None
+    if before:
+        try:
+            page.set_viewport_size({"width": width, "height": height})
+        except Exception:  # noqa: BLE001
+            return None
+
+        def back() -> None:
+            try:
+                page.set_viewport_size(before)
+            except Exception:  # noqa: BLE001
+                pass
+        return back
+    try:
+        session = page.context.new_cdp_session(page)
+        session.send("Emulation.setDeviceMetricsOverride", {"width": width, "height": height, "deviceScaleFactor": 0, "mobile": False})
+    except Exception:  # noqa: BLE001 — Chromium 이 아니거나 창이 닫히는 중
+        return None
+
+    def clear() -> None:
+        try:
+            session.send("Emulation.clearDeviceMetricsOverride")
+            session.detach()
+        except Exception:  # noqa: BLE001
+            pass
+    return clear
+
+
 def screenshot_clear(page, out: Path, wait: Callable[[float], None] | None = None) -> int:
-    """지도를 가리는 세부 경로 창을 잠깐 숨기고 찍은 뒤 되돌린다 — 숨긴 창 수(없으면 0, 그대로 찍는다)."""
+    """넓은 화면(CAPTURE_SIZE)에서 경로 전체를 보이게 하고 지도를 가리는 세부 경로 창을 잠깐 숨기고 찍은 뒤 되돌린다 — 숨긴 창 수(없으면 0)."""
+    restore = _wide_view(page)
+    if restore is not None and wait is not None:
+        wait(0.8)                       # 지도가 넓어진 화면에 맞춰 다시 그려질 때까지
+        try:
+            fitted = page.evaluate(FIT_ROUTE_JS)
+        except Exception:  # noqa: BLE001
+            fitted = 0
+        if fitted == 1:
+            wait(1.2)
     hidden = 0
     for frame in list(page.frames):
         try:
@@ -131,6 +199,8 @@ def screenshot_clear(page, out: Path, wait: Callable[[float], None] | None = Non
                     frame.evaluate(SHOW_DETAIL_JS)
                 except Exception:  # noqa: BLE001
                     continue
+        if restore is not None:
+            restore()
     return hidden
 
 
@@ -719,12 +789,29 @@ def capture(page, out: Path, label: str = "", wait: Callable[[float], None] | No
     return result
 
 
-def shot_path(folder: Path, label: str) -> Path:
-    """찍은 지도 그림 이름 — '네이버지도 최단거리_가는 길.png'. 같은 이름이 있으면 덮어쓰지 않고 _2."""
-    stem = f"네이버지도 최단거리_{label}".strip("_ ")
-    path = folder / f"{stem}.png"
+KEEP_SHOTS = 2      # 같은 구간의 지도 그림은 최근 둘만(새로 찍으면 그 전 것 하나는 남겨 둔다 — 찍다 실패해도 앞 그림이 남게)
+
+
+def shot_path(folder: Path, label: str, now: dt.datetime | None = None) -> Path:
+    """찍을 지도 그림 — 출장 폴더가 아니라 앱 사용자 폴더(~/.claim-downloader/출장지도/<출장 폴더마다>/)에.
+    담당자 2026-11-11 "네이버지도 최단거리 이미지가 생성되는데 왜이러나요? 이건 필요없습니다" — 출장증빙 PDF 에 넣을 그림일 뿐인데 출장 폴더에
+    '네이버지도 최단거리_… _7.png' 처럼 찍을 때마다 쌓였다. 이름에 찍은 때를 붙여(미리 보기가 옛 그림을 다시 쓰지 않게) 같은 구간의 오래된 것은 지운다
+    (앱이 자기 폴더에 만든 것만)."""
+    from .. import settings
+    key = hashlib.sha1(os.path.normcase(os.path.abspath(str(folder))).encode("utf-8")).hexdigest()[:12]
+    base = settings.data_dir() / MAP_DIR / key
+    stem = re.sub(r'[\\/:*?"<>|]+', " ", f"최단거리_{label}").strip("_ ")
+    olds = sorted(glob.glob(os.path.join(glob.escape(str(base)), glob.escape(stem) + "_" + "[0-9]" * 8 + "-" + "[0-9]" * 6 + "*.png")))
+    for old in olds[:max(0, len(olds) - (KEEP_SHOTS - 1))]:
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+    stamp = (now or dt.datetime.now()).strftime("%Y%m%d-%H%M%S")
+    path = base / f"{stem}_{stamp}.png"
     n = 2
     while path.exists():
-        path = folder / f"{stem}_{n}.png"
+        path = base / f"{stem}_{stamp}_{n}.png"
         n += 1
     return path
+

@@ -908,6 +908,9 @@ KIND_WORDS = (
     (STAY, ("체류",)),
 )
 MAP_WORDS = ("지도", "경로", "길찾기", "최단거리", "map")
+# 2026-11-11 전 판이 출장 폴더에 남긴 지도 그림('네이버지도 최단거리_<이름> 가는 길_7.png') — 증빙으로도 지도로도 쓰지 않는다.
+# 좁은 창에서 찍혀 경로가 잘린 것이 많고, 이제 앱은 지도 그림을 앱 사용자 폴더에 찍는다(navermap.shot_path, 담당자 "이건 필요없습니다")
+APP_MAP_PREFIX = "네이버지도최단거리_"
 GO_WORDS = ("가는", "출발", "갈때", "갈 때")
 BACK_WORDS = ("오는", "돌아", "귀가", "복귀", "올때", "올 때")
 MODES = (("열차", ("열차", "기차", "ktx", "srt", "itx", "무궁화", "새마을")), ("고속버스", ("고속버스",)),
@@ -1000,6 +1003,8 @@ def scan_folder(folder: Path, names: list[str] | None = None) -> Scan:
             continue
         named = name_prefix(path, names)
         if any(w in path.stem for w in SKIP_WORDS) and not named:
+            continue
+        if squashed.startswith(APP_MAP_PREFIX):
             continue
         if path.suffix.lower() in IMAGE_SUFFIXES and any(w in path.stem.lower() for w in MAP_WORDS):
             back = any(w in path.stem for w in BACK_WORDS)

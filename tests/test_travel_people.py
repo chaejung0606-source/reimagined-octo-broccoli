@@ -305,11 +305,22 @@ def test_one_map_for_a_round_trip_and_fuel_in_head():
 
 
 def test_scan_finds_go_and_back_maps(tmp_path):
-    for name in ("홍길동_하이패스 증빙.png", "네이버지도 최단거리_가는 길.png", "네이버지도 최단거리_오는 길.png"):
+    for name in ("홍길동_하이패스 증빙.png", "지도 가는 길.png", "지도 오는 길.png"):
         (tmp_path / name).write_bytes(b"x")
     scan = model.scan_folder(tmp_path)
-    assert [p.name for p in scan.route_maps] == ["네이버지도 최단거리_가는 길.png", "네이버지도 최단거리_오는 길.png"]
+    assert [p.name for p in scan.route_maps] == ["지도 가는 길.png", "지도 오는 길.png"]
     assert scan.route_map.name.endswith("가는 길.png") and [p.name for p in scan.files["toll"]] == ["홍길동_하이패스 증빙.png"]
+
+
+def test_scan_skips_map_pictures_an_old_version_left_in_the_trip_folder(tmp_path):
+    """2026-11-11 전 판은 찍을 때마다 출장 폴더에 '네이버지도 최단거리_<이름> 가는 길(오는 길도 같은 거리)_7.png' 를 남겼다(좁은 창이라 경로가 잘린 것도) —
+    담당자 "이건 필요없습니다". 지도로도 증빙으로도 쓰지 않는다(새로 찍은 그림은 앱 사용자 폴더에)."""
+    for name in ("홍길동_하이패스 증빙.png", "네이버지도 최단거리_홍길동 가는 길(오는 길도 같은 거리).png",
+                 "네이버지도 최단거리_홍길동 가는 길(오는 길도 같은 거리)_7.png"):
+        (tmp_path / name).write_bytes(b"x")
+    scan = model.scan_folder(tmp_path, ["홍길동"])
+    assert scan.route_map is None and not any(scan.route_maps)
+    assert [p.name for kind in scan.files.values() for p in kind] == ["홍길동_하이패스 증빙.png"] and not scan.unsorted
 
 
 def test_fuels_setting_round_trip(isolated_home):
@@ -345,7 +356,8 @@ def test_directions_url_uses_web_mercator():
 
 MOCK_PAGE = """<!doctype html><html><body style="margin:0">
 <div id="panel" style="position:absolute;left:0;top:0;width:400px"></div>
-<div id="mapArea" style="position:absolute;left:420px;top:0;width:900px;height:800px"><canvas id="map" width="900" height="800"></canvas></div>
+<div id="mapArea" style="position:absolute;left:420px;top:0;right:0;bottom:0"><canvas id="map" width="900" height="800"></canvas>
+<button id="fitAll" style="position:absolute;right:20px;bottom:40px" onclick="window.fitted=(window.fitted||0)+1"><span>전체</span></button></div>
 <script>
 // 2026-11-10 담당자 그림 — '거리우선' 을 고르면 지도 위에 같은 머리의 세부 경로 창이 뜬다(지도를 가림)
 window.vislog = [];
@@ -486,18 +498,26 @@ def test_find_route_in_mock_naver_map(browser_page, tmp_path, fast_naver):
     _naver_world(page, {"연세대학교 원주캠퍼스": [{"id": "11622019", "name": "연세대학교 미래캠퍼스", "x": "127.9030", "y": "37.2777"}],
                         "@ids": [CAMPUS]}, calls)
     logs = []
-    out = navermap.shot_path(tmp_path, "홍길동 가는 길(오는 길도 같은 거리)")
+    trip_folder = tmp_path / "출장비 지급(26.10.20. 협의)"
+    out = navermap.shot_path(trip_folder, "홍길동 가는 길(오는 길도 같은 거리)")
+    # 지도 그림은 출장 폴더가 아니라 앱 사용자 폴더에(담당자 2026-11-11 "네이버지도 최단거리 이미지가 생성되는데 … 이건 필요없습니다")
+    from claim_downloader import settings
+    assert settings.data_dir() / navermap.MAP_DIR in out.parents and trip_folder not in out.parents
     result = navermap.find_route(page, "강원대학교 춘천캠퍼스", "연세대학교 원주캠퍼스", out, logs.append,
                                  wait=lambda s: page.wait_for_timeout(int(s * 300)), label="가는 길")
     assert result.ok and result.km == 76 and Path(result.image).exists() and Path(result.image).stat().st_size > 1000, result.lines()
     assert page.evaluate("document.body.dataset.picked") == "1"           # '거리우선' 을 눌렀다
     assert "/-/car" in page.url and "PLACE_POI" in page.url and "11591476" in page.url and "11622019" in page.url
+    assert page.evaluate("window.fitted") == 1                              # 넓힌 화면에서 지도의 '전체'(경로 전체 보기)
+    assert page.evaluate("[innerWidth, innerHeight]") == [navermap.VIEWPORT["width"], navermap.VIEWPORT["height"]]   # 찍은 뒤 되돌림
     # 목적지가 검색되지 않으면 그 곳을 돌려준다 — 화면이 그 출장자의 출장목적지를 묻는다
     missing = navermap.find_route(page, "강원대학교 춘천캠퍼스", "원주", tmp_path / "x.png", logs.append,
                                   wait=lambda s: page.wait_for_timeout(int(s * 300)))
     assert not missing.ok and missing.need_place == "원주" and "찾지 못했습니다" in missing.note
     assert any("화면에서 곳을 읽지 못했습니다" in step and "pcmap.place.naver.com/place/list" in step for step in missing.steps)
-    assert navermap.shot_path(tmp_path, "홍길동 가는 길(오는 길도 같은 거리)").name.endswith("_2.png")     # 덮어쓰지 않는다
+    again = navermap.shot_path(trip_folder, "홍길동 가는 길(오는 길도 같은 거리)")
+    assert again != out and again.parent == out.parent                     # 찍을 때마다 새 이름(미리 보기가 옛 그림을 다시 쓰지 않게)
+    assert _png_size(result.image) == navermap.CAPTURE_SIZE                  # 창 크기와 상관없이 가로로 긴 화면으로 찍는다
 
 
 def test_one_search_reads_the_result_list_and_picks_similar_or_first(browser_page, tmp_path, fast_naver):
@@ -736,7 +756,8 @@ def test_session_find_routes_keeps_names_out_of_the_log(tmp_path, isolated_home,
     found = s.find_routes([("강원대학교 춘천캠퍼스", "연세대학교 원주캠퍼스", "출장자 1 가는 길", "홍길동 가는 길"),
                            ("강원대학교 춘천캠퍼스", "원주시청", "출장자 2 구간 1")], tmp_path)
     assert [r.ok for r in found] == [True, True]
-    assert shots == ["네이버지도 최단거리_홍길동 가는 길.png", "네이버지도 최단거리_출장자 2 구간 1.png"]
+    assert [n.rsplit("_", 1)[0] for n in shots] == ["최단거리_홍길동 가는 길", "최단거리_출장자 2 구간 1"]     # 앱 사용자 폴더에 · 찍은 때를 붙여
+    assert not list(tmp_path.glob("*.png"))
     assert any("✓ 네이버 지도 최단거리 출장자 1 가는 길" in line for line in logs)
     assert not any("홍길동" in line for line in logs), logs
 
@@ -1320,3 +1341,35 @@ def test_page_waits_for_confirmation_then_continues(qapp, tmp_path, isolated_hom
     qapp.processEvents()
     assert page._routes[first]["km"] == 82.0 and page._pending_route is None and page.route_notice.isHidden()
     assert len(worker.calls) == calls_before + 1                       # 다음 구간을 이어 띄운다
+
+
+def test_capture_in_the_app_browser_is_wide_and_leaves_the_window_as_it_was(tmp_path):
+    """앱 브라우저는 창 크기를 따르는 화면(no_viewport)이다 — 좁은 창이어도 찍는 동안만 1600×900 으로 흉내 내고(CDP) 끝나면 창 크기로 되돌린다
+    (담당자 2026-11-11 "지도 경로가 잘렸습니다 … 이게 보통 가로로 긴 이미지인데")."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    import os
+    try:
+        pw = sync_api.sync_playwright().start()
+        path = "/opt/pw-browsers/chromium"
+        browser = pw.chromium.launch(executable_path=path if os.path.exists(path) else None)
+    except Exception as exc:  # noqa: BLE001 — 브라우저가 없는 곳
+        pytest.skip(str(exc))
+    try:
+        page = browser.new_context(no_viewport=True).new_page()
+        page.set_content("<body style='margin:0;background:#e8efe4'><div style='width:100vw;height:100vh'></div></body>")
+        before = page.evaluate("[innerWidth, innerHeight]")
+        out = tmp_path / "shot.png"
+        navermap.screenshot_clear(page, out, wait=lambda s: page.wait_for_timeout(int(s * 100)))
+        assert _png_size(out) == navermap.CAPTURE_SIZE
+        assert page.evaluate("[innerWidth, innerHeight]") == before
+    finally:
+        browser.close()
+        pw.stop()
+
+
+def _png_size(path) -> tuple[int, int]:
+    """PNG 머리(IHDR)의 폭 · 높이 — PySide6 없는 곳(CI)에서도."""
+    import struct
+    with open(path, "rb") as f:
+        head = f.read(24)
+    return struct.unpack(">II", head[16:24])

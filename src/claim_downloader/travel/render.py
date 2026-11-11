@@ -577,35 +577,52 @@ def _draw_grid(p: QPainter, rect: QRectF, cells: list[_Cell], grid: _Grid, mark=
 
 
 PAGE_SIZE = QSizeF(QPageSize(QPageSize.A4).sizePixels(DPI))      # 쪽 크기(점) — PDF 와 미리 보기가 같은 자리에 그린다
+LANDSCAPE_SIZE = QSizeF(PAGE_SIZE.height(), PAGE_SIZE.width())  # 가로 쪽
+# 쪽 짜임마다 세로 · 가로 중 증빙이 더 잘 보이는 쪽으로(담당자 2026-11-11 "증빙에 따라서 증빙이 잘보이는 형식으로 용지를 세로,가로형 변경" —
+# 네이버 지도 길찾기 그림은 가로로 길어 세로 쪽에서는 작았다). 기본은 세로, 가로는 쪽이 줄거나 · 같은 쪽 수에서 증빙이 이만큼 넘게 커질 때만
+LANDSCAPE_GAIN = 1.15
+
+
+def size_of(image: QImage) -> QSizeF:
+    """미리 보기 쪽 그림의 쪽 크기(점) — 가로로 긴 그림이면 가로 쪽. 누를 자리(Hit.rect)는 이 좌표다."""
+    return LANDSCAPE_SIZE if image.width() > image.height() else PAGE_SIZE
 
 
 @dataclass
 class Hit:
-    """미리 보기에서 누를 자리 — 몇째 쪽(0부터)의 어느 칸이 어느 증빙(또는 이동경로 · 연료)인지. rect 는 쪽 좌표(PAGE_SIZE)."""
+    """미리 보기에서 누를 자리 — 몇째 쪽(0부터)의 어느 칸이 어느 증빙(또는 이동경로 · 연료)인지. rect 는 쪽 좌표(그 쪽의 크기 — size_of)."""
     page: int
     rect: QRectF
     ref: tuple
     where: str           # cell(증빙 칸) · bar(묶음 줄) · head(머리 줄)
 
 
+def _layout(size: QSizeF) -> QPageLayout:
+    landscape = size.width() > size.height()
+    return QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Landscape if landscape else QPageLayout.Portrait, QMarginsF(0, 0, 0, 0))
+
+
 class _PdfTarget:
     def __init__(self, out: Path):
         self.writer = QPdfWriter(str(out))
         self.writer.setResolution(DPI)
-        self.writer.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Portrait, QMarginsF(0, 0, 0, 0)))
+        self.writer.setPageLayout(_layout(PAGE_SIZE))
         self.writer.setTitle(out.stem)
         self.painter: QPainter | None = None
 
-    def begin(self) -> QPainter:
+    def begin(self, size: QSizeF = PAGE_SIZE) -> QPainter:
+        self.writer.setPageLayout(_layout(size))          # 첫 쪽의 방향은 그리기 전에
         self.painter = QPainter(self.writer)
         return self.painter
 
-    def next(self) -> QPainter:
+    def next(self, size: QSizeF = PAGE_SIZE) -> QPainter:
+        self.writer.setPageLayout(_layout(size))          # 다음 쪽의 방향은 newPage 바로 전에(Qt 규칙)
         self.writer.newPage()
         return self.painter
 
     def end(self) -> None:
-        self.painter.end()
+        if self.painter is not None:
+            self.painter.end()
 
 
 class _ImageTarget:
@@ -616,8 +633,8 @@ class _ImageTarget:
         self.images: list[QImage] = []
         self.painter: QPainter | None = None
 
-    def _new(self) -> QPainter:
-        image = QImage(int(PAGE_SIZE.width() * self.scale), int(PAGE_SIZE.height() * self.scale), QImage.Format_RGB32)
+    def _new(self, size: QSizeF) -> QPainter:
+        image = QImage(int(size.width() * self.scale), int(size.height() * self.scale), QImage.Format_RGB32)
         image.fill(QColor("white"))
         self.images.append(image)
         self.painter = QPainter(image)
@@ -626,12 +643,12 @@ class _ImageTarget:
         self.painter.scale(self.scale, self.scale)
         return self.painter
 
-    def begin(self) -> QPainter:
-        return self._new()
+    def begin(self, size: QSizeF = PAGE_SIZE) -> QPainter:
+        return self._new(size)
 
-    def next(self) -> QPainter:
+    def next(self, size: QSizeF = PAGE_SIZE) -> QPainter:
         self.painter.end()
-        return self._new()
+        return self._new(size)
 
     def end(self) -> None:
         if self.painter is not None:
@@ -652,10 +669,64 @@ def preview(pages: list[Page], scale: float = 0.6, cache: dict | None = None, ne
     return target.images, hits
 
 
-def _paint(pages: list[Page], target, hits: list | None = None, cache: dict | None = None, needs: dict | None = None) -> int:
-    painter = target.begin()
-    size = PAGE_SIZE
+@dataclass
+class _Frame:
+    """쪽 크기 하나의 자리 — 틀 · 안쪽 폭 · 아래 끝 · 빈 쪽에서 증빙에 쓸 높이."""
+    size: QSizeF
+    frame: QRectF
+    inner_left: float
+    inner_w: float
+    bottom: float
+    full_room: float
+
+
+def _frame(size: QSizeF) -> _Frame:
     frame = QRectF(MARGIN, MARGIN, size.width() - 2 * MARGIN, size.height() - 2 * MARGIN)
+    bottom = frame.bottom() - 12
+    return _Frame(size, frame, frame.left() + 16, frame.width() - 32, bottom, bottom - (frame.top() + HEAD_H + GAP))
+
+
+def _first_room(f: _Frame, page: Page) -> float:
+    return f.bottom - (f.frame.top() + HEAD_H + GAP + 28 * len(page.notes))
+
+
+def _visibility(plan: list[list[_Slot]], cells_of: list[list[_Cell]], titles: list[list[str]], f: _Frame, first_room: float) -> float:
+    """짠 쪽들에서 증빙이 얼마나 크게 보이는지 — 증빙마다 (놓인 배율 / 잘 보일 배율) 의 기하평균. 높이를 나눠 준다(_allot — 그릴 때 다시 한다)."""
+    total, n = 0.0, 0
+    for i, slots in enumerate(plan):
+        _allot(slots, cells_of, titles, f.inner_w, first_room if i == 0 else f.full_room)
+        for slot in slots:
+            if not slot.count:
+                continue
+            cells = cells_of[slot.block][slot.start:slot.start + slot.count]
+            grid = best_grid(cells, f.inner_w, slot.room_h)
+            heights = _row_heights(cells, f.inner_w, slot.room_h, grid)
+            cw = f.inner_w / grid.cols - 2 * CELL_PAD
+            for r, row_h in enumerate(heights):
+                ch = row_h - _caption_h(cells) - 2 * CELL_PAD
+                for cell in cells[r * grid.cols:(r + 1) * grid.cols]:
+                    if cw > 0 and ch > 0 and cell.w and cell.h:
+                        total += math.log(max(1e-6, min(cw / cell.w, ch / cell.h) / cell.need))
+                        n += 1
+    return math.exp(total / n) if n else 1.0
+
+
+def _orient(page: Page, cells_of: list[list[_Cell]], titles: list[list[str]]) -> tuple[_Frame, list[list[_Slot]]]:
+    """쪽 짜임 하나를 세로 · 가로로 짜 보고 증빙이 잘 보이는 쪽 — 쪽이 줄거나, 같은 쪽 수에서 증빙이 LANDSCAPE_GAIN 배 넘게 커지면 가로."""
+    options = []
+    for size in (PAGE_SIZE, LANDSCAPE_SIZE):
+        f = _frame(size)
+        first = _first_room(f, page)
+        plan = _plan(cells_of, titles, f.inner_w, first, f.full_room)
+        options.append((f, plan, _visibility(plan, cells_of, titles, f, first)))
+    (fp, pp, vp), (fl, pl, vl) = options
+    if any(cells_of) and (len(pl) < len(pp) or (len(pl) == len(pp) and vl > vp * LANDSCAPE_GAIN)):
+        return fl, pl
+    return fp, pp
+
+
+def _paint(pages: list[Page], target, hits: list | None = None, cache: dict | None = None, needs: dict | None = None) -> int:
+    painter = None
     cache = {} if cache is None else cache
     needs = {} if needs is None else needs
     count = 0
@@ -664,11 +735,11 @@ def _paint(pages: list[Page], target, hits: list | None = None, cache: dict | No
         if hits is not None and ref:
             hits.append(Hit(count - 1, QRectF(rect), ref, where))
 
-    def new_page(page: Page, cont: bool) -> float:
+    def new_page(page: Page, cont: bool, f: _Frame) -> float:
         nonlocal count, painter
-        if count:
-            painter = target.next()
+        painter = target.next(f.size) if count else target.begin(f.size)
         count += 1
+        frame = f.frame
         head = list(page.head)
         if cont:
             head[0] += " (계속)"
@@ -691,18 +762,14 @@ def _paint(pages: list[Page], target, hits: list | None = None, cache: dict | No
                 y += 28
         return y
 
-    inner_left, inner_w = frame.left() + 16, frame.width() - 32
-    bottom = frame.bottom() - 12
-    full_room = bottom - (frame.top() + HEAD_H + GAP)
     for page in pages:
         cells_of = [_cells(block, cache, needs) for block in page.blocks]
         titles = [block.title for block in page.blocks]
-        y = new_page(page, False)
-        plan = _plan(cells_of, titles, inner_w, bottom - y, full_room)
+        f, plan = _orient(page, cells_of, titles)
+        frame = f.frame
         for n, slots in enumerate(plan):
-            if n:
-                y = new_page(page, True)
-            _allot(slots, cells_of, titles, inner_w, bottom - y)
+            y = new_page(page, n > 0, f)
+            _allot(slots, cells_of, titles, f.inner_w, f.bottom - y)
             for slot in slots:
                 block = page.blocks[slot.block]
                 if block.title:
@@ -713,8 +780,10 @@ def _paint(pages: list[Page], target, hits: list | None = None, cache: dict | No
                     y += TITLE_H + GAP
                 if slot.count:
                     cells = cells_of[slot.block][slot.start:slot.start + slot.count]
-                    _draw_grid(painter, QRectF(inner_left, y, inner_w, slot.room_h), cells, best_grid(cells, inner_w, slot.room_h), mark)
+                    _draw_grid(painter, QRectF(f.inner_left, y, f.inner_w, slot.room_h), cells, best_grid(cells, f.inner_w, slot.room_h), mark)
                     y += slot.room_h
                 y += GAP
+    if count == 0:
+        target.begin(PAGE_SIZE)                    # 쪽이 하나도 없어도 PDF 는 닫는다
     target.end()
     return count
