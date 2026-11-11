@@ -83,7 +83,14 @@ _ROW_SPOTS = [
     # '최단거리 <이름> 가는 길' · '최단거리_<이름> 구간 N.png' 를 기록에 남겼다. 지금 판은 이름 대신 '출장자 N' 을 쓰지만 옛 기록도 가린다.
     re.compile(r"(^|[\s/\\(])(" + _ROW_NAME + r")(?= 출장증빙(?:_[\d.]+)*\.pdf)", re.M),   # <이름> 출장증빙_yy.mm.dd(_2).pdf — 파일 이름 꼴만
     re.compile(r"(최단거리[ _])(" + _ROW_NAME + r")(?= (?:가는 길|오는 길|구간 \d))"),   # 최단거리 <이름> 가는 길 · _<이름> 구간 N
+    # 카드청구 회의록등록 창의 참석자(19절) — 2026-11-11 20:18 담당자 기록에 '신청 전 확인: … 회의록에서 못 정한 사람(확인 필요): <이름> · <소속> (…)'
+    # · '임의로 넣은 참여인력(확인 필요): <이름>, <이름> — …' 의 이름이 그대로 남았다(목록은 _ATTENDEE_LISTS 가 읽는다)
+    re.compile(r"((?:참여인력|내부참석자) 자동 선택: )(" + _ROW_NAME + r")(?= — )"),
+    re.compile(r"(외부참석자: )(" + _ROW_NAME + r")(?= · )"),
+    re.compile(r"((?:— |^|\s))(" + _ROW_NAME + r")(?=: (?:참여인력 목록에 없어|소속 없이|증빙|참여연구원 명단|회의록에 없는))", re.M),
 ]
+# 참석자 목록 줄 — '…(확인 필요): 가, 나 · 소속 (까닭), 다 —' 의 이름들. 한 줄에 쉼표로 이어지고 이름 뒤에 ' · 소속' · ' (까닭)' 이 붙기도 한다
+_ATTENDEE_LISTS = re.compile(r"(?:못 정한 사람|임의로 넣은 참여인력|회의록에 없는 사람)\(확인 필요\): (.+?)(?: — |$)", re.M)
 # 이름 자리에 올 수 있지만 이름이 아닌 말 — 기록 전체에서 가리면 글이 망가진다
 _NOT_NAMES = {"학생", "사람", "외국인", "교수", "직원", "강사", "비어", "없음", "확인", "저장", "멈춤", "학번", "이름", "출장자",
               "과제", "첨부", "서포터즈", "멘토단", "평가단", "사업단", "소학회", "진행요원", "혁신인재", "학사지원", "계절학기",
@@ -95,6 +102,11 @@ _DOC_WORD = re.compile(r"(?:증빙|자료|내역|서류|일지|명단|사진|통
 
 def harvest_names(text: str) -> set[str]:
     found = set()
+    for m in _ATTENDEE_LISTS.finditer(text):
+        for part in re.split(r",\s*(?![^()]*\))", m.group(1)):          # 괄호 안 쉼표('(이름 · 소속이 같은 사람이 2명)')는 나누지 않는다
+            name = re.split(r"\s+[·(]|\(", part.strip(), maxsplit=1)[0].strip()
+            if re.fullmatch(_ROW_NAME, name) and name not in _NOT_NAMES:
+                found.add(name)
     for spots, strict in ((_NAME_SPOTS, False), (_ROW_SPOTS, True)):
         for spot in spots:
             for m in spot.finditer(text):

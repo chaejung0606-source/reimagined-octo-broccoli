@@ -1249,6 +1249,20 @@ def sheet_key(job: card.CardJob, sheet: card.CardSheet) -> str:
     return f"{job.folder}#{sheet.code}"
 
 
+def forget_sheet(job: card.CardJob, sheet: card.CardSheet) -> int:
+    """이 청구서를 임시저장했다는 앱 기록을 지우고 결제 건을 다시 넣을 것으로 — ERP 에서 그 청구서를 지운 뒤 처음부터 다시 넣을 때.
+    ERP 의 청구서는 앱이 지우지 않는다. 지우지 않고 다시 넣으면 그 결제 건은 미청구 카드내역에 없어(ERP 가 뺀다) 넣지 못하고 묻는다. 다시 넣을 결제 건 수."""
+    from . import record
+    record.forget_saved(sheet_key(job, sheet))
+    sheet.req_cnt = ""
+    count = 0
+    for item in sheet.items:
+        if item.status == "saved":
+            item.status = ""
+            count += 1
+    return count
+
+
 def restore(job: card.CardJob) -> None:
     """기록에서 결의번호 · 저장한 결제 건을 되살린다(폴더를 다시 읽은 뒤)."""
     from . import record

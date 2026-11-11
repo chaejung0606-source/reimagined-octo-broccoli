@@ -708,13 +708,19 @@ class ClaimPage(QWidget):
         self.result_button = QPushButton("결과 다시 보기")
         self.result_button.setToolTip("이 폴더를 ERP 에 넣은 결과 창(신청 전 확인할 것 · 넣은 값)을 다시 띄웁니다. 앱을 다시 켜도 남아 있습니다.")
         self.result_button.clicked.connect(self._reopen_result)
+        # 다 넣은 카드 청구서를 처음부터 다시 — ERP 에서 그 청구서를 지운 뒤(담당자 2026-11-11: 결제 11건을 다 넣자 [ERP 에 넣기 (결제 0건)] 이
+        # 꺼져 다시 넣을 길이 없었다). 앱의 저장 기록만 지운다 — ERP 청구서는 지우지 않는다
+        self.card_reset_button = QPushButton("다시 넣기 — 저장 기록 지우기")
+        self.card_reset_button.setToolTip("이 청구서의 결제 건을 ERP 에 임시저장했다는 앱 기록을 지워 처음부터 다시 넣게 합니다.\n"
+                                          "먼저 ERP 결의서내역에서 그 청구서를 지우세요 — 앱은 ERP 청구서를 지우지 않습니다.")
+        self.card_reset_button.clicked.connect(self._reset_card_sheet)
         row = QHBoxLayout()
         row.setSpacing(10)
         self.open_button = QPushButton("브라우저 열기")
         self.open_button.setToolTip("앱이 연 브라우저에서 ERP 에 로그인하세요 — 결의서내역 · 새 청구서 화면은 앱이 띄웁니다")
         self.open_button.clicked.connect(lambda: self.browser.open_browser(scan=False, owner="claim"))
         row.addWidget(self.open_button)
-        for button in (self.fill_button, self.sheet_button, self.result_button):
+        for button in (self.fill_button, self.sheet_button, self.result_button, self.card_reset_button):
             row.addWidget(button)
         row.addStretch(1)
         row.addLayout(options)
@@ -771,7 +777,15 @@ class ClaimPage(QWidget):
             index = self.card_panel.chosen_sheet() if job is not None else -1
             sheet = job.sheets[index] if job is not None and index >= 0 else None
             left = [i for i in sheet.items if i.status != "saved"] if sheet else []
-            if dry:
+            done = [i for i in sheet.items if i.status == "saved"] if sheet else []
+            if sheet is not None and done and not left:
+                self.fill_button.setEnabled(False)
+                self.fill_button.setText(f"ERP 에 넣기 (결제 {len(left)}건)")
+                self.fill_button.setToolTip(f"이 청구서의 결제 {len(done)}건은 모두 ERP 에 임시저장했습니다"
+                                            + (f"(결의번호 {sheet.req_cnt})" if sheet.req_cnt else "")
+                                            + " — 같은 결제 건을 두 번 넣지 않게 꺼 두었습니다.\n처음부터 다시 넣으려면 ERP 에서 그 청구서를 지운 뒤 "
+                                              "[다시 넣기 — 저장 기록 지우기] 를 누르세요.")
+            elif dry:
                 self.fill_button.setEnabled(bool(left) and not busy)
                 self.fill_button.setText(f"미리 보기 (결제 {len(left)}건)")
                 self.fill_button.setToolTip("고른 청구서의 결제 건마다 ERP 에 넣을 값을 표로 봅니다. 브라우저는 필요 없습니다.")
@@ -795,6 +809,9 @@ class ClaimPage(QWidget):
             self.fill_button.setText("미리 보기" if dry else "ERP 에 넣기")
             self.fill_button.setToolTip("지출 목록에서 넣을 폴더를 고르세요.")
         self.sheet_button.setVisible(is_sch)
+        card_sheet = self._card_sheet()
+        self.card_reset_button.setVisible(bool(is_card and card_sheet is not None and any(i.status == "saved" for i in card_sheet.items)))
+        self.card_reset_button.setEnabled(not busy and not self._browser_busy)
         results = self._results(self._current)
         self.result_button.setVisible(bool(results))
         self.result_button.setEnabled(not busy)
@@ -1428,6 +1445,44 @@ class ClaimPage(QWidget):
                         side_detail=True, stretch=CARD_STRETCH, detail_title="고른 결제 건 — 확인할 것 · ERP 에 넣은 값 · 읽은 곳",
                         notes=review or alerts, notes_title="신청 전 확인할 것" if review else "ERP 알림",
                         footer="ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요 — 앱은 누르지 않습니다." + nxt)
+        self._sync_buttons()
+
+    # ── 카드 청구서 다시 넣기 ─────────────────────────────────────────────
+    def _card_sheet(self):
+        """지금 고른 줄이 카드면 카드 패널에서 고른 청구서(없으면 None)."""
+        row = self._current
+        if not (0 <= row < len(self._cards)) or self._kind(row) != kinds.CARD:
+            return None
+        job = self._cards[row]
+        index = self.card_panel.chosen_sheet() if job is not None else -1
+        return job.sheets[index] if job is not None and 0 <= index < len(job.sheets) else None
+
+    def _reset_card_sheet(self) -> None:
+        row = self._current
+        sheet = self._card_sheet()
+        if sheet is None or self._erp_running:
+            return
+        job = self._cards[row]
+        done = sum(1 for i in sheet.items if i.status == "saved")
+        number = f"결의번호 {sheet.req_cnt}" if sheet.req_cnt else "그 청구서"
+        box = QMessageBox(QMessageBox.Warning, "다시 넣기 — 저장 기록 지우기",
+                          f"'{sheet.main_summary}' 의 결제 {done}건을 ERP 에 임시저장했다는 앱 기록을 지웁니다.\n\n"
+                          f"먼저 ERP 결의서내역에서 {number} 을(를) 지우셨나요? 앱은 ERP 청구서를 지우지 않습니다.\n"
+                          "지우지 않고 다시 넣으면 그 결제 건은 미청구 카드내역에 없어(ERP 가 뺍니다) 넣지 못하고 결제 건마다 묻고,\n"
+                          "넣기 전 결의서내역 확인에서 같은 대표적요의 청구서를 알립니다.", parent=self)
+        forget = box.addButton("기록 지우기", QMessageBox.AcceptRole)
+        box.addButton("취소", QMessageBox.RejectRole)
+        box.setDefaultButton(box.buttons()[-1])
+        box.exec()
+        if box.clickedButton() is not forget:
+            return
+        count = card_erp.forget_sheet(job, sheet)
+        self._append_log(f"카드청구 저장 기록을 지웠습니다 — 결제 {count}건을 다시 넣을 수 있습니다 ({number})")
+        if 0 <= row < len(self._status):
+            self._set_status(row, "read")
+        self.card_panel.set_job(job)
+        self._refresh_row(row)
+        self._set_state("다시 넣기", "info", f"결제 {count}건을 다시 넣을 수 있습니다. ERP 에서 그 청구서를 지웠는지 확인하고 [ERP 에 넣기] 를 누르세요.")
         self._sync_buttons()
 
     # ── 결과 창 다시 보기 ───────────────────────────────────────────────

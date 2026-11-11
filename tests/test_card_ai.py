@@ -313,3 +313,44 @@ def test_claim_page_asks_to_log_in_and_reads_again_once_logged_in(tmp_path, monk
     assert item.amount == 160000 and item.meeting.place == "공학관 세미나실" and item.meeting.start == "17:00"
     assert "다시 읽습니다" in page.log_view.toPlainText()
     page.shutdown()
+
+
+def test_claim_page_explains_a_fully_saved_card_sheet_and_resets_it(tmp_path, monkeypatch):
+    """담당자 2026-11-11 "이거 왜 erp넣기 버튼이 비활성화되어있는거죠?" — 결제 11건을 다 임시저장한 청구서는 [ERP 에 넣기 (결제 0건)] 이 꺼진다
+    (같은 결제 건을 두 번 넣지 않게). 단추에 까닭(결의번호)을 보이고, ERP 에서 지운 뒤 처음부터 다시 넣게 [다시 넣기 — 저장 기록 지우기]."""
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    QApplication.instance() or QApplication([])
+    from claim_downloader.claims import card_erp, kinds, record
+    from claim_downloader.ui.pages import claim as claim_page
+    from claim_downloader.ui.worker import SessionWorker
+    claim, _folder = make_item_folder(tmp_path)
+    monkeypatch.setattr(card_ai, "read", lambda path, files, model=None: card_ai.clean(AI_DATA))
+    page = claim_page.ClaimPage(worker=SessionWorker())
+    page._choose_kind(kinds.CARD)
+    assert page.add_folder(str(claim), kinds.CARD)
+    page.table.selectRow(0)
+    job = page._cards[0]
+    sheet = job.sheets[0]
+    record.remember(card_erp.sheet_key(job, sheet), {"summary": sheet.main_summary, "req_cnt": "390", "amount": 160000},
+                    kind="card", people=[{"name": item.name} for item in sheet.items])
+    page._reload_card()
+    page._browser_open = True
+    page.dry_run.setChecked(False)
+    page._sync_buttons()
+    assert all(i.status == "saved" for i in page._cards[0].sheets[0].items)
+    assert not page.fill_button.isEnabled() and page.fill_button.text() == "ERP 에 넣기 (결제 0건)"
+    assert "결의번호 390" in page.fill_button.toolTip() and "다시 넣기" in page.fill_button.toolTip()
+    assert page.card_reset_button.isVisibleTo(page)
+    # [다시 넣기 — 저장 기록 지우기] → 묻는 창에서 [기록 지우기]
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: 0)
+    monkeypatch.setattr(QMessageBox, "clickedButton", lambda self: next(b for b in self.buttons() if b.text() == "기록 지우기"))
+    page._reset_card_sheet()
+    sheet = page._cards[0].sheets[0]
+    assert not any(i.status == "saved" for i in sheet.items) and sheet.req_cnt == ""
+    assert page.fill_button.text() == f"ERP 에 넣기 (결제 {len(sheet.items)}건)" and not page.card_reset_button.isVisibleTo(page)
+    entry = record.previous(card_erp.sheet_key(page._cards[0], sheet))
+    assert not entry.get("saved") and entry["req_cnt"] == "" and entry["runs"][-1]["note"] == "저장 기록 지움"   # 언제 넣었는지는 남긴다
+    page._reload_card()                                                                # 다시 읽어도 되살아나지 않는다
+    assert not any(i.status == "saved" for i in page._cards[0].sheets[0].items)

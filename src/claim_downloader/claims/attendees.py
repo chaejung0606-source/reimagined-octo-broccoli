@@ -70,6 +70,16 @@ CHECK_ROW_JS = "([index, r]) => {" + _ROWS_SNIPPET + """
 }"""
 # 인적정보조회(멀티)의 '고른 사람' 표 — 체크한 사람이 숨은 CFRC_IN_EMP_NO 로 쌓인다(실측 36 → 37번). 읽기만
 BASKET_JS = """() => Array.from(document.querySelectorAll('input[name=CFRC_IN_EMP_NO]')).map(e => (e.value || '').trim()).filter(x => x)"""
+# 그 줄의 체크 칸(마우스로 누를 것) — 줄 번호(r)가 다르면 다시 그려진 것이라 돌려주지 않는다
+BOX_JS = "([index, r]) => {" + _ROWS_SNIPPET + """
+  const row = rows[index];
+  if (!row || (r && row.getAttribute('r') !== r)) return null;
+  return row.querySelector('input[type=checkbox]');
+}"""
+# 체크했는데 '고른 사람' 표가 비었을 때 기록에 남길 모양(값 없이 수만) — 다음 기록으로 까닭을 본다
+BASKET_STATE_JS = """() => ({checked: document.querySelectorAll('.jgrid-row input[type=checkbox]:checked').length,
+  basket: document.querySelectorAll('input[name=CFRC_IN_EMP_NO]').length,
+  rows: Array.from(document.querySelectorAll('table tr')).filter(tr => tr.querySelector('input[name=CFRC_IN_EMP_NO]')).length})"""
 
 
 @dataclass
@@ -194,8 +204,8 @@ def _scan_all(popup, wait: Callable[[float], None]) -> tuple[list[dict], dict]:
     return out, tops
 
 
-def _check(popup, key: str, tops: dict, wait: Callable[[float], None]) -> tuple[bool, str]:
-    """고른 줄로 돌아가(스크롤했으면) 그 줄의 체크를 켠다."""
+def _check(popup, key: str, tops: dict, wait: Callable[[float], None], mouse: bool = False) -> tuple[bool, str]:
+    """고른 줄로 돌아가(스크롤했으면) 그 줄의 체크를 켠다. mouse 면 사람처럼 마우스로 누른다(인적정보조회 — 아래 _one)."""
     rows, where = listing(popup)
     if key in tops:
         _scroll(where, tops[key], wait)
@@ -204,6 +214,16 @@ def _check(popup, key: str, tops: dict, wait: Callable[[float], None]) -> tuple[
     if index is None:
         return False, "고른 줄로 돌아가지 못함"
     r = rows[index].get("r") or ""
+    if mouse:
+        try:
+            box = where.evaluate_handle(BOX_JS, [index, r]).as_element()
+            if box is not None:
+                if not box.is_checked():
+                    box.click(timeout=5000)
+                if box.is_checked():
+                    return True, ""
+        except Exception:  # noqa: BLE001 — 줄이 다시 그려짐 등 — 화면 스크립트로 한 번 더
+            pass
     done = where.evaluate(CHECK_ROW_JS, [index, r])
     return bool(done.get("ok")), str(done.get("why", ""))
 
@@ -299,13 +319,26 @@ def _one(minutes, person: part_mod.Attendee, multi: bool, log: Callable[[str], N
         elif by_name:
             review = f"소속 없이 이름으로 골랐습니다({why}) — 회의록등록에서 사번 · 소속을 확인하세요"
         chosen = cells[index]
-        ok, note = _check(popup, rows[index]["key"], tops, wait)
+        # 인적정보조회는 사람처럼 마우스로 체크한다 — 화면 스크립트로 누른 체크는 '고른 사람' 표에 쌓이지 않았다(2026-11-11 20:18 실제:
+        # 줄은 체크됐는데 [확인] 에 '선택된 내역이 없습니다' 가 떠 내부참석자를 하나도 못 넣었다. 참여인력선택은 스크립트로 됐다)
+        ok, note = _check(popup, rows[index]["key"], tops, wait, mouse=multi)
         if not ok:
             return False, "줄을 체크하지 못함: " + note, ""
         if multi:
-            # 체크하면 '고른 사람' 표에 조금 뒤에 쌓인다(실측) — 쌓인 뒤 [확인]
+            # 체크하면 '고른 사람' 표에 조금 뒤에 쌓인다(실측) — 쌓인 뒤에만 [확인](비었는데 누르면 ERP 가 '선택된 내역이 없습니다' 로 막는다)
             want = _digits(chosen.get(COL_NO))
-            wait_until(lambda: want in [_digits(v) for v in (popup.evaluate(BASKET_JS) or [])], wait, tries=20)
+
+            def in_basket() -> bool:
+                return want in [_digits(v) for v in (popup.evaluate(BASKET_JS) or [])]
+
+            if not wait_until(in_basket, wait, tries=20):
+                try:
+                    state = popup.evaluate(BASKET_STATE_JS) or {}
+                except Exception:  # noqa: BLE001
+                    state = {}
+                log("  인적정보: 줄을 체크했지만 '고른 사람' 표에 들어가지 않음 (체크된 줄 %s · 고른 사람 칸 %s)"
+                    % (state.get("checked", "?"), state.get("basket", "?")))
+                return False, "줄을 체크했지만 '고른 사람' 표에 들어가지 않음 — 인적정보조회 창에서 직접 고르세요", ""
             clicked = popup.evaluate(CLICK_TEXT_JS, CONFIRM_TEXT)
         else:
             clicked = popup.evaluate(CLICK_ID_JS, PART_CONFIRM_ID)

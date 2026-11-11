@@ -508,6 +508,51 @@ def test_finder_windows_search_by_number_first_then_by_name():
         raise
 
 
+def _server(pages: dict):
+    """모의 ERP 응답 — Playwright 는 처리기의 인자가 둘이면 요청을 둘째로 넘기므로 인자 하나짜리 함수로."""
+    def serve(route):
+        route.fulfill(status=200, content_type="text/html; charset=utf-8", body=pages[route.request.url])
+    return serve
+
+
+def test_internal_attendee_is_checked_with_the_mouse_and_never_confirmed_with_an_empty_basket():
+    """2026-11-11 20:18 실제: 인적정보조회에서 화면 스크립트로 누른 체크가 '고른 사람' 표에 쌓이지 않아 [확인] 에 '선택된 내역이 없습니다' —
+    내부참석자를 하나도 못 넣었다. 이제 사람처럼 마우스로 체크하고(진짜 입력만 받는 창도 됨), 표가 비면 [확인] 을 누르지 않고 까닭을 남긴다."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    executable = os.environ.get("CHROMIUM_PATH", "/opt/pw-browsers/chromium")
+    click = "onclick=\"pick(' + i + ', this)\""
+    trusted = MULTI_WINDOW.replace(click, "onclick=\"if (event.isTrusted) pick(' + i + ', this)\"")
+    never = MULTI_WINDOW.replace(click, "")
+    assert trusted != MULTI_WINDOW and never != MULTI_WINDOW
+    try:
+        with sync_api.sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=executable if os.path.exists(executable) else None)
+            for window, picked in ((trusted, True), (never, False)):
+                pages = {"http://erp.test/minutes": MINUTES_WITH_FINDERS, "http://erp.test/part": PART_WINDOW, "http://erp.test/multi": window}
+                context = browser.new_context()
+                context.route("http://erp.test/**", _server(pages))
+                alerts: list[str] = []
+                context.on("dialog", lambda d: (alerts.append(d.message), d.dismiss()))
+                minutes = context.new_page()
+                minutes.goto("http://erp.test/minutes")
+                wait = lambda s, m=minutes: m.wait_for_timeout(int(s * 1000))  # noqa: E731
+                lines: list[str] = []
+                names = lambda m=minutes: [x["name"] for x in card_erp._inside_names(m)]  # noqa: E731
+                report = attendees.add(minutes, [participants.Attendee("라", "마바사학과", "internal")], lines.append, wait, names)
+                if picked:
+                    assert report.added == ["라"] and alerts == []
+                else:
+                    assert report.added == [] and "'고른 사람' 표에 들어가지 않음" in report.left["라"] and alerts == []   # [확인] 을 누르지 않았다
+                    assert any("체크된 줄 1 · 고른 사람 칸 0" in line for line in lines)
+                    assert len(context.pages) == 1                                   # 그 창은 닫았다
+                context.close()
+            browser.close()
+    except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
+        if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):
+            pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
+        raise
+
+
 # ── 회의비 · 다과비 1인 한도와 다과비 칸 (담당자 2026-11-11) ─────────────────────────────────────────────
 def test_need_heads_is_cost_over_the_per_person_limit_rounded_up():
     """16만원이면 4명 이상(1인 5만원). 한도가 없으면 따지지 않는다."""

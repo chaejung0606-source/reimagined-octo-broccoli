@@ -81,6 +81,27 @@ def remember(folder, data: dict, kind: str = "", people: list[dict] | None = Non
     _write(records)
 
 
+def forget_saved(folder) -> int:
+    """이 폴더를 임시저장했다는 기록(결의번호 · 저장한 사람 · 결제 건)을 지운다 — 사람이 ERP 에서 그 청구서를 지우고 처음부터 다시 넣을 때
+    (담당자 2026-11-11 카드청구 — 다 넣은 청구서는 [ERP 에 넣기 (결제 0건)] 이 꺼져 다시 넣을 길이 없었다). 언제 넣었는지(runs)는 남긴다.
+    지운 수를 돌려준다."""
+    records = _load()
+    key = _key(folder)
+    entry = records.get(key)
+    if not isinstance(entry, dict):
+        return 0
+    count = len(entry.get("saved") or [])
+    runs = [r for r in (entry.get("runs") or []) if isinstance(r, dict)]
+    runs.append({"when": time.strftime("%Y-%m-%d %H:%M"), "kind": entry.get("kind", ""), "req_cnt": entry.get("req_cnt", ""),
+                 "summary": entry.get("summary", ""), "amount": entry.get("amount"), "count": 0, "note": "저장 기록 지움"})
+    entry.pop("saved", None)
+    entry["req_cnt"] = ""
+    entry["runs"] = runs[-MAX_RUNS:]
+    records[key] = entry
+    _write(records)
+    return count
+
+
 def already_saved(folder, people) -> list[dict]:
     """이번에 넣으려는 사람(roster.Person 들) 중 전에 이 폴더에서 임시저장한 사람의 기록."""
     entry = previous(folder) or {}

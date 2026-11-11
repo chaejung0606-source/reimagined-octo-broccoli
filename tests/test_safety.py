@@ -340,7 +340,10 @@ def test_attendees_press_only_row_add_search_row_check_and_confirm():
     값을 넣는 칸은 두 창의 검색 칸뿐이고, '선택없음' · '외부인 등록' · 행 삭제 · 줄마다의 돋보기 · 회의록등록 [저장] 은 없다."""
     from claim_downloader.claims import attendees
     text = (SRC / "claims" / "attendees.py").read_text(encoding="utf-8")
-    assert text.count(".click(") == 1 and ".click()" in attendees.CHECK_ROW_JS and "if (!box.checked)" in attendees.CHECK_ROW_JS
+    assert text.count(".click(") == 2 and ".click()" in attendees.CHECK_ROW_JS and "if (!box.checked)" in attendees.CHECK_ROW_JS
+    # 다른 하나는 인적정보조회 줄의 체크 칸을 마우스로(2026-11-11 실제 — 스크립트 체크가 '고른 사람' 표에 안 쌓였다): BOX_JS 가 돌려주는 그 줄의 체크 칸뿐, 켜져 있지 않을 때만
+    assert "box = where.evaluate_handle(BOX_JS, [index, r]).as_element()" in text and "if not box.is_checked():\n                    box.click(timeout=5000)" in text
+    assert "input[type=checkbox]" in attendees.BOX_JS and "row.getAttribute('r') !== r" in attendees.BOX_JS
     assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", text)) == {"SEARCH_ID", "PART_CONFIRM_ID"}
     assert re.findall(r"evaluate\(CLICK_TEXT_JS,\s*([A-Za-z_]+)\)", text) == ["CONFIRM_TEXT"] and attendees.CONFIRM_TEXT == "확인"
     assert re.findall(r"open_popup\(minutes, minutes, ([A-Za-z_]+),", text) == ["button", "PART_ADD_ID"]
