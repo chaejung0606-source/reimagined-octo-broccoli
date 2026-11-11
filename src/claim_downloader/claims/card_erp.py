@@ -267,8 +267,9 @@ def plan_item(item: card.CardItem, index: int, members: list[part_mod.Member] | 
         lines.append(f"청구내역: {item.summary}")
     elif item.req_div == "17":
         values, people, missing = meeting_plan(item, members or [])
-        lines.append(f"회의록등록: {values['CFRC_ST_DTM'] or '?'}~{values['CFRC_END_DTM'] or '?'} · 장소 {values['CFRC_PLCE'] or '?'} · "
-                     f"목적 {values['CFRC_PURS'][:30] or '?'}")
+        lines.append(f"회의록등록: {values['CFRC_ST_DTM'] or '?'}~{values['CFRC_END_DTM'] or '?'}"
+                     + (" (끝 시각은 회의록에 없어 시작 + 1시간)" if item.meeting and item.meeting.end_guessed else "")
+                     + f" · 장소 {values['CFRC_PLCE'] or '?'} · 목적 {values['CFRC_PURS'][:30] or '?'}")
         for kind in ("part", "internal", "external"):
             who = [p.label() for p in people if p.kind == kind]
             if who:

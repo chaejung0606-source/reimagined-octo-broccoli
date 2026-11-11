@@ -507,6 +507,7 @@ class Minutes:
     agenda: str = ""             # 회의안건 → ERP 회의록등록 #CFRC_PURS(회의목적)
     start: str = ""              # 회의일시의 시각 'HH:MM' → #CFRC_ST_DTM · #CFRC_END_DTM
     end: str = ""
+    end_guessed: bool = False    # 끝 시각이 회의록에 없어 시작 + 1시간으로 둠(MEETING_HOURS)
     content: list[str] = field(default_factory=list)                    # 회의내용 문단 → #CFRC_CONT
     attendees: list[tuple[str, str]] = field(default_factory=list)      # (소속, 이름) — 이름이 빈 칸은 뺀다
 
@@ -514,6 +515,25 @@ class Minutes:
 MINUTES_LABELS = ("사 업 명", "회의안건", "회의일시", "회의장소", "회의비 사용처", "금액", "참석자", "소속", "이름")
 CONTENT_LABEL = "회의내용"
 TIME_RE = re.compile(r"(\d{1,2})\s*[:시]\s*(\d{2})?")
+# 회의일시에 시각이 하나뿐이면 그것이 시작 — 끝 시각은 회의를 1시간으로 보고 정한다(담당자 2026-11-11
+# "종료시간이 없을 경우 회의시간을 1시간으로 보고 종료시간을 1시간 책정해서 입력")
+MEETING_HOURS = 1
+
+
+def end_after(start: str, hours: int = MEETING_HOURS) -> str:
+    """'HH:MM' 에 hours 를 더한 끝 시각 — 자정을 넘으면 23:59(ERP 는 같은 날의 시각만 받는다). 못 읽으면 ''."""
+    hit = re.fullmatch(r"(\d{1,2}):(\d{2})", start or "")
+    if not hit:
+        return ""
+    minutes = int(hit.group(1)) * 60 + int(hit.group(2)) + hours * 60
+    return "23:59" if minutes >= 24 * 60 else f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def fill_end(minutes: "Minutes | None") -> None:
+    """시작 시각만 있으면 끝 시각을 시작 + 1시간으로(end_guessed 표시)."""
+    if minutes is not None and minutes.start and not minutes.end:
+        minutes.end = end_after(minutes.start)
+        minutes.end_guessed = bool(minutes.end)
 
 
 def minutes_texts(path: str) -> list[str]:
@@ -986,6 +1006,7 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
             _fill_minutes(minutes, ai_meeting)  # 회의록 생성의 .hwpx 가 먼저 — 빈 칸만
         if ai_meeting.path and ai_meeting.path not in minutes_files:
             minutes_files.append(ai_meeting.path)
+    fill_end(minutes)                           # 회의록 · AI 어디에도 끝 시각이 없을 때만 — 그래서 AI 를 다시 부르지도 않는다
     if minutes_files:
         item.minutes = minutes.path if minutes and minutes.path else minutes_files[0]
         item.meeting = minutes

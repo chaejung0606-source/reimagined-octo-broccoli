@@ -141,6 +141,29 @@ def test_text_and_folder_name_come_before_ai(tmp_path):
     assert item.minutes.endswith(".hwpx")
 
 
+def test_start_time_only_means_one_hour_meeting(tmp_path):
+    """회의일시에 시각이 하나면 시작 — 끝 시각은 시작 + 1시간(담당자 2026-11-11). 그래서 끝 시각 하나 때문에 AI 를 부르지 않는다."""
+    assert card.end_after("16:00") == "17:00" and card.end_after("09:30") == "10:30"
+    assert card.end_after("23:30") == "23:59" and card.end_after("") == ""
+    claim = tmp_path / "26-10(10.09. ~ 11.08.)" / CLAIM_07
+    folder = claim / "261012_(17)_가나다_150,000"
+    touch(folder / RECEIPT_JPG)
+    build_hwpx({"filenameBase": "x", "agenda": "WE-Meet 회의", "date": "2026. 10. 12. (월) 16:00", "place": "사업단 회의실",
+                "expensePlace": "가나다카페", "amount": "150,000원", "attendeeCount": 1, "attendees": [{"org": "컴퓨터공학과", "name": "학생1"}],
+                "content": ["프로젝트 진행 상황을 점검하고 다음 일정을 정하였음."], "supplement": ""},
+               str(folder / "2026-10-12 월 WE-Meet 회의.hwpx"))
+    job = card.load_job(str(claim), read_text=lambda p: "", ai_lookup=lambda f, files: None)
+    item = job.items[0]
+    assert (item.meeting.start, item.meeting.end, item.meeting.end_guessed) == ("16:00", "17:00", True)
+    assert card_ai.needs(item) == [] and card_ai.pending(job) == []
+    assert any("16:00~17:00 (끝 시각은 회의록에 없어 시작 + 1시간)" in line for line in card_erp.plan_item(item, 0, []).lines)
+    # AI 가 읽은 회의록도 같다 — 끝 시각을 지어내지 않고 비워 두면 앱이 1시간으로
+    data = card_ai.clean({**AI_DATA, "meeting": {**AI_DATA["meeting"], "end": ""}})
+    claim2, _f = make_item_folder(tmp_path / "둘")
+    m = card.load_job(str(claim2), read_text=lambda p: "", ai_lookup=lambda f, files: data).items[0].meeting
+    assert (m.start, m.end, m.end_guessed) == ("17:00", "18:00", True)
+
+
 def test_reading_failed_and_in_progress_are_shown_not_repeated(tmp_path):
     claim, _folder = make_item_folder(tmp_path)
     failed = card.load_job(str(claim), read_text=lambda p: "", ai_lookup=lambda f, files: {"failed": "Claude 로그인이 풀림"})
