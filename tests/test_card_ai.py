@@ -27,7 +27,8 @@ AI_DATA = {
                   "address": "강원특별자치도 춘천시 강원대학길 1", "cardLast4": "****-4321", "approvalNo": "3001-2345", "items": "아메리카노 8, 케이크 4"}],
     "meeting": {"file": MINUTES_PDF, "date": "2026-10-12", "start": "17시", "end": "18:30", "place": "공학관 세미나실",
                 "agenda": "WE-Meet 프로젝트 2차 회의", "content": "역할을 나누고 다음 일정을 정하였음. 시제품 설계안을 함께 검토하였음.",
-                "attendees": [{"org": "컴퓨터공학과", "name": "학생1"}, {"org": "", "name": "학생2"}, {"org": "x"}, "학생3"]},
+                "attendees": [{"org": "컴퓨터공학과", "name": "학생1", "no": "학번 2024-00011"}, {"org": "", "name": "학생2", "no": "12"},
+                              {"org": "x"}, "학생3"]},
     "snack": True,
     "notes": "",
 }
@@ -76,7 +77,8 @@ def test_clean_keeps_only_the_shape_the_app_uses():
     assert receipt["amount"] == 160000 and receipt["cardLast4"] == "4321" and receipt["file"] == RECEIPT_JPG
     meeting = data["meeting"]
     assert meeting["content"] == ["역할을 나누고 다음 일정을 정하였음. 시제품 설계안을 함께 검토하였음."]   # 문자열 하나도 문단으로
-    assert meeting["attendees"] == [{"org": "컴퓨터공학과", "name": "학생1"}, {"org": "", "name": "학생2"}]   # 이름 없는 것 · 글자는 뺀다
+    assert meeting["attendees"] == [{"org": "컴퓨터공학과", "name": "학생1", "no": "202400011"},              # 학번 · 사번은 숫자만
+                                    {"org": "", "name": "학생2", "no": ""}]   # 이름 없는 것 · 글자 · 번호 같지 않은 숫자는 뺀다
     assert data["snack"] is True
     odd = card_ai.clean({"receipts": [{"amount": "모름"}, "x"], "meeting": {"file": "", "content": []}, "snack": "네"})
     assert odd["receipts"][0]["amount"] is None and odd["meeting"] is None and odd["snack"] is None
@@ -112,6 +114,7 @@ def test_ai_reading_fills_amount_meeting_and_snack(tmp_path):
     m = item.meeting
     assert (m.start, m.end, m.place, m.agenda, m.used) == ("17:00", "18:30", "공학관 세미나실", "WE-Meet 프로젝트 2차 회의", D(2026, 10, 12))
     assert m.attendees == [("컴퓨터공학과", "학생1"), ("", "학생2")]
+    assert m.numbers == {"학생1": "202400011"} and m.number_from == {"학생1": "AI"}      # AI 가 읽은 학번 — ERP 에서 번호로 먼저 찾는다
     assert item.snack and item.snack_from.startswith("AI")
     assert any("다과비로 봄(AI" in n for n in item.notes) and any(n.startswith("AI 가 회의록에서 읽은 칸: 회의일자 · 시작 시각 · 끝 시각 · 장소 · 목적(안건) · 내용 · 참석자") for n in item.notes)
     assert not item.blocking() and card_ai.pending(job) == []

@@ -127,7 +127,7 @@ def test_plan_shows_who_the_app_types_and_who_the_person_adds(tmp_path):
     plan = card_erp.plan_item(item, 0, [participants.Member("가", "100001")])
     text = "\n".join(plan.lines)
     assert "회의록등록: 11:00~12:00 · 장소 사업단 회의실" in text
-    assert "참여인력: 가(100001)" in text and "내부참석자: 나 · 가나다학과 — 앱이 [행 추가] 창에서 고름(이름 · 소속이 하나일 때)" in text
+    assert "참여인력: 가(100001)" in text and "내부참석자: 나 · 가나다학과 — 앱이 [행 추가] 창에서 고름(학번 · 사번이 있으면 번호로 먼저, 없으면 이름 · 소속이 하나일 때)" in text
     assert "외부참석자: 다 · 한림대학교 — 앱이 넣음" in text and "09_" in text
     assert card_erp.attachments(item)[0].endswith("회의비 지출 공문.pdf")          # 공문이 맨 앞, PDF · 그림만
     assert {os.path.basename(p) for p in card_erp.attachments(item)} == {"회의비 지출 공문.pdf", "0915 영수증.pdf", "사진.jpg"}
@@ -415,6 +415,92 @@ def test_attendees_are_picked_in_the_two_finder_windows_only_when_certain():
             assert len(context.pages) == 1                             # 못 고른 사람의 창도 닫았다
             left = card_erp._missing_inside(people[:4], on)
             assert [x.name for x in left] == ["사"]
+            browser.close()
+    except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
+        if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):
+            pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
+        raise
+
+
+# ── 증빙의 학번 · 사번으로 먼저 찾기 (담당자 2026-11-11) ─────────────────────────────────────────────
+def test_minutes_table_takes_numbers_out_of_the_name_cell(tmp_path):
+    """회의록 이름 칸에 '이름(학번)' 으로 적었으면 번호를 떼어 내 ERP 에서 번호로 먼저 찾는다 — 이름 칸에는 이름만."""
+    data = minutes_data(attendees=[{"org": "강원대학교", "name": "가(202600001)"}, {"org": "가나다학과", "name": "나"}])
+    for build, name in ((build_hwpx, "m.hwpx"), (build_docx, "m.docx")):
+        path = tmp_path / name
+        build(data, str(path))
+        got = card.read_minutes(str(path))
+        assert got.attendees == [("강원대학교", "가"), ("가나다학과", "나")], name
+        assert got.numbers == {"가": "202600001"} and got.number_from == {"가": "회의록 표"}, name
+
+
+def test_sign_sheet_numbers_are_used_to_find_people_first(tmp_path):
+    """결제 건 폴더의 서명부 PDF 에 '이름 학번' 이 같은 줄에 있으면 그 번호 — 계획에 어디서 읽었는지 보이고, 참석자는 그 번호로 찾는다."""
+    period = tmp_path / "26-09(09.09. ~ 10.08.)"
+    folder = period / "기타운영경비 0915 사업단 운영회의"
+    touch(folder / "0915 영수증.pdf")
+    touch(folder / "회의 서명부.pdf")
+    build_hwpx(minutes_data(attendees=[{"org": "강원대학교", "name": "가가"}, {"org": "가나다학과", "name": "나나"},
+                                       {"org": "한림대학교", "name": "다다"}]), str(folder / "2026-09-15 화 운영회의.hwpx"))
+    sheet = "연번 소속 성명 학번 서명\n1 가나다학과 나나 202600002 (서명)\n2 한림대학교 다다 202699999\n3 강원대학교 가가"
+    job = card.load_job(str(period), read_text=reader({"0915 영수증.pdf": RECEIPT, "회의 서명부.pdf": sheet}))
+    m = job.items[0].meeting
+    assert m.numbers == {"나나": "202600002", "다다": "202699999"} and m.number_from["나나"] == "회의 서명부.pdf"
+    _v, people, _missing = card_erp.meeting_plan(job.items[0], [participants.Member("가가", "100001")])
+    assert [(p.name, p.kind, p.emp_no) for p in people] == [("가가", "part", "100001"), ("나나", "internal", "202600002"),
+                                                            ("다다", "external", "")]     # 외부참석자는 ERP 에서 찾지 않는다(글로 넣음)
+    plan = card_erp.plan_item(job.items[0], 0, [participants.Member("가가", "100001")])
+    inside = next(e for e in plan.entries if e.label == "내부참석자")
+    assert "학번 · 사번: 회의 서명부.pdf" in inside.source and "번호로 먼저" in inside.source
+
+
+def test_classify_uses_the_evidence_number_before_the_name():
+    members = [participants.Member("라", "200001"), participants.Member("라", "200002"), participants.Member("가", "100001")]
+    numbers = {"라": "200002", "가": "202600009", "신": "202600005", "외": "202600006"}
+    got = participants.classify([("", "라"), ("", "가"), ("", "신"), ("한림대학교", "외"), ("", "무")], members, numbers,
+                                {"신": "서명부.pdf"})
+    by = {p.name: p for p in got}
+    assert (by["라"].kind, by["라"].emp_no, by["라"].note) == ("part", "200002", "")        # 동명이인이어도 번호로 한 사람
+    assert (by["가"].kind, by["가"].emp_no) == ("internal", "202600009") and "참여연구원 명단의 같은 이름" in by["가"].hint
+    assert (by["신"].kind, by["신"].emp_no, by["신"].no_from) == ("internal", "202600005", "서명부.pdf")
+    assert (by["외"].kind, by["외"].emp_no) == ("external", "")
+    assert (by["무"].kind, by["무"].emp_no) == ("internal", "")
+    # 번호가 없으면 전처럼 — 명단의 같은 이름이 둘이면 사람에게
+    assert participants.classify([("", "라")], members)[0].note.startswith("참여연구원 명단에 같은 이름이 2명")
+
+
+def test_finder_windows_search_by_number_first_then_by_name():
+    sync_api = pytest.importorskip("playwright.sync_api")
+    executable = os.environ.get("CHROMIUM_PATH", "/opt/pw-browsers/chromium")
+    pages = {"http://erp.test/minutes": MINUTES_WITH_FINDERS, "http://erp.test/part": PART_WINDOW, "http://erp.test/multi": MULTI_WINDOW}
+    try:
+        with sync_api.sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=executable if os.path.exists(executable) else None)
+            context = browser.new_context()
+            # 검색 칸에 넣은 말을 회의록등록 창에 모은다 — 번호가 먼저인지
+            record = "function search() { const q0 = (document.getElementById('SEARCH_NM') || document.getElementById('EMP_NM')).value.trim(); " \
+                     "(window.opener.qs = window.opener.qs || []).push(q0); "
+            pages = {url: body.replace("function search() { ", record, 1) for url, body in pages.items()}
+            context.route("http://erp.test/**", lambda route: route.fulfill(status=200, content_type="text/html; charset=utf-8",
+                                                                            body=pages[route.request.url]))
+            context.on("dialog", lambda d: d.dismiss())
+            minutes = context.new_page()
+            minutes.goto("http://erp.test/minutes")
+            people = [participants.Attendee("바", "", "part", "100004", no_from=participants.ROSTER),      # 목록 그대로에서 직번으로 — 검색 없이
+                      participants.Attendee("마", "", "internal", "100009", no_from="서명부.pdf"),         # 인적정보조회에서 번호로
+                      participants.Attendee("라", "마바사학과", "internal", "999999", no_from="서명부.pdf")]  # 번호로 0줄 → 이름 · 소속으로
+            wait = lambda s: minutes.wait_for_timeout(int(s * 1000))  # noqa: E731
+            lines: list[str] = []
+            names = lambda: [x["name"] for x in card_erp._inside_names(minutes)]  # noqa: E731
+            report = attendees.add(minutes, people, lines.append, wait, names)
+            assert report.added == ["바", "마", "라"]
+            assert minutes.evaluate("window.qs") == ["100009", "999999", "라"]   # 참여인력선택은 검색하지 않았다(목록 그대로에서 직번)
+            assert any("직번 · 목록 그대로" in line for line in lines) and any("인적정보 찾기(번호)" in line for line in lines)
+            assert any(r.startswith("라: 증빙(서명부.pdf)의 학번 · 사번으로는 찾지 못해 이름으로 골랐습니다") for r in report.review)
+            assert not any(n in line for line in lines for n in ("100004", "100009", "999999", "202400001"))   # 기록에 번호 없음
+            on = card_erp._inside_names(minutes)
+            assert [(x["kind"], x["name"], x["no"]) for x in on] == [("part", "바", "100004"), ("internal", "나", "100002"),   # 나: 처음부터 있던 줄
+                                                                        ("internal", "마", "100009"), ("internal", "라", "202400001")]
             browser.close()
     except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
         if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):

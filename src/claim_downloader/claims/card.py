@@ -31,6 +31,7 @@ import zipfile
 from dataclasses import dataclass, field
 
 from ..naming import BIMOK_NM, normnm
+from . import idnums
 from . import notice as notice_mod
 from .schema import CATEGORY_CODES, category_code, parse_amount
 
@@ -513,12 +514,20 @@ class Minutes:
     sources: dict[str, str] = field(default_factory=dict)
     content: list[str] = field(default_factory=list)                    # 회의내용 문단 → #CFRC_CONT
     attendees: list[tuple[str, str]] = field(default_factory=list)      # (소속, 이름) — 이름이 빈 칸은 뺀다
+    # 참석자의 학번 · 사번(띄어쓰기 뺀 이름 → 번호)과 그 출처 — ERP 에서 사람을 번호로 먼저 찾는다(담당자 2026-11-11, idnums)
+    numbers: dict[str, str] = field(default_factory=dict)
+    number_from: dict[str, str] = field(default_factory=dict)
 
 
 # 회의록등록 창의 칸 이름 — 미리 보기 · 확인할 것 글에 쓴다
 MEETING_LABELS = {"used": "회의일자", "start": "시작 시각", "end": "끝 시각", "place": "장소", "agenda": "목적(안건)",
                   "content": "내용", "attendees": "참석자"}
 SOURCE_TEXT = {"hwpx": "회의록(.hwpx)", "ai": "AI 가 회의록에서 읽음", "guess": "시작 + 1시간(끝 시각이 회의록에 없음)"}
+
+
+def _squash(text) -> str:
+    """이름 열쇠 — 띄어쓰기를 뺀 것(idnums.numbers_for_names 와 같다)."""
+    return re.sub(r"\s+", "", str(text or ""))
 
 
 def mark_sources(minutes: "Minutes", source: str) -> None:
@@ -598,7 +607,12 @@ def read_minutes(path: str) -> Minutes:
     times = [f"{int(h):02d}:{m or '00'}" for h, m in TIME_RE.findall(when[found.end():] if found else when) if int(h) < 24]
     if times:
         out.start, out.end = times[0], times[1] if len(times) > 1 else ""
-    out.attendees, out.content = minutes_table(path)
+    people, out.content = minutes_rows(path)
+    out.attendees = [(org, name) for org, name, _no in people]
+    for _org, name, no in people:
+        if no:
+            out.numbers[_squash(name)] = no
+            out.number_from[_squash(name)] = "회의록 표"
     mark_sources(out, "hwpx")
     return out
 
@@ -642,11 +656,16 @@ def _ai_minutes(ai: dict | None, folder: str) -> Minutes | None:
     if not isinstance(raw, dict):
         return None
     content = [str(p).strip() for p in raw.get("content") or [] if str(p).strip()]
-    people = [(str(p.get("org") or "").strip(), str(p.get("name") or "").strip()) for p in raw.get("attendees") or []
-              if isinstance(p, dict) and str(p.get("name") or "").strip()]
+    raw_people = [p for p in raw.get("attendees") or [] if isinstance(p, dict) and str(p.get("name") or "").strip()]
+    people = [(str(p.get("org") or "").strip(), str(p.get("name") or "").strip()) for p in raw_people]
     out = Minutes(path=_ai_path(folder, str(raw.get("file") or "")), used=_iso_day(raw.get("date")),
                   place=str(raw.get("place") or "").strip(), agenda=str(raw.get("agenda") or "").strip(),
                   start=_hhmm(raw.get("start")), end=_hhmm(raw.get("end")), content=content, attendees=people)
+    for p in raw_people:                     # AI 가 회의록 · 서명부에서 읽은 학번 · 사번(card_ai — 적혀 있을 때만)
+        no = idnums.clean(p.get("no"))
+        if no:
+            key = _squash(p.get("name"))
+            out.numbers[key], out.number_from[key] = no, "AI"
     mark_sources(out, "ai")
     return out
 
@@ -657,6 +676,9 @@ def _fill_minutes(minutes: Minutes, ai: Minutes) -> None:
         if not getattr(minutes, key) and getattr(ai, key):
             setattr(minutes, key, getattr(ai, key))
             minutes.sources[key] = "ai"
+    for key, no in ai.numbers.items():          # 회의록 표에 번호가 없는 사람만 — AI 가 서명부에서 읽었을 수 있다
+        if key not in minutes.numbers:
+            minutes.numbers[key], minutes.number_from[key] = no, ai.number_from.get(key, "AI")
 
 
 def ai_found_text(ai: dict) -> str:
@@ -678,8 +700,19 @@ def _cell_text(xml: str, tag: str) -> list[str]:
 
 
 def minutes_table(path: str) -> tuple[list[tuple[str, str]], list[str]]:
-    """회의록 표의 참석자 (소속, 이름) · 회의내용 문단. 소속 칸은 같은 소속끼리 세로로 합쳐져 있어(hwpx rowSpan · docx vMerge)
-    글자 순서만으로는 소속과 이름을 못 가린다 — 칸 주소(열)로 읽고 합쳐진 소속은 아래 줄로 내려 준다. 못 읽으면 ([], [])."""
+    """회의록 표의 참석자 (소속, 이름) · 회의내용 문단(minutes_rows 에서 번호를 뺀 것)."""
+    people, content = minutes_rows(path)
+    return [(org, name) for org, name, _no in people], content
+
+
+NUMBER_HEADS = idnums.LABELS
+
+
+def minutes_rows(path: str) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """회의록 표의 참석자 (소속, 이름, 학번 · 사번) · 회의내용 문단. 소속 칸은 같은 소속끼리 세로로 합쳐져 있어(hwpx rowSpan · docx vMerge)
+    글자 순서만으로는 소속과 이름을 못 가린다 — 칸 주소(열)로 읽고 합쳐진 소속은 아래 줄로 내려 준다. 못 읽으면 ([], []).
+    번호는 '학번' · '사번' … 머리의 칸이 있으면 그 칸, 이름 칸에 '홍길동(202412345)' 처럼 함께 적혔으면 떼어 낸다(회의록 생성의 표는 소속 · 이름뿐 —
+    담당자가 고쳐 적은 것)."""
     lower = path.lower()
     try:
         with zipfile.ZipFile(path) as z:
@@ -708,9 +741,9 @@ def minutes_table(path: str) -> tuple[list[tuple[str, str]], list[str]]:
                 span = re.search(r'<w:gridSpan\s+w:val="(\d+)"', tc)
                 col += int(span.group(1)) if span else 1
             rows.append(row)
-    attendees: list[tuple[str, str]] = []
+    attendees: list[tuple[str, str, str]] = []
     content: list[str] = []
-    org_col = name_col = None
+    org_col = name_col = no_col = None
     org, org_left = "", 0
     in_people = in_content = False
     for row in rows:
@@ -730,6 +763,7 @@ def minutes_table(path: str) -> tuple[list[tuple[str, str]], list[str]]:
             if "소속" in heads.values() and "이름" in heads.values():
                 org_col = next(c for c, t in heads.items() if t == "소속")
                 name_col = next(c for c, t in heads.items() if t == "이름")
+                no_col = next((c for c, t in heads.items() if len(t) <= 9 and any(w in t for w in NUMBER_HEADS)), None)
                 in_people = True
             continue
         spans = {col: span for col, span, _p in row}
@@ -738,9 +772,11 @@ def minutes_table(path: str) -> tuple[list[tuple[str, str]], list[str]]:
             org, org_left = texts[org_col], spans.get(org_col, 1)
         elif not carried and org_left <= 0:
             org = ""
-        name = texts.get(name_col, "").strip()
+        name, no = idnums.split_name(texts.get(name_col, ""))
+        if no_col is not None and idnums.clean(texts.get(no_col, "")):
+            no = idnums.clean(texts.get(no_col, ""))
         if name:
-            attendees.append((org, name))
+            attendees.append((org, name, no))
         org_left -= 1
     return attendees, content
 
@@ -980,6 +1016,56 @@ def _is_goods(path: str) -> bool:
     return name.lower().endswith(EXCEL_SUFFIXES) and any(w in name.replace(" ", "") for w in GOODS_NAME_WORDS)
 
 
+def _texts_for_numbers(path: str, read_text) -> str:
+    """번호를 찾을 글 — PDF 는 글자, 엑셀은 줄마다 칸을 띄어 이은 것, .hwpx · .docx 는 칸 글자를 줄마다."""
+    lower = path.lower()
+    if lower.endswith(".pdf"):
+        return read_text(path)
+    if lower.endswith((".hwpx", ".docx")):
+        return "\n".join(minutes_texts(path))
+    if lower.endswith((".xlsx", ".xlsm")):
+        try:
+            import openpyxl
+            book = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        except Exception:  # noqa: BLE001 — 못 읽는 엑셀은 건너뛴다
+            return ""
+        try:
+            lines: list[str] = []
+            for sheet in book.worksheets:
+                for n, row in enumerate(sheet.iter_rows(values_only=True)):
+                    if n > 400:
+                        break
+                    # 학번이 숫자 칸이면 202412345.0 이 아니라 정수로
+                    lines.append(" ".join(str(int(v)) if isinstance(v, float) and v.is_integer() else str(v)
+                                          for v in row if v is not None and str(v).strip()))
+            return "\n".join(lines)
+        except Exception:  # noqa: BLE001 — 읽다 깨진 엑셀은 번호 없이
+            return ""
+        finally:
+            book.close()
+    return ""
+
+
+NUMBER_FILES = 12                 # 결제 건 폴더에서 번호를 찾아볼 파일 수(영수증 · 공문 · 서명부 · 회의록 …)
+
+
+def attendee_numbers(minutes: Minutes, files: list[str], read_text=pdf_text) -> None:
+    """회의록 참석자 가운데 번호가 없는 사람 — 결제 건 폴더의 다른 서류(서명부 · 학생이 낸 회의록 PDF · 참석자 명단 엑셀 …)에서
+    그 이름과 같은 줄에 적힌 학번 · 사번(idnums.numbers_for_names — 한 사람에 번호가 둘이면 쓰지 않는다). 회의록 생성의 .hwpx 자체는 minutes_rows 가 봤다."""
+    names = [name for _org, name in minutes.attendees if _squash(name) not in minutes.numbers]
+    if not names:
+        return
+    paths = [p for p in files if p != minutes.path and p.lower().endswith((".pdf", ".hwpx", ".docx", ".xlsx", ".xlsm"))][:NUMBER_FILES]
+    texts = {p: _texts_for_numbers(p, read_text) for p in paths}
+    found = idnums.numbers_for_names([t for t in texts.values() if t], names)
+    for key, no in found.items():
+        if key in minutes.numbers or no in minutes.numbers.values():
+            continue                           # 다른 출처가 그 번호를 다른 사람에게 붙였다 — 이름으로 찾게 둔다
+        where = next((os.path.basename(p) for p, t in texts.items() if (key, no) in
+                      {(_squash(n), x) for n, x in idnums.pairs_in_text(t, names)}), "증빙")
+        minutes.numbers[key], minutes.number_from[key] = no, where
+
+
 def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: str = "", read_text=pdf_text, ai_lookup=None) -> CardItem:
     """결제 건 폴더 하나 — 이름 · 영수증 · 회의록 · 물품 표 · 공문을 읽고 금액 출처 · 청구구분을 정한다.
     ai_lookup(폴더, 파일들) 이 주는 AI 결과(card_ai — 영수증 그림 · 회의록 PDF)는 글자로 읽은 것이 비운 자리만 채운다."""
@@ -1038,6 +1124,8 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
         if ai_meeting.path and ai_meeting.path not in minutes_files:
             minutes_files.append(ai_meeting.path)
     fill_end(minutes)                           # 회의록 · AI 어디에도 끝 시각이 없을 때만 — 그래서 AI 를 다시 부르지도 않는다
+    if minutes is not None and minutes.attendees:
+        attendee_numbers(minutes, item.files, read_text)   # 서명부 · 회의록 PDF · 참석자 명단 엑셀의 '이름 학번' — ERP 에서 번호로 먼저 찾게
     if minutes_files:
         item.minutes = minutes.path if minutes and minutes.path else minutes_files[0]
         item.meeting = minutes

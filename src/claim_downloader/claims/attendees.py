@@ -18,7 +18,9 @@
 못 정하면 그 창을 닫고(창 닫기 — ERP 단추가 아니다) 까닭을 돌려준다 — card_erp 가 '신청 전 확인할 것' 에 그 이름을 남긴다.
 회의록의 사람이 불분명하거나 1인 한도(회의비 · 다과비 5만원)로 사람이 모자라면 `fill_up` 이 참여인력선택에서 **아무나** 골라 채운다
 (담당자 2026-11-11 "참여인력에서 임의로 사람을 선택해서 넣고 일단 저장만하기 … 임의로 넣은 사람도 안내").
-고르는 규칙: 참여인력은 이름(명단에 직번이 있으면 직번도)이 같은 줄 하나. 참여인력선택 목록에 없으면 인적정보조회에서 직번으로 찾는다.
+고르는 규칙: **번호(학번 · 사번)가 있으면 번호로 먼저, 못 찾으면 이름으로**(담당자 2026-11-11). 번호는 참여연구원 명단의 직번이나 증빙(회의록 표 · 서명부 ·
+AI 가 읽은 회의록)에서 그 이름 옆에 적힌 학번 · 사번(idnums.py · card.py). 번호로 고를 때도 이름이 같은 줄만 — 번호를 잘못 짝지었으면 이름으로 간다.
+참여인력은 연 그대로의 목록(검색 칸은 성명뿐)에서 번호가 같은 줄 → 이름(명단에 직번이 있으면 직번도)이 같은 줄 하나. 참여인력선택 목록에 없으면 인적정보조회에서 직번으로 찾는다.
 내부참석자는 이름이 같은 줄 가운데 — 회의록의 소속이 학과 같은 것이면 소속이 맞는 줄 → 여럿이면 재직 · 재학인 줄 — 하나. 소속을 모르면 재직 · 재학인 같은 이름이
 하나일 때만(그때는 '신청 전 확인할 것' 에 남긴다). 재직 · 재학이 아닌 줄(제적 · 졸업 · 퇴직 …)은 소속이 맞을 때만 고른다.
 
@@ -30,7 +32,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from . import participants as part_mod
 from .attach import CLICK_TEXT_JS
@@ -114,7 +116,7 @@ def choose_part(rows: list[dict], person: part_mod.Attendee) -> tuple[int | None
     if person.emp_no:
         same = [i for i in same if _digits(rows[i].get(COL_NO)) == _digits(person.emp_no)]
         if not same:
-            return None, f"이름은 있지만 직번 {person.emp_no} 인 줄이 없음"
+            return None, "이름은 있지만 직번이 같은 줄이 없음"
     if len(same) > 1:
         return None, f"같은 이름이 {len(same)}줄"
     return same[0], "참여인력 목록에서 " + ("직번 · 이름" if person.emp_no else "이름") + "으로"
@@ -124,9 +126,9 @@ def choose_person(rows: list[dict], person: part_mod.Attendee) -> tuple[int | No
     """인적정보조회(멀티) 결과에서 이 사람의 줄 — (줄, 근거, 소속 없이 이름으로만 골랐는지). 확실하지 않으면 (None, 까닭, False)."""
     name = _squash(person.name)
     same = [i for i, c in enumerate(rows) if _squash(c.get(COL_NAME)) == name]
-    if person.emp_no:                                       # 직번으로 찾은 것 — 직번 · 이름이 둘 다 맞는 줄 하나
+    if person.emp_no:                                       # 번호(직번 · 학번 · 사번)로 찾은 것 — 번호 · 이름이 둘 다 맞는 줄 하나
         hit = [i for i in same if _digits(rows[i].get(COL_NO)) == _digits(person.emp_no)]
-        return (hit[0], "직번 · 이름으로", False) if len(hit) == 1 else (None, f"직번 {person.emp_no} · 이름이 맞는 줄 {len(hit)}개", False)
+        return (hit[0], "번호 · 이름으로", False) if len(hit) == 1 else (None, f"번호 · 이름이 맞는 줄 {len(hit)}개", False)
     if not same:
         return None, "이름이 같은 사람이 없음", False
     key = _org_key(person.org)
@@ -215,38 +217,91 @@ def _close(popup) -> None:
         pass
 
 
+def choose_part_by_no(rows: list[dict], person: part_mod.Attendee) -> tuple[int | None, str]:
+    """참여인력선택 목록에서 번호(k_EMP_NO)가 이 사람의 번호인 줄 — 하나이고 이름도 같을 때만(번호를 잘못 짝지었으면 엉뚱한 사람이 들어간다)."""
+    want = _digits(person.emp_no)
+    hit = [i for i, c in enumerate(rows) if want and _digits(c.get(COL_NO)) == want]
+    if not hit:
+        return None, f"목록 {len(rows)}줄에 그 번호인 줄이 없음"
+    if len(hit) > 1:
+        return None, f"번호가 같은 줄이 {len(hit)}개"
+    got = _squash(rows[hit[0]].get(COL_NAME))
+    if got and got != _squash(person.name):
+        return None, "번호는 같은데 이름이 다름"
+    return hit[0], "참여인력 목록에서 번호 · 이름으로"
+
+
+def _rows_shown(popup, wait: Callable[[float], None]) -> None:
+    """참여인력선택은 열면 그 과제의 참여인력이 그려져 있다(실측 21줄) — 그려질 때까지 잠깐."""
+    def shown() -> bool:
+        try:
+            return bool(listing(popup)[0])
+        except Exception:  # noqa: BLE001 — 그리는 중
+            return False
+
+    wait_until(shown, wait, tries=10)
+
+
 def _one(minutes, person: part_mod.Attendee, multi: bool, log: Callable[[str], None], wait: Callable[[float], None],
-         names_now: Callable[[], list[str]]) -> tuple[bool, str, bool]:
-    """한 사람을 넣는다 — (넣었는지, 근거 · 까닭, 이름으로만 골랐는지)."""
+         names_now: Callable[[], list[str]]) -> tuple[bool, str, str]:
+    """한 사람을 넣는다 — (넣었는지, 근거 · 까닭, 넣었으면 신청 전 확인할 말 — 없으면 '').
+
+    번호(학번 · 사번 — 명단의 직번이나 증빙의 번호)가 있으면 **번호로 먼저**, 못 찾으면 이름으로(담당자 2026-11-11). 인적정보조회는 검색 칸이 번호를 받고(실측),
+    참여인력선택은 검색 칸이 성명뿐이라 연 그대로의 목록(그 과제의 참여인력)에서 번호가 같은 줄을 찾는다."""
     button = INTERNAL_ADD_ID if multi else PART_ADD_ID
     assert button in ALLOWED_IDS
     popup, why = open_popup(minutes, minutes, button, MULTI_PROBE_JS if multi else PART_PROBE_JS, log)
     if popup is None:
-        return False, ("내부참석자" if multi else "참여인력") + " [행 추가] 창을 열지 못함: " + why, False
+        return False, ("내부참석자" if multi else "참여인력") + " [행 추가] 창을 열지 못함: " + why, ""
     if not wait_until(lambda: popup.evaluate(MULTI_PROBE_JS if multi else PART_PROBE_JS) is True, wait, tries=40):
         _close(popup)
-        return False, "사람 찾기 창이 아님", False
+        return False, "사람 찾기 창이 아님", ""
     done = False
     try:
-        query = person.emp_no if (multi and person.emp_no) else person.name
-        ok, why = _search(popup, MULTI_FIELD_ID if multi else PART_FIELD_ID, query, wait)
-        if not ok:
-            return False, why, False
-        rows, tops = _scan_all(popup, wait)
-        cells = [r["cells"] for r in rows]
-        if multi:
-            index, why, by_name = choose_person(cells, person)
-        else:
-            (index, why), by_name = choose_part(cells, person), False
-        # 기록에는 이름 · 사번을 남기지 않는다(로그 보내기로 나간다) — 무엇으로 찾았는지만
-        log("  %s 찾기(%s) → %d줄: %s" % ("인적정보" if multi else "참여인력", "직번" if query == person.emp_no and query else "이름",
-                                       len(rows), why))
+        no = _digits(person.emp_no)
+        what_no = "직번" if person.no_from == part_mod.ROSTER else "번호"
+        # (무엇, 검색어, 고르는 규칙) — 검색어가 None 이면 검색하지 않고 연 그대로의 목록에서
+        attempts: list[tuple[str, str | None, Callable]] = []
+        if no and multi:
+            attempts.append((what_no, no, lambda cells: choose_person(cells, person)))
+        elif no:
+            attempts.append((what_no, None, lambda cells: (*choose_part_by_no(cells, person), False)))
+        by_name_person = replace(person, emp_no="") if multi else person   # 번호로 못 찾았으면 이름 · 소속으로(인적정보조회)
+        attempts.append(("이름", person.name, (lambda cells: choose_person(cells, by_name_person)) if multi
+                         else (lambda cells: (*choose_part(cells, person), False))))
+        index = None
+        rows: list[dict] = []
+        tops: dict = {}
+        cells: list[dict] = []
+        why, by_name, used = "", False, ""
+        for what, query, choose in attempts:
+            if query is None:
+                _rows_shown(popup, wait)
+            else:
+                ok, note = _search(popup, MULTI_FIELD_ID if multi else PART_FIELD_ID, query, wait)
+                if not ok:
+                    return False, note, ""
+            rows, tops = _scan_all(popup, wait)
+            cells = [r["cells"] for r in rows]
+            index, why, by_name = choose(cells)
+            # 기록에는 이름 · 사번을 남기지 않는다(로그 보내기로 나간다) — 무엇으로 찾았는지만
+            log("  %s 찾기(%s%s) → %d줄: %s" % ("인적정보" if multi else "참여인력", what, "" if query is not None else " · 목록 그대로",
+                                            len(rows), why))
+            used = what
+            if index is not None:
+                break
         if index is None:
-            return False, why, False
+            return False, why, ""
+        review = ""
+        if no and used == "이름":
+            source = "참여연구원 명단의 직번" if what_no == "직번" else f"증빙({person.no_from or '회의록 · 서명부'})의 학번 · 사번"
+            review = f"{source}으로는 찾지 못해 이름으로 골랐습니다({why}) — 회의록등록에서 사번 · 소속을 확인하세요"
+        elif by_name:
+            review = f"소속 없이 이름으로 골랐습니다({why}) — 회의록등록에서 사번 · 소속을 확인하세요"
         chosen = cells[index]
         ok, note = _check(popup, rows[index]["key"], tops, wait)
         if not ok:
-            return False, "줄을 체크하지 못함: " + note, False
+            return False, "줄을 체크하지 못함: " + note, ""
         if multi:
             # 체크하면 '고른 사람' 표에 조금 뒤에 쌓인다(실측) — 쌓인 뒤 [확인]
             want = _digits(chosen.get(COL_NO))
@@ -255,14 +310,14 @@ def _one(minutes, person: part_mod.Attendee, multi: bool, log: Callable[[str], N
         else:
             clicked = popup.evaluate(CLICK_ID_JS, PART_CONFIRM_ID)
         if not clicked.get("ok"):
-            return False, "[확인] 을 누르지 못함: " + str(clicked.get("why", "")), False
+            return False, "[확인] 을 누르지 못함: " + str(clicked.get("why", "")), ""
         if not wait_closed(popup, wait, seconds=10):
-            return False, "[확인] 을 눌렀지만 창이 닫히지 않음", False
+            return False, "[확인] 을 눌렀지만 창이 닫히지 않음", ""
         name = _squash(person.name)
         if not wait_until(lambda: name in {_squash(n) for n in names_now()}, wait, tries=12):
-            return False, "[확인] 뒤 회의록등록 창에 이름이 보이지 않음", False
+            return False, "[확인] 뒤 회의록등록 창에 이름이 보이지 않음", ""
         done = True
-        return True, why, by_name
+        return True, why, review
     finally:
         if not done:
             _close(popup)
@@ -279,23 +334,24 @@ def add(minutes, people: list[part_mod.Attendee], log: Callable[[str], None], wa
             continue
         multi = person.kind == "internal"
         try:
-            ok, why, by_name = _one(minutes, person, multi, log, wait, names_now)
+            ok, why, note = _one(minutes, person, multi, log, wait, names_now)
             if not ok and not multi and person.emp_no and why == NOT_LISTED:
                 # 그날 참여기간이 아니거나 목록에 없으면 — 인적정보조회에서 직번으로(내부참석자 줄로 들어간다)
                 log(f"  {who}: {NOT_LISTED} — 인적정보조회에서 직번으로 찾습니다")
                 multi = True
-                ok, why, by_name = _one(minutes, person, True, log, wait, names_now)
+                ok, why, note = _one(minutes, person, True, log, wait, names_now)
                 if ok:
                     report.review.append(f"{person.name}: 참여인력 목록에 없어 내부참석자로 넣음 — 참여기간을 확인하세요")
         except Exception as error:  # noqa: BLE001 — 창이 닫히는 등 — 사람에게
-            ok, why, by_name = False, "오류: " + (str(error).splitlines()[0][:100] if str(error) else type(error).__name__), False
+            ok, why, note = False, "오류: " + (str(error).splitlines()[0][:100] if str(error) else type(error).__name__), ""
         kind = "내부참석자" if multi else "참여인력"
         if ok:
             report.added.append(person.name)
             report.lines.append(f"{kind} 자동 선택: {person.name} — {why}")
             log(f"  ✓ {kind} {who} — {why}")
-            if by_name:
-                report.review.append(f"{person.name}: 소속 없이 이름으로 골랐습니다({why}) — 회의록등록에서 사번 · 소속을 확인하세요")
+            for text in (note, person.hint):
+                if text:
+                    report.review.append(f"{person.name}: {text}")
         else:
             report.left[person.name] = why
             log(f"  ✗ {kind} {who}: {why}")

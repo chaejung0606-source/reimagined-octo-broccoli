@@ -262,7 +262,7 @@ def meeting_plan(item: card.CardItem, members: list[part_mod.Member]) -> tuple[d
                                         ("CFRC_PURS", "회의목적(안건)"), ("CFRC_CONT", "회의내용")) if not values[key]]
     if values["CFRC_CONT"] and len(values["CFRC_CONT"].replace(" ", "")) < MIN_CONTENT:
         missing.append(f"회의내용이 {MIN_CONTENT}자보다 짧음")
-    people = part_mod.classify(m.attendees, members)
+    people = part_mod.classify(m.attendees, members, m.numbers, m.number_from)
     if not people:
         missing.append("참석자 이름")
     return values, people, missing
@@ -297,11 +297,16 @@ def _meeting_entries(item: card.CardItem, values: dict, people: list, need: int)
                      + (f" · {len(content)}자" if content else ""),
                      f"{MIN_CONTENT}자보다 짧음 — ERP 가 저장을 막음" if short else _meeting_check(m, "content", not content)))
     who_src = _source(m, "attendees") + " → 참여연구원 명단으로 나눔"
-    for kind, how in (("part", "앱이 [행 추가] 창에서 고름(직번 · 이름이 하나일 때)"),
-                      ("internal", "앱이 [행 추가] 창에서 고름(이름 · 소속이 하나일 때)"), ("external", "앱이 성명 · 소속을 넣음")):
-        who = [p.label() for p in people if p.kind == kind]
-        if who:
-            out.append(Entry(part_mod.Attendee("", kind=kind).kind_name, f"{len(who)}명: " + ", ".join(who), f"{who_src} · {how}",
+    for kind, how in (("part", "앱이 [행 추가] 창에서 고름(직번 · 학번이 있으면 번호로 먼저, 이름이 맞는 줄이 하나일 때)"),
+                      ("internal", "앱이 [행 추가] 창에서 고름(학번 · 사번이 있으면 번호로 먼저, 없거나 못 찾으면 이름 · 소속으로)"),
+                      ("external", "앱이 성명 · 소속을 넣음(ERP 에서 찾지 않음)")):
+        group = [p for p in people if p.kind == kind]
+        if group:
+            # 번호를 어디서 읽었나 — 참여연구원 명단 말고 증빙(회의록 표 · 서명부 · AI)에서 온 것만 적는다
+            froms = sorted({p.no_from.replace(part_mod.ROSTER + " · ", "") for p in group
+                            if p.emp_no and p.no_from and p.no_from != part_mod.ROSTER})
+            src = f"{who_src} · 학번 · 사번: {', '.join(froms)} · {how}" if froms else f"{who_src} · {how}"
+            out.append(Entry(part_mod.Attendee("", kind=kind).kind_name, f"{len(group)}명: " + ", ".join(p.label() for p in group), src,
                              "AI 가 읽은 사람 — 회의록등록 창에서 확인" if m.sources.get("attendees") == "ai" else ""))
     short_heads = need - len(people)
     out.append(Entry("인원", f"{len(people)}명 (1인 {DEFAULT_LIMIT:,}원 한도로 {need}명 이상)",
@@ -344,7 +349,7 @@ def plan_item(item: card.CardItem, index: int, members: list[part_mod.Member] | 
             if who:
                 lines.append(f"  {part_mod.Attendee('', kind=kind).kind_name}: " + ", ".join(who)
                              + {"external": " — 앱이 넣음", "part": " — 앱이 [행 추가] 창에서 고름(직번 · 이름이 하나일 때)",
-                                  "internal": " — 앱이 [행 추가] 창에서 고름(이름 · 소속이 하나일 때)"}[kind])
+                                  "internal": " — 앱이 [행 추가] 창에서 고름(학번 · 사번이 있으면 번호로 먼저, 없으면 이름 · 소속이 하나일 때)"}[kind])
         if item.snack:
             lines.append(f"다과비({item.snack_from}) — 회의록등록 창에서 식비청구 '아니오' · 회의비(다과)(B) "
                          + (f"{item.amount:,}원" if item.amount else "결제 금액"))

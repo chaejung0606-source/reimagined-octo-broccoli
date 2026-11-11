@@ -32,6 +32,7 @@ from ..minutes.errors import BackendError, _extract_json, _failure_reason
 from ..minutes.logbook import log
 from ..minutes.textfile import _read_text
 from . import card as card_mod
+from . import idnums
 from .schema import parse_amount
 
 TIMEOUT_SEC = 900           # 결제 건 하나 — 영수증 몇 장 · 회의록 하나라 회의록 생성(1,800초)보다 짧게
@@ -149,7 +150,7 @@ def build_prompt(folder: str, files: list[str], json_path: str) -> str:
         '"merchant": "가맹점 상호", "address": "가맹점 주소", "cardLast4": "카드번호 끝 4자리", "approvalNo": "승인번호", '
         '"items": "주문 품목 요약(예: 아메리카노 4, 케이크 2)"}],\n'
         '  "meeting": {"file": "회의록 파일 이름", "date": "YYYY-MM-DD", "start": "HH:MM", "end": "HH:MM", "place": "회의장소", '
-        '"agenda": "회의 안건(목적) 한 줄", "content": ["회의내용 1문단", "2문단"], "attendees": [{"org": "소속", "name": "이름"}]},\n'
+        '"agenda": "회의 안건(목적) 한 줄", "content": ["회의내용 1문단", "2문단"], "attendees": [{"org": "소속", "name": "이름", "no": "학번 또는 사번"}]},\n'
         '  "snack": true,\n'
         '  "notes": "확인이 필요한 점(없으면 빈 문자열)"\n'
         "}\n"
@@ -159,7 +160,8 @@ def build_prompt(folder: str, files: list[str], json_path: str) -> str:
         "- meeting 은 회의록(회의 결과 보고 · 회의 기록)에 적힌 것만 옮기세요. 지어내지 마세요. 회의록이 없으면 null 입니다.\n"
         "  start · end 는 회의 시작 · 끝 시각(24시간 HH:MM)입니다. 회의록에 시각이 하나뿐이면 그것이 start 이고 end 는 빈 문자열로 두세요. place 는 회의를 한 곳입니다(회의록의 회의장소 — 결제한 식당 · 카페가 아닙니다).\n"
         "  content 는 회의록의 논의 내용을 2~4문단으로 정리합니다(합쳐서 공백 빼고 20자 이상). 식사 · 메뉴 · 결제 · 영수증 이야기는 넣지 마세요.\n"
-        "  attendees 는 회의록 · 서명부에서 이름을 확인할 수 있는 사람만, 소속은 적힌 그대로(없으면 빈 문자열) 담으세요.\n"
+        "  attendees 는 회의록 · 서명부에서 이름을 확인할 수 있는 사람만, 소속은 적힌 그대로(없으면 빈 문자열) 담으세요. "
+        "no 는 그 사람 이름 옆에 적힌 학번 · 사번(숫자만)이고, 적혀 있지 않거나 누구 것인지 분명하지 않으면 빈 문자열입니다 — 지어내지 마세요.\n"
         "- snack 은 이 결제가 식사가 아니라 다과(커피 · 음료 · 빵 · 과자)면 true, 식사면 false, 모르면 null 입니다.\n"
         "위 JSON 파일 하나만 저장하고 폴더 안의 파일은 고치거나 지우지 마세요. 반드시 한국어로 작성하세요.\n"
     )
@@ -191,7 +193,8 @@ def clean(data: dict) -> dict:
         m["attendees"] = []
         for person in meeting.get("attendees") or []:
             if isinstance(person, dict) and _text(person.get("name")):
-                m["attendees"].append({"org": _text(person.get("org"))[:80], "name": _text(person.get("name"))[:40]})
+                m["attendees"].append({"org": _text(person.get("org"))[:80], "name": _text(person.get("name"))[:40],
+                                       "no": idnums.clean(person.get("no"))})
         if any(m[key] for key in ("date", "start", "place", "agenda", "content", "attendees")):
             out["meeting"] = m
     snack = data.get("snack")

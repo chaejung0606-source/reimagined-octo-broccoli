@@ -1024,6 +1024,51 @@ def test_person_recheck_skips_numbers_of_other_students_and_asks_when_nothing_fi
     assert searched == ["202600001"] and report.saved == 0 and asked and "소득자" in asked[0]
 
 
+def test_person_without_roster_number_is_searched_by_the_document_number_first(monkeypatch, tmp_path):
+    """담당자 2026-11-11: 증빙에 학번 · 사번이 있으면 그 번호로 먼저, 없으면 이름으로. 명단에 학번이 없으면 전에는 이름으로 먼저 찾고
+    (명단에 학번이 없어 고르지 않음) 그다음에야 개별증빙의 학번으로 찾았다 — 이제 개별증빙의 번호로 먼저 찾는다."""
+    job = _mismatch_job(tmp_path, ["Student 202600009"])
+    job.people[0].student_no = ""
+    frame = FakeForm(account="110594395796")
+    _patch_popups(monkeypatch, frame)
+    searched = []
+
+    def fake_search(page, fr, name, no, log, wait=None, messages=None, tab=None, auto_pick=True):
+        searched.append(no)
+        if no == "202600009":
+            frame.pick_person(name, no)
+            return person.PersonReport(ok=True, name=name, student_no=no, picked=True, chosen_no=no, pick_note="학번 일치")
+        return person.PersonReport(ok=True, name=name, student_no=no, rows=1, pick_note="명단에 학번이 없어 고르지 않음")
+
+    monkeypatch.setattr(person, "search", fake_search)
+    asked = []
+    lines: list[str] = []
+    report = scholarship.run(object(), frame, job, lines.append, ask=lambda m: asked.append(m) or False,
+                             wait=lambda s: None, dry_run=False)
+    assert searched == ["202600009"] and asked == [] and report.saved == 1      # 이름 검색 없이 번호로 바로
+    assert frame.saved[0]["RCV_CD"] == "202600009"
+    assert any("명단에 학번이 없어 개별증빙의 번호 202600009 로 소득자를 골랐습니다" in item for item in report.review_items())
+    assert any("번호 후보 1개로 먼저 찾습니다" in line for line in lines)
+
+    # 개별증빙에 번호가 없으면 전처럼 이름으로
+    (tmp_path / "b").mkdir()
+    job = _mismatch_job(tmp_path / "b", ["Bank 110-594-395796"])
+    job.people[0].student_no = ""
+    searched.clear()
+    frame = FakeForm(account="110594395796")
+    _patch_popups(monkeypatch, frame)
+    monkeypatch.setattr(person, "search", fake_search)
+    scholarship.run(object(), frame, job, lambda m: None, ask=lambda m: False, wait=lambda s: None, dry_run=False)
+    assert searched == [""]
+
+
+def test_evidence_numbers_take_labeled_numbers_first_and_skip_other_people(tmp_path):
+    job = _mismatch_job(tmp_path, ["Member 202600001", "Other 202600007", "Other 202600007"])
+    job.people[0].student_no = ""
+    numbers, read = scholarship.evidence_numbers(job, 0)
+    assert read == 1 and numbers == ["202600007", "202600001"]
+
+
 def test_account_mismatch_puts_the_document_account_then_presses_owner_check(monkeypatch, tmp_path):
     """담당자 결정(2026-10-14): ERP 계좌가 다르면 첨부서류의 계좌를 넣고, 앱이 [예금주조회] 를 눌러 '성공' 이면 이어 간다."""
     job = _mismatch_job(tmp_path, ["Account 110-594-395796"])

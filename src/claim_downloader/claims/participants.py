@@ -35,8 +35,10 @@ class Attendee:
     name: str
     org: str = ""
     kind: str = ""                 # 'part'(참여인력) · 'internal'(내부참석자) · 'external'(외부참석자)
-    emp_no: str = ""               # 참여인력이면 명단의 직번
-    note: str = ""
+    emp_no: str = ""               # 찾을 번호 — 참여인력이면 명단의 직번, 아니면 증빙(회의록 · 서명부 …)의 학번 · 사번
+    note: str = ""                 # 앱이 고르지 않는 까닭(참여연구원 명단에 같은 이름 여럿) — attendees.add 가 사람에게 넘긴다
+    no_from: str = ""              # emp_no 를 어디서 — '참여연구원 명단' · 증빙 파일 이름 · 'AI'
+    hint: str = ""                 # 넣은 뒤 '신청 전 확인할 것' 으로 남길 말(고르는 것은 막지 않음)
 
     @property
     def kind_name(self) -> str:
@@ -139,19 +141,45 @@ def is_internal_org(org: str) -> bool:
     return bool(DEPT_RE.search(text))
 
 
-def classify(attendees: list[tuple[str, str]], members: list[Member]) -> list[Attendee]:
-    """회의록 참석자 (소속, 이름) → 참여인력 · 내부참석자 · 외부참석자. 참여인력은 명단에 이름이 **하나**만 있을 때만(동명이인이면 내부참석자로 두고 알림)."""
+def _digits(text) -> str:
+    return "".join(ch for ch in str(text or "") if ch.isdigit())
+
+
+ROSTER = "참여연구원 명단"
+
+
+def classify(attendees: list[tuple[str, str]], members: list[Member], numbers: dict[str, str] | None = None,
+             number_from: dict[str, str] | None = None) -> list[Attendee]:
+    """회의록 참석자 (소속, 이름) → 참여인력 · 내부참석자 · 외부참석자. 참여인력은 명단에 이름이 **하나**만 있을 때만(동명이인이면 내부참석자로 두고 알림).
+
+    numbers 는 증빙(회의록 표 · 서명부 · AI 가 읽은 것)에서 이름마다 찾은 학번 · 사번(열쇠는 띄어쓰기 뺀 이름, idnums) — 번호는 한 사람이라 이름보다 먼저 본다
+    (담당자 2026-11-11 "증빙자료에 사번이나 학번이 있으면 그 번호로 먼저 조회를 하고 없으면 이름으로"):
+    명단에 그 번호 · 이름의 사람이 있으면 참여인력(동명이인이어도), 명단의 같은 이름과 번호가 다르면 다른 사람이라 내부참석자로 그 번호로 찾는다."""
+    numbers, number_from = numbers or {}, number_from or {}
     by_name: dict[str, list[Member]] = {}
     for m in members:
         by_name.setdefault(_squash(m.name), []).append(m)
     out = []
     for org, name in attendees:
         found = by_name.get(_squash(name), [])
+        no = _digits(numbers.get(_squash(name), ""))
+        source = number_from.get(_squash(name), "증빙") if no else ""
         if not is_internal_org(org):
+            # 외부참석자는 ERP 에서 찾지 않는다 — 회의록등록 창의 성명 · 소속 칸에 글로 넣는다(번호를 쓸 곳이 없다)
             note = "참여연구원 명단에 같은 이름이 있음 — 소속이 학교 밖이라 외부참석자로" if found else ""
             out.append(Attendee(name, org, "external", note=note))
+            continue
+        if no:
+            same = [m for m in found if _digits(m.emp_no) == no]
+            if same:
+                out.append(Attendee(name, org, "part", same[0].emp_no, no_from=f"{ROSTER} · {source}"))
+            else:
+                # 명단에 이름이 없거나, 같은 이름이 있어도 번호가 다르다(다른 사람) — 인적정보조회에서 그 번호로
+                hint = (f"증빙의 학번 · 사번이 참여연구원 명단의 같은 이름(직번 {', '.join(m.emp_no for m in found)})과 달라 내부참석자로 찾음"
+                        " — 같은 사람이면 회의록등록에서 참여인력으로 고치세요") if found else ""
+                out.append(Attendee(name, org, "internal", no, no_from=source, hint=hint))
         elif len(found) == 1:
-            out.append(Attendee(name, org, "part", found[0].emp_no))
+            out.append(Attendee(name, org, "part", found[0].emp_no, no_from=ROSTER))
         elif len(found) > 1:
             out.append(Attendee(name, org, "internal", note=f"참여연구원 명단에 같은 이름이 {len(found)}명 — 직번을 보고 고르세요"))
         else:

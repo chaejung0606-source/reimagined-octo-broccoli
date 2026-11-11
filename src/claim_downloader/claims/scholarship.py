@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from .. import settings
 from ..minutes.logbook import log as file_log
 from ..minutes.textfile import _read_text
-from . import attach, kinds, nation as nation_mod, person, roster as roster_mod
+from . import attach, idnums, kinds, nation as nation_mod, person, roster as roster_mod
 from .checks import FIX, INFO, Note
 from .schema import CATEGORY_CODES
 from .nation import same_country  # noqa: F401 — 테스트 · 화면이 scholarship.same_country 로 부른다
@@ -988,10 +988,16 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
             return True, ""
         return False, f"작성 화면의 {who}가 {p.name}({want['no'] or '학번 없음'}) 이 아님 (지금: {s['RCV_NM'] or '—'} {s['RCV_CD'] or ''})"
 
-    found = person.search(page, frame, p.name, p.student_no, log, wait=wait, messages=messages, tab=job.tab, auto_pick=auto_pick)
-    result.lines.extend(found.lines())
-    if auto_pick and not found.picked and _not_found(found.pick_note) and not person_ok()[0]:
-        found = _recheck_student_no(page, frame, job, index, log, wait, messages, result, want) or found
+    found = None
+    if auto_pick and not _digits(p.student_no):
+        # 명단에 학번 · 사번이 없으면 그 사람 개별증빙의 번호로 먼저 — 번호가 있으면 번호로 먼저, 없으면 이름으로(담당자 2026-11-11).
+        # 전에는 이름으로 먼저 찾고(명단에 학번이 없어 고르지 않음) 그다음에야 개별증빙의 학번으로 찾았다
+        found = _search_by_evidence(page, frame, job, index, log, wait, messages, result, want, first=True)
+    if found is None:
+        found = person.search(page, frame, p.name, p.student_no, log, wait=wait, messages=messages, tab=job.tab, auto_pick=auto_pick)
+        result.lines.extend(found.lines())
+        if auto_pick and _digits(p.student_no) and not found.picked and _not_found(found.pick_note) and not person_ok()[0]:
+            found = _recheck_student_no(page, frame, job, index, log, wait, messages, result, want) or found
     ok, why = _ask_until(person_ok, ask, lambda w: ("%d. %s — %s 팝업에서 %s 을(를) 고르고 [확인] 을 누른 뒤 [계속] 을 누르세요. "
                                                     "팝업이 닫혀 있으면 작성 화면의 돋보기를 눌러 여세요.\n(%s)"
                                                     % (index + 1, p.name, who, p.name, found.pick_note or found.note or w)), wait)
@@ -1185,33 +1191,52 @@ def _not_found(pick_note: str) -> bool:
     return note.endswith("인 행이 없음") or note == "검색 결과가 없음" or note.startswith("명단에 학번이 없어")
 
 
-def _recheck_student_no(page, frame, job: Job, index: int, log, wait, messages: list[str], result: PersonResult,
-                        want: dict):
-    """명단 학번으로 소득자를 못 찾았을 때 — 그 학생 개별증빙 PDF 의 학번으로 다시 찾는다(담당자 요청 2026-10-19: "오류가 생기면
-    개별증빙에 있는 자료로 지급대상의 정보를 재확인"). 명단은 담당자가 첨부서류를 보고 옮긴 것이라 옮기다 틀릴 수 있다.
-
-    고르는 것은 person.search 그대로 — 목록의 학번이 그 후보와 같고 **이름도 명단과 같은** 줄이 하나일 때만(person.match). 그래서 PDF 에
-    다른 학생 학번이 섞여 있어도 엉뚱한 사람을 고르지 않는다. 명단의 다른 학생 학번은 후보에서 뺀다. 학번(인적정보) 탭에서만 —
-    참여인력 사번(6자리)은 PDF 의 다른 숫자와 가르기 어렵다. 고르면 '신청 전 확인할 것' 에 남긴다(명단을 고치시라고)."""
-    if job.tab != person.TAB_STUDENT:
-        return None
+def evidence_numbers(job: Job, index: int, limit: int = 3) -> tuple[list[str], int]:
+    """그 사람 개별증빙 PDF 의 학번 · 사번 후보 — 이름표가 붙은 번호('학번 : …' · '사번 …') 먼저, 그다음 학번 꼴(20 으로 시작하는 9자리),
+    같은 무리에서는 많이 나온 것부터(idnums.ranked). 그 사람의 명단 번호 · 명단의 다른 사람 번호는 뺀다. (후보, 글자를 읽을 수 있었던 PDF 수)."""
     p = job.people[index]
-    others = {q.student_no for i, q in enumerate(job.people) if i != index and q.student_no}
-    numbers, read = student_numbers_in_files(job.person_files.get(index, []))
-    candidates = [n for n in numbers if n != p.student_no and n not in others][:3]
-    log("소득자 재확인: 명단 학번 %s 로 못 찾음 — 개별증빙 PDF %d개(글자 있는 것)에서 학번 후보 %d개"
-        % (p.student_no or "(없음)", read, len(candidates)))
+    others = {_digits(q.student_no) for i, q in enumerate(job.people) if i != index and _digits(q.student_no)}
+    texts = [t for t in _pdf_texts(job.person_files.get(index, [])) if t.strip()]
+    numbers = [n for n in idnums.ranked(texts) if n != _digits(p.student_no) and n not in others]
+    return numbers[:limit], len(texts)
+
+
+def _search_by_evidence(page, frame, job: Job, index: int, log, wait, messages: list[str], result: PersonResult,
+                        want: dict, first: bool):
+    """개별증빙의 번호로 소득자를 찾는다 — first 면 명단에 번호가 없어 처음부터(담당자 2026-11-11 "증빙자료에 사번이나 학번이 있으면 그 번호로 먼저"),
+    아니면 명단 번호로 못 찾은 뒤 다시(담당자 요청 2026-10-19: "오류가 생기면 개별증빙에 있는 자료로 지급대상의 정보를 재확인").
+
+    고르는 것은 person.search 그대로 — 목록의 번호가 그 후보와 같고 **이름도 명단과 같은** 줄이 하나일 때만(person.match). 그래서 PDF 에
+    다른 사람 번호가 섞여 있어도 엉뚱한 사람을 고르지 않는다. 고르면 '신청 전 확인할 것' 에 남긴다(명단을 고치시라고). 못 고르면 None."""
+    p = job.people[index]
+    candidates, read = evidence_numbers(job, index)
+    what = "학번" if job.tab == person.TAB_STUDENT else "학번 · 사번"
+    if first:
+        log("소득자 찾기: 명단에 %s이 없어 개별증빙 PDF %d개(글자 있는 것)의 번호 후보 %d개로 먼저 찾습니다" % (what, read, len(candidates)))
+    else:
+        log("소득자 재확인: 명단 %s %s 로 못 찾음 — 개별증빙 PDF %d개(글자 있는 것)에서 번호 후보 %d개"
+            % (what, p.student_no or "(없음)", read, len(candidates)))
     for no in candidates:
         again = person.search(page, frame, p.name, no, log, wait=wait, messages=messages, tab=job.tab, auto_pick=True)
         if again.picked:
             want["no"] = no
             result.lines.extend(again.lines())
-            item = (f"명단 학번({p.student_no or '없음'})으로는 소득자를 찾지 못해 개별증빙의 학번 {no} 로 골랐습니다(이름도 같음) — "
+            item = (f"명단에 {what}이 없어 개별증빙의 번호 {no} 로 소득자를 골랐습니다(이름도 같음) — 명단 엑셀에 {what}을 적어 두세요" if first else
+                    f"명단 학번({p.student_no or '없음'})으로는 소득자를 찾지 못해 개별증빙의 학번 {no} 로 골랐습니다(이름도 같음) — "
                     "명단 엑셀의 학번을 고치세요")
             result.review.append(item)
             log("신청 전 확인: %d. %s — %s" % (index + 1, p.name, item))
             return again
+    if first and candidates:
+        log("개별증빙의 번호로 못 찾음 — 이름으로 찾습니다")
     return None
+
+
+def _recheck_student_no(page, frame, job: Job, index: int, log, wait, messages: list[str], result: PersonResult,
+                        want: dict):
+    """명단 번호로 소득자를 못 찾았을 때 — 그 사람 개별증빙 PDF 의 번호로 다시 찾는다(_search_by_evidence). 참여인력 탭(사번)도 —
+    이름표가 붙은 번호('사번 …')만 아니라 학번 꼴도 보지만, 이름까지 같은 줄만 고르므로 PDF 의 다른 숫자로 엉뚱한 사람을 고르지 않는다."""
+    return _search_by_evidence(page, frame, job, index, log, wait, messages, result, want, first=False)
 
 
 def _use_document_account(frame, job: Job, index: int, s: dict, log, ask: Ask, wait,
