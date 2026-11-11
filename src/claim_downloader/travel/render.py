@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QMarginsF, QRectF, QSizeF, Qt
-from PySide6.QtGui import (QColor, QFont, QFontMetrics, QImage, QPageLayout, QPageSize, QPainter, QPainterPath, QPdfWriter, QPen,
-                           QTransform)
+from PySide6.QtGui import (QColor, QFont, QFontMetrics, QImage, QImageReader, QPageLayout, QPageSize, QPainter, QPainterPath,
+                           QPdfWriter, QPen, QTransform)
 
 from ..ui.tokens import COLORS
 from .model import Block, Page, rows_for
@@ -186,7 +186,11 @@ def _load(path: Path) -> list[QImage]:
                 out.append(image)
         doc.close()
         return out
-    image = QImage(str(path))
+    # 휴대폰을 옆으로 들고 찍은 영수증은 눕힌 채 저장되고 EXIF 회전 표시만 붙는다 — QImage(경로) 는 그 표시를 무시해
+    # 출장증빙 · 미리 보기에 옆으로 누운 영수증이 들어가고 글자 높이도 누운 그림으로 쟀다. 회의록 영수증(minutes/receipt.py)과 같이 읽는다.
+    reader = QImageReader(str(path))
+    reader.setAutoTransform(True)
+    image = reader.read()
     return [] if image.isNull() else [image]
 
 

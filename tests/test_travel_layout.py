@@ -120,3 +120,19 @@ def test_public_page_draws_route_captions_and_totals(qapp, tmp_path):
     text = _pages_text(out)[0]
     for words in ("실비 합계 24,000원", "일자 합계 16,000원", "열차 · 춘천 → 용산 · 8,000원", "열차 · 춘천 → ? · 8,000원", "2일 · 증빙 3건"):
         assert "".join(words.split()) in text
+
+
+def test_phone_photo_is_drawn_upright(qapp, tmp_path):
+    """휴대폰을 옆으로 들고 찍은 영수증은 눕힌 채 저장되고 EXIF 회전 표시(6 = 90° 돌려 보라)만 붙는다 —
+    QImage(경로) 는 그 표시를 무시해 출장증빙에 옆으로 누운 영수증이 들어갔다. 바로 세워 읽는지 본다."""
+    pil = pytest.importorskip("PIL.Image")
+    from claim_downloader.travel import render
+    photo = pil.new("RGB", (400, 200), "white")
+    photo.paste((30, 30, 30), (40, 40, 360, 160))    # 여백 자르기가 지우지 않게 가운데에 내용
+    exif = pil.Exif()
+    exif[0x0112] = 6
+    path = tmp_path / "홍길동_체류증빙.jpg"
+    photo.save(path, exif=exif.tobytes())
+    images = render.load_images(path)
+    assert len(images) == 1
+    assert images[0].height() > images[0].width()
