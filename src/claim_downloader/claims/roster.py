@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .checks import CHECK, FIX, Note
+
 # 머리글 글자(공백 제거 뒤) → 열 뜻. 앞에 있는 것이 우선.
 HEADERS = {
     "name": ("이름", "성명", "성명(한글)"),
@@ -84,17 +86,26 @@ class Roster:
     def total(self) -> int:
         return sum(p.amount or 0 for p in self.people)
 
+    @property
+    def where(self) -> str:
+        """확인할 것의 '어디서' — 명단 엑셀 파일 이름."""
+        return f"명단 엑셀 「{Path(self.path).name}」" if self.path else "명단 엑셀"
+
     def problems(self) -> list[str]:
-        """넣기 전에 사람이 봐야 할 것. 비어 있으면 넣어도 된다."""
+        """넣기 전에 사람이 봐야 할 것(checks.Note — 무엇 · 어디서 · 할 일 · 무게). 비어 있으면 넣어도 된다."""
         out = list(self.warnings)
         if not self.people:
-            out.append("명단에 사람이 없습니다")
+            out.append(Note("명단에 사람이 없습니다", level=FIX, where=self.where,
+                            todo="이름 · 학번 · 금액 머리글이 있는 표인지 보고 고친 뒤 [다시 읽기]"))
         if self.sheet_total is not None and self.sheet_total != self.total:
-            out.append(f"표의 합계({self.sheet_total:,})와 금액을 더한 값({self.total:,})이 다릅니다")
+            out.append(Note(f"표의 합계({self.sheet_total:,})와 금액을 더한 값({self.total:,})이 다릅니다", level=FIX,
+                            what=f"표의 합계 {self.sheet_total:,}원 ≠ 사람마다 금액을 더한 값 {self.total:,}원",
+                            where=self.where + " — '합계' 줄 · 금액 칸",
+                            todo="빠지거나 틀린 금액을 고친 뒤 [다시 읽기] — 맞을 때까지 넣지 않습니다"))
         out.extend(self.duplicate_problems())
-        for p in self.people:
+        for index, p in enumerate(self.people):
             if p.note:
-                out.append(f"{p.row}행 {p.name}: {p.note}")
+                out.append(person_note(self, index))
         return out
 
 
@@ -114,12 +125,16 @@ class Roster:
             if key in seen:
                 first = seen[key]
                 what = f"교과목 '{p.course}' 까지 같은" if p.course else "같은"
-                out.append(f"{first.row}행 · {p.row}행 {p.name}(학번 {p.student_no}) — {what} 줄이 둘입니다. 중복인지 확인하세요")
+                out.append(Note(f"{first.row}행 · {p.row}행 {p.name}(학번 {p.student_no}) — {what} 줄이 둘입니다. 중복인지 확인하세요",
+                                what=f"{p.name}(학번 {p.student_no}) — {what} 줄이 둘", where=f"{self.where} {first.row}행 · {p.row}행",
+                                todo="같은 줄이 두 번 적혔으면 하나를 지우고 [다시 읽기]. 둘 다 맞으면 그대로"))
             else:
                 seen[key] = p
         for no, names in names_by_no.items():
             if len(names) > 1:
-                out.append(f"학번 {no} 인데 이름이 다릅니다: " + " · ".join(sorted(names)))
+                out.append(Note(f"학번 {no} 인데 이름이 다릅니다: " + " · ".join(sorted(names)),
+                                what=f"같은 학번 {no} 에 이름이 다름: " + " · ".join(sorted(names)), where=self.where + " — 학번 · 이름 칸",
+                                todo="학번이나 이름을 잘못 적은 줄을 고친 뒤 [다시 읽기]"))
         return out
 
 
@@ -245,25 +260,34 @@ def read(path, sheet: str | None = None) -> Roster:
     try:
         import openpyxl
     except ImportError:
-        roster.warnings.append("openpyxl 이 없어 엑셀을 읽지 못합니다 — 앱 준비 단계를 다시 돌리세요")
+        roster.warnings.append(Note("openpyxl 이 없어 엑셀을 읽지 못합니다 — 앱 준비 단계를 다시 돌리세요", level=FIX,
+                                    what="엑셀을 읽는 부품(openpyxl)이 없습니다", where="이 PC 의 앱",
+                                    todo="앱을 껐다가 '앱 실행' 으로 다시 켜 준비 단계를 돌리세요"))
         return roster
     try:
         wb = openpyxl.load_workbook(str(path), data_only=True, read_only=False)
     except Exception as error:  # noqa: BLE001 — 열려 있는 파일 · 깨진 파일
-        roster.warnings.append("엑셀을 열지 못했습니다: " + (str(error).splitlines()[0][:100] if str(error) else "오류"))
+        why = str(error).splitlines()[0][:100] if str(error) else "오류"
+        roster.warnings.append(Note("엑셀을 열지 못했습니다: " + why, level=FIX, what="엑셀을 열지 못했습니다(" + why + ")",
+                                    where=roster.where, todo="엑셀에서 그 파일을 닫거나 다시 저장한 뒤 [다시 읽기]"))
         return roster
     try:
         names = [sheet] if sheet else list(wb.sheetnames)
         found = [(name, _find_header(wb[name])) for name in names]
         found = [(name, hit) for name, hit in found if hit[0]]
         if not found:
-            roster.warnings.append("머리글(이름 · 학번)이 있는 줄을 찾지 못했습니다. 시트에 명단 표가 있어야 합니다")
+            roster.warnings.append(Note("머리글(이름 · 학번)이 있는 줄을 찾지 못했습니다. 시트에 명단 표가 있어야 합니다", level=FIX,
+                                        what="명단 표의 머리글(이름 · 학번)을 찾지 못했습니다", where=roster.where,
+                                        todo="머리글에 '이름'(또는 성명) · '학번' · '금액' 이 있는 표로 고친 뒤 [다시 읽기]"))
             return roster
         # 시트가 여럿이면(프로그램참여지원비 명단: 국외 · 국내) 사람이 있는 첫 시트 — 둘 다 있으면 알린다(폴더 1개 = 청구서 1개)
         filled = [(name, hit) for name, hit in found if _has_people(wb[name], *hit)] or found
         if len(filled) > 1:
-            roster.warnings.append("시트 %d개(%s)에 명단이 있어 '%s' 만 읽었습니다 — 다른 시트는 폴더를 나눠 넣으세요"
-                                   % (len(filled), ", ".join(n for n, _ in filled), filled[0][0]))
+            roster.warnings.append(Note("시트 %d개(%s)에 명단이 있어 '%s' 만 읽었습니다 — 다른 시트는 폴더를 나눠 넣으세요"
+                                        % (len(filled), ", ".join(n for n, _ in filled), filled[0][0]),
+                                        what="시트 %d개(%s)에 명단이 있어 '%s' 시트만 읽었습니다"
+                                        % (len(filled), ", ".join(n for n, _ in filled), filled[0][0]),
+                                        where=roster.where, todo="다른 시트의 사람은 그 시트만 든 폴더를 따로 만들어 넣으세요(폴더 하나 = 청구서 하나)"))
         name, (header_row, columns) = filled[0]
         ws = wb[name]
         roster.columns = columns
@@ -289,7 +313,9 @@ def read(path, sheet: str | None = None) -> Roster:
                 continue                       # 빈 줄
             if not name and not _merged(ws, r, columns["name"]):
                 # 이름 칸이 병합된 둘째 줄이 아닌데 금액만 있다 — 앞 학생 줄로 내려받지 않는다(합계 · 메모 줄일 수 있다)
-                roster.warnings.append(f"{r}행: 이름이 없는데 금액({amount:,})이 있습니다 — 합계 줄이면 '합계' 라고 적어 주세요")
+                roster.warnings.append(Note(f"{r}행: 이름이 없는데 금액({amount:,})이 있습니다 — 합계 줄이면 '합계' 라고 적어 주세요",
+                                            what=f"이름 칸이 비었는데 금액 {amount:,}원이 있습니다 — 이 줄은 넣지 않습니다",
+                                            where=f"{roster.where} {r}행", todo="합계 줄이면 그 줄에 '합계' 라고 적고, 사람이면 이름을 적은 뒤 [다시 읽기]"))
                 continue
             person = Person(name=name, row=r, amount=amount,
                             student_no=digits(cells.get("student_no")),
@@ -315,14 +341,18 @@ def read(path, sheet: str | None = None) -> Roster:
             roster.people.append(person)
             last = person
         if roster.people and not found_total:
-            roster.warnings.append("명단 아래에 '합계' 줄이 없습니다 — 합계와 맞춰 보지 못했습니다. 금액을 한 번 더 확인하세요")
+            roster.warnings.append(Note("명단 아래에 '합계' 줄이 없습니다 — 합계와 맞춰 보지 못했습니다. 금액을 한 번 더 확인하세요",
+                                        what="'합계' 줄이 없어 금액을 합계와 맞춰 보지 못했습니다", where=roster.where + " — 명단 맨 아래",
+                                        todo="아래 표의 청구액을 한 번 더 보세요(합계 줄을 넣으면 앱이 맞춰 봅니다)"))
     finally:
         try:
             wb.close()
         except Exception:  # noqa: BLE001
             pass
     if not roster.title:
-        roster.warnings.append("표 위에 제목(예: 2026년도 7월 (가)형 근로장학금 지급내역)이 없습니다 — 대표적요를 직접 적으세요")
+        roster.warnings.append(Note("표 위에 제목(예: 2026년도 7월 (가)형 근로장학금 지급내역)이 없습니다 — 대표적요를 직접 적으세요",
+                                    what="표 위에 제목(예: 2026년도 7월 (가)형 근로장학금 지급내역)이 없습니다", where=roster.where + " — 표 위 제목 줄",
+                                    todo="③ 오른쪽 칸 '대표적요' 를 직접 적으세요"))
     return roster
 
 
@@ -333,6 +363,31 @@ def _has_people(ws, header_row: int, columns: dict) -> bool:
         if name and name not in TOTAL_WORDS and ("amount" not in columns or _to_int(ws.cell(r, columns["amount"]).value)):
             return True
     return False
+
+
+# 사람 줄의 note(read 가 적음)를 무엇 · 어디서 · 할 일로 — 담당자 2026-11-11: '21행 <이름>: 금액이 없음' 만으로는 어느 파일의 무엇을 해야 하는지 몰랐다
+_PERSON_PARTS = (
+    ("학번이 없음", "학번이 비어 있음", "학번 칸", "학번을 적고 [다시 읽기] — 그대로 넣으면 앱이 소득자를 못 골라 노란 띠로 묻습니다"),
+    ("학번 자릿수", None, "학번 칸", "학번(9자리 · 사번 6자리)을 고친 뒤 [다시 읽기] — 그대로면 앱이 소득자를 못 골라 노란 띠로 묻습니다"),
+    ("금액이 없음", "금액이 비어 있음", "금액 칸", "금액을 적고 [다시 읽기] — 지금은 이 사람의 체크가 풀려 넣지 않습니다"),
+)
+
+
+def person_note(roster: Roster, index: int) -> Note:
+    p = roster.people[index]
+    whats, cells, todos = [], [], []
+    for part in p.note.split(" · "):
+        for key, what, cell, todo in _PERSON_PARTS:
+            if part.startswith(key):
+                whats.append(what or part)
+                cells.append(cell)
+                todos.append(todo)
+                break
+        else:
+            whats.append(part)
+    return Note(f"{p.row}행 {p.name}: {p.note}", level=CHECK, what=f"{p.name} — " + ", ".join(whats),
+                where=f"{roster.where} {p.row}행" + (" — " + " · ".join(dict.fromkeys(cells)) if cells else ""),
+                todo=" / ".join(todos) or "명단 엑셀을 보고 고친 뒤 [다시 읽기]", person=index)
 
 
 def summary_lines(roster: Roster) -> list[str]:

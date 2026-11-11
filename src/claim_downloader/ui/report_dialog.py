@@ -7,8 +7,13 @@
 - 확인할 것(문제 · ERP 알림)도 따로 칸을 두고 길면 그 안에서 스크롤한다.
 - side_detail 이면 '자세히' 를 표 오른쪽에 더 넓게 둔다 — 카드 결제 건처럼 줄마다 확인할 것 · 넣을 값이 많은 창
   (담당자 2026-11-11 "건별 목록보다 확인이 필요한 내용 박스가 더 넓게"). 줄의 html 이 있으면 그것을 그린다.
+- 확인할 것이 checks.Note(무엇 · 어디서 · 할 일 · 무게)면 목록 위 한 칸에 번호 · 무게(고칠 것 · 확인 · 참고)로 나눠 그리고, 사람 줄이 있으면
+  [표에서 보기] 로 그 줄을 고른다 — 장학금 미리 보기(담당자 2026-11-11 "뭘 어디서 어떤걸 확인해야 하는지 모르겠잖아요" ·
+  "확인필요 세부사항은 목록 위에서만 보여지도록 … 아래 박스로 되어있는건 삭제"). 표의 칸은 위 칸의 번호만 가리킨다.
 """
 from __future__ import annotations
+
+import html
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,7 +38,9 @@ from PySide6.QtWidgets import (
 )
 
 from .. import diagnose, settings
+from ..claims import checks
 from ..minutes import logbook
+from .tokens import COLORS
 from .widgets import Pill, PillDelegate, WrapLabel
 
 MAX_WIDTH, MAX_HEIGHT = 1120, 720
@@ -49,6 +56,38 @@ class ReportRow:
     tips: dict[int, str] = field(default_factory=dict)    # 칸 번호(cells 기준) → 마우스를 올리면 보일 전체 글
     right: tuple[int, ...] = ()      # 오른쪽 정렬할 칸 번호(cells 기준) — 금액 · 개수
     html: str = ""                   # 있으면 '자세히' 칸에 detail 대신 이것(서식 있는 글)
+    key: object = None               # 확인할 것(checks.Note.person)이 가리키는 줄 — [표에서 보기] 로 이 줄을 고른다
+
+
+LEVEL_TONES = {checks.FIX: "danger", checks.CHECK: "warning", checks.INFO: "info"}
+
+
+def notes_html(notes: list, keys: dict) -> str:
+    """확인할 것마다 한 덩어리 — 번호 · 무게 · 무엇(굵게) · 어디서 · 할 일. 무게마다 바탕색이 달라 한눈에 갈린다.
+    keys: Note.person → 표의 No 글(그 사람 줄이 표에 있을 때만 [표에서 보기])."""
+    c = COLORS
+    rows = []
+    for n, note in enumerate(notes, 1):
+        note = checks.as_note(note)
+        tone = LEVEL_TONES[note.level]
+        fg, bg = c[tone], c[tone + "_bg"]
+        link = ""
+        if note.person is not None and note.person in keys:
+            link = (f'&nbsp;&nbsp;<a href="row:{note.person}" style="color:{c["primary"]}; font-weight:400;">'
+                    f'표에서 보기 ({html.escape(str(keys[note.person]))}번)</a>')
+        lines = [f'<span style="color:{c["text"]}; font-weight:700;">{html.escape(note.what)}</span>{link}']
+        if note.where:
+            lines.append(f'<span style="color:{c["text_muted"]};">어디서&nbsp;&nbsp;</span>'
+                         f'<span style="color:{c["text"]};">{html.escape(note.where)}</span>')
+        if note.todo:
+            lines.append(f'<span style="color:{c["text_muted"]};">할 일&nbsp;&nbsp;&nbsp;</span>'
+                         f'<span style="color:{fg if note.level != checks.INFO else c["text"]};">{html.escape(note.todo)}</span>')
+        # 한 건이 한 덩어리(표 하나) — 덩어리 사이는 흰 틈 몇 점만
+        rows.append(f'<table width="100%" cellspacing="0" cellpadding="5" bgcolor="{bg}" style="margin-bottom:5px;"><tr>'
+                    f'<td width="24" valign="top" align="right" style="color:{fg}; font-weight:700;">{n}</td>'
+                    f'<td width="56" valign="top" nowrap style="color:{fg}; font-weight:700;">{note.level_name}</td>'
+                    f'<td valign="top">{"<br>".join(lines)}</td></tr></table>')
+    return "".join(rows)
 
 
 class ReportDialog(QDialog):
@@ -65,6 +104,7 @@ class ReportDialog(QDialog):
         self.setWindowTitle(title)
         self.setSizeGripEnabled(True)
         self._rows = rows or []
+        self._notes_height = 0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(22, 18, 22, 16)
@@ -84,7 +124,29 @@ class ReportDialog(QDialog):
             text.setTextInteractionFlags(Qt.TextSelectableByMouse)
             layout.addWidget(text)
 
-        if notes:
+        rich = bool(notes) and any(isinstance(n, checks.Note) for n in notes)
+        notes_box = None
+        if notes and rich:
+            # 무게 · 무엇 · 어디서 · 할 일로 나눈 칸 — 목록 위에만 둔다(아래 '자세히' 칸 없이)
+            box = QWidget()
+            column = QVBoxLayout(box)
+            column.setContentsMargins(0, 0, 0, 0)
+            column.setSpacing(6)
+            label = QLabel(f"{notes_title} {len(notes)}건 — {checks.count_text(notes)}"
+                           + ("  ·  '참고' 는 앱이 알아서 하는 것(할 일 없음)" if any(checks.as_note(n).level == checks.INFO for n in notes) else ""))
+            label.setObjectName("fieldLabel")
+            column.addWidget(label)
+            self.notes = QTextBrowser()
+            self.notes.setObjectName("reportNotes")
+            self.notes.setOpenLinks(False)
+            keys = {row.key: row.cells[0] if row.cells else "" for row in self._rows if row.key is not None}
+            self.notes.setHtml(notes_html(notes, keys))
+            self.notes.anchorClicked.connect(self._go_row)
+            column.addWidget(self.notes, 1)
+            notes_box = box
+            # 한 건이 두세 줄 — 적으면 그만큼, 많으면 아래 표와의 경계를 끌어 넓힌다
+            self._notes_height = min(340, 40 + 70 * len(notes))
+        elif notes:
             label = QLabel(f"{notes_title} {len(notes)}건")
             label.setObjectName("fieldLabel")
             layout.addWidget(label)
@@ -95,6 +157,8 @@ class ReportDialog(QDialog):
             lines = min(4, sum(1 + len(n) // 90 for n in notes))
             self.notes.setFixedHeight(18 + 21 * max(1, lines))
             layout.addWidget(self.notes)
+        if notes_box is not None and not columns:
+            layout.addWidget(notes_box, 1)
 
         self.table = None
         self.detail = None
@@ -151,6 +215,18 @@ class ReportDialog(QDialog):
                 split.setStretchFactor(0, 2)
                 split.setStretchFactor(1, 3)
                 split.setSizes([2000, 3000])
+                if notes_box is not None:
+                    layout.addWidget(notes_box)
+                layout.addWidget(split, 1)
+            elif notes_box is not None:
+                # 확인할 것(위)과 목록(아래) — 사이 경계를 끌어 넓힌다
+                split = QSplitter(Qt.Vertical)
+                split.setChildrenCollapsible(False)
+                split.addWidget(notes_box)
+                split.addWidget(self.table)
+                split.setStretchFactor(0, 0)
+                split.setStretchFactor(1, 1)
+                split.setSizes([self._notes_height, 10000])
                 layout.addWidget(split, 1)
             else:
                 layout.addWidget(self.table, 1)
@@ -200,6 +276,19 @@ class ReportDialog(QDialog):
             self.table.setFocus()           # 첫 칸(확인할 것)이 초점을 받아 테두리가 강조돼 보이지 않게 — 표에서 위아래 키로 넘긴다
         self._fit_to_screen(parent)
 
+    def _go_row(self, url: QUrl) -> None:
+        """확인할 것의 [표에서 보기] — 그 사람 줄을 골라 보이게."""
+        text = url.toString()
+        if self.table is None or not text.startswith("row:"):
+            return
+        key = text[4:]
+        for r, row in enumerate(self._rows):
+            if str(row.key) == key:
+                self.table.selectRow(r)
+                self.table.scrollToItem(self.table.item(r, 0), QAbstractItemView.PositionAtCenter)
+                self.table.setFocus()
+                return
+
     def _show_detail(self, row: int) -> None:
         if self.detail is None or not 0 <= row < len(self._rows):
             return
@@ -219,7 +308,7 @@ class ReportDialog(QDialog):
         if self._side:
             self.resize(width, max(420, limit))         # 자세히가 옆에 있으면 줄 수와 상관없이 넉넉하게 — 확인할 것이 길다
             return
-        wanted = self.sizeHint().height()
+        wanted = self.sizeHint().height() + self._notes_height
         if self.table is not None:
             # 표가 줄 수만큼 다 보이는 높이 — 그보다 화면이 작으면 표 안에서 스크롤
             wanted += max(0, 38 * len(self._rows) + 44 - self.table.sizeHint().height())

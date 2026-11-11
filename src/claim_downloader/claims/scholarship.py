@@ -27,6 +27,7 @@ from .. import settings
 from ..minutes.logbook import log as file_log
 from ..minutes.textfile import _read_text
 from . import attach, kinds, nation as nation_mod, person, roster as roster_mod
+from .checks import FIX, INFO, Note
 from .schema import CATEGORY_CODES
 from .nation import same_country  # noqa: F401 — 테스트 · 화면이 scholarship.same_country 로 부른다
 from .form import PROBE_JS, SET_SELECT_JS, SET_TEXT_JS, read_state, save_draft
@@ -286,21 +287,32 @@ class Job:
         return row_summary(self.main_summary, self.people[index], self.roster.kind, self.rules)
 
     def problems(self) -> list[str]:
+        """넣기 전에 볼 것 — checks.Note(글은 옛 그대로 + 무엇 · 어디서 · 할 일 · 무게). 무게 fix 만 넣기를 막는다(claim._fill_scholarship)."""
         out = list(self.warnings) + self.roster.problems()
         if not self.main_summary:
-            out.append("대표적요가 비어 있습니다")
+            out.append(Note("대표적요가 비어 있습니다", level=FIX, where="③ 오른쪽 칸 '대표적요'",
+                            todo="대표적요를 적으세요(명단 표 위에 제목이 있으면 앱이 채웁니다)"))
         if not re.fullmatch(r"\d{4}-\d{2}", self.pay_ym or ""):
-            out.append("지급예정년월은 YYYY-MM 꼴이어야 합니다")
+            out.append(Note("지급예정년월은 YYYY-MM 꼴이어야 합니다", level=FIX, what=f"지급예정년월 '{self.pay_ym}' 이 YYYY-MM 꼴이 아닙니다",
+                            where="③ 오른쪽 칸 '지급예정년월'", todo="2026-11 처럼 적으세요"))
         if self.pay_category not in CATEGORY_CODES.values():
-            out.append(f"비목 '{self.pay_category}' 은 ERP 보기에 없습니다")
+            out.append(Note(f"비목 '{self.pay_category}' 은 ERP 보기에 없습니다", level=FIX, where="청구 종류의 비목",
+                            todo="[로그 보내기] 로 알려 주세요(앱을 고쳐야 합니다)"))
         if self.unmatched:
-            out.append("어느 학생 것인지 모르는 개별증빙 %d개 — 붙이지 않습니다. 파일 이름에 학생 이름(또는 명단의 소학회명)이 있어야 합니다: %s"
-                       % (len(self.unmatched), " · ".join(os.path.basename(f) for f in self.unmatched[:5])))
+            names = " · ".join(os.path.basename(f) for f in self.unmatched[:5]) + (" …" if len(self.unmatched) > 5 else "")
+            out.append(Note("어느 학생 것인지 모르는 개별증빙 %d개 — 붙이지 않습니다. 파일 이름에 학생 이름(또는 명단의 소학회명)이 있어야 합니다: %s"
+                            % (len(self.unmatched), " · ".join(os.path.basename(f) for f in self.unmatched[:5])),
+                            what=f"어느 학생 것인지 모르는 개별증빙 {len(self.unmatched)}개 — 어느 줄에도 붙이지 않습니다",
+                            where="개별증빙 폴더의 파일: " + names,
+                            todo="파일 이름(또는 하위 폴더 이름)에 학생 이름이나 명단의 소학회명을 넣고 [다시 읽기]"))
         # ERP 청구내역 표에서는 줄을 적요로 구분한다 — 같은 적요가 둘이면 어느 줄이 누구 것인지 모른다
         summaries = [self.row_summary(i) for i in range(len(self.people))]
         same = sorted({t for t in summaries if t and summaries.count(t) > 1})
         for text in same:
-            out.append(f"개별 적요가 같은 줄이 둘 이상입니다: {text} — {self.spec.rules_file} 로 구분되게 고치세요")
+            out.append(Note(f"개별 적요가 같은 줄이 둘 이상입니다: {text} — {self.spec.rules_file} 로 구분되게 고치세요",
+                            what=f"개별 적요가 같은 줄이 둘 이상: {text} — ERP 청구내역에서 어느 줄이 누구 것인지 모릅니다",
+                            where=f"적요 규칙 파일 「{self.spec.rules_file}」(사용자 폴더)",
+                            todo="행적요에 이름 · 교과목이 들어가게 고친 뒤 [다시 읽기]"))
         return out
 
     def _project_text(self) -> str:
@@ -458,10 +470,15 @@ def load_job(folder: str, excel: str | None = None, rules: dict[str, str] | None
     candidates = [os.path.join(folder, n) for n in entries
                   if n.lower().endswith(EXCEL_SUFFIXES) and not n.startswith(("~$", "."))]
     chosen = excel if excel and os.path.isfile(excel) else (candidates[0] if candidates else "")
-    roster = roster_mod.read(chosen) if chosen else roster_mod.Roster(path="", warnings=["폴더 바로 아래에 명단 엑셀(.xlsx)이 없습니다"])
+    roster = roster_mod.read(chosen) if chosen else roster_mod.Roster(path="", warnings=[Note(
+        "폴더 바로 아래에 명단 엑셀(.xlsx)이 없습니다", level=FIX, where=f"폴더 「{os.path.basename(folder)}」 바로 아래",
+        todo="명단 엑셀(.xlsx)을 폴더 바로 아래에 두고 [다시 읽기]")])
     job = Job(folder=folder, roster=roster, excel_candidates=candidates, rules=rules, kind=spec_for(kind).kind)
     if len(candidates) > 1 and not excel:
-        job.warnings.append("엑셀이 %d개 있어 첫 것을 읽었습니다: %s" % (len(candidates), os.path.basename(chosen)))
+        job.warnings.append(Note("엑셀이 %d개 있어 첫 것을 읽었습니다: %s" % (len(candidates), os.path.basename(chosen)),
+                                 what=f"엑셀이 {len(candidates)}개라 「{os.path.basename(chosen)}」 을 명단으로 읽었습니다",
+                                 where=f"폴더 「{os.path.basename(folder)}」 바로 아래",
+                                 todo="명단이 다른 엑셀이면 ③ 오른쪽 칸에서 명단 엑셀을 바꾸세요"))
     for d in _subdirs_with(folder, COMMON_DIR_WORD):
         job.common_files.extend(_files_under(d))
     person_dirs = _subdirs_with(folder, PERSON_DIR_WORD)
@@ -469,11 +486,16 @@ def load_job(folder: str, excel: str | None = None, rules: dict[str, str] | None
     if person_dirs:
         job.person_files, job.unmatched = assign_person_files(files, person_dirs[0] if len(person_dirs) == 1 else folder, roster.people)
     if not job.common_files and not files:
-        job.warnings.append("공통증빙\\ · 개별증빙\\ 폴더가 비어 있거나 없습니다 — 첨부 없이 넣습니다")
+        job.warnings.append(Note("공통증빙\\ · 개별증빙\\ 폴더가 비어 있거나 없습니다 — 첨부 없이 넣습니다",
+                                 what="공통증빙 · 개별증빙 폴더가 비어 있거나 없어 첨부 없이 넣습니다",
+                                 where=f"폴더 「{os.path.basename(folder)}」 — 이름에 '공통' · '개별' 이 든 하위 폴더",
+                                 todo="첨부할 서류가 있으면 그 하위 폴더에 넣고 [다시 읽기]"))
     named = kinds.named_kind(folder)
     if named and named != spec.kind:
-        job.warnings.append(f"폴더 · 명단 이름으로는 {kinds.name_of(named)} 인데 {spec.name} 으로 넣습니다(비목 {spec.code}) — "
-                            "맞지 않으면 오른쪽 칸 위의 '종류' 를 바꾸세요")
+        job.warnings.append(Note(f"폴더 · 명단 이름으로는 {kinds.name_of(named)} 인데 {spec.name} 으로 넣습니다(비목 {spec.code}) — "
+                                 "맞지 않으면 오른쪽 칸 위의 '종류' 를 바꾸세요",
+                                 what=f"폴더 · 명단 이름은 {kinds.name_of(named)} 인데 {spec.name}(비목 {spec.code})으로 넣습니다",
+                                 where="③ 오른쪽 칸 위 '종류'", todo=f"{kinds.name_of(named)} 이 맞으면 '종류' 를 바꾸세요"))
     job.main_summary = main_summary(roster.title, rules) if roster.title else ""
     job.pay_ym = time.strftime("%Y-%m")
     job.selected = [bool(p.name) and p.amount is not None and p.amount > 0 for p in roster.people]
@@ -515,6 +537,8 @@ class PersonResult:
     # 저장은 했지만 [신청] 전에 사람이 ERP 에서 봐야 할 것 — 담당자 결정(2026-10-14): 소득구분이 앱으로 안 바뀌면
     # 멈추지 말고 그대로 임시저장한 뒤 신청 전 확인 목록으로 알린다
     review: list[str] = field(default_factory=list)
+    # 미리 보기에서 이 줄에 볼 것(checks.Note) — 명단 줄의 문제는 Job.problems() 쪽에 있다(같은 것을 두 번 세지 않게)
+    notes: list = field(default_factory=list)
 
 
 @dataclass
@@ -703,18 +727,28 @@ def plan_person(job: Job, index: int) -> PersonResult:
                     f"첨부 {len(files)}개" + (": " + " · ".join(os.path.basename(f) for f in files[:6]) if files else "")]
     if p.foreign_nation:
         result.lines.append(f"국적 {p.nation}(명단) — 넣을 때 앱이 ERP 국적조회에서 고릅니다(못 고르면 노란 띠로 묻습니다)")
-    notes = [p.note] if p.note else []
+    who = f"{p.name}" + (f"({p.course})" if p.course else "")
+    notes = []
     if (job.person_files or job.unmatched) and not job.person_files.get(index):
-        notes.append("개별증빙 없음 — 공통증빙만 붙습니다")
+        notes.append(Note("개별증빙 없음 — 공통증빙만 붙습니다", what=f"{who} — 개별증빙이 없어 공통증빙만 붙습니다",
+                          where="개별증빙 폴더", person=index,
+                          todo="이 학생 서류가 있으면 파일 이름(또는 하위 폴더 이름)에 이름을 넣고 [다시 읽기]. 원래 없으면 그대로"))
     shared = job.shared_course_files(index)
     if shared:
         # TA 교과목 여럿인 학생 — 교과목 이름이 없는 파일은 개인 서류로 보고 모든 교과목 줄에 붙인다. 다른 과목 증빙이면 파일 이름에 교과목을 넣어야 한다
-        notes.append("교과목 이름이 없는 개별증빙 %d개는 이 학생의 교과목 줄 모두에 붙습니다(다른 과목 서류면 파일 이름에 교과목을 넣으세요): %s"
-                     % (len(shared), " · ".join(os.path.basename(f) for f in shared[:4])))
+        names = " · ".join(os.path.basename(f) for f in shared[:4])
+        notes.append(Note("교과목 이름이 없는 개별증빙 %d개는 이 학생의 교과목 줄 모두에 붙습니다(다른 과목 서류면 파일 이름에 교과목을 넣으세요): %s"
+                          % (len(shared), names), what=f"{who} — 교과목 이름이 없는 개별증빙 {len(shared)}개가 이 학생의 교과목 줄 모두에 붙습니다",
+                          where="개별증빙 폴더의 파일: " + names, person=index,
+                          todo="한 과목 서류면 파일 이름에 교과목을 넣고 [다시 읽기]. 모든 과목에 쓰는 개인 서류면 그대로"))
     if p.foreign_nation:
-        notes.append(f"외국인({p.nation}) — 국적은 앱이 고름")
-    if notes:
-        result.note = " · ".join(notes)
+        notes.append(Note(f"외국인({p.nation}) — 국적은 앱이 고름", level=INFO, what=f"{who} — 외국인 학생(국적 {p.nation})",
+                          where=f"{job.roster.where} {p.row}행 — 국적 칸", person=index,
+                          todo="할 일 없음 — 넣을 때 앱이 ERP 국적조회에서 고릅니다(못 고르면 노란 띠로 묻습니다)"))
+    result.notes = notes
+    texts = ([p.note] if p.note else []) + [str(n) for n in notes]
+    if texts:
+        result.note = " · ".join(texts)
     return result
 
 

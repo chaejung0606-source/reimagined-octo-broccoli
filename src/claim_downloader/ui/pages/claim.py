@@ -50,6 +50,7 @@ from ... import ai, navigate, settings, work_folders
 from ...claims import card as card_mod
 from ...claims import card_ai
 from ...claims import card_erp
+from ...claims import checks
 from ...claims import participants as part_mod
 from ...claims import kinds
 from ...claims import reattach as reattach_mod
@@ -101,7 +102,9 @@ def _money(value) -> str:
 # 카드 결제 건 표 — 왼쪽은 좁게(건명이 늘어남), 확인할 것 · 넣을 값은 오른쪽 넓은 칸에(ReportDialog side_detail, 담당자 2026-11-11)
 CARD_COLUMNS = [("상태", 92), ("사용일", 68), ("구분", 52), ("건명", None), ("금액", 84), ("확인", 52)]
 CARD_STRETCH = 3
-SCH_COLUMNS = [("상태", 104), ("No", 44), ("이름", 92), ("학번", 104), ("청구액", 92), ("개별 적요", 300), ("첨부", 56), ("확인할 것", None)]
+# 확인할 것은 표 위 한 칸에만(번호 · 무게 · 무엇 · 어디서 · 할 일) — 표의 '확인' 칸은 그 번호만 가리킨다(담당자 2026-11-11)
+SCH_COLUMNS = [("상태", 100), ("No", 44), ("이름", 150), ("학번", 100), ("청구액", 88), ("개별 적요", None), ("첨부", 56), ("확인", 84)]
+SCH_STRETCH = 5
 # 첨부만 다시 올리기(claims/reattach.py) — 청구내역 줄마다 한 줄
 REATTACH_COLUMNS = [("상태", 96), ("줄", 44), ("이름 · 폴더", 150), ("적요", 280), ("파일", 48), ("지움", 48), ("올림", 48), ("확인할 것", None)]
 # ② 오른쪽 칸 위 '할 일' — 폴더마다 새 청구서에 넣을지, ERP 에 이미 있는 청구서(임시저장 · 보완요청)의 첨부만 다시 올릴지. ③ 의 큰 단추가 고른 것을 한다
@@ -155,38 +158,80 @@ def sheet_check_rows(check) -> list[ReportRow]:
     return rows
 
 
-def scholarship_rows(job, results) -> list[ReportRow]:
-    """결과(PersonResult)마다 표 한 줄. 긴 값(첨부 목록 · 진행 단계)은 '자세히' 칸으로."""
+def review_notes(results) -> list:
+    """넣은 뒤의 '신청 전 확인'(PersonResult.review) — 그 학생 줄을 가리키는 확인할 것으로."""
+    out = []
+    for r in results:
+        for item in r.review:
+            out.append(checks.Note(f"{r.index + 1}. {r.name} — {item}", what=f"{r.name} — {item}", person=r.index,
+                                   where="ERP 작성 화면 청구내역 — 이 학생 줄",
+                                   todo="ERP 에서 그 줄의 ○ 를 눌러 열고 고친 뒤 [저장] — 그다음 [신청] 은 직접"))
+    return out
+
+
+def check_notes(problems) -> list:
+    """신청 전 대조(sheet_check)의 문제 — 청구내역 표를 다시 읽어 명단과 맞춘 것."""
+    return [checks.Note("청구내역 대조: " + item, what=item, where="ERP 작성 화면 청구내역 표(신청 전 대조)",
+                        todo="ERP 청구내역에서 그 줄을 보고 고친 뒤 [신청]") for item in problems]
+
+
+def run_notes(results) -> list:
+    """넣다가 못 넣은 · 멈춘 · 이미 있던 학생의 까닭 — 전에는 표 끝 칸에 있었다. 이제 확인할 것은 표 위 칸에만 둔다."""
+    out = []
+    for r in results:
+        if not r.note or r.review:
+            continue
+        who = r.name + (f"({r.course})" if r.course else "")
+        if r.status in ("failed", "stopped"):
+            out.append(checks.Note(f"{r.index + 1}. {r.name} — {r.note}", level=checks.FIX if r.status == "failed" else checks.CHECK,
+                                   what=f"{who} — {'넣지 못함' if r.status == 'failed' else '멈춤'}: {r.note}", person=r.index,
+                                   where="ERP 작성 화면 — 이 학생을 넣던 중",
+                                   todo="까닭을 고친 뒤 [ERP 에 넣기] 를 다시 누르면 넣지 못한 사람만 넣습니다"))
+        elif r.status == "present":
+            out.append(checks.Note(f"{r.index + 1}. {r.name} — {r.note}", level=checks.INFO, what=f"{who} — {r.note}", person=r.index,
+                                   where="ERP 작성 화면 청구내역", todo="할 일 없음 — 두 번 넣지 않았습니다"))
+    return out
+
+
+def scholarship_view(job, results, notes=()) -> tuple[list, list[ReportRow]]:
+    """확인할 것(표 위 한 칸 — 고칠 것 → 확인 → 참고 차례로 번호)과 사람마다 표 한 줄. 표의 '확인' 칸은 위 칸의 번호만 가리키고,
+    첨부 파일 목록 · 진행 단계는 그 칸에 마우스를 올리면 보인다 — 아래 '자세히' 칸은 두지 않는다(담당자 2026-11-11
+    "확인필요 세부사항은 목록 위에서만 보여지도록 해주세요. 아래 박스로 되어있는건 삭제")."""
+    ordered = checks.ordered(list(notes) + run_notes(results) + [n for r in results for n in r.notes])
+    numbers: dict[int, list[int]] = {}
+    for n, note in enumerate(ordered, 1):
+        if note.person is not None:
+            numbers.setdefault(note.person, []).append(n)
     rows = []
     for r in results:
+        mine = [ordered[n - 1] for n in numbers.get(r.index, [])]
         status, tone = SCH_STATUS.get(r.status, (r.status, "neutral"))
-        if r.status == "planned" and r.note:
+        if r.status == "planned" and any(n.level != checks.INFO for n in mine):
             status, tone = "확인 필요", "warning"
         if r.status == "saved" and r.review:
             status, tone = SCH_STATUS["review"]
         main = job.main_summary if job is not None else ""
         # 줄마다 앞의 대표적요는 같다 — 줄을 가르는 뒷부분(_이름 · (이름_교과목))이 보이게 앞을 줄인다
         shown = "…" + r.summary[len(main):] if main and r.summary.startswith(main) and r.summary != main else r.summary
-        personal = len(r.files) - r.common_count
         base = job.folder if job is not None else ""
-        detail = [f"{r.index + 1}. {r.name}  ·  학번 {r.student_no or '—'}" + (f"  ·  교과목 {r.course}" if r.course else "")
-                  + f"  ·  청구액 {_money(r.amount) or '—'}원",
-                  f"개별 적요: {r.summary}",
-                  f"첨부 {len(r.files)}개 (공통 {r.common_count} · 개별 {personal})"]
-        for i, path in enumerate(r.files):
-            name = os.path.relpath(path, base) if base else os.path.basename(path)
-            detail.append(f"  [{'공통' if i < r.common_count else '개별'}] {name}")
-        for item in r.review:
-            detail.append(f"신청 전 확인: {item}")
-        if r.note and not r.review:
-            detail.append(f"확인할 것: {r.note}")
+        files = [f"[{'공통' if i < r.common_count else '개별'}] " + (os.path.relpath(path, base) if base else os.path.basename(path))
+                 for i, path in enumerate(r.files)]
+        who = r.name + (f" · {r.course}" if r.course else "")
+        tip_who = who + (f"\n학번 {r.student_no}" if r.student_no else "")
         if r.status != "planned" and r.lines:
-            detail.append("진행:")
-            detail.extend("  " + line for line in r.lines)
-        rows.append(ReportRow(status, tone, [str(r.index + 1), r.name, r.student_no or "—", _money(r.amount) or "—",
-                                             shown, f"{len(r.files)}개", " / ".join(r.review) or r.note],
-                              detail="\n".join(detail), tips={4: r.summary}, right=(3, 5)))
-    return rows
+            tip_who += "\n진행:\n" + "\n".join("  " + line for line in r.lines)
+        mark = ("위 " + " · ".join(str(n) for n in numbers.get(r.index, []))) if r.index in numbers else ""
+        if mine and all(n.level == checks.INFO for n in mine):
+            mark += " (참고)"
+        personal = len(r.files) - r.common_count
+        rows.append(ReportRow(status, tone, [str(r.index + 1), who, r.student_no or "—", _money(r.amount) or "—",
+                                             shown, f"{len(r.files)}개", mark],
+                              tips={1: tip_who, 4: r.summary,
+                                    5: f"첨부 {len(r.files)}개 (공통 {r.common_count} · 개별 {personal})\n" + "\n".join(files),
+                                    6: "\n".join(f"{ordered[n - 1].level_name} — {ordered[n - 1].what}" for n in numbers.get(r.index, []))
+                                       or "확인할 것 없음"},
+                              right=(3, 5), key=r.index))
+    return ordered, rows
 
 
 class ClaimPage(QWidget):
@@ -1442,9 +1487,11 @@ class ClaimPage(QWidget):
                 return
             # 넣기를 막는 것만(17절): 대표적요 없음 · 지급예정년월 꼴 · 표의 합계 불일치 · 사람 없음.
             # '…대표적요를 확인하세요' 같은 알림 글은 막지 않는다 — 전에는 '대표적요' 글자만 봐서 대표적요를 적은 뒤에도 막혔다
-            hard = [p for p in problems if p.startswith(("대표적요가 비어", "지급예정년월")) or "표의 합계" in p or "사람이 없" in p]
+            hard = [p for p in problems if checks.as_note(p).level == checks.FIX]
             if hard:
-                QMessageBox.warning(self, "넣기 전에 고칠 것", "\n".join("· " + p for p in hard))
+                QMessageBox.warning(self, "넣기 전에 고칠 것", "\n\n".join(
+                    f"· {checks.as_note(p).what}" + (f"\n   어디서: {checks.as_note(p).where}" if checks.as_note(p).where else "")
+                    + (f"\n   할 일: {checks.as_note(p).todo}" if checks.as_note(p).todo else "") for p in hard))
                 return
             # 개별증빙을 학생에게 못 붙였으면 따로 묻는다 — 확인 창 아래 '확인할 것' 한 줄로만 보여 공통증빙만 붙은 채 저장됐다
             # (담당자 실제 시험 2026-10-19: 파일 이름이 소학회명이라 6명 모두 개별증빙 없이 저장)
@@ -1475,12 +1522,12 @@ class ClaimPage(QWidget):
                       + ("새 청구서 작성 화면이 없거나 다른 청구서가 떠 있으면 앱이 결의서내역의 [일반청구] 로 새로 띄웁니다."
                          if settings.load().auto_new_sheet else "브라우저에 새 청구서 작성 화면이 떠 있어야 합니다.")
                       + (f" 이 폴더를 끝내면 남은 명단 폴더 {len(waiting)}개도 하나씩 이어서 묻습니다." if waiting else ""))
-        if not dry and not show_report(
-                self, title="ERP 에 넣기", tone="warning", heading=heading,
-                summary=job.summary_lines(), columns=SCH_COLUMNS,
-                rows=scholarship_rows(job, [sch.plan_person(job, i) for i in job.chosen()]), notes=problems,
-                footer=footer, accept_text=f"ERP 에 넣기 ({job.count_text()})"):
-            return
+        if not dry:
+            notes, rows = scholarship_view(job, [sch.plan_person(job, i) for i in job.chosen()], problems)
+            if not show_report(self, title="ERP 에 넣기", tone="warning", heading=heading,
+                               summary=job.summary_lines(), columns=SCH_COLUMNS, stretch=SCH_STRETCH, rows=rows, notes=notes,
+                               footer=footer, accept_text=f"ERP 에 넣기 ({job.count_text()})"):
+                return
         self._erp_row = row
         if not dry:
             self._erp_running = True
@@ -1550,11 +1597,12 @@ class ClaimPage(QWidget):
             if job is None:
                 QMessageBox.information(self, "미리 보기", "\n".join(report.lines()[:40]))
             else:
+                notes, rows = scholarship_view(job, report.results, job.problems())
                 show_report(self, title="미리 보기", tone="info",
                             heading=f"ERP 에 넣지 않았습니다 — 이렇게 넣습니다 ({job.count_text([r.index for r in report.results])})",
-                            summary=job.summary_lines(), columns=SCH_COLUMNS, rows=scholarship_rows(job, report.results),
-                            notes=job.problems(),
-                            footer="실제로 넣으려면 '미리 보기만' 체크를 풀고 [ERP 에 넣기] 를 누르세요.")
+                            summary=job.summary_lines(), columns=SCH_COLUMNS, stretch=SCH_STRETCH, rows=rows, notes=notes,
+                            footer="첨부 파일 목록은 '첨부' 칸에 마우스를 올리면 보입니다. "
+                                   "실제로 넣으려면 '미리 보기만' 체크를 풀고 [ERP 에 넣기] 를 누르세요.")
         elif report.blocked:
             if 0 <= row < len(self._status):
                 self._set_status(row, "read")
@@ -1613,14 +1661,17 @@ class ClaimPage(QWidget):
                 # 같은 ERP 알림이 파일마다 되풀이된다('파일명의 특수문자는 제거됩니다.') — 한 줄로 모아 몇 번인지만
                 alerts = [f"{m} (×{report.messages.count(m)})" if report.messages.count(m) > 1 else m
                           for m in dict.fromkeys(report.messages)]
+                # 넣은 뒤 볼 것 — 학생 줄의 '신청 전 확인' + 청구내역 대조. 표의 '확인' 칸 번호가 위 칸과 맞게 한 번에 번호를 매긴다
+                notes, rows = scholarship_view(job, report.results, review_notes(report.results)
+                                               + (check_notes(report.check.problems) if report.check is not None else []))
                 show_report(self, title=f"{job.spec.name} 청구", tone="warning" if report.stopped or review else "success",
                             heading=f"임시저장 {saved_text}" + (" — 중간에 멈췄습니다" if report.stopped else "")
                                     + (f" · 신청 전 확인할 것 {len(review)}건" if review else ""),
                             summary=[f"대표적요: {job.main_summary}", f"지급예정년월: {job.pay_ym}"]
                                     + ([f"신청 전 대조: {report.check.heading()}"] if report.check is not None else [])
                                     + (["ERP 알림: " + " · ".join(alerts)] if alerts and review else []),
-                            columns=SCH_COLUMNS, rows=scholarship_rows(job, report.results),
-                            notes=review or alerts, notes_title="신청 전 확인할 것" if review else "ERP 알림",
+                            columns=SCH_COLUMNS, stretch=SCH_STRETCH, rows=rows,
+                            notes=notes or alerts, notes_title="신청 전 확인할 것" if notes else "ERP 알림",
                             footer="ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요 — 앱은 누르지 않습니다."
                                    + (" 위 '신청 전 확인할 것' 을 먼저 고치세요." if review else "")
                                    + (" 이 창을 닫으면 다음 폴더로 넘어갑니다." if nxt is not None else ""))
