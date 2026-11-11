@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 
 import openpyxl
 
@@ -211,6 +212,29 @@ def test_claim_folders_become_one_sheet_each(tmp_path):
     from claim_downloader.claims import card_erp
     assert card_erp.main_summary(one.sheets[0], test_mode=True) == "[시험] " + CLAIM_07
     assert card_erp.sheet_key(one, one.sheets[0]) == card_erp.sheet_key(job, job.sheets[2])   # 어느 쪽으로 넣어도 같은 기록
+
+
+def test_etc_folder_in_a_payment_folder_is_neither_read_nor_attached(tmp_path):
+    """담당자(2026-11-11): 결제 건 폴더 안 '기타' 폴더에는 증빙으로 쓰지 않을 파일을 모아 둔다 — 그 밖의 파일만 읽고 붙인다."""
+    from claim_downloader.claims import card_erp
+    claim = tmp_path / "26-10(10.09. ~ 11.08.)" / CLAIM_07
+    item_dir = claim / "261012_(17)_안전한지피유"
+    touch(item_dir / "2026학년도 2학기 WE-Meet 회의비 1차 지원 (10.7~10.27.).pdf")
+    touch(item_dir / "261012_안전한지피유_교수님회의비영수증.jpg")
+    touch(item_dir / "SDU COSS_안전한지피유_WE-Meet 프로젝트 회의록(261012)_최종.pdf")
+    touch(item_dir / "기타" / "옛 영수증.pdf")
+    touch(item_dir / "기타" / "초안" / "회의록 초안.pdf")
+    touch(item_dir / " 기타 " / "사진.jpg")
+    touch(claim / "기타" / "메모.pdf")                                              # 청구서 폴더의 '기타' 도 알림 없이 넘김
+    texts = {"옛 영수증.pdf": "카드 영수증\n결제금액 99,000원\n2026-10-12"}
+    job = card.load_job(str(claim), read_text=reader(texts))
+    item = job.items[0]
+    names = [os.path.basename(p) for p in item.files]
+    assert names == ["2026학년도 2학기 WE-Meet 회의비 1차 지원 (10.7~10.27.).pdf", "261012_안전한지피유_교수님회의비영수증.jpg",
+                     "SDU COSS_안전한지피유_WE-Meet 프로젝트 회의록(261012)_최종.pdf"]
+    assert item.amount is None and not item.receipts                                 # 기타 폴더의 영수증 금액은 쓰지 않는다
+    assert [os.path.basename(p) for p in card_erp.attachments(item)] == sorted(names, key=lambda n: (n != os.path.basename(item.notice), n))
+    assert not job.skipped
 
 
 def test_category_folder_is_strict():

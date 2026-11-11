@@ -826,10 +826,19 @@ class CardJob:
         return out
 
 
+# 결제 건 폴더 안의 '기타' 폴더 — 증빙으로 쓰지 않을 파일을 모아 두는 곳(담당자 2026-11-11 "기타폴더에는 증빙으로 사용 안할 파일들을 모아둘겁니다.
+# 기타 폴더 밖에 있는 파일들을 활용해주시고 첨부해주세요"). 읽지도 붙이지도 않는다 — 그 아래 폴더까지
+SKIP_DIRS = ("기타",)
+
+
+def _skip_dir(name: str) -> bool:
+    return name.startswith(".") or re.sub(r"\s+", "", name) in SKIP_DIRS
+
+
 def _files_under(folder: str) -> list[str]:
     out = []
     for root, dirs, names in os.walk(folder):
-        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        dirs[:] = sorted(d for d in dirs if not _skip_dir(d))
         out += [os.path.join(root, n) for n in sorted(names) if not n.startswith(("~$", ".")) and n != "Thumbs.db"]
     return out
 
@@ -1057,8 +1066,8 @@ def _claim_sheet(folder: str, claim: ClaimName, period, job: CardJob, read_text,
         path = os.path.join(folder, name)
         if name.startswith((".", "~$")) or name == "Thumbs.db":
             continue
-        if not os.path.isdir(path):
-            continue        # 청구서 폴더 바로 아래 파일(공문 · 신청 엑셀 …)은 보지 않는다 — 증빙은 카드 사용 건 폴더마다(담당자 2026-11-11)
+        if not os.path.isdir(path) or _skip_dir(name):
+            continue        # 청구서 폴더 바로 아래 파일(공문 · 신청 엑셀 …) · '기타' 폴더는 보지 않는다 — 증빙은 카드 사용 건 폴더마다(담당자 2026-11-11)
         if not parse_item_name(name, period).mmdd:
             job.skipped.append(f"{prefix}{name} (이름이 '사용일_(청구종류 번호)_건명' 꼴이 아님 — 예 '261012_(17)_회의')")
             continue
