@@ -45,14 +45,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import navigate, settings
+from ... import navigate, settings, work_folders
 from ...claims import card as card_mod
 from ...claims import card_erp
 from ...claims import participants as part_mod
 from ...claims import kinds
 from ...claims import reattach as reattach_mod
 from ...claims import scholarship as sch
-from .. import project_box
+from .. import folder_picker, project_box
 from ..art import Art
 from ..log_button import LogSendButton, warn
 from ..flow import HIDDEN, ChoiceCard, FlowArea, FlowStep
@@ -909,13 +909,33 @@ class ClaimPage(QWidget):
         self._sync_buttons()
         return True
 
+    def _start_dir(self) -> str:
+        """폴더 고르기 창이 처음 여는 곳 — 카드면 바탕화면 '★★지출진행' 안의 '2. 카드'(설정 card_root 가 있으면 그것, 담당자 2026-11-11
+        "카드청구에서 폴더고를때 바로 아래 폴더가 뜨도록"). 그 밖의 종류는 운영체제가 고른 곳."""
+        if self.add_kind.currentData() == kinds.CARD:
+            return folder_picker.work_root(work_folders.CARD, settings.load().card_root)
+        return ""
+
+    def _kind_ready(self) -> bool:
+        """폴더를 고르기 전에 ① 의 청구 종류부터 — 여러 폴더를 고른 뒤 폴더마다 같은 알림이 뜨지 않게."""
+        if self._kind_picked:
+            return True
+        QMessageBox.information(self, "청구 종류", "먼저 ① 에서 청구 종류(장학금 · 혁신인재지원금 · 카드)를 고르세요.")
+        return False
+
     def _add_one(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "지출 자료가 들어 있는 폴더 선택")
-        if path:
+        """폴더를 여러 개 골라 넣는다 — Ctrl · Shift 로 여러 개(담당자 2026-11-11 "폴더 여러개 선택가능하도록")."""
+        if self._erp_running or not self._kind_ready():
+            return
+        title = ("카드 결제 기간 폴더 고르기 — Ctrl · Shift 로 여러 개" if self.add_kind.currentData() == kinds.CARD
+                 else "지출 자료가 들어 있는 폴더 고르기 — Ctrl · Shift 로 여러 개")
+        for path in folder_picker.pick_folders(self, title, self._start_dir()):
             self.add_folder(path)
 
     def _add_parent(self) -> None:
-        parent = QFileDialog.getExistingDirectory(self, "여러 지출 폴더가 들어 있는 '상위' 폴더 선택")
+        if self._erp_running or not self._kind_ready():
+            return
+        parent = QFileDialog.getExistingDirectory(self, "여러 지출 폴더가 들어 있는 '상위' 폴더 선택", self._start_dir())
         if not parent:
             return
         subs = [os.path.join(parent, x) for x in sorted(os.listdir(parent)) if os.path.isdir(os.path.join(parent, x))]
@@ -948,6 +968,8 @@ class ClaimPage(QWidget):
 
     def dropEvent(self, event) -> None:  # noqa: N802
         self._set_drop_active(False)
+        if not self._kind_ready():
+            return
         if sum(1 for u in event.mimeData().urls() if self.add_folder(u.toLocalFile())):
             event.acceptProposedAction()
 

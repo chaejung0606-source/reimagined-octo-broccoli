@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 
 from ... import settings
 from ...travel import application, fuels, model, navermap
+from .. import folder_picker
 from ..art import Art
 from ..tokens import COLORS
 from ..travel_fuel_card import fuel_box
@@ -477,10 +478,7 @@ class TravelPage(QWidget):
     @staticmethod
     def _trip_root() -> str:
         """폴더 고르기 창이 처음 여는 곳 — 출장비 폴더(model.trip_root). 하던 폴더 안이 아니라 늘 그 폴더에서(담당자 2026-11-10)."""
-        from ..report_dialog import desktop_dir
-        home = Path.home()
-        desks = [desktop_dir(), home / "Desktop", home / "바탕 화면", home / "OneDrive" / "Desktop", home / "OneDrive" / "바탕 화면"]
-        return model.trip_root(settings.load().travel_root, list(dict.fromkeys(desks)))
+        return model.trip_root(settings.load().travel_root, folder_picker.desktops())
 
     def _add_folders(self, paths, start: bool = False) -> int:
         """폴더들을 목록에 더한다(체크된 채, 이미 있으면 그대로). start 면 넣은 것이 하나뿐이고 하던 폴더가 없을 때 바로 시작."""
@@ -981,9 +979,10 @@ class TravelPage(QWidget):
 
     # ── ① 폴더 → ② 출장신청서 검토 ─────────────────────────────────────────
     def _pick_folder(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "출장증빙을 만들 폴더(출장비 지급 폴더)", self._trip_root())
-        if path:
-            self._add_folders([path], start=True)
+        """출장비 지급 폴더를 여러 개 골라 넣는다 — Ctrl · Shift 로 여러 개(담당자 2026-11-11 "폴더 여러개 선택가능하도록")."""
+        paths = folder_picker.pick_folders(self, "출장증빙을 만들 폴더(출장비 지급 폴더) — Ctrl · Shift 로 여러 개", self._trip_root())
+        if paths:
+            self._add_folders(paths, start=True)
 
     def load_folder(self, folder: str) -> None:
         """폴더를 고르면 — 출장신청서를 먼저 검토하고(출장자 · 기간 · 출장지) 증빙 파일을 출장자 · 항목별로 나눈다(담당자 2026-11-10)."""

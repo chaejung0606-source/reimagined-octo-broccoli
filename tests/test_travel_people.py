@@ -918,6 +918,7 @@ def test_folder_dialog_opens_in_the_travel_folder(qapp, tmp_path, isolated_home,
     monkeypatch.setattr(travel_page.Path, "home", staticmethod(lambda: tmp_path))
     asked: list = []
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: asked.append(a[2]) or "")
+    monkeypatch.setattr(travel_page.folder_picker, "pick_folders", lambda parent, title, start: asked.append(start) or [])
     page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
     page.folder_edit.setText(str(tmp_path / "하던 폴더"))
     page._pick_folder()

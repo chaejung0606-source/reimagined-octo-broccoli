@@ -95,6 +95,8 @@ class Settings:
     travel_places: str = ""
     # 출장증빙의 [폴더 추가] 가 처음 여는 출장비 폴더(담당자 2026-11-10). 비우면 바탕화면의 '…지출진행' 폴더 안 '…출장비…' 폴더(travel.model.trip_root)
     travel_root: str = ""
+    # 일반청구 '카드' 의 [지출 폴더 추가] · [상위 폴더 추가] 가 처음 여는 카드 폴더(담당자 2026-11-11). 비우면 바탕화면의 '…지출진행' 안 '…카드…' 폴더(work_folders.find)
+    card_root: str = ""
     # 주차등록 사이트(parking.py) — 담당자 요청 2026-10-21. 로그인 정보는 여기가 아니라 _주차로그인.json(비밀번호는 윈도우 DPAPI 로 감쌈)에
     parking_url: str = "https://traffic.kangwon.ac.kr/login"
     parking_auto_login: bool = True        # 로그인 정보가 있으면 사이트를 열 때 한 번 자동 로그인(담당자 허락 2026-10-21)

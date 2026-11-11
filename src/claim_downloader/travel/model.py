@@ -966,22 +966,9 @@ def other_label(path: Path, names: list[str] | None = None) -> str:
 def trip_root(saved: str, desktops) -> str:
     """[폴더 추가] · [상위 폴더에서 여러 개] 가 처음 여는 곳 — 담당자 2026-11-10 "C:\\Users\\…\\Desktop\\★★지출진행\\3. 출장비 및 프로그램참여지원비 ·
     출장비 폴더추가할 때는 바로 이폴더가 뜨도록". 설정 travel_root 가 있으면 그것, 없으면 바탕화면의 이름에 '지출진행' 이 든 폴더 안에서 이름에
-    '출장비' 가 든 폴더(개인 경로를 코드에 적지 않는다 — 9절). 못 찾으면 ''(운영체제가 고른 곳)."""
-    if saved and Path(saved).is_dir():
-        return saved
-    for desk in desktops:
-        try:
-            works = sorted(d for d in Path(desk).iterdir() if d.is_dir() and "지출진행" in d.name)
-        except OSError:
-            continue
-        for work in works:
-            try:
-                hits = sorted(d for d in work.iterdir() if d.is_dir() and "출장비" in d.name)
-            except OSError:
-                continue
-            if hits:
-                return str(hits[0])
-    return ""
+    '출장비' 가 든 폴더(개인 경로를 코드에 적지 않는다 — 9절, work_folders.find). 못 찾으면 ''(운영체제가 고른 곳)."""
+    from .. import work_folders
+    return work_folders.find(saved, desktops, work_folders.TRAVEL)
 
 
 def looks_like_trip(folder: Path, depth: int = 3) -> bool:
