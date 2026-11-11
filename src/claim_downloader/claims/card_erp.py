@@ -6,8 +6,9 @@
     미청구 카드내역 [조회] → 결제 건 라디오(card.pick — 사용일 · 금액 · 승인번호 · 카드 뒷자리 · 가맹점이 맞는 줄 **하나**일 때만)
     → ERP 가 채운 사용일 · 청구액이 폴더와 같은지 → 비목(#PAY_EXP_CD — 청구구분보다 먼저, 담당자) → 청구구분 라디오
     → (90) 기타: 청구내역(#REQ_PTCL) = `NN_건명`
-      (17) 회의비: 증빙 [신규등록] → 회의록등록 창에 회의록(.hwpx)의 시간 · 장소 · 목적 · 내용 · 외부참석자 → 창의 [저장]
-                   → ERP 가 채운 청구내역 앞에 `NN_`(공문의 비목). 참여인력 · 내부참석자는 돋보기 창이 미실측이라 **사람이** 넣는다
+      (17) 회의비: 증빙 [신규등록] → 회의록등록 창에 회의록(.hwpx)의 시간(HH:MM) · 장소 · 목적 · 내용 · 외부참석자 → 창의 [저장]
+                   → ERP 가 채운 청구내역 앞에 `NN_`(공문의 비목). 참여인력 · 내부참석자는 사람 찾기 창이 미실측이라 **사람이** 넣고,
+                   앱은 두 표의 이름을 읽어 회의록의 사람이 다 들었는지 본다(실측 2026-11-11)
       (85) 소모성물품: [등록] 창이 미실측이라 **사람이** 물품 내역 · 물품검수 정보를 넣고 [계속] → 청구내역 앞에 `NN_`
     → 첨부(PDF · 그림) → 대표적요(#APPL_CONT) → 저장 전 검사 → [저장](form.save_draft) → 결의번호 · 줄이 늘었는지
 
@@ -131,8 +132,11 @@ EXTERNAL_ROWS_SNIPPET = """
                      : Array.from(document.querySelectorAll('input[name=CFRC_OUT_EMP_NM].dynamic-input')).filter(vis).map(e => e.closest('tr') || e.parentElement);
 """
 EXTERNAL_COUNT_JS = "() => {" + EXTERNAL_ROWS_SNIPPET + " return rows.length; }"
+# 빈 외부참석자 줄 — 창이 처음부터 빈 줄 하나(OUT_COUNT 1)를 두고 열릴 수 있어(실측 2026-11-11) [행 추가] 전에 그 줄부터 채운다
+EXTERNAL_EMPTY_JS = "() => {" + EXTERNAL_ROWS_SNIPPET + """
+  return rows.filter(tr => { const n = tr.querySelector('input[name=CFRC_OUT_EMP_NM]'); return n && !n.value.trim(); }).length; }"""
 EXTERNAL_FILL_JS = "([name, org]) => {" + EXTERNAL_ROWS_SNIPPET + """
-  const row = rows.slice().reverse().find(tr => { const n = tr.querySelector('input[name=CFRC_OUT_EMP_NM]'); return n && !n.value.trim(); });
+  const row = rows.find(tr => { const n = tr.querySelector('input[name=CFRC_OUT_EMP_NM]'); return n && !n.value.trim(); });
   if (!row) return {ok: false, why: '빈 외부참석자 줄이 없음'};
   const put = (el, value) => { if (!el || el.readOnly || el.disabled) return false; el.focus(); el.value = value;
     for (const t of ['input', 'keyup', 'change']) el.dispatchEvent(new Event(t, {bubbles: true})); el.blur(); return true; };
@@ -142,6 +146,26 @@ EXTERNAL_FILL_JS = "([name, org]) => {" + EXTERNAL_ROWS_SNIPPET + """
 }"""
 EXTERNAL_NAMES_JS = "() => {" + EXTERNAL_ROWS_SNIPPET + """
   return rows.map(tr => { const n = tr.querySelector('input[name=CFRC_OUT_EMP_NM]'); return n ? n.value.trim() : ''; }).filter(x => x); }"""
+# 회의록등록 창의 참여인력(#rtaskTb) · 내부참석자(#rtaskTb1) 줄에 들어 있는 사람(실측 2026-11-11 11:34) — 읽기만.
+# 참여인력 줄: 사번 #CFRC_IN_EMP_NO · 성명 #CFRC_IN_EMP_NM(둘 다 읽기전용) · 소속 · 참여기간. 내부참석자 줄: 사번(읽기전용) · 성명 #CFRC_OUT_EMP_NM
+# (외부참석자와 같은 이름) · 돋보기 · 소속. 두 표 모두 숨은 본뜸 줄이 하나 있어 보이는 줄만 센다. id 가 없으면 머리글로 표를 찾는다.
+INSIDE_NAMES_JS = """() => {
+  const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const norm = s => (s || '').replace(/[\\s*]/g, '');
+  const heads = t => Array.from(t.querySelectorAll('th')).map(th => norm(th.textContent)).filter(x => x).join('|');
+  const out = [];
+  for (const [kind, id, want] of [['part', 'rtaskTb', '사번/학번|성명|소속|참여기간'], ['internal', 'rtaskTb1', '사번/학번|성명|소속']]) {
+    const table = document.getElementById(id) || Array.from(document.querySelectorAll('table')).find(t => heads(t) === want);
+    if (!table) continue;
+    for (const tr of table.querySelectorAll('tr')) {
+      if (!vis(tr)) continue;
+      const names = Array.from(tr.querySelectorAll('input[name=CFRC_IN_EMP_NM], input[name=CFRC_OUT_EMP_NM]')).map(e => e.value.trim()).filter(x => x);
+      const no = tr.querySelector('input[name=CFRC_IN_EMP_NO]');
+      if (names.length) out.push({kind, name: names[0], no: no ? no.value.trim() : ''});
+    }
+  }
+  return out;
+}"""
 
 
 # ── 결과 ─────────────────────────────────────────────────────────────────
@@ -235,7 +259,8 @@ def plan_item(item: card.CardItem, index: int, members: list[part_mod.Member] | 
             who = [p.label() for p in people if p.kind == kind]
             if who:
                 lines.append(f"  {part_mod.Attendee('', kind=kind).kind_name}: " + ", ".join(who)
-                             + (" — 앱이 넣음" if kind == "external" else " — 사람이 돋보기로"))
+                             + {"external": " — 앱이 넣음", "part": " — 사람이 [행 추가] 로",
+                                  "internal": " — 사람이 [행 추가] 의 사람 찾기 창에서"}[kind])
         lines.append(f"청구내역: ERP 가 회의록에서 채운 글 앞에 {item.line_code or '?'}_")
         if missing:
             result.review.append("회의록에서 못 읽음: " + " · ".join(missing))
@@ -832,7 +857,7 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
     conflict = card.region_conflict(item.meeting_region, s["CARD_ADDR"] or item.shop_address)
     if conflict:
         log("지역 확인: " + conflict)
-        if not ask(f"{item.name}: {conflict}. 그래도 넣으려면(타지역 사유가 있는 경우) 회의록등록 창에서 사유를 넣고 [계속], 아니면 [멈추기]."):
+        if not ask(f"{item.name}: {conflict}. 그래도 넣으려면(타지역 사유가 있는 경우) 회의록등록 창의 '타지역사유' 칸(보이면 — 없으면 비고)에 사유를 넣고 [계속], 아니면 [멈추기]."):
             return False, conflict + " — 멈춤"
         result.review.append(conflict)
     elif shop:
@@ -855,15 +880,14 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
         if total_out and parse_amount(out_count) != total_out:
             _set(popup, "text", "OUT_COUNT", str(total_out))
 
-    # 참여인력 · 내부참석자 — 돋보기 창(rcomm_0071_02 등)이 미실측이라 사람이 넣는다
+    # 참여인력 · 내부참석자 — 사람을 고르는 창(참여인력 [행 추가] · 내부참석자 [행 추가] 의 사람 찾기 창)이 미실측이라 사람이 넣는다.
+    # 앱은 두 표에 들어 있는 이름을 읽어(실측 2026-11-11) 회의록의 사람 가운데 아직 없는 사람만 이름으로 알리고, 다 들었는지 이름으로 본다.
     inside = [p for p in people if p.kind in ("part", "internal")]
     weekend = s["WEEKEND"] in WEEKEND_WORDS
     asks = []
-    if inside:
-        parts = [p.label() for p in inside if p.kind == "part"]
-        others = [p.label() + (f" ({p.note})" if p.note else "") for p in inside if p.kind == "internal"]
-        asks.append(("참여인력 [행 추가]: " + ", ".join(parts) if parts else "")
-                    + (" / " if parts and others else "") + ("내부참석자 [행 추가] 후 돋보기: " + ", ".join(others) if others else ""))
+    left = _missing_inside(inside, _inside_names(popup))
+    if left:
+        asks.append(_inside_request(left))
     if weekend:
         asks.append(f"회의일이 {s['WEEKEND']} — 비고에 휴일 집행 사유")
     if missing:
@@ -874,8 +898,13 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
             return True, ""                # 사람이 창의 [저장] 까지 눌렀다 — 아래에서 작성 화면을 본다
         c = _state(popup, ["IN_COUNT", "EMP_COUNT", "OUT_COUNT", "RMK", "CFRC_CONT", "CFRC_ST_DTM", "CFRC_END_DTM", "CFRC_PLCE", "CFRC_PURS"])
         bad = []
-        have = (parse_amount(c["IN_COUNT"]) or 0) + (parse_amount(c["EMP_COUNT"]) or 0)
-        if have < len(inside):
+        on = _inside_names(popup)
+        have = max((parse_amount(c["IN_COUNT"]) or 0) + (parse_amount(c["EMP_COUNT"]) or 0), len(on))
+        if on:
+            still = _missing_inside(inside, on)
+            if still:
+                bad.append("아직 없는 사람 " + ", ".join(p.name for p in still))
+        elif have < len(inside):           # 표에서 이름을 못 읽으면(화면 모양이 다름) 전처럼 수로
             bad.append(f"참여인력 · 내부참석자 {have}/{len(inside)}명")
         if not have and not (parse_amount(c["OUT_COUNT"]) or 0) and not _external_names(popup):
             bad.append("참석자가 없음")
@@ -904,6 +933,11 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
     cost = parse_amount(counts["MEAL_COST"]) or item.amount or 0
     if heads and limit and cost / heads > limit:
         result.review.append(f"1인당 회의비 {cost // heads:,}원 — 한도 {limit:,}원을 넘음")
+    known = {_squash(p.name) for p in people}
+    for extra in _inside_names(popup):
+        if _squash(extra["name"]) not in known:            # ERP 가 넣어 둔 사람(작성자 등) · 사람이 잘못 고른 사람
+            kind = part_mod.Attendee("", kind=extra["kind"]).kind_name
+            result.review.append(f"회의록에 없는 {kind}: {extra['name']} — 회의에 없었으면 회의록등록에서 빼세요")
     result.lines.append("참석자: " + ", ".join(f"{p.kind_name} {p.name}" for p in people) if people else "참석자: 회의록에 없음")
 
     # 창의 [저장] — 확인 창은 앱이 [확인](담당자 허락). 창이 닫히면 작성 화면에 증빙이 붙는다
@@ -939,8 +973,32 @@ def _external_names(popup) -> list[str]:
         return []
 
 
+def _inside_names(popup) -> list[dict]:
+    try:
+        return [x for x in popup.evaluate(INSIDE_NAMES_JS) or [] if isinstance(x, dict) and x.get("name")]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _missing_inside(inside: list[part_mod.Attendee], on: list[dict]) -> list[part_mod.Attendee]:
+    """회의록의 참여인력 · 내부참석자 가운데 창의 두 표 어디에도 이름이 없는 사람(어느 표에 넣었든 든 것으로 본다)."""
+    names = {_squash(x.get("name")) for x in on}
+    return [p for p in inside if _squash(p.name) not in names]
+
+
+def _inside_request(left: list[part_mod.Attendee]) -> str:
+    parts = [p.label() for p in left if p.kind == "part"]
+    others = [p.label() + (f" ({p.note})" if p.note else "") for p in left if p.kind == "internal"]
+    out = []
+    if parts:
+        out.append("참여인력 [행 추가]: " + ", ".join(parts))
+    if others:
+        out.append("내부참석자 [행 추가] 의 사람 찾기 창에서(여러 명을 한 번에): " + ", ".join(others))
+    return " / ".join(out)
+
+
 def _add_externals(popup, externals: list[part_mod.Attendee], log, wait) -> int:
-    """외부참석자 [행 추가] → 새 줄에 성명 · 소속. 이미 같은 이름이 있으면 건너뛴다(다시 이을 때). 넣은 수."""
+    """외부참석자 줄에 성명 · 소속 — 빈 줄이 있으면 그 줄부터, 없으면 [행 추가]. 이미 같은 이름이 있으면 건너뛴다(다시 이을 때). 넣은 수."""
     have = {_squash(n) for n in _external_names(popup)}
     added = 0
     for person in externals:
@@ -949,12 +1007,14 @@ def _add_externals(popup, externals: list[part_mod.Attendee], log, wait) -> int:
             continue
         try:
             before = int(popup.evaluate(EXTERNAL_COUNT_JS))
+            empty = int(popup.evaluate(EXTERNAL_EMPTY_JS))
         except Exception:  # noqa: BLE001
-            before = 0
-        clicked = _click(popup, EXTERNAL_ADD_ID)
-        if not clicked.get("ok") or not wait_until(lambda: int(popup.evaluate(EXTERNAL_COUNT_JS)) > before, wait, tries=10):
-            log("  ✗ 외부참석자 줄을 더하지 못함: " + str(clicked.get("why", "") or "줄이 생기지 않음"))
-            break
+            before, empty = 0, 0
+        if not empty:
+            clicked = _click(popup, EXTERNAL_ADD_ID)
+            if not clicked.get("ok") or not wait_until(lambda: int(popup.evaluate(EXTERNAL_COUNT_JS)) > before, wait, tries=10):
+                log("  ✗ 외부참석자 줄을 더하지 못함: " + str(clicked.get("why", "") or "줄이 생기지 않음"))
+                break
         done = popup.evaluate(EXTERNAL_FILL_JS, [person.name, person.org])
         log("  %s 외부참석자: %s · %s%s" % ("✓" if done.get("ok") else "✗", person.name, person.org,
                                          "" if done.get("ok") else " — " + str(done.get("why", ""))))

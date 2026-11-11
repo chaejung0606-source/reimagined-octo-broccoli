@@ -10,6 +10,7 @@ import datetime as dt
 import os
 
 import openpyxl
+import pytest
 
 from claim_downloader.claims import card, card_erp, participants
 from claim_downloader.claims.form import STATE_JS
@@ -126,7 +127,7 @@ def test_plan_shows_who_the_app_types_and_who_the_person_adds(tmp_path):
     plan = card_erp.plan_item(item, 0, [participants.Member("가", "100001")])
     text = "\n".join(plan.lines)
     assert "회의록등록: 11:00~12:00 · 장소 사업단 회의실" in text
-    assert "참여인력: 가(100001)" in text and "내부참석자: 나 · 가나다학과 — 사람이 돋보기로" in text
+    assert "참여인력: 가(100001)" in text and "내부참석자: 나 · 가나다학과 — 사람이 [행 추가] 의 사람 찾기 창에서" in text
     assert "외부참석자: 다 · 한림대학교 — 앱이 넣음" in text and "09_" in text
     assert card_erp.attachments(item)[0].endswith("회의비 지출 공문.pdf")          # 공문이 맨 앞, PDF · 그림만
     assert {os.path.basename(p) for p in card_erp.attachments(item)} == {"회의비 지출 공문.pdf", "0915 영수증.pdf", "사진.jpg"}
@@ -237,3 +238,64 @@ def test_dry_run_plans_every_item_without_a_browser(tmp_path):
     report = card_erp.run(None, None, job, job.sheets[0], lambda _m: None, ask=lambda _m: False, dry_run=True)
     assert report.dry_run and [r.status for r in report.results] == ["planned"] and not report.blocked
     assert report.lines()[0] == "미리 보기 (ERP 에 넣지 않음)"
+
+
+# ── 회의록등록 창의 참석자 표 (실측 2026-11-11 11:34 의 모양 — 이름 · 번호는 가짜) ──────────────────────────
+MINUTES_WINDOW = """<html><body>
+<input id="CFRC_ST_DTM" class="text" value=""><input id="CFRC_END_DTM" class="text" value="">
+<input id="IN_COUNT" value="0" readonly><input id="EMP_COUNT" value="1" readonly><input id="OUT_COUNT" value="1">
+<table id="rtaskTb"><thead><tr><th></th><th>사번/학번*</th><th>성명*</th><th>소속*</th><th>참여기간</th></tr></thead><tbody>
+  <tr style="display:none"><td><input type="checkbox" name="supOrgChk"></td><td><input name="CFRC_IN_EMP_NO" readonly></td>
+      <td><input name="CFRC_IN_EMP_NM" readonly></td><td><input name="DEPT_NM"></td></tr></tbody></table>
+<table id="rtaskTb1"><thead><tr><th></th><th>사번/학번*</th><th>성명*</th><th>소속*</th></tr></thead><tbody>
+  <tr style="display:none"><td><input type="checkbox" name="supOrgChk1"></td><td><input name="CFRC_IN_EMP_NO" readonly></td>
+      <td><input name="CFRC_OUT_EMP_NM"><input type="button" name="btnEmpInfo"></td><td><input name="DEPT_NM"></td></tr>
+  <tr class="generated"><td><input type="checkbox" name="supOrgChk1"></td><td><input name="CFRC_IN_EMP_NO" value="100002" readonly></td>
+      <td><input name="CFRC_OUT_EMP_NM" value="나"><input type="button" name="btnEmpInfo"></td><td><input name="DEPT_NM" value="가나다학과"></td></tr>
+</tbody></table>
+<input type="button" id="btnRowAdd2" value="행 추가" onclick="add()">
+<table id="rtaskTb2"><thead><tr><th></th><th>성명*</th><th>소속*</th></tr></thead><tbody>
+  <tr id="tpl" style="display:none"><td><input type="checkbox" name="supOrgChk2"></td><td><input name="CFRC_OUT_EMP_NM" class="text dynamic-input"></td>
+      <td><input name="DEPT_NM" class="text dynamic-input"></td></tr>
+  <tr class="generated"><td><input type="checkbox" name="supOrgChk2"></td><td><input name="CFRC_OUT_EMP_NM" class="text dynamic-input"></td>
+      <td><input name="DEPT_NM" class="text dynamic-input"></td></tr>
+</tbody></table>
+<script>
+window.adds = 0;
+function add() { window.adds++; const tr = document.getElementById('tpl').cloneNode(true); tr.removeAttribute('id'); tr.style.display = '';
+  tr.className = 'generated'; document.querySelector('#rtaskTb2 tbody').appendChild(tr);
+  const c = document.getElementById('OUT_COUNT'); c.value = String(parseInt(c.value || '0') + 1); }
+</script></body></html>"""
+
+
+def test_missing_inside_people_are_named_whichever_table_they_are_in():
+    inside = [participants.Attendee("가", kind="part", emp_no="100001"), participants.Attendee("나", org="가나다학과", kind="internal")]
+    on = [{"kind": "internal", "name": "나", "no": "100002"}]
+    left = card_erp._missing_inside(inside, on)
+    assert [p.name for p in left] == ["가"]
+    assert card_erp._inside_request(left) == "참여인력 [행 추가]: 가(100001)"
+    assert card_erp._missing_inside(inside, on + [{"kind": "internal", "name": "가 ", "no": ""}]) == []   # 내부참석자 표에 넣어도 든 것
+    assert "사람 찾기 창에서(여러 명을 한 번에): 나 · 가나다학과" in card_erp._inside_request(inside)
+
+
+def test_minutes_window_names_and_the_empty_external_row_in_a_browser():
+    sync_api = pytest.importorskip("playwright.sync_api")
+    executable = os.environ.get("CHROMIUM_PATH", "/opt/pw-browsers/chromium")
+    try:
+        with sync_api.sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=executable if os.path.exists(executable) else None)
+            page = browser.new_page()
+            page.set_content(MINUTES_WINDOW)
+            assert page.evaluate(card_erp.INSIDE_NAMES_JS) == [{"kind": "internal", "name": "나", "no": "100002"}]   # 숨은 본뜸 줄은 빼고
+            assert page.evaluate(card_erp.EXTERNAL_EMPTY_JS) == 1
+            people = [participants.Attendee("다", org="한림대학교", kind="external"), participants.Attendee("라", org="가나 주식회사", kind="external")]
+            added = card_erp._add_externals(page, people, lambda _m: None, lambda s: page.wait_for_timeout(int(s * 1000)))
+            assert added == 2 and page.evaluate("window.adds") == 1        # 처음부터 있던 빈 줄을 먼저 채우고 [행 추가] 는 한 번만
+            assert card_erp._external_names(page) == ["다", "라"]
+            assert page.evaluate(card_erp.EXTERNAL_EMPTY_JS) == 0
+            assert card_erp._add_externals(page, people[:1], lambda _m: None, lambda s: None) == 1 and page.evaluate("window.adds") == 1
+            browser.close()
+    except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
+        if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):
+            pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
+        raise
