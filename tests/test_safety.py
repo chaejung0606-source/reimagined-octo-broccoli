@@ -328,6 +328,28 @@ def test_card_presses_only_inquiry_payment_category_evidence_and_saves():
             assert word not in line, line
 
 
+def test_attendees_press_only_row_add_search_row_check_and_confirm():
+    """회의록등록 창의 참석자(claims/attendees.py, 실측 2026-11-11 · 담당자 허락 2026-10-20 의 카드청구 창들) — 누르는 것은 참여인력 · 내부참석자 [행 추가]
+    (그 창을 여는 것) · 두 사람 찾기 창의 [검색] · 하나로 정한 줄의 체크 · [확인](참여인력선택 #btnItem · 인적정보조회 글자 '확인') 뿐.
+    값을 넣는 칸은 두 창의 검색 칸뿐이고, '선택없음' · '외부인 등록' · 행 삭제 · 줄마다의 돋보기 · 회의록등록 [저장] 은 없다."""
+    from claim_downloader.claims import attendees
+    text = (SRC / "claims" / "attendees.py").read_text(encoding="utf-8")
+    assert text.count(".click(") == 1 and ".click()" in attendees.CHECK_ROW_JS and "if (!box.checked)" in attendees.CHECK_ROW_JS
+    assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", text)) == {"SEARCH_ID", "PART_CONFIRM_ID"}
+    assert re.findall(r"evaluate\(CLICK_TEXT_JS,\s*([A-Za-z_]+)\)", text) == ["CONFIRM_TEXT"] and attendees.CONFIRM_TEXT == "확인"
+    assert re.findall(r"open_popup\(minutes, minutes, ([a-z_]+),", text) == ["button"] and "assert button in ALLOWED_IDS" in text
+    assert attendees.ALLOWED_IDS == {"btnRowAdd", "btnRowAdd1", "btn_search", "btnItem"}
+    assert re.findall(r"evaluate\(SET_TEXT_JS,\s*\[([a-z_]+),", text) == ["field_id"]
+    assert {attendees.PART_FIELD_ID, attendees.MULTI_FIELD_ID} == {"EMP_NM", "SEARCH_NM"}
+    body = text.split("def _one(", 1)[1]
+    assert body.index("if index is None:") < body.index("_check(popup")            # 줄은 하나로 정한 뒤에만 체크
+    for word in ("btnRowDel", "btnEmpInfo", "#save", "MINUTES_SAVE", "set_input_files", ".fill(", ".type("):
+        assert word not in text, word
+    for line in text.splitlines():
+        if "evaluate(" in line:
+            assert "선택없음" not in line and "외부인" not in line, line
+
+
 def test_reattach_presses_only_row_radio_file_delete_and_reuses_attach_and_save():
     """첨부만 다시 올리기(claims/reattach.py, 담당자 2026-10-23 "네 삭제 눌러도 됩니다") — 누르는 것은 청구내역 줄의 ○(CUR_REQ 라디오)와
     첨부문서 목록(#fileList) 옆의 '삭제' 뿐이고, 첨부는 attach.upload · [저장] 은 form.save_draft 를 그대로 쓴다. 값 넣기 · 파일 넣기는 없다.

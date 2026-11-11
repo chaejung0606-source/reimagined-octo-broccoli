@@ -7,14 +7,14 @@
     → ERP 가 채운 사용일 · 청구액이 폴더와 같은지 → 비목(#PAY_EXP_CD — 청구구분보다 먼저, 담당자) → 청구구분 라디오
     → (90) 기타: 청구내역(#REQ_PTCL) = `NN_건명`
       (17) 회의비: 증빙 [신규등록] → 회의록등록 창에 회의록(.hwpx)의 시간(HH:MM) · 장소 · 목적 · 내용 · 외부참석자 → 창의 [저장]
-                   → ERP 가 채운 청구내역 앞에 `NN_`(공문의 비목). 참여인력 · 내부참석자는 사람 찾기 창이 미실측이라 **사람이** 넣고,
-                   앱은 두 표의 이름을 읽어 회의록의 사람이 다 들었는지 본다(실측 2026-11-11)
+                   → ERP 가 채운 청구내역 앞에 `NN_`(공문의 비목). 참여인력 · 내부참석자는 [행 추가] 의 사람 찾기 창에서 하나로 확실할 때만
+                   앱이 고르고(attendees.py, 실측 2026-11-11), 못 고른 사람은 노란 띠로 사람이. 다 들었는지는 두 표의 이름으로 본다
       (85) 소모성물품: [등록] 창이 미실측이라 **사람이** 물품 내역 · 물품검수 정보를 넣고 [계속] → 청구내역 앞에 `NN_`
     → 첨부(PDF · 그림) → 대표적요(#APPL_CONT) → 저장 전 검사 → [저장](form.save_draft) → 결의번호 · 줄이 늘었는지
 
 확실하지 않으면 그 자리에서 **사람에게 묻는다**(ask — 장학금과 같은 노란 띠). 누르는 것(담당자 허락 2026-10-20 "네 눌러도 됩니다"):
 [조회](#btn_cardList) · 결제 건 라디오 · 청구구분 라디오 · 증빙 [신규등록](#btn_addEvid2) · 회의록등록 창의 외부참석자 [행 추가](#btnRowAdd2) ·
-그 창의 [저장](#save) · 작성 화면 [저장] · 첨부(attach.py). [신청] · [삭제] · [초기화] · '새 청구서' · [카드매출전표] · '과제카드' 링크 ·
+(attendees.py 가) 참여인력 · 내부참석자 [행 추가] 와 그 사람 찾기 창의 [검색] · 줄 체크 · [확인] · 회의록등록 창의 [저장](#save) · 작성 화면 [저장] · 첨부(attach.py). [신청] · [삭제] · [초기화] · '새 청구서' · [카드매출전표] · '과제카드' 링크 ·
 [불러오기] · 회의록 출력 · 행 삭제는 누르지 않는다(tests/test_safety.py). 새 카드청구 화면은 session 이 결의서내역의 [카드청구](#P11)로 띄운다
 (navigate.open_card_sheet, 담당자 허락 2026-10-20) — 이 모듈은 그 화면 안에서만 누른다.
 
@@ -31,7 +31,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from . import attach, card, participants as part_mod
+from . import attach, attendees, card, participants as part_mod
 from .form import FRAME_VISIBLE_JS, SET_SELECT_JS, SET_TEXT_JS, read_state, save_draft
 from .payee import CLICK_ID_JS, ROWS_JS, open_popup, wait_closed, wait_until
 from .schema import CATEGORY_CODES, parse_amount
@@ -46,7 +46,7 @@ MINUTES_SAVE_ID = "save"                 # 회의록등록 창의 [저장]
 EXTERNAL_ADD_ID = "btnRowAdd2"           # 회의록등록 창의 외부참석자 [행 추가]
 ALLOWED_CLICK_IDS = frozenset({LIST_BUTTON_ID, MINUTES_BUTTON_ID, MINUTES_SAVE_ID, EXTERNAL_ADD_ID})
 # 절대 누르지 않는다 — 신청 · 지우기 · 다른 창(미실측) · 다른 증빙 불러오기
-FORBIDDEN_IDS = ("btn_addEvid", "btn_addEvid3", "btn_gridCard", "btnRowAdd", "btnRowAdd1", "btnRowDel", "btnRowDel1", "btnRowDel2",
+FORBIDDEN_IDS = ("btn_addEvid", "btn_addEvid3", "btn_gridCard", "btnRowDel", "btnRowDel1", "btnRowDel2",
                  "btnEmpInfo", "CALL_PRE_SFRC", "oz_report", "confirmBtn", "btn_addCheckDate", "btn_addUser", "btn_addRCVRUserNm",
                  "btnRcvr", "bgtAmtPU", "btnModApplCont")
 ATTACH_SUFFIXES = (".pdf", ".jpg", ".jpeg", ".png", ".gif", ".bmp")
@@ -259,8 +259,8 @@ def plan_item(item: card.CardItem, index: int, members: list[part_mod.Member] | 
             who = [p.label() for p in people if p.kind == kind]
             if who:
                 lines.append(f"  {part_mod.Attendee('', kind=kind).kind_name}: " + ", ".join(who)
-                             + {"external": " — 앱이 넣음", "part": " — 사람이 [행 추가] 로",
-                                  "internal": " — 사람이 [행 추가] 의 사람 찾기 창에서"}[kind])
+                             + {"external": " — 앱이 넣음", "part": " — 앱이 [행 추가] 창에서 고름(직번 · 이름이 하나일 때)",
+                                  "internal": " — 앱이 [행 추가] 창에서 고름(이름 · 소속이 하나일 때)"}[kind])
         lines.append(f"청구내역: ERP 가 회의록에서 채운 글 앞에 {item.line_code or '?'}_")
         if missing:
             result.review.append("회의록에서 못 읽음: " + " · ".join(missing))
@@ -880,14 +880,22 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
         if total_out and parse_amount(out_count) != total_out:
             _set(popup, "text", "OUT_COUNT", str(total_out))
 
-    # 참여인력 · 내부참석자 — 사람을 고르는 창(참여인력 [행 추가] · 내부참석자 [행 추가] 의 사람 찾기 창)이 미실측이라 사람이 넣는다.
-    # 앱은 두 표에 들어 있는 이름을 읽어(실측 2026-11-11) 회의록의 사람 가운데 아직 없는 사람만 이름으로 알리고, 다 들었는지 이름으로 본다.
-    inside = [p for p in people if p.kind in ("part", "internal")]
+        # 참여인력 · 내부참석자 — 두 표에 아직 없는 사람만, 그 [행 추가] 의 사람 찾기 창에서 하나로 확실할 때만 앱이 고른다(attendees, 실측 2026-11-11).
+        # 못 고른 사람은 아래 노란 띠에 이름과 까닭으로. 다 들었는지는 두 표의 이름으로 본다.
+        inside = [p for p in people if p.kind in ("part", "internal")]
+        reasons: dict[str, str] = {}
+        left = _missing_inside(inside, _inside_names(popup))
+        if left:
+            picked = attendees.add(popup, left, log, wait, lambda: [x["name"] for x in _inside_names(popup)])
+            result.lines += picked.lines
+            result.review += picked.review
+            reasons = picked.left
+            left = _missing_inside(inside, _inside_names(popup))
+
     weekend = s["WEEKEND"] in WEEKEND_WORDS
     asks = []
-    left = _missing_inside(inside, _inside_names(popup))
     if left:
-        asks.append(_inside_request(left))
+        asks.append(_inside_request(left, reasons))
     if weekend:
         asks.append(f"회의일이 {s['WEEKEND']} — 비고에 휴일 집행 사유")
     if missing:
@@ -986,9 +994,13 @@ def _missing_inside(inside: list[part_mod.Attendee], on: list[dict]) -> list[par
     return [p for p in inside if _squash(p.name) not in names]
 
 
-def _inside_request(left: list[part_mod.Attendee]) -> str:
-    parts = [p.label() for p in left if p.kind == "part"]
-    others = [p.label() + (f" ({p.note})" if p.note else "") for p in left if p.kind == "internal"]
+def _inside_request(left: list[part_mod.Attendee], reasons: dict[str, str] | None = None) -> str:
+    def label(p: part_mod.Attendee) -> str:
+        why = (reasons or {}).get(p.name) or p.note
+        return p.label() + (f" ({why})" if why else "")
+
+    parts = [label(p) for p in left if p.kind == "part"]
+    others = [label(p) for p in left if p.kind == "internal"]
     out = []
     if parts:
         out.append("참여인력 [행 추가]: " + ", ".join(parts))

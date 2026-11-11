@@ -12,7 +12,7 @@ import os
 import openpyxl
 import pytest
 
-from claim_downloader.claims import card, card_erp, participants
+from claim_downloader.claims import attendees, card, card_erp, participants
 from claim_downloader.claims.form import STATE_JS
 from claim_downloader.minutes.docx import build_docx
 from claim_downloader.minutes.hwpx import build_hwpx
@@ -127,7 +127,7 @@ def test_plan_shows_who_the_app_types_and_who_the_person_adds(tmp_path):
     plan = card_erp.plan_item(item, 0, [participants.Member("가", "100001")])
     text = "\n".join(plan.lines)
     assert "회의록등록: 11:00~12:00 · 장소 사업단 회의실" in text
-    assert "참여인력: 가(100001)" in text and "내부참석자: 나 · 가나다학과 — 사람이 [행 추가] 의 사람 찾기 창에서" in text
+    assert "참여인력: 가(100001)" in text and "내부참석자: 나 · 가나다학과 — 앱이 [행 추가] 창에서 고름(이름 · 소속이 하나일 때)" in text
     assert "외부참석자: 다 · 한림대학교 — 앱이 넣음" in text and "09_" in text
     assert card_erp.attachments(item)[0].endswith("회의비 지출 공문.pdf")          # 공문이 맨 앞, PDF · 그림만
     assert {os.path.basename(p) for p in card_erp.attachments(item)} == {"회의비 지출 공문.pdf", "0915 영수증.pdf", "사진.jpg"}
@@ -294,6 +294,130 @@ def test_minutes_window_names_and_the_empty_external_row_in_a_browser():
             assert card_erp._external_names(page) == ["다", "라"]
             assert page.evaluate(card_erp.EXTERNAL_EMPTY_JS) == 0
             assert card_erp._add_externals(page, people[:1], lambda _m: None, lambda s: None) == 1 and page.evaluate("window.adds") == 1
+            browser.close()
+    except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
+        if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):
+            pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
+        raise
+
+
+# ── 사람 찾기 창 두 개 (실측 2026-11-11 14:03 ~ 14:06 의 모양 — 이름 · 번호는 가짜) ─────────────────────────────
+def test_choose_part_needs_one_row_and_the_same_emp_no():
+    rows = [{"k_EMP_NO": "100001", "k_EMP_NM": "가"}, {"k_EMP_NO": "100002", "k_EMP_NM": "나"}, {"k_EMP_NO": "100003", "k_EMP_NM": "나"}]
+    assert attendees.choose_part(rows, participants.Attendee("가", kind="part", emp_no="100001"))[0] == 0
+    assert attendees.choose_part(rows, participants.Attendee("가", kind="part", emp_no="999999"))[0] is None
+    assert attendees.choose_part(rows, participants.Attendee("나", kind="part"))[1] == "같은 이름이 2줄"
+    assert attendees.choose_part(rows, participants.Attendee("다", kind="part"))[1] == attendees.NOT_LISTED
+
+
+def test_choose_person_uses_org_then_active_status_and_never_a_lone_inactive_row():
+    def row(no, name, sts, dept, up=""):
+        return {"k_EMP_NO": no, "k_EMP_NM": name, "k_WORK_STS_NM": sts, "k_DEPT_NM": dept, "k_UP_DEPT_NM": up}
+
+    rows = [row("19910001", "라", "제적", "가나다학과_1991"), row("200001", "라", "재직(직원)", "산학협력단_근로계약자", "산학협력단"),
+            row("202400001", "라", "재학(학생)", "마바사학과", "공과대학")]
+    index, why, by_name = attendees.choose_person(rows, participants.Attendee("라", org="마바사학과", kind="internal"))
+    assert index == 2 and not by_name                                         # 소속이 맞는 사람 하나
+    assert attendees.choose_person(rows, participants.Attendee("라", org="강원대학교", kind="internal"))[0] is None   # 재직 · 재학 둘
+    assert attendees.choose_person(rows[:1], participants.Attendee("라", kind="internal"))[0] is None                # 제적 하나뿐 — 안 고른다
+    index, why, by_name = attendees.choose_person(rows[:2], participants.Attendee("라", kind="internal"))
+    assert index == 1 and by_name                                                                                   # 이름으로만 — 확인할 것
+    assert attendees.choose_person(rows, participants.Attendee("라", org="자차카학과", kind="internal"))[0] is None
+    assert attendees.choose_person(rows, participants.Attendee("라", kind="part", emp_no="200001"))[0] == 1          # 직번으로 찾은 것
+
+
+PART_WINDOW = """<html><body>
+<input id="EMP_NM"><input type="button" id="btn_search" value="검색" onclick="search()">
+<div class="jgrid-viewport" style="height:300px;overflow:auto"><div id="grid"></div></div>
+<a id="btnItem" href="javascript:" onclick="ok()">확인</a> <a href="javascript:" style="display:none">선택없음</a>
+<input type="hidden" id="RTN_FUNC" value="uf_rcomm_0071_02Params"><input type="hidden" id="CHK_GB" value="2">
+<script>
+const all = [['100001', '가', '가나다학과'], ['100002', '나', '가나다학과'], ['100004', '바', '산학협력단']];
+let shown = all;
+function draw() { document.getElementById('grid').innerHTML = shown.map((p, i) =>
+  '<div class="jgrid-row" r="' + i + '"><input type="checkbox" class="checkmg"><span class="k_EMP_NO" title="' + p[0] + '">' + p[0] +
+  '</span> <span class="k_EMP_NM">' + p[1] + '</span> <span class="k_BLNG_DEPT_NM">' + p[2] + '</span></div>').join(''); }
+function search() { const q = document.getElementById('EMP_NM').value.trim(); shown = all.filter(p => !q || p[1] === q); setTimeout(draw, 100); }
+function ok() { const picked = Array.from(document.querySelectorAll('.jgrid-row')).filter(r => r.querySelector('input').checked)
+    .map(r => shown[+r.getAttribute('r')]);
+  if (!picked.length) { alert('선택된 내역이 없습니다.'); return; } window.opener.addPart(picked); window.close(); }
+draw();
+</script></body></html>"""
+
+MULTI_WINDOW = """<html><body>
+<input id="SEARCH_NM" value=""><input type="button" id="btn_search" value="검색" onclick="search()">
+<div class="jgrid-viewport" style="height:300px;overflow:auto"><div id="grid"></div></div>
+<table id="basket"><tr><th>성명*</th><th>소속*</th></tr></table>
+<a href="#none" onclick="ok()">확인</a> <a href="#none" style="display:none">선택없음</a> <a href="#none" style="display:none">외부인 등록</a>
+<input type="hidden" id="RTN_FUNC" value="uf_rcomm_0008_04Params_multi"><input type="hidden" id="RTN_TYPE" value="M">
+<script>
+const all = [['19910001', '라', '제적', '가나다학과_1991'], ['200001', '라', '재직(직원)', '산학협력단_근로계약자'],
+             ['202400001', '라', '재학(학생)', '마바사학과'], ['100009', '마', '재직(직원)', '가나다학과'], ['300001', '사', '졸업', '아자학과']];
+let shown = [];
+function draw() { document.getElementById('grid').innerHTML = shown.map((p, i) =>
+  '<div class="jgrid-row" r="' + i + '"><input type="checkbox" class="checkmg" onclick="pick(' + i + ', this)"><span class="k_EMP_NO">' + p[0] +
+  '</span> <span class="k_EMP_NM">' + p[1] + '</span> <span class="k_WORK_STS_NM">' + p[2] + '</span> <span class="k_DEPT_NM">' + p[3] + '</span></div>').join(''); }
+function search() { const q = document.getElementById('SEARCH_NM').value.trim(); shown = all.filter(p => p[1] === q || p[0] === q); setTimeout(draw, 100); }
+function pick(i, box) { if (!box.checked) return; const p = shown[i];
+  setTimeout(() => { const tr = document.createElement('tr');   // 고른 사람 표에는 조금 뒤에 쌓인다(실측)
+    tr.innerHTML = '<td>' + p[1] + '<input type="hidden" name="CFRC_IN_EMP_NO" value="' + p[0] + '"></td><td>' + p[3] + '</td>';
+    document.getElementById('basket').appendChild(tr); }, 300); }
+function ok() { const picked = Array.from(document.querySelectorAll('input[name=CFRC_IN_EMP_NO]')).map(e => all.find(p => p[0] === e.value));
+  window.opener.addInternal(picked); window.close(); }
+draw();
+</script></body></html>"""
+
+FINDER_BUTTONS = (
+    "<input type='button' id='btnRowAdd' value='행 추가' onclick=\"window.open('http://erp.test/part', 'part', 'width=700,height=500')\">\n"
+    "<input type='button' id='btnRowAdd1' value='행 추가' onclick=\"window.open('http://erp.test/multi', 'multi', 'width=700,height=500')\">\n")
+ADD_ROWS_JS = """
+function addPart(list) { for (const p of list) { const tr = document.createElement('tr'); tr.className = 'generated';
+  tr.innerHTML = '<td><input type="checkbox" name="supOrgChk"></td><td><input name="CFRC_IN_EMP_NO" value="' + p[0] + '" readonly></td>' +
+    '<td><input name="CFRC_IN_EMP_NM" value="' + p[1] + '" readonly></td><td><input name="DEPT_NM" value="' + p[2] + '"></td>';
+  document.querySelector('#rtaskTb tbody').appendChild(tr); } }
+function addInternal(list) { for (const p of list) { const tr = document.createElement('tr'); tr.className = 'generated';
+  tr.innerHTML = '<td><input type="checkbox" name="supOrgChk1"></td><td><input name="CFRC_IN_EMP_NO" value="' + p[0] + '" readonly></td>' +
+    '<td><input name="CFRC_OUT_EMP_NM" value="' + p[1] + '"><input type="button" name="btnEmpInfo"></td><td><input name="DEPT_NM" value="' + p[3] + '"></td>';
+  document.querySelector('#rtaskTb1 tbody').appendChild(tr); } }
+</script></body></html>"""
+MINUTES_WITH_FINDERS = (MINUTES_WINDOW.replace('<input type="button" id="btnRowAdd2"', FINDER_BUTTONS + '<input type="button" id="btnRowAdd2"', 1)
+                        .replace("</script></body></html>", ADD_ROWS_JS))
+
+
+def test_attendees_are_picked_in_the_two_finder_windows_only_when_certain():
+    sync_api = pytest.importorskip("playwright.sync_api")
+    executable = os.environ.get("CHROMIUM_PATH", "/opt/pw-browsers/chromium")
+    pages = {"http://erp.test/minutes": MINUTES_WITH_FINDERS, "http://erp.test/part": PART_WINDOW, "http://erp.test/multi": MULTI_WINDOW}
+    try:
+        with sync_api.sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=executable if os.path.exists(executable) else None)
+            context = browser.new_context()
+            context.route("http://erp.test/**", lambda route: route.fulfill(status=200, content_type="text/html; charset=utf-8",
+                                                                            body=pages[route.request.url]))
+            context.on("dialog", lambda d: d.dismiss())
+            minutes = context.new_page()
+            minutes.goto("http://erp.test/minutes")
+            people = [participants.Attendee("가", "가나다학과", "part", "100001"),       # 참여인력 목록에서 직번 · 이름
+                      participants.Attendee("라", "마바사학과", "internal"),              # 같은 이름 셋 중 소속이 맞는 하나
+                      participants.Attendee("마", "", "part", "100009"),                 # 참여인력 목록에 없음 → 인적정보에서 직번으로
+                      participants.Attendee("사", "", "internal"),                       # 졸업 하나뿐 — 안 고른다
+                      participants.Attendee("자", "", "internal", note="참여연구원 명단에 같은 이름이 2명")]
+            wait = lambda s: minutes.wait_for_timeout(int(s * 1000))  # noqa: E731
+            lines: list[str] = []
+            names = lambda: [x["name"] for x in card_erp._inside_names(minutes)]  # noqa: E731
+            report = attendees.add(minutes, people, lines.append, wait, names)
+            assert report.added == ["가", "라", "마"]
+            assert set(report.left) == {"사", "자"} and "재직 · 재학이 아님" in report.left["사"]
+            assert lines and not any(n in line for line in lines for n in ("100001", "100009", "202400001", "마바사학과"))   # 기록에 사번 · 소속 없음
+            assert all("번째 사람" in line for line in lines if "✓" in line or "✗" in line)                               # 사람은 차례로만
+            assert any("마: 참여인력 목록에 없어 내부참석자로" in r for r in report.review)
+            on = card_erp._inside_names(minutes)
+            assert [(x["kind"], x["name"], x["no"]) for x in on] == [("part", "가", "100001"), ("internal", "나", "100002"),
+                                                                        ("internal", "라", "202400001"), ("internal", "마", "100009")]
+            assert len(context.pages) == 1                             # 못 고른 사람의 창도 닫았다
+            left = card_erp._missing_inside(people[:4], on)
+            assert [x.name for x in left] == ["사"]
+            assert "사 (같은 이름 1명이 모두 재직 · 재학이 아님" in card_erp._inside_request(left, report.left)
             browser.close()
     except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
         if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):
