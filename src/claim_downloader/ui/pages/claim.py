@@ -927,7 +927,7 @@ class ClaimPage(QWidget):
         """폴더를 여러 개 골라 넣는다 — Ctrl · Shift 로 여러 개(담당자 2026-11-11 "폴더 여러개 선택가능하도록")."""
         if self._erp_running or not self._kind_ready():
             return
-        title = ("카드 결제 기간 폴더 고르기 — Ctrl · Shift 로 여러 개" if self.add_kind.currentData() == kinds.CARD
+        title = ("카드 청구서 폴더 고르기 — 기간 폴더 안의 '03_[비목명] …' 폴더, Ctrl · Shift 로 여러 개" if self.add_kind.currentData() == kinds.CARD
                  else "지출 자료가 들어 있는 폴더 고르기 — Ctrl · Shift 로 여러 개")
         for path in folder_picker.pick_folders(self, title, self._start_dir()):
             self.add_folder(path)
@@ -1132,7 +1132,7 @@ class ClaimPage(QWidget):
             return
         sheet = job.sheets[index]
         left = [i for i in sheet.items if i.status != "saved"]
-        hard = ([] if sheet.code else ["이 청구서의 비목을 모릅니다 — 결제 건 폴더 이름 앞에 비목명을 적으세요"]) + \
+        hard = ([] if sheet.code else ["이 청구서의 비목을 모릅니다 — 청구서 폴더 이름을 '03_[비목명] …' 처럼 비목 번호로 시작하게 하세요"]) + \
                [f"{i.name}: " + " · ".join(i.blocking()) for i in left if i.blocking()]
         if hard:
             QMessageBox.warning(self, "넣기 전에 고칠 것", "\n".join("· " + p for p in hard) + "\n\n고친 뒤 [다시 읽기] 를 누르세요.")

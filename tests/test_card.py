@@ -153,6 +153,66 @@ def test_claim_kind_number_wins_over_files(tmp_path):
     assert twin.req_div == "90" and any("(87) · (99)" in n for n in twin.notes)       # 못 정하면 전처럼 파일로(기타)
 
 
+CLAIM_03 = "03_[교육연구프로그램개발운영비] 카드 결제 건(26.10.09.~26.11.08.)"
+CLAIM_05 = "05_[실험실습기가재구입운영비] 카드 결제 건(26.10.09.~26.11.08.)"     # 담당자 폴더 그대로(비목 이름에 오타)
+CLAIM_07 = "07_[기업지원협력활동비] 2026학년도 2학기 WE-Meet 회의비 1차 지원 (10.09~10.27.)"
+
+
+def test_claim_folder_name_is_the_summary():
+    """담당자 2026-11-11 — 기간 폴더 안에 청구서 폴더(이름 = 대표적요), 그 안에 'MMDD_(NN)_건명' 결제 건 폴더."""
+    assert card.claim_name(CLAIM_03).code == "03" and not card.claim_name(CLAIM_03).note
+    typo = card.claim_name(CLAIM_05)
+    assert typo.code == "05" and "실험실습장비및기자재구입운영비" in typo.note and "오타" in typo.note
+    assert card.claim_name("03_[기타운영경비] 카드 결제 건").note.startswith("대표적요의 번호 03 와")
+    assert card.claim_name("기타운영경비 0915 회의") is None and card.claim_name("99_[없는비목] x") is None
+    parent = (D(2026, 10, 9), D(2026, 11, 8))
+    assert card.claim_period(CLAIM_03, parent) == parent
+    assert card.claim_period(CLAIM_07, parent) == (D(2026, 10, 9), D(2026, 10, 27))      # 해가 없는 기간은 위 기간 폴더의 해
+    assert card.claim_period("09_[그밖의사업운영경비] 회의비", parent) == parent
+    assert card.claim_period("09_[그밖의사업운영경비] (01.02~01.20.)", (D(2026, 12, 9), D(2027, 1, 8))) == (D(2027, 1, 2), D(2027, 1, 20))
+    # 결제 건 폴더 'MMDD_(NN)_건명'
+    got = card.parse_item_name("1021_(97)_ACK 2026 등록비", parent)
+    assert (got.code, got.used, got.req_div, got.title) == ("", D(2026, 10, 21), "97", "ACK 2026 등록비")
+    got = card.parse_item_name("261012_(17)_안전한지피유", parent)                 # 사용일을 YYMMDD 로(담당자 폴더)
+    assert (got.used, got.req_div, got.title) == (D(2026, 10, 12), "17", "안전한지피유")
+    assert card.parse_item_name("20261027_(17)_엑시업제로", parent).used == D(2026, 10, 27)
+    assert card.parse_item_name("261399_(17)_x", parent).mmdd is None                # 없는 날짜는 결제 건 폴더가 아님
+    got = card.parse_item_name("1107_(90)_콘텐트 최신화 클로드 결제(1월분) 33,000원", parent)
+    assert (got.used, got.req_div, got.title, got.amount) == (D(2026, 11, 7), "90", "콘텐트 최신화 클로드 결제(1월분)", 33000)
+
+
+def test_claim_folders_become_one_sheet_each(tmp_path):
+    period = tmp_path / "26-10(10.09. ~ 11.08.)"
+    touch(period / CLAIM_03 / "1021_(97)_ACK 2026 등록비" / "1021 영수증.pdf")
+    touch(period / CLAIM_03 / "1107_(90)_클로드 결제" / "결제.pdf")
+    touch(period / CLAIM_03 / "공문.pdf")                                         # 청구서 폴더 바로 아래 파일은 붙지 않는다
+    touch(period / CLAIM_05 / "1015_(85)_소모품" / "결제.pdf")
+    touch(period / CLAIM_07 / "261020_(17)_군집방패" / "결제.pdf")                 # 담당자 폴더 그대로 'YYMMDD_(NN)_건명'
+    touch(period / CLAIM_07 / "261012_(17)_안전한지피유" / "결제.pdf")
+    touch(period / CLAIM_07 / "2026학년도 2학기 WE-Meet 회의비 1차 지원 (10.7~10.27.).pdf")   # 큰 폴더의 공문 · 엑셀은 보지 않는다
+    (period / CLAIM_07 / "메모").mkdir()
+    texts = {"1021 영수증.pdf": "카드 영수증\n결제금액 150,000원\n2026-10-21"}
+    # 기간 폴더를 고르면 청구서 폴더마다 청구서 하나
+    job = card.load_job(str(period), read_text=reader(texts))
+    assert [s.main_summary for s in job.sheets] == [CLAIM_03, CLAIM_05, CLAIM_07]
+    first = job.sheets[0]
+    assert [(i.code, i.used, i.req_div, i.title) for i in first.items] == [
+        ("03", D(2026, 10, 21), "97", "ACK 2026 등록비"), ("03", D(2026, 11, 7), "90", "클로드 결제")]
+    assert first.items[0].amount == 150000 and first.items[1].summary == "03_클로드 결제"
+    assert (job.sheets[2].start, job.sheets[2].end) == (D(2026, 10, 9), D(2026, 10, 27))
+    assert [(i.used, i.req_div, i.title) for i in job.sheets[2].items] == [
+        (D(2026, 10, 12), "17", "안전한지피유"), (D(2026, 10, 20), "17", "군집방패")]
+    assert not any(".pdf" in s for s in job.skipped) and any("메모" in s for s in job.skipped)   # 파일은 말없이 넘김 · 이름이 다른 폴더는 알림
+    assert any("오타" in n for n in job.problems())                              # 05 폴더 이름의 비목 이름
+    # 청구서 폴더 하나를 고르면 그 청구서 하나 — 대표적요는 폴더 이름 그대로
+    one = card.load_job(str(period / CLAIM_07), read_text=reader(texts))
+    assert [s.main_summary for s in one.sheets] == [CLAIM_07] and (one.start, one.end) == (D(2026, 10, 9), D(2026, 10, 27))
+    assert [i.code for i in one.items] == ["07", "07"] and one.items[0].req_div == "17"
+    from claim_downloader.claims import card_erp
+    assert card_erp.main_summary(one.sheets[0], test_mode=True) == "[시험] " + CLAIM_07
+    assert card_erp.sheet_key(one, one.sheets[0]) == card_erp.sheet_key(job, job.sheets[2])   # 어느 쪽으로 넣어도 같은 기록
+
+
 def test_category_folder_is_strict():
     assert card.is_category_folder("기타운영경비")
     assert card.is_category_folder("09_기타운영경비")

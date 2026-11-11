@@ -56,6 +56,8 @@ TAG_RE = re.compile(r"[\[(（]\s*([^\])）]{1,12}?)\s*[\])）]")
 DIV_TOKEN_RE = re.compile(r"^\(?(\d{2,3})\)?(.*)$")
 AMOUNT_IN_NAME_RE = re.compile(r"(?<![\d,])(\d{1,3}(?:,\d{3})+|\d+)\s*원")
 # 사용일 — '0915' · '09.15' · '9.15'. 뒤에 '원' 이 오면 금액이다
+# 결제 건 폴더 이름 맨 앞의 해가 든 사용일 — '261012_(17)_안전한지피유'(YYMMDD, 담당자 2026-11-11) · '20261012_…'
+FULL_DATE_IN_NAME_RE = re.compile(r"^\s*(?:20)?(\d{2})(\d{2})(\d{2})(?=$|[\s_\-(])")
 DATE_IN_NAME_RE = re.compile(r"(?<![\d,.])(\d{1,2})\.?(\d{2})(?![\d,]|\s*원)")
 CODE_PREFIX_RE = re.compile(r"^\s*(\d{2})\s*(?:_|\.(?=\s*[가-힣])|\s+(?=[가-힣]))\s*")
 
@@ -66,6 +68,10 @@ PERIOD_DOTS_RE = re.compile(          # 26.09.09. ~ 10.08. · 26.09.09.~26.10.08
     r"(?P<yy>\d{4}|\d{2})\s*\.\s*(?P<m1>\d{1,2})\s*\.\s*(?P<d1>\d{1,2})\s*\.?\s*[~∼]\s*"
     r"(?:(?P<yy2>\d{4}|\d{2})\s*\.\s*)?(?P<m2>\d{1,2})\s*\.\s*(?P<d2>\d{1,2})\s*\.?")
 PERIOD_MONTH_RE = re.compile(r"^\s*(?P<yy>\d{4}|\d{2})\s*-\s*(?P<ym>\d{1,2})\s*(?:카드.*)?$")     # '26-09' 만
+# 청구서 폴더 — 이름이 대표적요 그대로(담당자 2026-11-11): '03_[교육연구프로그램개발운영비] 카드 결제 건(26.10.09.~26.11.08.)' ·
+# '07_[기업지원협력활동비] 2026학년도 2학기 WE-Meet 회의비 1차 지원 (10.09~10.27.)'. 그 안이 결제 건 폴더 'YYMMDD_(NN)_건명'.
+CLAIM_NAME_RE = re.compile(r"^\s*(\d{2})\s*[_.]\s*\[([^\]]{2,40})\]\s*\S")
+PERIOD_SHORT_RE = re.compile(r"\(\s*(\d{1,2})\s*\.\s*(\d{1,2})\s*\.?\s*[~∼-]\s*(\d{1,2})\s*\.\s*(\d{1,2})\s*\.?\s*\)")   # (10.09~10.27.)
 
 RECEIPT_NAME_WORDS = ("영수증", "매출전표", "전표", "카드", "결제", "receipt", "invoice")
 RECEIPT_TEXT_WORDS = ("승인번호", "카드번호", "가맹점", "결제금액", "승인금액", "매출전표", "영수증")
@@ -133,6 +139,51 @@ def parse_period(name: str) -> tuple[dt.date, dt.date] | None:
         end = _date(year + (month == 12), month % 12 + 1, START_DAY - 1)
         return (start, end) if start and end else None
     return None
+
+
+@dataclass
+class ClaimName:
+    code: str
+    bracket: str          # 대괄호 안 비목 이름(폴더에 적힌 그대로)
+    note: str = ""        # 대괄호 안 이름이 번호의 비목과 다르면
+
+
+def claim_name(name: str) -> ClaimName | None:
+    """청구서 폴더 이름(= 대표적요) '03_[비목명] …' → 비목 번호. 청구서 폴더가 아니면 None.
+    대괄호 안 이름이 번호와 다른 비목이거나 읽히지 않으면(오타 등) 알린다 — 폴더 이름이 그대로 ERP 대표적요가 된다."""
+    hit = CLAIM_NAME_RE.match(name or "")
+    if not hit or hit.group(1) not in CATEGORY_CODES:
+        return None
+    code, bracket = hit.group(1), hit.group(2).strip()
+    named = category_code(bracket)
+    if not named:
+        found = notice_mod.categories_in(bracket)
+        named = found[0] if len(found) == 1 else ""
+    note = ""
+    if named != code:
+        known = category_short(code)
+        note = (f"대표적요의 [{bracket}] 가 {code} 비목 이름({known})과 다름 — 폴더 이름이 그대로 ERP 대표적요가 되니 오타인지 확인"
+                if not named else f"대표적요의 번호 {code} 와 [{bracket}]({named}) 의 비목이 다름 — 폴더 이름을 확인")
+    return ClaimName(code, bracket, note)
+
+
+def claim_period(name: str, parent: tuple[dt.date, dt.date] | None = None) -> tuple[dt.date, dt.date] | None:
+    """청구서 폴더의 기간 — '(26.10.09.~26.11.08.)', 해가 없는 '(10.09~10.27.)' 는 위 기간 폴더의 해로. 없으면 위 기간 폴더의 기간."""
+    full = parse_period(name)
+    if full:
+        return full
+    hit = PERIOD_SHORT_RE.search(name or "")
+    if hit:
+        m1, d1, m2, d2 = (int(g) for g in hit.groups())
+        year = parent[0].year if parent else dt.date.today().year
+        start = _date(year, m1, d1)
+        if start and parent and (parent[0] - start).days > 60:
+            start = _date(year + 1, m1, d1)               # 위 기간이 12월이고 이 청구서가 1월인 때
+        if start:
+            end = _date(start.year + (1 if (m2, d2) < (m1, d1) else 0), m2, d2)
+            if end and start <= end:
+                return start, end
+    return parent
 
 
 def period_text(start: dt.date, end: dt.date) -> str:
@@ -243,8 +294,8 @@ def _split_div(head: str) -> tuple[str, str, str, str]:
 
 
 def parse_item_name(name: str, period: tuple[dt.date, dt.date] | None = None) -> ItemName:
-    """결제 건 폴더 이름 '<비목명> [청구종류] MMDD <건명> [금액원] [회의비]' 을 나눈다. 사용일 해는 기간에서 정한다.
-    청구종류는 비목명 바로 뒤에 적는다(담당자 2026-11-11) — '교육연구프로그램개발운영비 회의비 1015 사업단 운영회의'."""
+    """결제 건 폴더 이름을 나눈다. 지금 꼴(담당자 2026-11-11)은 'YYMMDD_(NN)_건명' — '261012_(17)_안전한지피유'(비목은 청구서 폴더의 것).
+    옛 꼴 '<비목명> [청구종류] MMDD <건명> [금액원] [회의비]' 도 읽는다 — 그때 사용일 해는 기간에서 정한다."""
     out = ItemName()
     rest = name
     for hit in list(TAG_RE.finditer(rest)):
@@ -259,6 +310,13 @@ def parse_item_name(name: str, period: tuple[dt.date, dt.date] | None = None) ->
     if amount:
         out.amount = parse_amount(amount.group(1))
         rest = rest[:amount.start()] + " " + rest[amount.end():]
+    full = FULL_DATE_IN_NAME_RE.match(rest)
+    used = _date(2000 + int(full.group(1)), int(full.group(2)), int(full.group(3))) if full else None
+    if used:
+        out.mmdd = (used.month, used.day)
+        out.used = used
+        out.title = re.sub(r"\s+", " ", rest[full.end():]).strip(" _-")
+        return out
     date_hit = _item_date(rest)
     if date_hit:
         out.mmdd = (int(date_hit.group(1)), int(date_hit.group(2)))
@@ -700,6 +758,8 @@ class CardSheet:
     items: list[CardItem] = field(default_factory=list)
     req_cnt: str = ""              # 넣은 ERP 청구서의 결의번호(첫 [저장] 뒤) — 이어 넣을 때 같은 청구서인지 본다
     test_req_cnt: str = ""         # [시험] 으로 넣은 청구서의 결의번호 — 진짜 것과 섞지 않는다
+    title: str = ""                # 청구서 폴더 이름 — 있으면 그대로 대표적요(담당자 2026-11-11)
+    folder: str = ""               # 청구서 폴더(있을 때)
 
     @property
     def category(self) -> str:
@@ -707,7 +767,7 @@ class CardSheet:
 
     @property
     def main_summary(self) -> str:
-        return main_summary(self.code, self.start, self.end)
+        return self.title or main_summary(self.code, self.start, self.end)
 
     @property
     def total(self) -> int:
@@ -738,14 +798,14 @@ class CardJob:
     def problems(self) -> list[str]:
         out = []
         if not self.start:
-            out.append("기간 폴더 이름에서 결제 기간을 읽지 못함 — 이름을 '26-09(09.09. ~ 10.08.)' 처럼")
+            out.append("결제 기간을 읽지 못함 — 청구서 폴더 이름 끝에 '(26.10.09.~26.11.08.)' 처럼, 또는 기간 폴더 '26-10(10.09. ~ 11.08.)' 안에")
         if not self.items:
-            out.append("결제 건 폴더가 없음 — '<비목명> MMDD <건명>' 폴더를 기간 폴더 안에")
+            out.append("결제 건 폴더가 없음 — 청구서 폴더 안에 카드 사용 건마다 'YYMMDD_(NN)_건명' 폴더(NN = 청구종류 번호)")
         for item in self.items:
             missing = item.blocking()
             if missing:
                 out.append(f"{item.name}: " + " · ".join(missing))
-        return out
+        return out + self.notes        # 청구서 폴더 이름(대표적요)의 비목 이름 오타 등 — 넣기를 막지는 않는다
 
     def summary_lines(self) -> list[str]:
         if not self.start:
@@ -891,13 +951,28 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
 
 
 def load_job(folder: str, read_text=pdf_text) -> CardJob:
-    """결제 기간 폴더 → 비목마다 청구서 · 결제 건. 비목 이름만 있는 하위 폴더는 그 아래를 결제 건으로 본다."""
+    """카드 폴더 → 비목마다 청구서 · 결제 건.
+
+    - **청구서 폴더**(담당자 2026-11-11): 이름이 대표적요 그대로인 '03_[비목명] 카드 결제 건(26.10.09.~26.11.08.)' — 그 폴더 하나가 청구서 하나,
+      안의 'YYMMDD_(NN)_건명' 폴더가 결제 건(NN = 청구종류 번호, 'MMDD_…' 도). 청구서 폴더 바로 아래 파일은 보지 않는다. 결제 기간 폴더를 고르면 그 안의 청구서 폴더마다 청구서 하나.
+    - 옛 모양: 결제 기간 폴더 안의 '<비목명> MMDD <건명>' 결제 건 폴더 · 비목 이름만 있는 폴더 — 비목마다 청구서 하나로 모은다.
+    """
     folder = os.path.normpath(folder)
     job = CardJob(folder=folder)
-    period = parse_period(os.path.basename(folder))
+    name = os.path.basename(folder)
+    parent = parse_period(os.path.basename(os.path.dirname(folder)))
+    own = claim_name(name)
+    if own is not None:
+        period = claim_period(name, parent)
+        if period:
+            job.start, job.end = period
+        job.sheets = [_claim_sheet(folder, own, period, job, read_text)]
+        return job
+    period = parse_period(name)
     if period:
         job.start, job.end = period
     items: list[CardItem] = []
+    claims: list[CardSheet] = []
     try:
         names = sorted(os.listdir(folder))
     except OSError:
@@ -910,7 +985,10 @@ def load_job(folder: str, read_text=pdf_text) -> CardJob:
         if not os.path.isdir(path):
             job.skipped.append(f"{name} (기간 폴더 바로 아래 파일 — 결제 건 폴더에 넣어야 붙습니다)")
             continue
-        if parse_item_name(name, period).mmdd:
+        sub_claim = claim_name(name)
+        if sub_claim is not None:
+            claims.append(_claim_sheet(path, sub_claim, claim_period(name, period), job, read_text, prefix=name + "\\"))
+        elif parse_item_name(name, period).mmdd:
             items.append(read_item(path, period, read_text=read_text))
         elif is_category_folder(name):
             code = _category_of(name)
@@ -926,8 +1004,44 @@ def load_job(folder: str, read_text=pdf_text) -> CardJob:
     for item in sorted(items, key=lambda i: (i.used or dt.date.max, i.name)):
         sheet = by_code.setdefault(item.code, CardSheet(item.code, job.start, job.end))
         sheet.items.append(item)
-    job.sheets = sorted(by_code.values(), key=lambda s: s.code or "99")
+    job.sheets = sorted(by_code.values(), key=lambda s: s.code or "99") + claims
+    if claims and not job.start:
+        firsts = [s for s in claims if s.start]
+        if firsts:
+            job.start, job.end = min(s.start for s in firsts), max(s.end for s in firsts)
     return job
+
+
+def _claim_sheet(folder: str, claim: ClaimName, period, job: CardJob, read_text, prefix: str = "") -> CardSheet:
+    """청구서 폴더 하나 → 청구서 하나. 안의 'YYMMDD_(NN)_건명' 폴더가 결제 건(카드 사용 건마다 하나)이고, 비목은 청구서 폴더의 것."""
+    title = os.path.basename(os.path.normpath(folder)).strip()
+    sheet = CardSheet(claim.code, *(period or (None, None)), title=title, folder=folder)
+    if claim.note:
+        job.notes.append((prefix and f"{title}: ") + claim.note)
+    items: list[CardItem] = []
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:
+        job.notes.append(f"{title}: 폴더를 열지 못함")
+        return sheet
+    for name in names:
+        path = os.path.join(folder, name)
+        if name.startswith((".", "~$")) or name == "Thumbs.db":
+            continue
+        if not os.path.isdir(path):
+            continue        # 청구서 폴더 바로 아래 파일(공문 · 신청 엑셀 …)은 보지 않는다 — 증빙은 카드 사용 건 폴더마다(담당자 2026-11-11)
+        if not parse_item_name(name, period).mmdd:
+            job.skipped.append(f"{prefix}{name} (이름이 '사용일_(청구종류 번호)_건명' 꼴이 아님 — 예 '261012_(17)_회의')")
+            continue
+        item = read_item(path, period, code_hint=claim.code, read_text=read_text)
+        if item.code != claim.code:
+            if item.code:
+                item.notes.append(f"결제 건 이름의 비목({item.code})이 청구서 폴더의 비목({claim.code})과 다름 — 청구서 폴더의 비목으로 넣음")
+            item.code = claim.code
+            item.notes = [n for n in item.notes if "비목으로 읽지 못함" not in n]
+        items.append(item)
+    sheet.items = sorted(items, key=lambda i: (i.used or dt.date.max, i.name))
+    return sheet
 
 
 def looks_like_card_folder(folder: str) -> bool:

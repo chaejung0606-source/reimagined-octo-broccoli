@@ -104,3 +104,23 @@ def test_card_claim_opens_card_folder_and_adds_several(tmp_path, monkeypatch):
     page._choose_kind(kinds.SCHOLARSHIP)             # 장학금은 전처럼 운영체제가 고른 곳
     page._add_one()
     assert asked[-1][1] == ""
+
+
+def test_card_claim_folders_picked_together(tmp_path, monkeypatch):
+    """담당자 2026-11-11 — 기간 폴더 안의 청구서 폴더('03_[비목명] …')를 하나든 여럿이든 골라 넣으면 폴더마다 청구서 하나, 대표적요는 폴더 이름."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    _qt()
+    from claim_downloader.ui import folder_picker
+    from claim_downloader.ui.pages import claim as claim_page
+    from claim_downloader.ui.worker import SessionWorker
+    period = tmp_path / "26-10(10.09. ~ 11.08.)"
+    names = ["03_[교육연구프로그램개발운영비] 카드 결제 건(26.10.09.~26.11.08.)",
+             "07_[기업지원협력활동비] 2026학년도 2학기 WE-Meet 회의비 1차 지원 (10.09~10.27.)"]
+    for name, item in zip(names, ["1021_(97)_ACK 2026 등록비 150,000원", "261020_(17)_군집방패 45,000원"]):
+        (period / name / item).mkdir(parents=True)
+    monkeypatch.setattr(folder_picker, "pick_folders", lambda parent, title, start: [str(period / n) for n in names])
+    page = claim_page.ClaimPage(worker=SessionWorker())
+    page._choose_kind(kinds.CARD)
+    page._add_one()
+    assert [job.sheets[0].main_summary for job in page._cards] == names
+    assert [job.items[0].req_div for job in page._cards] == ["97", "17"]

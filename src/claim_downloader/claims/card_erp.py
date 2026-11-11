@@ -987,6 +987,9 @@ def record_warning(job: card.CardJob, sheet: card.CardSheet) -> str:
 
 
 def sheet_key(job: card.CardJob, sheet: card.CardSheet) -> str:
+    """기록 열쇠 — 청구서 폴더가 있으면 그 폴더(한 기간 폴더에 같은 비목의 청구서 폴더가 둘일 수 있다), 없으면 옛 '폴더#비목'."""
+    if getattr(sheet, "folder", ""):
+        return f"{sheet.folder}#{sheet.code}"
     return f"{job.folder}#{sheet.code}"
 
 
