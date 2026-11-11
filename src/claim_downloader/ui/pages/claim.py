@@ -60,7 +60,8 @@ from ..art import Art
 from ..log_button import LogSendButton, warn
 from ..flow import HIDDEN, ChoiceCard, FlowArea, FlowStep
 from ..flowlogic import CLAIM_ORDER, claim_stage, flow_states
-from ..report_dialog import ReportRow, show_report
+from .. import result_store
+from ..report_dialog import ReportRow, report_from_data, report_to_data, show_report
 from ..widgets import Card, Pill, PillDelegate, WrapLabel, muted_label
 from ..worker import SessionWorker
 from .card import CardPanel, item_detail, item_html, review_of
@@ -103,6 +104,7 @@ def _money(value) -> str:
 CARD_COLUMNS = [("상태", 92), ("사용일", 68), ("구분", 52), ("건명", None), ("금액", 84), ("확인", 52)]
 CARD_STRETCH = 3
 # 확인할 것은 표 위 한 칸에만(번호 · 무게 · 무엇 · 어디서 · 할 일) — 표의 '확인' 칸은 그 번호만 가리킨다(담당자 2026-11-11)
+NEXT_FOLDER_NOTE = " 이 창을 닫으면 다음 폴더로 넘어갑니다."
 SCH_COLUMNS = [("상태", 100), ("No", 44), ("이름", 150), ("학번", 100), ("청구액", 88), ("개별 적요", None), ("첨부", 56), ("확인", 84)]
 SCH_STRETCH = 5
 # 첨부만 다시 올리기(claims/reattach.py) — 청구내역 줄마다 한 줄
@@ -702,13 +704,17 @@ class ClaimPage(QWidget):
                                      "명단에 없는 줄 · 합계와 공제합계. 읽기만 하고 아무것도 누르지 않습니다.")
         self.sheet_button.clicked.connect(self._check_sheet)
         # 첨부만 다시 올리기(임시저장 · 보완요청 청구서, 담당자 2026-10-23)는 따로 단추가 아니라 ② 의 '할 일' 로 고르고 fill_button 이 한다(_fill → _reattach)
+        # 결과 창을 닫은 뒤에도 다시 본다 — 담당자 2026-11-11 "한번 닫으면 다시 내용을 확인할 수 없습니다". 폴더마다 최근 결과(result_store)
+        self.result_button = QPushButton("결과 다시 보기")
+        self.result_button.setToolTip("이 폴더를 ERP 에 넣은 결과 창(신청 전 확인할 것 · 넣은 값)을 다시 띄웁니다. 앱을 다시 켜도 남아 있습니다.")
+        self.result_button.clicked.connect(self._reopen_result)
         row = QHBoxLayout()
         row.setSpacing(10)
         self.open_button = QPushButton("브라우저 열기")
         self.open_button.setToolTip("앱이 연 브라우저에서 ERP 에 로그인하세요 — 결의서내역 · 새 청구서 화면은 앱이 띄웁니다")
         self.open_button.clicked.connect(lambda: self.browser.open_browser(scan=False, owner="claim"))
         row.addWidget(self.open_button)
-        for button in (self.fill_button, self.sheet_button):
+        for button in (self.fill_button, self.sheet_button, self.result_button):
             row.addWidget(button)
         row.addStretch(1)
         row.addLayout(options)
@@ -789,6 +795,10 @@ class ClaimPage(QWidget):
             self.fill_button.setText("미리 보기" if dry else "ERP 에 넣기")
             self.fill_button.setToolTip("지출 목록에서 넣을 폴더를 고르세요.")
         self.sheet_button.setVisible(is_sch)
+        results = self._results(self._current)
+        self.result_button.setVisible(bool(results))
+        self.result_button.setEnabled(not busy)
+        self.result_button.setText("결과 다시 보기" + (f" ({len(results)})" if len(results) > 1 else ""))
         self._sync_put_state()
         self._sync_flow()
 
@@ -1397,7 +1407,7 @@ class ClaimPage(QWidget):
         review = report.review_items()
         for item in review:
             self._append_log("신청 전 확인: " + item)
-        check = f" 신청 전 확인할 것 {len(review)}건 — 결과 창과 [진행 기록] 에 있습니다." if review else ""
+        check = f" 신청 전 확인할 것 {len(review)}건 — 결과 창([결과 다시 보기])과 [진행 기록] 에 있습니다." if review else ""
         more = [s for s in (job.sheets if job else []) if any(i.status != "saved" for i in s.items)]
         nxt = (f" 남은 청구서 {len(more)}개 — 다음 것은 ERP 에서 새 카드청구 화면을 띄운 뒤 '넣을 청구서' 를 고르고 다시 누르세요."
                if more and not left else "")
@@ -1409,7 +1419,7 @@ class ClaimPage(QWidget):
             self._set_state("임시저장", "success", f"결제 {report.saved}건을 임시저장했습니다. ERP 에서 검토하고 [신청] 을 직접 누르세요." + nxt)
         alerts = [f"{m} (×{report.messages.count(m)})" if report.messages.count(m) > 1 else m for m in dict.fromkeys(report.messages)]
         if sheet is not None:
-            show_report(self, title="카드청구", tone="warning" if report.stopped or review else "success",
+            self._show_result(row, title="카드청구", tone="warning" if report.stopped or review else "success",
                         heading=f"임시저장 결제 {report.saved}건" + (" — 중간에 멈췄습니다" if report.stopped else "")
                                 + (f" · 신청 전 확인할 것 {len(review)}건" if review else ""),
                         summary=[f"대표적요: {report.summary}"] + ([f"결의번호 {report.req_cnt}"] if report.req_cnt else [])
@@ -1419,6 +1429,45 @@ class ClaimPage(QWidget):
                         notes=review or alerts, notes_title="신청 전 확인할 것" if review else "ERP 알림",
                         footer="ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요 — 앱은 누르지 않습니다." + nxt)
         self._sync_buttons()
+
+    # ── 결과 창 다시 보기 ───────────────────────────────────────────────
+    def _results(self, row: int) -> list[dict]:
+        return result_store.entries(self._dirs[row]) if 0 <= row < len(self._dirs) else []
+
+    def _show_result(self, row: int, **kwargs) -> None:
+        """넣은 뒤의 결과 창 — 띄우기 전에 그 폴더의 결과로 남긴다(닫은 뒤 [결과 다시 보기] 로 다시 본다)."""
+        if 0 <= row < len(self._dirs):
+            kept = dict(kwargs)
+            # 장학금 결과의 '이 창을 닫으면 다음 폴더로 넘어갑니다' 는 그때만의 말 — 다시 볼 때는 뺀다
+            kept["footer"] = str(kept.get("footer", "")).replace(NEXT_FOLDER_NOTE, "")
+            why = result_store.save(self._dirs[row], str(kwargs.get("title", "")), str(kwargs.get("heading", "")), report_to_data(kept))
+            if why:
+                self._append_log("결과 창을 남기지 못했습니다(앱을 켜 둔 동안은 다시 볼 수 있음): " + why)
+        show_report(self, **kwargs)
+        self._sync_buttons()
+
+    def _reopen_result(self) -> None:
+        results = self._results(self._current)
+        if not results:
+            return
+        if len(results) == 1:
+            self._open_result(results[0])
+            return
+        menu = QMenu(self.result_button)
+        for entry in results:
+            menu.addAction(f"{entry.get('when', '')} · {entry.get('title', '')} — {entry.get('heading', '')}"[:110],
+                           lambda e=entry: self._open_result(e))
+        menu.exec(self.result_button.mapToGlobal(self.result_button.rect().bottomLeft()))
+
+    def _open_result(self, entry: dict) -> None:
+        kwargs = report_from_data(entry["report"])
+        kwargs["summary"] = [f"{entry.get('when', '')} 에 넣은 결과입니다 — 그 뒤 ERP 에서 고친 것은 여기에 없습니다."] + list(kwargs.get("summary") or [])
+        kwargs["title"] = (kwargs.get("title") or entry.get("title") or "결과") + " — 다시 보기"
+        try:
+            show_report(self, **kwargs)
+        except Exception as error:  # noqa: BLE001 — 옛 판이 남긴 모양이 달라도 앱은 그대로
+            QMessageBox.warning(self, "결과 다시 보기", "남겨 둔 결과를 띄우지 못했습니다: "
+                                + (str(error).splitlines()[0][:120] if str(error) else type(error).__name__))
 
     def _row_kind_changed(self, _index: int) -> None:
         row = self._current
@@ -1642,7 +1691,7 @@ class ClaimPage(QWidget):
             # 넣기를 마친 뒤 청구내역 표를 다시 읽어 명단과 맞춘 것(sheet_check) — 확인할 것은 같은 목록에 붙인다
             if report.check is not None:
                 review = review + ["청구내역 대조: " + item for item in report.check.problems]
-            check = f" 신청 전 확인할 것 {len(review)}건 — 결과 창과 [진행 기록] 에 있습니다." if review else ""
+            check = f" 신청 전 확인할 것 {len(review)}건 — 결과 창([결과 다시 보기])과 [진행 기록] 에 있습니다." if review else ""
             all_present = bool(report.present) and not saved and not report.stopped
             if report.present and not all_present:
                 check = f" 이미 청구내역에 있던 {report.present}명은 넣지 않았습니다." + check
@@ -1664,7 +1713,7 @@ class ClaimPage(QWidget):
                 # 넣은 뒤 볼 것 — 학생 줄의 '신청 전 확인' + 청구내역 대조. 표의 '확인' 칸 번호가 위 칸과 맞게 한 번에 번호를 매긴다
                 notes, rows = scholarship_view(job, report.results, review_notes(report.results)
                                                + (check_notes(report.check.problems) if report.check is not None else []))
-                show_report(self, title=f"{job.spec.name} 청구", tone="warning" if report.stopped or review else "success",
+                self._show_result(row, title=f"{job.spec.name} 청구", tone="warning" if report.stopped or review else "success",
                             heading=f"임시저장 {saved_text}" + (" — 중간에 멈췄습니다" if report.stopped else "")
                                     + (f" · 신청 전 확인할 것 {len(review)}건" if review else ""),
                             summary=[f"대표적요: {job.main_summary}", f"지급예정년월: {job.pay_ym}"]
@@ -1674,7 +1723,7 @@ class ClaimPage(QWidget):
                             notes=notes or alerts, notes_title="신청 전 확인할 것" if notes else "ERP 알림",
                             footer="ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요 — 앱은 누르지 않습니다."
                                    + (" 위 '신청 전 확인할 것' 을 먼저 고치세요." if review else "")
-                                   + (" 이 창을 닫으면 다음 폴더로 넘어갑니다." if nxt is not None else ""))
+                                   + (NEXT_FOLDER_NOTE if nxt is not None else ""))
             if nxt is not None and job is not None:
                 QTimer.singleShot(0, lambda: self._start_next(nxt, job))
         self._sync_buttons()
@@ -1757,12 +1806,12 @@ class ClaimPage(QWidget):
                 self._set_status(row, "saved" if saved and not report.stopped else "problem" if report.stopped else "read")
             if saved and not report.stopped:
                 self._set_state("첨부 다시 올림", "success", f"{saved}줄의 첨부를 다시 올려 [저장] 했습니다. ERP 에서 확인하고 [신청] 은 직접 누르세요."
-                                + (f" 신청 전 확인할 것 {len(review)}건 — 결과 창에 있습니다." if review else ""))
+                                + (f" 신청 전 확인할 것 {len(review)}건 — 결과 창([결과 다시 보기])에 있습니다." if review else ""))
             elif report.stopped:
                 self._set_state("멈춤", "warning", f"{saved}줄까지 저장하고 멈췄습니다 — 결과 창의 까닭을 보고 다시 누르면 남은 줄을 합니다.")
             else:
                 self._set_state("한 줄도 안 됨", "warning", "첨부를 다시 올린 줄이 없습니다 — 결과 창의 까닭을 보세요.")
-            show_report(self, title="첨부만 다시 올리기 — 결과", tone="success" if saved and not report.stopped else "warning",
+            self._show_result(row, title="첨부만 다시 올리기 — 결과", tone="success" if saved and not report.stopped else "warning",
                         heading=f"첨부를 다시 올려 저장한 줄 {saved}/{len(report.results)}"
                                 + (f" · 결의번호 {report.req_cnt}" if report.req_cnt else "") + (f" ({report.state})" if report.state else "")
                                 + (" · 멈춤" if report.stopped else ""),

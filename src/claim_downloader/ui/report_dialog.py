@@ -321,6 +321,48 @@ def show_report(parent: QWidget | None, **kwargs) -> bool:
     return dialog.exec() == QDialog.Accepted
 
 
+# ── 결과 창을 남겼다가 다시 띄우기(result_store, 담당자 2026-11-11 "한번 닫으면 다시 내용을 확인할 수 없습니다") ──
+_NOTE_KEYS = ("level", "what", "where", "todo", "person")
+
+
+def _plain(value):
+    """JSON 에 담을 수 있는 값으로 — 못 담는 것은 글로."""
+    return value if value is None or isinstance(value, (str, int, float, bool)) else str(value)
+
+
+def report_to_data(kwargs: dict) -> dict:
+    """show_report 에 넘긴 값 → JSON. 줄(ReportRow) · 확인할 것(checks.Note — 무엇 · 어디서 · 할 일 · 무게)을 그대로 담는다.
+    묻는 창의 단추(accept_text)는 담지 않는다 — 다시 볼 때는 닫기만."""
+    out = {k: v for k, v in kwargs.items() if k not in ("rows", "notes", "columns", "accept_text", "close_text")}
+    out["columns"] = [[name, width] for name, width in kwargs.get("columns") or []]
+    out["rows"] = [{"status": r.status, "tone": r.tone, "cells": [str(c) for c in r.cells], "detail": r.detail,
+                    "tips": {str(k): v for k, v in r.tips.items()}, "right": list(r.right), "html": r.html, "key": _plain(r.key)}
+                   for r in kwargs.get("rows") or []]
+    out["notes"] = [{"text": str(n), **({k: getattr(n, k) for k in _NOTE_KEYS} if isinstance(n, checks.Note) else {})}
+                    for n in kwargs.get("notes") or []]
+    return out
+
+
+def report_from_data(data: dict) -> dict:
+    """report_to_data 의 거꾸로 — show_report 에 그대로 넘긴다."""
+    out = {k: v for k, v in data.items() if k not in ("rows", "notes", "columns")}
+    out["columns"] = [(c[0], c[1]) for c in data.get("columns") or [] if isinstance(c, (list, tuple)) and len(c) == 2]
+    out["rows"] = [ReportRow(status=str(r.get("status", "")), tone=str(r.get("tone", "neutral")), cells=list(r.get("cells") or []),
+                             detail=str(r.get("detail", "")), tips={int(k): v for k, v in (r.get("tips") or {}).items() if str(k).isdigit()},
+                             right=tuple(r.get("right") or ()), html=str(r.get("html", "")), key=r.get("key"))
+                   for r in data.get("rows") or [] if isinstance(r, dict)]
+    notes = []
+    for n in data.get("notes") or []:
+        if isinstance(n, dict) and "level" in n:
+            notes.append(checks.Note(str(n.get("text", "")), **{k: n.get(k) for k in _NOTE_KEYS if n.get(k) is not None}))
+        elif isinstance(n, dict):
+            notes.append(str(n.get("text", "")))
+        else:
+            notes.append(str(n))
+    out["notes"] = notes
+    return out
+
+
 def show_structure_saved(parent: QWidget | None, path: str) -> None:
     """[화면 구조 저장] 을 마친 뒤 — '화면 구조 저장' 업무(pages/structure.py)가 쓴다. path 가 비었으면 못 한 것."""
     if not path:
