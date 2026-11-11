@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import html
 import os
 
 from PySide6.QtCore import Qt, QUrl, Signal
@@ -23,9 +24,10 @@ from PySide6.QtWidgets import (
 )
 
 from ...claims import card, card_erp
+from ..tokens import COLORS
 from ..widgets import Field, PillDelegate, WrapLabel, muted_label
 
-COLUMNS = [("상태", 84), ("청구구분", 112), ("비목", 40), ("사용일", 70), ("건명", 140), ("금액", 80), ("확인할 것", None)]
+COLUMNS = [("상태", 84), ("청구구분", 112), ("비목", 40), ("사용일", 70), ("건명", 140), ("금액", 80), ("확인", None)]
 COL_STATE, COL_DIV, COL_CODE, COL_DATE, COL_TITLE, COL_AMOUNT, COL_NOTES = range(7)
 DIV_TONE = {"17": "info", "85": "info", "90": "neutral"}
 STATE_TEXT = {"saved": ("저장됨", "success"), "running": ("넣는 중", "info"), "review": ("저장·확인", "warning"),
@@ -76,6 +78,74 @@ def item_detail(item: card.CardItem, base: str = "", plan: card_erp.ItemResult |
     lines += ["  " + (os.path.relpath(p, base) if base else os.path.basename(p)) for p in item.files[:20]]
     lines += ["확인: " + n for n in item.blocking() + item.notes]
     return "\n".join(lines)
+
+
+def _esc(text) -> str:
+    return html.escape(str(text or ""))
+
+
+def review_of(item: card.CardItem, plan: card_erp.ItemResult | None = None) -> list[str]:
+    """확인할 것 — 계획이 있으면 그것(폴더에서 본 것 + 넣을 때 볼 것), 없으면 폴더에서 본 것. 같은 글은 한 번."""
+    return list(dict.fromkeys(plan.review if plan is not None else item.blocking() + item.notes))
+
+
+def item_html(item: card.CardItem, base: str = "", plan: card_erp.ItemResult | None = None) -> str:
+    """한 결제 건을 세 덩어리로 — ① 확인할 것 ② ERP 에 넣을 값(칸 · 값 · 어디서, 볼 칸은 칠함) ③ 읽은 곳.
+    담당자 2026-11-11: "확인이 필요한 내용 가독성이 너무 좋지 않습니다 … 논리적으로 구성되어서 한눈에 뭐가 입력되고 뭐가 확인이 필요한 건지".
+    전에는 한 줄에 '확인할 것' 을 이어 붙여 잘렸고, 넣을 값과 근거가 줄글로 섞였다."""
+    c = COLORS
+    head = f"{item.used:%m-%d}" if item.used else "사용일 모름"
+    amount = f"{item.amount:,}원" if item.amount is not None else "금액 모름"
+    out = [f'<div style="font-size:16px; font-weight:700; color:{c["text"]};">{_esc(head)} · {_esc(item.title or item.name)} · {_esc(amount)}</div>',
+           f'<div style="color:{c["text_muted"]};">{_esc(item.req_div_name or "청구구분 모름")} — {_esc(item.req_div_from)}'
+           + (" · ERP 에 임시저장함" if item.status == "saved" else "") + "</div>"]
+
+    review = review_of(item, plan)
+    if review:
+        out.append(f'<p style="margin:12px 0 4px 0; font-weight:700; color:{c["warning"]};">확인할 것 {len(review)}건</p>')
+        rows = "".join(f'<tr><td width="30" valign="top" nowrap style="color:{c["warning"]}; font-weight:700;">{n}.</td>'
+                       f'<td style="color:{c["text"]};">{_esc(text)}</td></tr>' for n, text in enumerate(review, 1))
+        out.append(f'<table width="100%" cellspacing="0" cellpadding="5" bgcolor="{c["warning_bg"]}">{rows}</table>')
+    else:
+        out.append(f'<p style="margin:12px 0 4px 0; font-weight:700; color:{c["success"]};">확인할 것 없음 — 아래 값 그대로 넣습니다</p>')
+
+    entries = plan.entries if plan is not None else []
+    if entries:
+        title = "ERP 에 넣을 값" if plan.status == "planned" else "ERP 에 넣은 값"
+        out.append(f'<p style="margin:14px 0 4px 0; font-weight:700; color:{c["text"]};">{title}'
+                   f'<span style="font-weight:400; color:{c["text_muted"]};">  — 칠한 줄이 확인할 값</span></p>')
+        rows = [f'<tr bgcolor="{c["surface_alt"]}"><td width="96"><b>칸</b></td><td><b>넣을 값</b></td><td width="36%"><b>어디서</b></td></tr>']
+        for e in entries:
+            bg = f' bgcolor="{c["warning_bg"]}"' if e.check else ""
+            check = f'<br><span style="color:{c["warning"]}; font-weight:700;">확인: {_esc(e.check)}</span>' if e.check else ""
+            rows.append(f'<tr{bg}><td valign="top"><b>{_esc(e.label)}</b></td><td valign="top">{_esc(e.value)}{check}</td>'
+                        f'<td valign="top" style="color:{c["text_muted"]};">{_esc(e.source)}</td></tr>')
+        out.append(f'<table width="100%" cellspacing="0" cellpadding="5" style="border-color:{c["border"]};" border="1">{"".join(rows)}</table>')
+    elif plan is None:
+        out.append(f'<p style="color:{c["text_muted"]};">[미리 보기] 를 누르면 ERP 에 넣을 값(회의록등록 창 · 참석자 · 첨부)이 칸마다 보입니다.</p>')
+
+    facts = [f"금액: {_money(item.amount) or '모름'}원" + (f" — {item.amount_from}" if item.amount_from else "")]
+    found = [f"가맹점 {item.merchant}" if item.merchant else "", f"카드 …{item.card_last}" if item.card_last else "",
+             f"승인번호 {item.approval}" if item.approval else ""]
+    if any(found):
+        facts.append("영수증 · 회의록에서: " + " · ".join(x for x in found if x))
+    if item.ai_found:
+        facts.append("AI 가 읽은 것: " + item.ai_found)
+    if item.minutes:
+        facts.append(f"회의록: {os.path.basename(item.minutes)}")
+    if item.notice:
+        facts.append(f"공문: {os.path.basename(item.notice)}" + (f" (비목 {item.notice_code})" if item.notice_code else ""))
+    if item.req_div == "17":
+        facts.append(f"회의 장소 지역: {item.meeting_region or '모름'} ({item.meeting_region_from})"
+                     + (f" · 가맹점 주소: {item.shop_address}" if item.shop_address else " · 가맹점 주소는 넣을 때 회의록등록 창에서 견줌"))
+    if item.goods:
+        facts.append(f"물품 표: {os.path.basename(item.goods.path)} ({item.goods.sheet}) — {len(item.goods.rows)}줄"
+                     + (f" · 합계 {item.goods.total:,}원" if item.goods.total else ""))
+    names = [(os.path.relpath(p, base) if base else os.path.basename(p)) for p in item.files[:20]]
+    facts.append(f"파일 {len(item.files)}개: " + " · ".join(names) + (" …" if len(item.files) > 20 else ""))
+    out.append(f'<p style="margin:14px 0 4px 0; font-weight:700; color:{c["text"]};">읽은 곳</p>')
+    out.append("".join(f'<div style="color:{c["text_muted"]}; margin:2px 0;">· {_esc(f)}</div>' for f in facts))
+    return "".join(out)
 
 
 def sheet_label(sheet: card.CardSheet) -> str:
@@ -139,6 +209,7 @@ class CardPanel(QWidget):
 
         self.detail = WrapLabel("")
         self.detail.setObjectName("body")
+        self.detail.setTextFormat(Qt.RichText)        # item_html — 확인할 것 · 넣을 값 표 · 읽은 곳
         self.detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self.detail)
         self.skipped = muted_label("")
@@ -191,6 +262,8 @@ class CardPanel(QWidget):
         self._items = list(sheet.items) if sheet else []
         self._rows = {(index, ii): ii for ii in range(len(self._items))}
         self.table.setRowCount(len(self._items))
+        # 아래 자세히 칸(확인할 것 · 넣을 값 표)이 길어도 결제 건 표가 두어 줄로 눌리지 않게 — 여섯 줄까지는 다 보이게
+        self.table.setMinimumHeight(min(40 + 34 * max(1, len(self._items)), 40 + 34 * 6))
         for row, item in enumerate(self._items):
             self._set_state_cell(row, "saved" if item.status == "saved" else "", "")
             div = QTableWidgetItem(item.req_div_name or "모름")
@@ -199,14 +272,15 @@ class CardPanel(QWidget):
             self.table.setItem(row, COL_DIV, div)
             cells = {COL_CODE: item.code or "?", COL_DATE: f"{item.used:%m-%d}" if item.used else "?",
                      COL_TITLE: item.title, COL_AMOUNT: _money(item.amount) or "모름",
-                     COL_NOTES: " / ".join(item.blocking() + item.notes)}
+                     COL_NOTES: f"{len(review_of(item))}건" if review_of(item) else "—"}
             for col, text in cells.items():
                 cell = QTableWidgetItem(text)
-                cell.setToolTip(f"금액 출처: {item.amount_from}" if col == COL_AMOUNT and item.amount_from else text)
+                cell.setToolTip(f"금액 출처: {item.amount_from}" if col == COL_AMOUNT and item.amount_from else
+                                "\n".join(review_of(item)) or "확인할 것 없음" if col == COL_NOTES else text)
                 if col == COL_AMOUNT:
                     cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table.setItem(row, col, cell)
-        self.detail.setText("줄을 고르면 그 결제 건의 금액 출처 · 가맹점 · 카드 뒷자리 · 파일이 여기 보입니다." if self._items else "")
+        self.detail.setText("줄을 고르면 그 결제 건의 확인할 것 · ERP 에 넣을 값 · 읽은 곳이 여기 보입니다." if self._items else "")
 
     def _on_sheet(self, _index: int) -> None:
         self._plans = {}
@@ -245,7 +319,7 @@ class CardPanel(QWidget):
         rows = {i.row() for i in self.table.selectedItems()}
         if rows and self.job:
             row = min(rows)
-            self.detail.setText(item_detail(self._items[row], self.job.folder, self._plans.get(row)))
+            self.detail.setText(item_html(self._items[row], self.job.folder, self._plans.get(row)))
 
     def _open_folder(self) -> None:
         if self.job:

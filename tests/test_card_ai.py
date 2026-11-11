@@ -113,7 +113,7 @@ def test_ai_reading_fills_amount_meeting_and_snack(tmp_path):
     assert (m.start, m.end, m.place, m.agenda, m.used) == ("17:00", "18:30", "공학관 세미나실", "WE-Meet 프로젝트 2차 회의", D(2026, 10, 12))
     assert m.attendees == [("컴퓨터공학과", "학생1"), ("", "학생2")]
     assert item.snack and item.snack_from.startswith("AI")
-    assert any("다과비로 봄(AI" in n for n in item.notes) and any("AI 가 회의록에서 읽음" in n for n in item.notes)
+    assert any("다과비로 봄(AI" in n for n in item.notes) and any(n.startswith("AI 가 회의록에서 읽은 칸: 회의일자 · 시작 시각 · 끝 시각 · 장소 · 목적(안건) · 내용 · 참석자") for n in item.notes)
     assert not item.blocking() and card_ai.pending(job) == []
     values, people, missing = card_erp.meeting_plan(item, [])
     assert values["CFRC_PLCE"] == "공학관 세미나실" and len(people) == 2 and missing == []
@@ -138,6 +138,8 @@ def test_text_and_folder_name_come_before_ai(tmp_path):
     m = item.meeting
     assert (m.place, m.start, m.end) == ("사업단 회의실", "16:00", "17:00")       # 회의록 생성의 .hwpx 가 먼저
     assert m.agenda == "WE-Meet 프로젝트 2차 회의" and m.attendees == [("컴퓨터공학과", "학생1"), ("", "학생2")]   # 빈 칸만 AI 로
+    assert m.sources["place"] == "hwpx" and m.sources["agenda"] == "ai"
+    assert any(n.startswith("AI 가 회의록에서 읽은 칸: 목적(안건) · 내용 · 참석자 —") for n in item.notes)   # AI 가 채운 칸만 알린다
     assert item.minutes.endswith(".hwpx")
 
 

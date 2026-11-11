@@ -508,8 +508,29 @@ class Minutes:
     start: str = ""              # 회의일시의 시각 'HH:MM' → #CFRC_ST_DTM · #CFRC_END_DTM
     end: str = ""
     end_guessed: bool = False    # 끝 시각이 회의록에 없어 시작 + 1시간으로 둠(MEETING_HOURS)
+    # 칸마다 어디서 왔나 — 'hwpx'(회의록 생성의 .hwpx · .docx) · 'ai'(AI 가 읽음) · 'guess'(시작 + 1시간).
+    # 미리 보기가 '무엇이 어디서 왔고 무엇을 확인할지' 를 칸마다 보이게(담당자 2026-11-11 "한눈에 뭐가 입력되고 뭐가 확인이 필요한 건지")
+    sources: dict[str, str] = field(default_factory=dict)
     content: list[str] = field(default_factory=list)                    # 회의내용 문단 → #CFRC_CONT
     attendees: list[tuple[str, str]] = field(default_factory=list)      # (소속, 이름) — 이름이 빈 칸은 뺀다
+
+
+# 회의록등록 창의 칸 이름 — 미리 보기 · 확인할 것 글에 쓴다
+MEETING_LABELS = {"used": "회의일자", "start": "시작 시각", "end": "끝 시각", "place": "장소", "agenda": "목적(안건)",
+                  "content": "내용", "attendees": "참석자"}
+SOURCE_TEXT = {"hwpx": "회의록(.hwpx)", "ai": "AI 가 회의록에서 읽음", "guess": "시작 + 1시간(끝 시각이 회의록에 없음)"}
+
+
+def mark_sources(minutes: "Minutes", source: str) -> None:
+    """값이 있는 칸마다 출처를 적는다(이미 적힌 칸은 그대로)."""
+    for key in MEETING_LABELS:
+        if getattr(minutes, key) and key not in minutes.sources:
+            minutes.sources[key] = source
+
+
+def ai_keys(minutes: "Minutes | None") -> list[str]:
+    """AI 가 채운 칸 — 사람이 회의록등록 창에서 맞는지 볼 것."""
+    return [key for key in MEETING_LABELS if minutes is not None and minutes.sources.get(key) == "ai"]
 
 
 MINUTES_LABELS = ("사 업 명", "회의안건", "회의일시", "회의장소", "회의비 사용처", "금액", "참석자", "소속", "이름")
@@ -534,6 +555,8 @@ def fill_end(minutes: "Minutes | None") -> None:
     if minutes is not None and minutes.start and not minutes.end:
         minutes.end = end_after(minutes.start)
         minutes.end_guessed = bool(minutes.end)
+        if minutes.end:
+            minutes.sources["end"] = "guess"
 
 
 def minutes_texts(path: str) -> list[str]:
@@ -575,6 +598,7 @@ def read_minutes(path: str) -> Minutes:
     if times:
         out.start, out.end = times[0], times[1] if len(times) > 1 else ""
     out.attendees, out.content = minutes_table(path)
+    mark_sources(out, "hwpx")
     return out
 
 
@@ -619,9 +643,11 @@ def _ai_minutes(ai: dict | None, folder: str) -> Minutes | None:
     content = [str(p).strip() for p in raw.get("content") or [] if str(p).strip()]
     people = [(str(p.get("org") or "").strip(), str(p.get("name") or "").strip()) for p in raw.get("attendees") or []
               if isinstance(p, dict) and str(p.get("name") or "").strip()]
-    return Minutes(path=_ai_path(folder, str(raw.get("file") or "")), used=_iso_day(raw.get("date")),
-                   place=str(raw.get("place") or "").strip(), agenda=str(raw.get("agenda") or "").strip(),
-                   start=_hhmm(raw.get("start")), end=_hhmm(raw.get("end")), content=content, attendees=people)
+    out = Minutes(path=_ai_path(folder, str(raw.get("file") or "")), used=_iso_day(raw.get("date")),
+                  place=str(raw.get("place") or "").strip(), agenda=str(raw.get("agenda") or "").strip(),
+                  start=_hhmm(raw.get("start")), end=_hhmm(raw.get("end")), content=content, attendees=people)
+    mark_sources(out, "ai")
+    return out
 
 
 def _fill_minutes(minutes: Minutes, ai: Minutes) -> None:
@@ -629,6 +655,7 @@ def _fill_minutes(minutes: Minutes, ai: Minutes) -> None:
     for key in ("used", "place", "agenda", "start", "end", "content", "attendees"):
         if not getattr(minutes, key) and getattr(ai, key):
             setattr(minutes, key, getattr(ai, key))
+            minutes.sources[key] = "ai"
 
 
 def ai_found_text(ai: dict) -> str:
@@ -1045,6 +1072,10 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
     known = [(where, value) for where, value in sources if value]
     if known:
         item.amount_from, item.amount = known[0]
+        if item.amount_from in ("폴더 이름", "회의록"):
+            # 사람이 적은 금액 · 회의록의 금액이 있으면 그림 영수증을 못 읽은 것은 알릴 일이 아니다 — 확인할 것이 그것에 묻혔다(2026-11-11).
+            # 물품 표 합계는 구매 계획이라 결제 금액과 다를 수 있어 그대로 알린다
+            item.notes = [n for n in item.notes if not n.startswith("글자를 못 읽는 영수증")]
         differ = {value for _w, value in known}
         if len(differ) > 1:
             item.notes.append("금액이 서로 다름: " + " · ".join(f"{w} {v:,}" for w, v in known))
@@ -1079,8 +1110,10 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
         item.req_div, item.req_div_from = "90", "회의록 · 물품 표 없음"
     if item.req_div == "17" and not item.minutes and item.meeting is None:
         item.notes.append("회의비인데 회의록이 없음")
-    if item.req_div == "17" and ai_meeting is not None:
-        item.notes.append("회의 시각 · 장소 · 목적 · 내용 · 참석자를 AI 가 회의록에서 읽음 — 신청 전에 회의록등록 내용을 확인")
+    from_ai = ai_keys(item.meeting)
+    if item.req_div == "17" and from_ai:
+        # AI 가 실제로 채운 칸만 — .hwpx 가 다 채운 건에까지 같은 글을 달면 정작 볼 것이 묻혔다(담당자 2026-11-11 "가독성이 너무 좋지 않습니다")
+        item.notes.append("AI 가 회의록에서 읽은 칸: " + " · ".join(MEETING_LABELS[k] for k in from_ai) + " — 회의록등록 창에서 맞는지 확인")
     if item.req_div == "17":
         # 영수증이 없으면 ERP 의 카드매출전표로 갈음하는데, 회의 장소(공문 · 회의록)와 가맹점 주소의 도 · 시가 같아야 한다(담당자 2026-10-20)
         item.meeting_region, item.meeting_region_from = meeting_region(minutes.place if minutes else "",

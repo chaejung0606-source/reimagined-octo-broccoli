@@ -317,7 +317,7 @@ def test_period_folder_splits_by_category_and_reads_each_payment(tmp_path):
     assert (sub.req_div, sub.amount, sub.merchant) == ("90", 29000, "ANTHROPIC")
     snack = other.items[0]
     assert (snack.code, snack.used, snack.amount, snack.amount_from, snack.req_div) == ("03", D(2026, 10, 2), 60000, "폴더 이름", "90")
-    assert any("1002 영수증.jpg" in n for n in snack.notes)
+    assert not any("1002 영수증.jpg" in n for n in snack.notes)      # 폴더 이름에 금액이 있으면 그림 영수증을 못 읽은 것은 알리지 않는다(2026-11-11)
     assert etc.total == 45000 + 62000 + 29000 and job.total == etc.total + 60000
     assert job.problems() == []
     assert any("메모.txt" in s for s in job.skipped) and any("정리 중" in s for s in job.skipped)

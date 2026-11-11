@@ -184,6 +184,16 @@ INSIDE_NAMES_JS = """() => {
 
 # ── 결과 ─────────────────────────────────────────────────────────────────
 @dataclass
+class Entry:
+    """ERP 에 넣을 값 하나 — 미리 보기 창이 칸 · 값 · 어디서 · 확인할 것으로 나눠 보인다
+    (담당자 2026-11-11 "한눈에 뭐가 입력되고 뭐가 확인이 필요한 건지 알 수 있도록")."""
+    label: str
+    value: str
+    source: str = ""
+    check: str = ""                  # 비면 그대로 넣어도 되는 값, 있으면 사람이 볼 까닭
+
+
+@dataclass
 class ItemResult:
     index: int
     name: str
@@ -191,6 +201,7 @@ class ItemResult:
     lines: list[str] = field(default_factory=list)
     note: str = ""
     review: list[str] = field(default_factory=list)     # 저장했지만 [신청] 전에 사람이 볼 것
+    entries: list[Entry] = field(default_factory=list)  # 미리 보기 — 넣을 값 하나하나
 
 
 @dataclass
@@ -257,16 +268,74 @@ def meeting_plan(item: card.CardItem, members: list[part_mod.Member]) -> tuple[d
     return values, people, missing
 
 
+def _source(m: card.Minutes, key: str) -> str:
+    return card.SOURCE_TEXT.get(m.sources.get(key, ""), "회의록")
+
+
+def _meeting_check(m: card.Minutes, key: str, missing: bool) -> str:
+    if missing:
+        return "회의록에서 못 읽음 — 노란 띠가 뜨면 회의록등록 창에 직접"
+    if m.sources.get(key) == "ai":
+        return "AI 가 읽은 값 — 회의록등록 창에서 맞는지 확인"
+    return ""
+
+
+def _meeting_entries(item: card.CardItem, values: dict, people: list, need: int) -> list[Entry]:
+    """회의록등록 창에 들어갈 칸 — 시간 · 장소 · 목적 · 내용 · 참석자 · 회의비 · 인원."""
+    m = item.meeting or card.Minutes()
+    out = []
+    start, end = values["CFRC_ST_DTM"], values["CFRC_END_DTM"]
+    time_src = _source(m, "start") + (" · 끝은 시작 + 1시간(회의록에 끝 시각 없음)" if m.end_guessed else
+                                      "" if m.sources.get("end", "") == m.sources.get("start", "") else " · 끝 " + _source(m, "end"))
+    time_check = _meeting_check(m, "start", not start) or _meeting_check(m, "end", not end)
+    out.append(Entry("회의 시간", f"{start or '?'} ~ {end or '?'}", time_src, time_check))
+    out.append(Entry("장소", values["CFRC_PLCE"] or "?", _source(m, "place"), _meeting_check(m, "place", not values["CFRC_PLCE"])))
+    out.append(Entry("목적(안건)", values["CFRC_PURS"] or "?", _source(m, "agenda"), _meeting_check(m, "agenda", not values["CFRC_PURS"])))
+    content = values["CFRC_CONT"]
+    short = bool(content) and len(content.replace(" ", "")) < MIN_CONTENT
+    out.append(Entry("내용", (content[:90] + "…" if len(content) > 90 else content) or "?", _source(m, "content")
+                     + (f" · {len(content)}자" if content else ""),
+                     f"{MIN_CONTENT}자보다 짧음 — ERP 가 저장을 막음" if short else _meeting_check(m, "content", not content)))
+    who_src = _source(m, "attendees") + " → 참여연구원 명단으로 나눔"
+    for kind, how in (("part", "앱이 [행 추가] 창에서 고름(직번 · 이름이 하나일 때)"),
+                      ("internal", "앱이 [행 추가] 창에서 고름(이름 · 소속이 하나일 때)"), ("external", "앱이 성명 · 소속을 넣음")):
+        who = [p.label() for p in people if p.kind == kind]
+        if who:
+            out.append(Entry(part_mod.Attendee("", kind=kind).kind_name, f"{len(who)}명: " + ", ".join(who), f"{who_src} · {how}",
+                             "AI 가 읽은 사람 — 회의록등록 창에서 확인" if m.sources.get("attendees") == "ai" else ""))
+    short_heads = need - len(people)
+    out.append(Entry("인원", f"{len(people)}명 (1인 {DEFAULT_LIMIT:,}원 한도로 {need}명 이상)",
+                     "회의록 참석자 수",
+                     f"{short_heads}명이 모자라 참여인력에서 임의로 넣고 저장 — 누가 들어갔는지 확인" if short_heads > 0 else ""))
+    if item.snack:
+        weak = item.snack_from.startswith(("가맹점", "AI"))
+        out.append(Entry("회의비", f"다과(B) {item.amount:,}원 · 식비청구 '아니오'" if item.amount else "다과(B) · 식비청구 '아니오'",
+                         f"다과비로 봄 — {item.snack_from}", "다과비가 맞는지 확인" if weak else ""))
+    else:
+        out.append(Entry("회의비", f"식비(A) {item.amount:,}원" if item.amount else "식비(A)", "ERP 가 결제 금액을 넣어 둠"))
+    return out
+
+
 def plan_item(item: card.CardItem, index: int, members: list[part_mod.Member] | None = None) -> ItemResult:
     result = ItemResult(index=index, name=item.name, status="planned")
     lines = result.lines
+    entries = result.entries
+    pick_check = " · ".join(item.blocking())
+    entries.append(Entry("결제 건", f"{item.used:%Y-%m-%d} · {item.amount:,}원" if item.used and item.amount is not None else "?",
+                         "미청구 카드내역에서 사용일 · 금액이 같은 줄을 고름" + (f" — 금액은 {item.amount_from}" if item.amount_from else ""),
+                         pick_check))
+    entries.append(Entry("비목", CATEGORY_CODES.get(item.code, "?"), f"청구서 폴더 이름 '{item.code}_'" if item.code else "",
+                         "" if item.code else "비목을 모름 — 청구서 폴더 이름을 'NN_' 으로 시작하게"))
+    entries.append(Entry("청구구분", item.req_div_name or "?", item.req_div_from, "" if item.req_div else "청구구분을 모름"))
     lines.append(f"결제 건: 사용일 {item.used:%Y-%m-%d} · {item.amount:,}원" if item.used and item.amount is not None
                  else "결제 건: " + " · ".join(item.blocking()))
     lines.append(f"비목 {CATEGORY_CODES.get(item.code, '?')} → 청구구분 {item.req_div_name or '?'}")
     if item.req_div == "90":
         lines.append(f"청구내역: {item.summary}")
+        entries.append(Entry("청구내역", item.summary, "건명"))
     elif item.req_div == "17":
         values, people, missing = meeting_plan(item, members or [])
+        entries.extend(_meeting_entries(item, values, people, need_heads(item.amount or 0, DEFAULT_LIMIT)))
         lines.append(f"회의록등록: {values['CFRC_ST_DTM'] or '?'}~{values['CFRC_END_DTM'] or '?'}"
                      + (" (끝 시각은 회의록에 없어 시작 + 1시간)" if item.meeting and item.meeting.end_guessed else "")
                      + f" · 장소 {values['CFRC_PLCE'] or '?'} · 목적 {values['CFRC_PURS'][:30] or '?'}")
@@ -287,16 +356,23 @@ def plan_item(item: card.CardItem, index: int, members: list[part_mod.Member] | 
             if "참석자 이름" in missing:
                 missing.remove("참석자 이름")
         lines.append(f"청구내역: ERP 가 회의록에서 채운 글 앞에 {item.line_code or '?'}_")
+        entries.append(Entry("청구내역", f"{item.line_code or '?'}_ + ERP 가 회의록에서 채운 글", "공문의 비목" if item.notice_code else "청구서의 비목"))
         if missing:
             result.review.append("회의록에서 못 읽음: " + " · ".join(missing))
     elif item.req_div == "85":
         lines.append("소모성물품: [등록] 창 · 물품검수 정보는 사람이 넣음 (창 미실측)")
         lines.append(f"청구내역: ERP 가 채운 글 앞에 {item.line_code or '?'}_")
+        entries.append(Entry("물품 · 검수", "[등록] 창의 물품 내역 · 물품검수 정보", "사람이 넣음(창 미실측)", "노란 띠가 뜨면 직접 넣고 [계속]"))
+        entries.append(Entry("청구내역", f"{item.line_code or '?'}_ + ERP 가 채운 '물품명:…'", "청구서의 비목"))
     elif item.req_div:
         lines.append(f"{item.req_div_name}: 앱이 청구구분을 고르고, 증빙 창이 뜨면 사람이 작성 (창 미실측)")
         lines.append(f"청구내역: 증빙이 채운 글 앞에 {item.line_code or '?'}_ — 증빙이 없으면 {item.summary}")
+        entries.append(Entry("증빙", f"{item.req_div_name} 증빙 창", "사람이 작성(창 미실측)", "증빙 창이 뜨면 직접 작성하고 [계속]"))
+        entries.append(Entry("청구내역", f"{item.line_code or '?'}_ + 증빙이 채운 글 (증빙이 없으면 '{item.summary}')", "청구서의 비목"))
     files = attachments(item)
     lines.append(f"첨부 {len(files)}개: " + (" · ".join(os.path.basename(f) for f in files) or "없음"))
+    entries.append(Entry("첨부", f"{len(files)}개: " + (" · ".join(os.path.basename(f) for f in files) or "없음"),
+                         "결제 건 폴더의 PDF · 그림(공문 먼저, '기타' 폴더 빼고)"))
     result.review += item.blocking() + item.notes
     return result
 

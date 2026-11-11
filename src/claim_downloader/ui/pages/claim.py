@@ -19,6 +19,7 @@ ERP 결의서내역에서 대표적요가 같은 청구서를 찾아 있으면 �
 """
 from __future__ import annotations
 
+import html
 import os
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
@@ -61,7 +62,7 @@ from ..flowlogic import CLAIM_ORDER, claim_stage, flow_states
 from ..report_dialog import ReportRow, show_report
 from ..widgets import Card, Pill, PillDelegate, WrapLabel, muted_label
 from ..worker import SessionWorker
-from .card import CardPanel, item_detail
+from .card import CardPanel, item_detail, item_html, review_of
 from .scholarship import ScholarshipPanel
 
 COLUMNS = [("상태", 96), ("종류", 108), ("지출 (폴더)", 200), ("적요", 280), ("청구액", 110), ("입금처", None)]
@@ -97,7 +98,9 @@ def _money(value) -> str:
 
 
 # 장학금 미리 보기 · 넣기 확인 · 결과 창의 표 (ui/report_dialog.py) — 사람마다 한 줄
-CARD_COLUMNS = [("상태", 96), ("사용일", 70), ("건명", 200), ("금액", 84), ("청구구분", 110), ("확인할 것", None)]
+# 카드 결제 건 표 — 왼쪽은 좁게(건명이 늘어남), 확인할 것 · 넣을 값은 오른쪽 넓은 칸에(ReportDialog side_detail, 담당자 2026-11-11)
+CARD_COLUMNS = [("상태", 92), ("사용일", 68), ("구분", 52), ("건명", None), ("금액", 84), ("확인", 52)]
+CARD_STRETCH = 3
 SCH_COLUMNS = [("상태", 104), ("No", 44), ("이름", 92), ("학번", 104), ("청구액", 92), ("개별 적요", 300), ("첨부", 56), ("확인할 것", None)]
 # 첨부만 다시 올리기(claims/reattach.py) — 청구내역 줄마다 한 줄
 REATTACH_COLUMNS = [("상태", 96), ("줄", 44), ("이름 · 폴더", 150), ("적요", 280), ("파일", 48), ("지움", 48), ("올림", 48), ("확인할 것", None)]
@@ -1244,10 +1247,14 @@ class ClaimPage(QWidget):
                     status, tone = "저장·확인", "warning"
                 elif result.status == "planned" and (item.blocking() or result.review):
                     status, tone = "확인 필요", "warning"
-                note = " / ".join(([result.note] if result.note and result.status != "saved" else []) + result.review)
-            rows.append(ReportRow(status, tone, [f"{item.used:%m-%d}" if item.used else "?", item.title, _money(item.amount) or "모름",
-                                                 item.req_div_name or "?", note],
-                                  detail=item_detail(item, job.folder, result), tips={1: item.title, 4: note}, right=(2,)))
+                note = result.note if result.note and result.status != "saved" else ""
+            review = review_of(item, result)
+            count = f"{len(review)}건" if review else "—"
+            rows.append(ReportRow(status, tone, [f"{item.used:%m-%d}" if item.used else "?", f"({item.req_div})" if item.req_div else "?",
+                                                 item.title, _money(item.amount) or "모름", count],
+                                  detail=item_detail(item, job.folder, result),
+                                  html=(f"<p><b>{html.escape(note)}</b></p>" if note else "") + item_html(item, job.folder, result),
+                                  tips={1: item.req_div_name, 2: item.title, 4: "\n".join(review) or "확인할 것 없음"}, right=(3, 4)))
         return rows
 
     def _preview_card(self, row: int) -> None:
@@ -1262,9 +1269,10 @@ class ClaimPage(QWidget):
         show_report(self, title="미리 보기", heading=f"ERP 에 넣지 않았습니다 — 카드 {sheet.main_summary or '(비목 모름)'}", tone="info",
                     summary=[f"대표적요: {report.summary}", f"결제 {len(report.results)}건 · {sum(i.amount or 0 for i in sheet.items if i.status != 'saved'):,}원"]
                             + ([f"결의번호 {sheet.req_cnt} 에 이어서" ] if sheet.req_cnt else []),
-                    columns=CARD_COLUMNS, rows=self._card_rows(job, sheet, report.results),
+                    columns=CARD_COLUMNS, rows=self._card_rows(job, sheet, report.results), side_detail=True, stretch=CARD_STRETCH,
+                    detail_title="고른 결제 건 — 확인할 것 · ERP 에 넣을 값 · 읽은 곳",
                     notes=job.problems() + [f"읽지 않음: {s}" for s in job.skipped],
-                    footer="줄을 고르면 아래에 ERP 에 넣을 값(회의록등록 창 · 참석자 · 첨부)이 보입니다. 실제로 넣으려면 '미리 보기만' 체크를 풀고 "
+                    footer="왼쪽에서 결제 건을 고르면 오른쪽에 확인할 것 · ERP 에 넣을 값(칠한 줄이 볼 값) · 읽은 곳이 보입니다. 실제로 넣으려면 '미리 보기만' 체크를 풀고 "
                            "[ERP 에 넣기] 를 누르세요.")
 
     def _fill_card(self, row: int) -> None:
@@ -1291,6 +1299,7 @@ class ClaimPage(QWidget):
                         + ([f"결의번호 {sheet.req_cnt} 에 이어서 넣습니다"] if sheet.req_cnt else [])
                         + (["시험 — 대표적요 앞에 [시험]. 시험 청구서를 ERP 에서 지우기 전까지 그 결제 건은 미청구 카드내역에서 빠집니다."] if test else []),
                 columns=CARD_COLUMNS, rows=self._card_rows(job, sheet, plan.results), notes=job.problems(),
+                side_detail=True, stretch=CARD_STRETCH, detail_title="고른 결제 건 — 확인할 것 · ERP 에 넣을 값 · 읽은 곳",
                 footer=("결의서내역에서 대표적요가 같은 청구서를 먼저 찾고, 이어 넣는 것이 아니면 결의서내역의 [카드청구] 로 새 카드청구 화면을 앱이 띄웁니다. "
                         "미청구 카드내역 [조회] · 결제 건 고르기 · 비목 · 청구구분 · 회의록등록 창(시간 · 장소 · 목적 · 내용 · 외부참석자) · 첨부 · [저장] 은 "
                         "앱이, 참여인력 · 내부참석자와 소모성물품 [등록] 은 노란 띠가 뜨면 사람이 넣습니다."),
@@ -1361,6 +1370,7 @@ class ClaimPage(QWidget):
                         summary=[f"대표적요: {report.summary}"] + ([f"결의번호 {report.req_cnt}"] if report.req_cnt else [])
                                 + ([report.blocked] if report.blocked else []),
                         columns=CARD_COLUMNS, rows=self._card_rows(job, sheet, report.results),
+                        side_detail=True, stretch=CARD_STRETCH, detail_title="고른 결제 건 — 확인할 것 · ERP 에 넣은 값 · 읽은 곳",
                         notes=review or alerts, notes_title="신청 전 확인할 것" if review else "ERP 알림",
                         footer="ERP 에서 청구내역을 검토하고 [신청] 을 직접 누르세요 — 앱은 누르지 않습니다." + nxt)
         self._sync_buttons()

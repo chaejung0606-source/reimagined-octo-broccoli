@@ -5,6 +5,8 @@
 - 창 크기는 화면의 90%(폭) · 80%(높이)를 넘지 않게 정하고, 늘어나는 것은 표 안에서 스크롤한다.
 - 사람마다 한 줄. 긴 값(첨부 파일 목록 · 진행 단계)은 줄을 고르면 아래 '자세히' 칸에 보인다.
 - 확인할 것(문제 · ERP 알림)도 따로 칸을 두고 길면 그 안에서 스크롤한다.
+- side_detail 이면 '자세히' 를 표 오른쪽에 더 넓게 둔다 — 카드 결제 건처럼 줄마다 확인할 것 · 넣을 값이 많은 창
+  (담당자 2026-11-11 "건별 목록보다 확인이 필요한 내용 박스가 더 넓게"). 줄의 html 이 있으면 그것을 그린다.
 """
 from __future__ import annotations
 
@@ -22,8 +24,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -33,6 +37,7 @@ from ..minutes import logbook
 from .widgets import Pill, PillDelegate, WrapLabel
 
 MAX_WIDTH, MAX_HEIGHT = 1120, 720
+SIDE_WIDTH = 1380            # 자세히를 옆에 둘 때 — 목록 2 : 자세히 3
 
 
 @dataclass
@@ -43,6 +48,7 @@ class ReportRow:
     detail: str = ""                 # 줄을 고르면 아래 '자세히' 칸에
     tips: dict[int, str] = field(default_factory=dict)    # 칸 번호(cells 기준) → 마우스를 올리면 보일 전체 글
     right: tuple[int, ...] = ()      # 오른쪽 정렬할 칸 번호(cells 기준) — 금액 · 개수
+    html: str = ""                   # 있으면 '자세히' 칸에 detail 대신 이것(서식 있는 글)
 
 
 class ReportDialog(QDialog):
@@ -51,8 +57,10 @@ class ReportDialog(QDialog):
     def __init__(self, parent: QWidget | None, title: str, heading: str, tone: str = "info",
                  summary: list[str] | None = None, columns: list[tuple[str, int | None]] | None = None,
                  rows: list[ReportRow] | None = None, notes: list[str] | None = None, notes_title: str = "확인할 것",
-                 footer: str = "", accept_text: str = "", close_text: str = "닫기"):
+                 footer: str = "", accept_text: str = "", close_text: str = "닫기",
+                 side_detail: bool = False, stretch: int | None = None, detail_title: str = "자세히 — 표에서 줄을 고르세요"):
         super().__init__(parent)
+        self._side = side_detail
         self.setObjectName("reportDialog")
         self.setWindowTitle(title)
         self.setSizeGripEnabled(True)
@@ -107,9 +115,9 @@ class ReportDialog(QDialog):
             header = self.table.horizontalHeader()
             header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             header.setHighlightSections(False)
-            header.setStretchLastSection(True)
+            header.setStretchLastSection(stretch is None)
             for col, (_, width) in enumerate(columns):
-                header.setSectionResizeMode(col, QHeaderView.Interactive)
+                header.setSectionResizeMode(col, QHeaderView.Stretch if col == stretch else QHeaderView.Interactive)
                 if width:
                     self.table.setColumnWidth(col, width)
             for r, row in enumerate(self._rows):
@@ -122,16 +130,39 @@ class ReportDialog(QDialog):
                     if c in row.right:
                         item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                     self.table.setItem(r, c + 1, item)
-            layout.addWidget(self.table, 1)
-
-            if any(row.detail for row in self._rows):
-                label = QLabel("자세히 — 표에서 줄을 고르세요")
+            has_detail = any(row.detail or row.html for row in self._rows)
+            if side_detail and has_detail:
+                # 목록은 왼쪽에 좁게, 자세히는 오른쪽에 넓게 — 사이 경계는 끌어서 바꾼다
+                self.detail = QTextBrowser()
+                self.detail.setObjectName("reportDetail")
+                self.detail.setOpenLinks(False)
+                right = QWidget()
+                side = QVBoxLayout(right)
+                side.setContentsMargins(0, 0, 0, 0)
+                side.setSpacing(6)
+                label = QLabel(detail_title)
                 label.setObjectName("fieldLabel")
-                layout.addWidget(label)
-                self.detail = QPlainTextEdit()
-                self.detail.setReadOnly(True)
-                self.detail.setFixedHeight(132)
-                layout.addWidget(self.detail)
+                side.addWidget(label)
+                side.addWidget(self.detail, 1)
+                split = QSplitter(Qt.Horizontal)
+                split.setChildrenCollapsible(False)
+                split.addWidget(self.table)
+                split.addWidget(right)
+                split.setStretchFactor(0, 2)
+                split.setStretchFactor(1, 3)
+                split.setSizes([2000, 3000])
+                layout.addWidget(split, 1)
+            else:
+                layout.addWidget(self.table, 1)
+                if has_detail:
+                    label = QLabel(detail_title)
+                    label.setObjectName("fieldLabel")
+                    layout.addWidget(label)
+                    self.detail = QTextBrowser() if any(row.html for row in self._rows) else QPlainTextEdit()
+                    self.detail.setReadOnly(True)
+                    self.detail.setFixedHeight(132)
+                    layout.addWidget(self.detail)
+            if self.detail is not None:
                 self.table.currentCellChanged.connect(lambda row, _c, _pr, _pc: self._show_detail(row))
                 if self._rows:
                     self.table.selectRow(0)
@@ -170,15 +201,24 @@ class ReportDialog(QDialog):
         self._fit_to_screen(parent)
 
     def _show_detail(self, row: int) -> None:
-        if self.detail is not None and 0 <= row < len(self._rows):
-            self.detail.setPlainText(self._rows[row].detail)
+        if self.detail is None or not 0 <= row < len(self._rows):
+            return
+        item = self._rows[row]
+        if item.html and isinstance(self.detail, QTextBrowser):
+            self.detail.setHtml(item.html)
+        else:
+            self.detail.setPlainText(item.detail)
 
     def _fit_to_screen(self, parent: QWidget | None) -> None:
         """화면보다 커지지 않게 — 폭 90% · 높이 80% 안에서, 줄이 적으면 그만큼 낮게."""
         screen = (parent.screen() if parent is not None else None) or self.screen()
         area = screen.availableGeometry() if screen is not None else None
-        width = min(MAX_WIDTH, int(area.width() * 0.9)) if area else MAX_WIDTH
-        limit = min(MAX_HEIGHT, int(area.height() * 0.8)) if area else MAX_HEIGHT
+        most = SIDE_WIDTH if self._side else MAX_WIDTH
+        width = min(most, int(area.width() * 0.9)) if area else most
+        limit = min(MAX_HEIGHT + (80 if self._side else 0), int(area.height() * (0.86 if self._side else 0.8))) if area else MAX_HEIGHT
+        if self._side:
+            self.resize(width, max(420, limit))         # 자세히가 옆에 있으면 줄 수와 상관없이 넉넉하게 — 확인할 것이 길다
+            return
         wanted = self.sizeHint().height()
         if self.table is not None:
             # 표가 줄 수만큼 다 보이는 높이 — 그보다 화면이 작으면 표 안에서 스크롤
