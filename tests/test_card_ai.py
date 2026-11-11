@@ -231,3 +231,57 @@ def test_claim_page_reads_with_ai_in_the_background_and_reloads(tmp_path, monkey
     log = page.log_view.toPlainText()
     assert "AI(Claude Code)로 읽습니다" in log and "영수증 1장 · 금액 있음" in log and "가나다카페" not in log and "학생1" not in log
     page.shutdown()
+
+
+def test_claim_page_asks_to_log_in_and_reads_again_once_logged_in(tmp_path, monkeypatch):
+    """담당자 PC 2026-11-11 16:24 — Claude Code 가 로그인돼 있지 않아 첫 건에서 멈췄고 회의 시각 · 장소가 빈 채 남았다.
+    이제 로그인 창을 열지 묻고, 위쪽 AI 단추가 '로그인됨' 이 되면 못 읽은 건을 저절로 다시 읽는다."""
+    pytest.importorskip("PySide6")
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    import time
+
+    from claim_downloader import ai
+    from claim_downloader.claims import kinds
+    from claim_downloader.ui import ai_status
+    from claim_downloader.ui.pages import claim as claim_page
+    from claim_downloader.ui.worker import SessionWorker
+    claim, folder = make_item_folder(tmp_path)
+    logged_in = {"yes": False}
+
+    def fake_read(path, files, model=None):
+        if not logged_in["yes"]:
+            raise BackendError("Claude 에 로그인되어 있지 않음 (오른쪽 위 [Claude 로그인] 단추를 누르세요)")
+        return card_ai.clean(AI_DATA)
+
+    asked, opened = [], []
+    monkeypatch.setattr(card_ai, "read", fake_read)
+    monkeypatch.setattr(claim_page.QMessageBox, "question", lambda *a, **k: asked.append(a[1]) or claim_page.QMessageBox.Yes)
+    monkeypatch.setattr(ai_status.AiStatus, "login", lambda self, parent=None, key="": opened.append(key) or True)
+
+    def settle(page):
+        for _ in range(200):
+            app.processEvents()
+            if not page._ai_reading:
+                break
+            time.sleep(0.02)
+        app.processEvents()
+
+    page = claim_page.ClaimPage(worker=SessionWorker())
+    page._choose_kind(kinds.CARD)
+    page.add_folder(str(claim), kinds.CARD)
+    page.table.selectRow(0)
+    settle(page)
+    item = page._cards[0].items[0]
+    assert item.amount is None and any("AI 로 읽지 못함" in n for n in item.notes)
+    assert asked == ["Claude 로그인이 필요합니다"] and len(opened) == 1
+    status = ai_status.instance()
+    assert status.status(ai.chosen("minutes")).state == ai.NO_LOGIN
+    logged_in["yes"] = True
+    status.mark(ai.chosen("minutes"), ai.OK)                 # 로그인을 마치면 위쪽 AI 단추가 초록 — 앱이 저절로 다시 맡긴다
+    settle(page)
+    item = page._cards[0].items[0]
+    assert item.amount == 160000 and item.meeting.place == "공학관 세미나실" and item.meeting.start == "17:00"
+    assert "다시 읽습니다" in page.log_view.toPlainText()
+    page.shutdown()

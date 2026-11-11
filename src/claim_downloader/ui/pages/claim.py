@@ -215,6 +215,7 @@ class ClaimPage(QWidget):
         self._ai_reading: set[str] = set()                         # 읽는 중인 결제 건 폴더(card_ai.folder_key)
         self._ai_results: dict[str, tuple[str, dict | str]] = {}  # 이번 실행에서 읽은 것 · 못 읽은 까닭 — (파일 서명, 결과)
         self._ai_missing_told = False
+        self._ai_retry_on_login = False          # 로그인이 풀려 못 읽은 결제 건 — 로그인되면(위쪽 AI 단추가 초록) 저절로 다시 맡긴다
         self._browser_open = False
         self._current = -1
         self._loading_form = False
@@ -243,6 +244,8 @@ class ClaimPage(QWidget):
         self.area.add(self.step_put)
         self.area.add(self._build_log(), 1)
         layout.addWidget(self.area, 1)
+
+        ai_status.instance().changed.connect(self._on_ai_status)
 
         b = self.browser
         b.log.connect(self._append_log)
@@ -1126,8 +1129,18 @@ class ClaimPage(QWidget):
         self._append_log(f"카드: 결제 {len(items)}건의 영수증 사진 · 회의록을 AI(Claude Code)로 읽습니다 — 건마다 수십 초. 끝나면 저절로 다시 읽습니다.")
         self._card_ai_worker.run([(item.folder, list(item.files)) for item in items])
 
+    def _status_line(self, text: str = "") -> None:
+        """창 아래 상태 줄 — 화면이 큰 창 안에 있을 때만(시험에서는 화면 하나가 창이다)."""
+        bar = getattr(self.window(), "statusBar", None)
+        if bar is None:
+            return
+        if text:
+            bar().showMessage(text)
+        else:
+            bar().clearMessage()
+
     def _on_card_ai_started(self, _folder: str, number: int, total: int) -> None:
-        self.window().statusBar().showMessage(f"카드 영수증 · 회의록을 AI 로 읽는 중 ({number}/{total})")
+        self._status_line(f"카드 영수증 · 회의록을 AI 로 읽는 중 ({number}/{total})")
 
     def _on_card_ai_done(self, folder: str, result) -> None:
         key = card_ai.folder_key(folder)
@@ -1153,11 +1166,48 @@ class ClaimPage(QWidget):
         self._sync_buttons()
 
     def _on_card_ai_finished(self, fatal: str) -> None:
-        self.window().statusBar().clearMessage()
+        self._status_line()
         if fatal == "login":
-            ai_status.instance().mark(ai.chosen("minutes"), ai.NO_LOGIN, "카드 영수증 읽기에서 로그인이 풀림")
-        if fatal:
-            self._append_log("카드: AI 로 다 읽지 못했습니다 — 위쪽 AI 단추에서 로그인 · 한도를 확인한 뒤 카드 패널의 [다시 읽기] 를 누르세요.")
+            # 담당자 PC 2026-11-11 16:24 — Claude Code 가 로그인돼 있지 않아 첫 건에서 멈췄고, 회의 시각 · 장소가 빈 채 남았다.
+            # 기록 한 줄만으로는 몰라서 회의록 생성처럼 바로 묻고, 로그인되면 못 읽은 건을 저절로 다시 맡긴다(_on_ai_status)
+            status = ai_status.instance()
+            key = ai.chosen("minutes")
+            status.mark(key, ai.NO_LOGIN, "카드 영수증 읽기에서 로그인이 풀림")
+            self._ai_retry_on_login = True
+            self._append_log("카드: Claude Code 로그인이 풀려 있어 영수증 사진 · 회의록을 읽지 못했습니다 — 로그인하면 저절로 다시 읽습니다.")
+            if QMessageBox.question(
+                    self, "Claude 로그인이 필요합니다",
+                    f"{ai.short_label(key)} 에 로그인돼 있지 않아 영수증 사진 · 회의록 PDF 를 읽지 못했습니다.\n"
+                    "(그래서 금액 · 회의 시각 · 장소가 비어 있습니다.)\n\n지금 로그인 창을 열까요?\n"
+                    "로그인을 마치면 위쪽 AI 단추가 '로그인됨' 으로 바뀌고, 앱이 못 읽은 결제 건을 저절로 다시 읽습니다.",
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) == QMessageBox.Yes:
+                status.login(self, key)
+        elif fatal:
+            self._append_log("카드: AI 로 다 읽지 못했습니다 — 위쪽 AI 단추에서 한도를 확인한 뒤 카드 패널의 [다시 읽기] 를 누르세요.")
+
+    def _on_ai_status(self) -> None:
+        """로그인이 풀려 못 읽은 결제 건이 있으면, 위쪽 AI 단추가 '로그인됨' 이 되는 대로 다시 맡긴다."""
+        if not self._ai_retry_on_login or ai_status.instance().for_use("minutes").state != ai.OK:
+            return
+        self._ai_retry_on_login = False
+        failed = {key for key, (_sig, result) in self._ai_results.items() if isinstance(result, str)}
+        for key in failed:
+            self._ai_results.pop(key, None)
+        rows = [row for row, job in enumerate(self._cards)
+                if job is not None and any(card_ai.folder_key(item.folder) in failed for item in job.items)
+                and not (self._erp_running and row == self._erp_row)]
+        if not rows:
+            return
+        self._append_log("카드: Claude 로그인이 확인돼 못 읽은 결제 건을 다시 읽습니다.")
+        for row in rows:
+            sheet = self.card_panel.chosen_sheet() if row == self._current else -1
+            self._load_card(row, quiet=True)
+            self._refresh_row(row)
+            if row == self._current:
+                self._show_form(row)
+                if 0 <= sheet < self.card_panel.sheet_box.count():
+                    self.card_panel.sheet_box.setCurrentIndex(sheet)
+        self._sync_buttons()
 
     def _reload_card(self) -> None:
         row = self._current
