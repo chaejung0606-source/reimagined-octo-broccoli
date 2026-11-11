@@ -33,7 +33,9 @@ STATE_TEXT = {"saved": ("저장됨", "success"), "running": ("넣는 중", "info
 HOW_TO = ("청구서 폴더 이름 = 대표적요 그대로 — 예 '03_[교육연구프로그램개발운영비] 카드 결제 건(26.10.09.~26.11.08.)'. 그 안의 결제 건 폴더 = "
           "카드 사용 건마다 'YYMMDD_(NN)_건명' — 예 '261012_(17)_안전한지피유' (YYMMDD 는 사용일, NN 은 ERP 청구구분 번호: 17 회의비 · 85 소모성물품 · 90 기타 …). "
           "청구서 폴더 바로 아래의 공문 · 엑셀 같은 파일은 보지 않습니다. "
-          "금액은 영수증 PDF · 회의록에서 찾고, 못 찾으면 건명 끝에 '45,000원' 을 적어 주세요. 번호를 안 적으면 회의록이 있으면 회의비, "
+          "금액은 영수증 PDF · 회의록에서 찾고, 영수증 사진 · 회의록 PDF 처럼 글자로 못 읽는 것은 AI(Claude Code)가 읽습니다(건마다 수십 초 — 한 번 읽은 것은 "
+          "파일을 바꾸기 전까지 다시 읽지 않음). 그래도 틀리면 건명 끝에 '45,000원' 을 적어 주세요 — 폴더 이름의 금액이 먼저입니다. "
+          "결제 건 폴더 안의 '기타' 폴더는 읽지도 붙이지도 않습니다. 번호를 안 적으면 회의록이 있으면 회의비, "
           "물품 표(품명 엑셀)가 있으면 소모성물품, 아니면 기타.")
 
 
@@ -56,6 +58,8 @@ def item_detail(item: card.CardItem, base: str = "", plan: card_erp.ItemResult |
              f"승인번호 {item.approval}" if item.approval else ""]
     if any(found):
         lines.append("영수증 · 회의록에서: " + " · ".join(x for x in found if x))
+    if item.ai_found:
+        lines.append("AI 가 읽은 것: " + item.ai_found)
     if item.minutes:
         lines.append(f"회의록: {os.path.basename(item.minutes)}")
     if item.notice:

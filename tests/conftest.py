@@ -14,6 +14,9 @@ def isolated_home(tmp_path, monkeypatch):
     """설정·기록이 사용자 홈(~/.claim-downloader)을 건드리지 않게 한다."""
     home = tmp_path / "home"
     monkeypatch.setenv("CLAIM_DOWNLOADER_HOME", str(home))
+    # 카드청구 화면이 결제 건을 AI 로 읽으려 해도 이 PC 의 진짜 claude 를 부르지 않게(claims/card_ai.py) — 부르는 테스트는 따로 바꿔 끼운다
+    from claim_downloader.claims import card_ai
+    monkeypatch.setattr(card_ai, "find_claude", lambda: "")
     return home
 
 

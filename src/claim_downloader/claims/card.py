@@ -17,7 +17,8 @@
 청구구분: 폴더 이름의 청구종류(비목명 뒤의 번호 '17' · 이름 '회의비', 괄호 `[회의비]` · `(85)`)가 먼저 — ERP 에서 그 번호의 청구구분을 고른다.
 없으면 회의록이 있으면 (17) 회의비, 물품 표가 있으면 (85) 소모성물품, 둘 다 없으면 (90) 기타.
 
-AI 를 쓰지 않는다(pypdf · zipfile · openpyxl). 그림으로만 된 영수증은 못 읽는다 — 그때는 회의록 · 폴더 이름의 금액을 쓴다.
+이 파일은 AI 를 쓰지 않는다(pypdf · zipfile · openpyxl). 그림으로만 된 영수증 · 학생이 낸 회의록 PDF 처럼 글자로 못 읽는 증빙은
+card_ai.py 가 AI(Claude Code)로 읽어 캐시에 남기고, 여기는 그 캐시를 `ai_lookup` 으로 받아 비운 자리만 채운다(담당자 2026-11-11).
 ERP 카드청구 화면 자동화는 실측 뒤(roadmap 3절) — 이 파일은 폴더 읽기 · 검토 · 결제 건 고르기 규칙만 있다. Qt 없음.
 """
 from __future__ import annotations
@@ -33,6 +34,7 @@ from ..naming import BIMOK_NM, normnm
 from . import notice as notice_mod
 from .schema import CATEGORY_CODES, category_code, parse_amount
 
+AI_READING_NOTE = "AI 가 영수증 · 회의록을 읽는 중 — 끝나면 저절로 다시 읽습니다"
 START_DAY = 9            # 결제 기간은 9일 ~ 다음 달 8일(14절 '카드청구')
 # 카드청구 화면의 청구구분 보기(실측 14절 '카드청구 작성 화면' — name=REQ_DIV_CD). 앱이 증빙 창까지 하는 것은 (17) 회의비뿐이고,
 # (85) 와 그 밖의 것은 앱이 라디오만 고르고 증빙 창은 사람이(미실측). (90) 기타는 증빙이 없다.
@@ -551,6 +553,73 @@ def read_minutes(path: str) -> Minutes:
     return out
 
 
+# ── AI 가 읽은 것(card_ai 의 캐시) → 영수증 · 회의록 ─────────────────────────
+def _ai_path(folder: str, name: str) -> str:
+    """AI 가 적은 파일 이름 → 그 결제 건 폴더 안의 실제 파일(없거나 폴더 밖이면 '')."""
+    if not name:
+        return ""
+    base = os.path.normpath(folder)
+    path = os.path.normpath(os.path.join(base, name))
+    return path if path.startswith(base + os.sep) and os.path.isfile(path) else ""
+
+
+def _iso_day(text: str) -> dt.date | None:
+    found = DATE_RE.search(str(text or ""))
+    return _date(*(int(x) for x in found.groups())) if found else None
+
+
+def _hhmm(text: str) -> str:
+    """'9:00' · '14시 30분' · '14:30:00' → 'HH:MM'. 못 읽으면 ''."""
+    hit = TIME_RE.search(str(text or ""))
+    if not hit or int(hit.group(1)) >= 24:
+        return ""
+    return f"{int(hit.group(1)):02d}:{hit.group(2) or '00'}"
+
+
+def _ai_receipts(ai: dict | None, folder: str) -> list[Receipt]:
+    out = []
+    for raw in (ai or {}).get("receipts") or []:
+        if not isinstance(raw, dict):
+            continue
+        out.append(Receipt(path=_ai_path(folder, str(raw.get("file") or "")), amount=raw.get("amount") if isinstance(raw.get("amount"), int) else None,
+                           card_last=str(raw.get("cardLast4") or ""), approval=re.sub(r"\D", "", str(raw.get("approvalNo") or "")),
+                           merchant=str(raw.get("merchant") or ""), used=_iso_day(raw.get("date")), address=str(raw.get("address") or "")))
+    return out
+
+
+def _ai_minutes(ai: dict | None, folder: str) -> Minutes | None:
+    raw = (ai or {}).get("meeting")
+    if not isinstance(raw, dict):
+        return None
+    content = [str(p).strip() for p in raw.get("content") or [] if str(p).strip()]
+    people = [(str(p.get("org") or "").strip(), str(p.get("name") or "").strip()) for p in raw.get("attendees") or []
+              if isinstance(p, dict) and str(p.get("name") or "").strip()]
+    return Minutes(path=_ai_path(folder, str(raw.get("file") or "")), used=_iso_day(raw.get("date")),
+                   place=str(raw.get("place") or "").strip(), agenda=str(raw.get("agenda") or "").strip(),
+                   start=_hhmm(raw.get("start")), end=_hhmm(raw.get("end")), content=content, attendees=people)
+
+
+def _fill_minutes(minutes: Minutes, ai: Minutes) -> None:
+    """회의록 생성의 .hwpx 에서 읽은 것이 먼저 — 빈 칸만 AI 가 읽은 것으로."""
+    for key in ("used", "place", "agenda", "start", "end", "content", "attendees"):
+        if not getattr(minutes, key) and getattr(ai, key):
+            setattr(minutes, key, getattr(ai, key))
+
+
+def ai_found_text(ai: dict) -> str:
+    """AI 가 찾은 것 한 줄 — 값(이름 · 금액)은 적지 않는다(기록 · 자세히 칸)."""
+    receipts = ai.get("receipts") or []
+    parts = [f"영수증 {len(receipts)}장" + (" · 금액 있음" if any(r.get("amount") for r in receipts) else " · 금액 못 읽음")
+             if receipts else "영수증 없음"]
+    meeting = ai.get("meeting")
+    parts.append(f"회의록(참석자 {len(meeting.get('attendees') or [])}명" + (" · 내용 있음" if meeting.get("content") else "") + ")"
+                 if meeting else "회의록 없음")
+    return " · ".join(parts)
+
+
+_ai_found = ai_found_text
+
+
 def _cell_text(xml: str, tag: str) -> list[str]:
     return [html.unescape(t).strip() for t in re.findall(rf"<{tag}(?:\s[^>]*)?>(.*?)</{tag}>", xml, re.S)]
 
@@ -721,6 +790,8 @@ class CardItem:
     snack: bool = False            # 회의비가 다과비 — 회의록등록 창의 식비청구 '아니오' · 회의비(다과)(B) 에 금액(card_erp)
     snack_from: str = ""
     shop_address: str = ""         # 가맹점 주소(영수증 글자에서. 없으면 ERP 회의록등록 창의 #CARD_ADDR 로 — 넣을 때)
+    ai_read: bool = False          # card_ai 가 이 폴더(지금 파일 그대로)를 읽은 결과를 썼다 — 다시 읽지 않는다
+    ai_found: str = ""             # AI 가 찾은 것 한 줄(값 없이 — 기록 · 자세히 칸)
     receipts: list[str] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)       # 확인할 것
@@ -853,8 +924,9 @@ def _is_goods(path: str) -> bool:
     return name.lower().endswith(EXCEL_SUFFIXES) and any(w in name.replace(" ", "") for w in GOODS_NAME_WORDS)
 
 
-def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: str = "", read_text=pdf_text) -> CardItem:
-    """결제 건 폴더 하나 — 이름 · 영수증 · 회의록 · 물품 표 · 공문을 읽고 금액 출처 · 청구구분을 정한다."""
+def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: str = "", read_text=pdf_text, ai_lookup=None) -> CardItem:
+    """결제 건 폴더 하나 — 이름 · 영수증 · 회의록 · 물품 표 · 공문을 읽고 금액 출처 · 청구구분을 정한다.
+    ai_lookup(폴더, 파일들) 이 주는 AI 결과(card_ai — 영수증 그림 · 회의록 PDF)는 글자로 읽은 것이 비운 자리만 채운다."""
     name = os.path.basename(os.path.normpath(folder))
     parsed = parse_item_name(name, period)
     item = CardItem(folder=folder, name=name, code=parsed.code or code_hint, used=parsed.used, title=parsed.title)
@@ -866,6 +938,18 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
         item.notes.append(f"사용일 {parsed.used:%m-%d} 이 결제 기간 밖")
     item.files = _files_under(folder)
     pdfs = [p for p in item.files if p.lower().endswith(".pdf")]
+    ai = ai_lookup(folder, item.files) if ai_lookup else None
+    if ai is not None:
+        # 화면은 읽는 중 · 못 읽음도 이 꼴로 넘긴다({"reading": True} · {"failed": 까닭}) — 다시 맡기지 않게 ai_read 는 켠다
+        item.ai_read = True
+        if ai.get("reading"):
+            item.notes.append(AI_READING_NOTE)
+        elif ai.get("failed"):
+            item.notes.append("AI 로 읽지 못함: " + str(ai["failed"]))
+        else:
+            item.ai_found = _ai_found(ai)
+    ai_receipts = _ai_receipts(ai, folder)
+    ai_meeting = _ai_minutes(ai, folder)
 
     # 영수증 — 이름이 영수증 같은 PDF 먼저, 없으면 글자가 영수증 같은 PDF(회의록 · 공문 · 서명부 빼고)
     named = [p for p in pdfs if any(w in os.path.basename(p).lower() for w in RECEIPT_NAME_WORDS)]
@@ -881,15 +965,27 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
     scanned = [os.path.basename(p) for p in named if p not in item.receipts]
     pictures = [os.path.basename(p) for p in item.files if p.lower().endswith((".jpg", ".jpeg", ".png", ".heic"))
                 and any(w in os.path.basename(p).lower() for w in RECEIPT_NAME_WORDS)]
-    if scanned or pictures:
-        item.notes.append("글자를 못 읽는 영수증: " + ", ".join(scanned + pictures))
+    if (scanned or pictures) and not any(r.amount for r in ai_receipts):
+        item.notes.append("글자를 못 읽는 영수증: " + ", ".join(scanned + pictures)
+                          + (" — AI 로도 금액을 못 읽음" if item.ai_found else ""))
+    if not receipts and ai_receipts:
+        receipts = ai_receipts                  # 가맹점 · 주소 · 카드 뒷자리 · 승인번호 · 날짜도 AI 가 읽은 영수증에서
 
     minutes_files = [p for p in item.files if _is_minutes(p)]
     minutes = next((m for m in (read_minutes(p) for p in minutes_files if p.lower().endswith((".hwpx", ".docx")))
                     if m.amount or m.merchant), None)
+    if ai_meeting is not None:
+        if minutes is None:
+            minutes = ai_meeting
+        else:
+            _fill_minutes(minutes, ai_meeting)  # 회의록 생성의 .hwpx 가 먼저 — 빈 칸만
+        if ai_meeting.path and ai_meeting.path not in minutes_files:
+            minutes_files.append(ai_meeting.path)
     if minutes_files:
-        item.minutes = minutes.path if minutes else minutes_files[0]
+        item.minutes = minutes.path if minutes and minutes.path else minutes_files[0]
         item.meeting = minutes
+    elif minutes is not None:
+        item.meeting = minutes                  # AI 가 회의록 파일 이름은 못 댔지만 회의 내용은 읽음
     goods_files = [p for p in item.files if _is_goods(p)]
     if goods_files:
         item.goods = read_goods(goods_files[0])
@@ -914,9 +1010,11 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
 
     # 금액 — 폴더 이름(사람이 적은 것) → 영수증 → 회의록 → 물품 표 → 공문(계획 금액일 수 있어 약함)
     receipt_amounts = sorted({r.amount for r in receipts if r.amount})
+    from_ai = bool(receipts) and receipts is ai_receipts
     if len(receipt_amounts) > 1:
-        item.notes.append("영수증 금액이 여럿: " + ", ".join(f"{a:,}" for a in receipt_amounts))
-    sources = [("폴더 이름", parsed.amount), ("영수증", receipt_amounts[0] if len(receipt_amounts) == 1 else None),
+        item.notes.append(("AI 가 읽은 " if from_ai else "") + "영수증 금액이 여럿: " + ", ".join(f"{a:,}" for a in receipt_amounts))
+    sources = [("폴더 이름", parsed.amount),
+               ("영수증(AI 로 읽음)" if from_ai else "영수증", receipt_amounts[0] if len(receipt_amounts) == 1 else None),
                ("회의록", minutes.amount if minutes else None), ("물품 표", item.goods.total if item.goods else None)]
     known = [(where, value) for where, value in sources if value]
     if known:
@@ -933,11 +1031,12 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
     item.card_last = next((r.card_last for r in receipts if r.card_last), "")
     item.approval = next((r.approval for r in receipts if r.approval), "")
     other_day = next((r.used for r in receipts if r.used), None) or (minutes.used if minutes else None)
+    where = ("영수증(AI)" if from_ai else "영수증") if receipts else "회의록"
     if item.used is None and other_day:
         item.used = other_day
-        item.notes.append(f"사용일은 {'영수증' if receipts else '회의록'}에서: {other_day:%m-%d}")
+        item.notes.append(f"사용일은 {where}에서: {other_day:%m-%d}")
     elif item.used and other_day and other_day != item.used:
-        item.notes.append(f"사용일이 다름: 폴더 {item.used:%m-%d} · {'영수증' if receipts else '회의록'} {other_day:%m-%d}")
+        item.notes.append(f"사용일이 다름: 폴더 {item.used:%m-%d} · {where} {other_day:%m-%d}")
 
     # 청구구분 — 이름 표시 → 회의록 → 물품 표 → 기타
     if parsed.req_div:
@@ -952,8 +1051,10 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
         item.req_div, item.req_div_from = "85", "물품 표"
     else:
         item.req_div, item.req_div_from = "90", "회의록 · 물품 표 없음"
-    if item.req_div == "17" and not item.minutes:
+    if item.req_div == "17" and not item.minutes and item.meeting is None:
         item.notes.append("회의비인데 회의록이 없음")
+    if item.req_div == "17" and ai_meeting is not None:
+        item.notes.append("회의 시각 · 장소 · 목적 · 내용 · 참석자를 AI 가 회의록에서 읽음 — 신청 전에 회의록등록 내용을 확인")
     if item.req_div == "17":
         # 영수증이 없으면 ERP 의 카드매출전표로 갈음하는데, 회의 장소(공문 · 회의록)와 가맹점 주소의 도 · 시가 같아야 한다(담당자 2026-10-20)
         item.meeting_region, item.meeting_region_from = meeting_region(minutes.place if minutes else "",
@@ -961,8 +1062,8 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
         conflict = region_conflict(item.meeting_region, item.shop_address)
         if conflict:
             item.notes.append(conflict)
-        item.snack, item.snack_from = snack_of(item.name, minutes, item.merchant)
-        if item.snack and item.snack_from.startswith("가맹점"):
+        item.snack, item.snack_from = snack_of(item.name, minutes, item.merchant, ai.get("snack") if ai else None)
+        if item.snack and item.snack_from.startswith(("가맹점", "AI")):
             item.notes.append(f"다과비로 봄({item.snack_from}) — 식비면 폴더 이름에 '식비' 를 넣으세요")
     if item.req_div == "85" and not item.goods:
         item.notes.append("소모성물품인데 물품 표(품명 · 수량 · 단가 · 금액 엑셀)가 없음")
@@ -971,13 +1072,16 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
     return item
 
 
-def snack_of(folder_name: str, minutes: Minutes | None, merchant: str) -> tuple[bool, str]:
-    """회의비가 다과비인지와 그 근거 — 폴더 이름(사람이 적은 것) → 회의록(사용처 · 안건 · 내용) → 가맹점 이름(카페 · 빵집 꼴, 약함)."""
+def snack_of(folder_name: str, minutes: Minutes | None, merchant: str, ai_snack: bool | None = None) -> tuple[bool, str]:
+    """회의비가 다과비인지와 그 근거 — 폴더 이름(사람이 적은 것) → AI 가 영수증 품목으로 본 것 → 회의록(사용처 · 안건 · 내용)
+    → 가맹점 이름(카페 · 빵집 꼴, 약함)."""
     name = re.sub(r"\s+", "", folder_name or "")
     if any(w in name for w in SNACK_WORDS):
         return True, "폴더 이름"
     if any(w in name for w in MEAL_WORDS):
         return False, "폴더 이름"
+    if ai_snack is not None:
+        return ai_snack, "AI 가 영수증 품목으로 판단"
     if minutes is not None:
         text = re.sub(r"\s+", "", " ".join([minutes.merchant, minutes.agenda] + list(minutes.content)))
         if any(w in text for w in SNACK_WORDS) and not any(w in text for w in MEAL_WORDS):
@@ -988,7 +1092,7 @@ def snack_of(folder_name: str, minutes: Minutes | None, merchant: str) -> tuple[
     return False, ""
 
 
-def load_job(folder: str, read_text=pdf_text) -> CardJob:
+def load_job(folder: str, read_text=pdf_text, ai_lookup=None) -> CardJob:
     """카드 폴더 → 비목마다 청구서 · 결제 건.
 
     - **청구서 폴더**(담당자 2026-11-11): 이름이 대표적요 그대로인 '03_[비목명] 카드 결제 건(26.10.09.~26.11.08.)' — 그 폴더 하나가 청구서 하나,
@@ -1004,7 +1108,7 @@ def load_job(folder: str, read_text=pdf_text) -> CardJob:
         period = claim_period(name, parent)
         if period:
             job.start, job.end = period
-        job.sheets = [_claim_sheet(folder, own, period, job, read_text)]
+        job.sheets = [_claim_sheet(folder, own, period, job, read_text, ai_lookup=ai_lookup)]
         return job
     period = parse_period(name)
     if period:
@@ -1025,15 +1129,15 @@ def load_job(folder: str, read_text=pdf_text) -> CardJob:
             continue
         sub_claim = claim_name(name)
         if sub_claim is not None:
-            claims.append(_claim_sheet(path, sub_claim, claim_period(name, period), job, read_text, prefix=name + "\\"))
+            claims.append(_claim_sheet(path, sub_claim, claim_period(name, period), job, read_text, prefix=name + "\\", ai_lookup=ai_lookup))
         elif parse_item_name(name, period).mmdd:
-            items.append(read_item(path, period, read_text=read_text))
+            items.append(read_item(path, period, read_text=read_text, ai_lookup=ai_lookup))
         elif is_category_folder(name):
             code = _category_of(name)
             subs = sorted(n for n in os.listdir(path) if os.path.isdir(os.path.join(path, n)) and not n.startswith("."))
             for sub in subs:
                 if parse_item_name(sub, period).mmdd:
-                    items.append(read_item(os.path.join(path, sub), period, code_hint=code, read_text=read_text))
+                    items.append(read_item(os.path.join(path, sub), period, code_hint=code, read_text=read_text, ai_lookup=ai_lookup))
                 else:
                     job.skipped.append(f"{name}\\{sub} (이름에 사용일 MMDD 가 없음)")
         else:
@@ -1050,7 +1154,7 @@ def load_job(folder: str, read_text=pdf_text) -> CardJob:
     return job
 
 
-def _claim_sheet(folder: str, claim: ClaimName, period, job: CardJob, read_text, prefix: str = "") -> CardSheet:
+def _claim_sheet(folder: str, claim: ClaimName, period, job: CardJob, read_text, prefix: str = "", ai_lookup=None) -> CardSheet:
     """청구서 폴더 하나 → 청구서 하나. 안의 'YYMMDD_(NN)_건명' 폴더가 결제 건(카드 사용 건마다 하나)이고, 비목은 청구서 폴더의 것."""
     title = os.path.basename(os.path.normpath(folder)).strip()
     sheet = CardSheet(claim.code, *(period or (None, None)), title=title, folder=folder)
@@ -1071,7 +1175,7 @@ def _claim_sheet(folder: str, claim: ClaimName, period, job: CardJob, read_text,
         if not parse_item_name(name, period).mmdd:
             job.skipped.append(f"{prefix}{name} (이름이 '사용일_(청구종류 번호)_건명' 꼴이 아님 — 예 '261012_(17)_회의')")
             continue
-        item = read_item(path, period, code_hint=claim.code, read_text=read_text)
+        item = read_item(path, period, code_hint=claim.code, read_text=read_text, ai_lookup=ai_lookup)
         if item.code != claim.code:
             if item.code:
                 item.notes.append(f"결제 건 이름의 비목({item.code})이 청구서 폴더의 비목({claim.code})과 다름 — 청구서 폴더의 비목으로 넣음")

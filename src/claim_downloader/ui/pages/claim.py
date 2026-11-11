@@ -45,14 +45,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ... import navigate, settings, work_folders
+from ... import ai, navigate, settings, work_folders
 from ...claims import card as card_mod
+from ...claims import card_ai
 from ...claims import card_erp
 from ...claims import participants as part_mod
 from ...claims import kinds
 from ...claims import reattach as reattach_mod
 from ...claims import scholarship as sch
-from .. import folder_picker, project_box
+from .. import ai_status, folder_picker, project_box
 from ..art import Art
 from ..log_button import LogSendButton, warn
 from ..flow import HIDDEN, ChoiceCard, FlowArea, FlowStep
@@ -74,6 +75,7 @@ ROW_STATUS = {
     "problem": ("확인 필요", "warning"),
     "erp": ("넣는 중", "info"),
     "partial": ("일부 저장", "warning"),
+    "ai": ("AI 읽는 중", "info"),          # 카드: 영수증 그림 · 회의록 PDF 를 AI 로 읽는 중(claims/card_ai.py)
 }
 
 GUIDE_START = "청구 종류(장학금 · 혁신인재지원금 · 카드)를 고르세요. 그다음 지출 폴더를 넣으면 명단 · 결제 건이 바로 나옵니다."
@@ -208,6 +210,11 @@ class ClaimPage(QWidget):
         self._erp_sheet = 0                              # 카드: 넣는 중인 청구서(비목) 번호
         self._browser_busy = False
         self._reattach_pending = -1     # 중복 확인 띠에서 [첨부만 다시 올리기] 를 누른 줄 — 넣기가 멈추면 그 폴더로 첨부만 다시 올린다
+        # 카드: 영수증 그림 · 회의록 PDF 를 AI 로 읽기(claims/card_ai.py) — 스레드는 처음 필요할 때 만든다
+        self._card_ai_worker = None
+        self._ai_reading: set[str] = set()                         # 읽는 중인 결제 건 폴더(card_ai.folder_key)
+        self._ai_results: dict[str, tuple[str, dict | str]] = {}  # 이번 실행에서 읽은 것 · 못 읽은 까닭 — (파일 서명, 결과)
+        self._ai_missing_told = False
         self._browser_open = False
         self._current = -1
         self._loading_form = False
@@ -712,9 +719,11 @@ class ClaimPage(QWidget):
                 self.fill_button.setText(f"미리 보기 (결제 {len(left)}건)")
                 self.fill_button.setToolTip("고른 청구서의 결제 건마다 ERP 에 넣을 값을 표로 봅니다. 브라우저는 필요 없습니다.")
             else:
-                self.fill_button.setEnabled(bool(left) and not busy and not self._browser_busy and self._browser_open)
+                reading = job is not None and self._card_ai_busy(job)
+                self.fill_button.setEnabled(bool(left) and not busy and not self._browser_busy and self._browser_open and not reading)
                 self.fill_button.setText(f"ERP 에 넣기 (결제 {len(left)}건)")
-                self.fill_button.setToolTip("" if self._browser_open else
+                self.fill_button.setToolTip("AI 가 영수증 · 회의록을 읽는 중입니다 — 끝나면 누를 수 있습니다." if reading else
+                                            "" if self._browser_open else
                                             "먼저 [브라우저 열기] 로 ERP 를 열고 로그인하세요. 카드청구 화면은 앱이 띄웁니다.")
         elif is_sch:
             job = self._jobs[self._current]
@@ -860,7 +869,7 @@ class ClaimPage(QWidget):
             self.table.setItem(row, col, item)
 
     def is_running(self) -> bool:
-        return self._erp_running
+        return self._erp_running or bool(self._ai_reading)
 
     def resumable(self) -> tuple[bool, str]:
         if self._erp_running:
@@ -1061,21 +1070,104 @@ class ClaimPage(QWidget):
         for problem in self._problems[row]:
             self._append_log("  확인: " + problem)
 
-    def _load_card(self, row: int) -> None:
-        """카드 결제 기간 폴더를 읽는다(영수증 PDF 글자 · 회의록 · 물품 표 — AI 없음)."""
-        job = card_mod.load_job(self._dirs[row])
+    def _load_card(self, row: int, quiet: bool = False) -> None:
+        """카드 폴더를 읽는다(영수증 PDF 글자 · 회의록 · 물품 표). 글자로 못 읽는 증빙(영수증 사진 · 회의록 PDF)은 AI 로 읽도록 뒤 스레드에
+        맡기고(card_ai), 끝나면 이 폴더를 다시 읽는다 — 그때는 AI 가 읽어 둔 것(캐시)을 쓴다."""
+        job = card_mod.load_job(self._dirs[row], ai_lookup=self._ai_lookup)
         card_erp.restore(job)                      # 전에 넣은 결제 건 · 결의번호(_청구입력기록.json) — 다시 누르면 남은 것만
+        self._queue_card_ai(job)
         self._cards[row] = job
         self._problems[row] = job.problems()
-        self._set_status(row, "read" if job.items and not self._problems[row] else "problem" if job.items else "failed")
+        self._set_status(row, "ai" if self._card_ai_busy(job) else
+                         "read" if job.items and not self._problems[row] else "problem" if job.items else "failed")
+        if quiet:
+            return
         self._append_log("카드 폴더 읽음: " + " / ".join(job.summary_lines()))
         for problem in self._problems[row]:
             self._append_log("  확인: " + problem)
+
+    # ── 카드: AI 로 읽기 ──────────────────────────────────────────────────
+    def _ai_lookup(self, folder: str, files: list[str]) -> dict | None:
+        """card.read_item 이 결제 건마다 부른다 — 읽는 중 · 이번에 읽은 것 · 못 읽은 까닭 · 전에 읽어 둔 것(캐시) 차례로."""
+        key = card_ai.folder_key(folder)
+        if key in self._ai_reading:
+            return {"reading": True}
+        held = self._ai_results.get(key)
+        if held is not None and held[0] == card_ai.signature(folder, files):
+            return held[1] if isinstance(held[1], dict) else {"failed": held[1]}
+        return card_ai.lookup(folder, files)
+
+    def _card_ai_busy(self, job) -> bool:
+        return any(card_ai.folder_key(item.folder) in self._ai_reading for item in job.items)
+
+    def _queue_card_ai(self, job) -> None:
+        """금액을 모르거나 회의 내용이 빈 결제 건을 AI 에 맡긴다(card_ai.needs). 이미 읽었거나 읽는 중이면 하지 않는다."""
+        items = card_ai.pending(job)
+        if not items:
+            return
+        platform = ai_status.instance().for_use("minutes")
+        if platform.state == ai.MISSING:
+            if not self._ai_missing_told:
+                self._ai_missing_told = True
+                self._append_log(f"카드: 금액 · 회의 내용을 모르는 결제 {len(items)}건 — 영수증 사진 · 회의록 PDF 는 AI(Claude Code)로 읽는데 "
+                                 "이 PC 에서 쓸 수 없습니다(위쪽 AI 단추). 폴더 이름 끝에 '45,000원' 처럼 금액을 적어도 됩니다.")
+            return
+        for item in items:
+            self._ai_reading.add(card_ai.folder_key(item.folder))
+            item.ai_read = True
+            item.notes.append(card_mod.AI_READING_NOTE)
+        if self._card_ai_worker is None:
+            from ..card_ai_worker import CardAiWorker
+            self._card_ai_worker = CardAiWorker()
+            self._card_ai_worker.log.connect(self._append_log)
+            self._card_ai_worker.started.connect(self._on_card_ai_started)
+            self._card_ai_worker.done.connect(self._on_card_ai_done)
+            self._card_ai_worker.finished.connect(self._on_card_ai_finished)
+        self._append_log(f"카드: 결제 {len(items)}건의 영수증 사진 · 회의록을 AI(Claude Code)로 읽습니다 — 건마다 수십 초. 끝나면 저절로 다시 읽습니다.")
+        self._card_ai_worker.run([(item.folder, list(item.files)) for item in items])
+
+    def _on_card_ai_started(self, _folder: str, number: int, total: int) -> None:
+        self.window().statusBar().showMessage(f"카드 영수증 · 회의록을 AI 로 읽는 중 ({number}/{total})")
+
+    def _on_card_ai_done(self, folder: str, result) -> None:
+        key = card_ai.folder_key(folder)
+        self._ai_reading.discard(key)
+        files = card_mod._files_under(folder)
+        self._ai_results[key] = (card_ai.signature(folder, files), result)
+        for row, job in enumerate(self._cards):
+            if job is None or not any(card_ai.folder_key(item.folder) == key for item in job.items):
+                continue
+            if self._erp_running and row == self._erp_row:
+                continue                            # 넣는 중인 청구서는 바꾸지 않는다 — 끝난 뒤 [다시 읽기]
+            sheet = self.card_panel.chosen_sheet() if row == self._current else -1
+            self._load_card(row, quiet=True)
+            self._refresh_row(row)
+            if row == self._current:
+                self._show_form(row)
+                if 0 <= sheet < self.card_panel.sheet_box.count():
+                    self.card_panel.sheet_box.setCurrentIndex(sheet)     # 보던 청구서 그대로
+            if not self._card_ai_busy(self._cards[row]):
+                self._append_log("카드 폴더 다시 읽음(AI 가 읽은 것으로): " + " / ".join(self._cards[row].summary_lines()))
+                for problem in self._problems[row]:
+                    self._append_log("  확인: " + problem)
+        self._sync_buttons()
+
+    def _on_card_ai_finished(self, fatal: str) -> None:
+        self.window().statusBar().clearMessage()
+        if fatal == "login":
+            ai_status.instance().mark(ai.chosen("minutes"), ai.NO_LOGIN, "카드 영수증 읽기에서 로그인이 풀림")
+        if fatal:
+            self._append_log("카드: AI 로 다 읽지 못했습니다 — 위쪽 AI 단추에서 로그인 · 한도를 확인한 뒤 카드 패널의 [다시 읽기] 를 누르세요.")
 
     def _reload_card(self) -> None:
         row = self._current
         if not (0 <= row < len(self._cards)) or self._kinds[row] != kinds.CARD or self._erp_running:
             return
+        job = self._cards[row]
+        for item in job.items if job is not None else []:
+            key = card_ai.folder_key(item.folder)
+            if isinstance(self._ai_results.get(key, (None, {}))[1], str):
+                self._ai_results.pop(key, None)    # 못 읽었던 것은 [다시 읽기] 때 다시 맡긴다(로그인 · 한도를 고친 뒤)
         self._load_card(row)
         self._refresh_row(row)
         self._show_form(row)
@@ -1648,6 +1740,8 @@ class ClaimPage(QWidget):
         self.form_card.hint_label.setVisible(height >= 860)
 
     def shutdown(self) -> None:
+        if self._card_ai_worker is not None:
+            self._card_ai_worker.shutdown()
         if self._erp_running:
             self.browser.request_stop()
         if self._owns_browser:
