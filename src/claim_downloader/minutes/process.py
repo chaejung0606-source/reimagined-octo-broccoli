@@ -22,6 +22,7 @@ from .errors import BackendError, fatal_kind
 from .hwpx import build_hwpx
 from .logbook import log
 from .naming import _sanitize, _unique, ensure_not_upload
+from .receipt import attach as attach_receipts
 from .rules import load_rules
 from .schema import problems
 
@@ -32,6 +33,7 @@ class MeetingResult:
     info: str          # 성공이면 만든 파일의 전체 경로, 실패면 사유 한 줄(한국어)
     note: str = ""     # 보완요청 (성공일 때만)
     kind: str = ""     # 실패가 남은 회의까지 막는 종류면 login · limit · balance
+    receipts: int = 0  # 회의록 아래 '기타' 칸에 붙인 카드 영수증 그림 수(receipt.py)
 
 
 _XML_BAD = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
@@ -49,8 +51,8 @@ def _clean(value):
     return value
 
 
-def write_minutes(data: dict, meeting_dir: str | Path) -> tuple[str, str]:
-    """dict 를 회의 폴더 안의 .hwpx 로. 돌려주는 값은 (경로, 보완요청)."""
+def write_minutes(data: dict, meeting_dir: str | Path) -> tuple[str, str, int]:
+    """dict 를 회의 폴더 안의 .hwpx 로. 돌려주는 값은 (경로, 보완요청, '기타' 칸에 붙인 영수증 그림 수)."""
     meeting_dir = str(meeting_dir)
     ensure_not_upload(meeting_dir)
     data = _clean(data)
@@ -59,6 +61,7 @@ def write_minutes(data: dict, meeting_dir: str | Path) -> tuple[str, str]:
     base = _sanitize(data.get("filenameBase") or "회의록")
     # 회의록은 회의 자료가 들어 있는 그 폴더에 저장한다.
     out = _unique(os.path.join(meeting_dir, base + ".hwpx"))
+    receipts = 0
     try:
         build_hwpx(data, out)
     except Exception as e:
@@ -72,8 +75,14 @@ def write_minutes(data: dict, meeting_dir: str | Path) -> tuple[str, str]:
         except Exception:
             log("워드 문서 생성도 실패\n" + traceback.format_exc())
             raise BackendError("문서 생성 오류: " + str(e)[:60])
+    else:
+        # 폴더에 카드 영수증이 있으면 회의록 아래 '기타' 칸에 그림으로(담당자 2026-11-11). 붙이다 실패해도 회의록은 그대로 둔다.
+        try:
+            receipts = attach_receipts(out, meeting_dir)
+        except Exception:  # noqa: BLE001
+            log("회의록에 영수증을 붙이지 못했습니다(회의록은 그대로): %s\n%s" % (meeting_dir, traceback.format_exc()))
     note = str(data.get("supplement", "") or "").strip() or "보완사항 없음"
-    return out, note
+    return out, note, receipts
 
 
 def process_meeting(meeting_dir: str | Path, backend: MinutesBackend,
@@ -86,7 +95,7 @@ def process_meeting(meeting_dir: str | Path, backend: MinutesBackend,
         data = backend.generate(meeting_dir, load_rules() if rules is None else rules)
         if not isinstance(data, dict):
             raise BackendError("회의록 데이터가 생성되지 않음")
-        out, note = write_minutes(data, meeting_dir)
+        out, note, receipts = write_minutes(data, meeting_dir)
     except BackendError as error:
         return MeetingResult(False, str(error), kind=fatal_kind(error))
     except RuntimeError as error:          # 업로드 폴더 보호
@@ -95,7 +104,7 @@ def process_meeting(meeting_dir: str | Path, backend: MinutesBackend,
         log("회의 처리 중 오류: %s\n%s" % (meeting_dir, traceback.format_exc()))
         return MeetingResult(False, "오류: " + str(error)[:60])
     log("회의록 저장: %s" % out)
-    return MeetingResult(True, out, note)
+    return MeetingResult(True, out, note, receipts=receipts)
 
 
 def run(meeting_dirs: list[str | Path], backend: MinutesBackend, rules: str | None = None,

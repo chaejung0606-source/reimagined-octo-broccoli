@@ -533,6 +533,7 @@ def ai_keys(minutes: "Minutes | None") -> list[str]:
     return [key for key in MEETING_LABELS if minutes is not None and minutes.sources.get(key) == "ai"]
 
 
+EXTRA_LABEL = "기타"            # 회의록 표 맨 아래 영수증 칸의 라벨(minutes/receipt.EXTRA_LABEL)
 MINUTES_LABELS = ("사 업 명", "회의안건", "회의일시", "회의장소", "회의비 사용처", "금액", "참석자", "소속", "이름")
 CONTENT_LABEL = "회의내용"
 TIME_RE = re.compile(r"(\d{1,2})\s*[:시]\s*(\d{2})?")
@@ -716,6 +717,9 @@ def minutes_table(path: str) -> tuple[list[tuple[str, str]], list[str]]:
         texts = {col: " ".join(p for p in paras if p).strip() for col, _span, paras in row if paras is not None}
         joined = "".join(texts.values()).replace(" ", "")
         if in_content:
+            # 회의록 생성이 내용 아래에 붙이는 '기타'(카드 영수증 그림, minutes/receipt.py) 줄부터는 회의 내용이 아니다
+            if len(row) >= 2 and texts.get(0, "").replace(" ", "") == EXTRA_LABEL:
+                break
             content += [p.strip() for _c, _s, paras in row for p in (paras or []) if p.strip()]
             continue
         if joined.startswith(CONTENT_LABEL):

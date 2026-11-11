@@ -520,7 +520,9 @@ class MinutesPage(QWidget):
         row = self._row(index)
         if result.ok:
             self._results[row] = result.info
-            self._set_status(row, "done", os.path.basename(result.info), result.note)
+            receipts = getattr(result, "receipts", 0)       # 회의록 아래 '기타' 칸에 붙인 카드 영수증(minutes/receipt.py)
+            self._set_status(row, "done", os.path.basename(result.info)
+                             + (f" · 기타 칸에 영수증 {receipts}장" if receipts else ""), result.note)
         else:
             self._set_status(row, "failed", "⚠ " + result.info)
         self._advance()
