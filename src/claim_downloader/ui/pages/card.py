@@ -30,9 +30,9 @@ COL_STATE, COL_DIV, COL_CODE, COL_DATE, COL_TITLE, COL_AMOUNT, COL_NOTES = range
 DIV_TONE = {"17": "info", "85": "info", "90": "neutral"}
 STATE_TEXT = {"saved": ("저장됨", "success"), "running": ("넣는 중", "info"), "review": ("저장·확인", "warning"),
               "stopped": ("멈춤", "danger"), "skipped": ("건너뜀", "neutral"), "planned": ("미리 봄", "neutral")}
-HOW_TO = ("결제 건 폴더 이름 = '<비목명> MMDD <건명>' (MMDD 는 사용일). 금액은 영수증 PDF · 회의록에서 찾고, 못 찾으면 이름 끝에 "
-          "'45,000원' 을 적어 주세요. 청구구분은 회의록이 있으면 회의비, 물품 표(품명 엑셀)가 있으면 소모성물품, 아니면 기타 — "
-          "이름에 [회의비] · [소모품] · [기타] 를 적으면 그것으로.")
+HOW_TO = ("결제 건 폴더 이름 = '<비목명> <청구종류 번호> MMDD <건명>' — 예 '교육연구프로그램개발운영비 17 1015 운영회의' (MMDD 는 사용일, "
+          "청구종류 17 회의비 · 85 소모성물품 · 90 기타 … ERP 의 청구구분 번호). 금액은 영수증 PDF · 회의록에서 찾고, 못 찾으면 이름 끝에 "
+          "'45,000원' 을 적어 주세요. 번호를 안 적으면 회의록이 있으면 회의비, 물품 표(품명 엑셀)가 있으면 소모성물품, 아니면 기타.")
 
 
 def _money(value) -> str:
@@ -188,7 +188,7 @@ class CardPanel(QWidget):
         for row, item in enumerate(self._items):
             self._set_state_cell(row, "saved" if item.status == "saved" else "", "")
             div = QTableWidgetItem(item.req_div_name or "모름")
-            div.setData(PillDelegate.ROLE, DIV_TONE.get(item.req_div, "warning"))
+            div.setData(PillDelegate.ROLE, DIV_TONE.get(item.req_div, "info" if item.req_div in card.REQ_DIV_NAMES else "warning"))
             div.setToolTip(item.req_div_from)
             self.table.setItem(row, COL_DIV, div)
             cells = {COL_CODE: item.code or "?", COL_DATE: f"{item.used:%m-%d}" if item.used else "?",

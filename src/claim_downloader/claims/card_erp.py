@@ -87,6 +87,11 @@ REQ_DIV_JS = """() => {
   const on = all.filter(r => r.checked);
   return {value: String(((on.filter(vis)[0]) || on[0] || {}).value || ''), enabled: all.some(r => vis(r) && !r.disabled)};
 }"""
+# 청구구분을 고른 뒤 증빙 단추가 보이는지 — (17) 은 [신규등록] #btn_addEvid2 · [불러오기] #btn_addEvid3, (85) 는 [등록] #btn_addEvid(실측 14절).
+# (17) · (85) · (90) 밖의 청구구분은 증빙 창이 미실측이라, 단추가 보이면 사람이 작성하고 안 보이면 (90) 처럼 증빙 없이 간다. 읽기만 한다.
+EVIDENCE_BUTTONS_JS = """() => { const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  return ['btn_addEvid', 'btn_addEvid2', 'btn_addEvid3'].some(id =>
+    Array.from(document.querySelectorAll('[id="' + id + '"]')).some(vis)); }"""
 # 보이는 링크의 글자 — 붙은 증빙 요약(#REQ_DIV_LNK '물품명:…' · '회의일자:…', 실측 15:32)
 LINK_TEXT_JS = """(id) => { const all = Array.from(document.querySelectorAll('[id="' + id + '"]'));
   const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
@@ -237,6 +242,9 @@ def plan_item(item: card.CardItem, index: int, members: list[part_mod.Member] | 
     elif item.req_div == "85":
         lines.append("소모성물품: [등록] 창 · 물품검수 정보는 사람이 넣음 (창 미실측)")
         lines.append(f"청구내역: ERP 가 채운 글 앞에 {item.line_code or '?'}_")
+    elif item.req_div:
+        lines.append(f"{item.req_div_name}: 앱이 청구구분을 고르고, 증빙 창이 뜨면 사람이 작성 (창 미실측)")
+        lines.append(f"청구내역: 증빙이 채운 글 앞에 {item.line_code or '?'}_ — 증빙이 없으면 {item.summary}")
     files = attachments(item)
     lines.append(f"첨부 {len(files)}개: " + (" · ".join(os.path.basename(f) for f in files) or "없음"))
     result.review += item.blocking() + item.notes
@@ -666,6 +674,7 @@ def _run_item(page, frame, job, sheet, item: card.CardItem, index: int, planned:
     log("비목 %s · 청구구분 %s" % (category, item.req_div_name))
 
     # 3. 청구구분마다 증빙 · 청구내역
+    needs_evidence = item.req_div in ("17", "85")
     if item.req_div == "17":
         ok, why = _minutes(page, frame, item, log, ask, wait, messages, result, members)
         if not ok:
@@ -674,8 +683,14 @@ def _run_item(page, frame, job, sheet, item: card.CardItem, index: int, planned:
         ok, why = _goods_by_person(frame, item, ask, wait)
         if not ok:
             return False, why
-    if item.req_div in ("17", "85"):
-        filled = _state(frame, ["REQ_PTCL"])["REQ_PTCL"]
+    elif item.req_div != "90":
+        ok, why, needs_evidence = _evidence_by_person(frame, item, ask, wait)
+        if not ok:
+            return False, why
+        if needs_evidence:
+            result.review.append(f"{item.req_div_name} 증빙은 사람이 작성함 — 신청 전에 증빙 내용을 확인")
+    filled = _state(frame, ["REQ_PTCL"])["REQ_PTCL"]
+    if item.req_div in ("17", "85") or (needs_evidence and filled):
         wanted = item.prefixed(filled)
         if wanted and wanted != filled:
             done = _set(frame, "text", "REQ_PTCL", wanted)
@@ -723,7 +738,7 @@ def _run_item(page, frame, job, sheet, item: card.CardItem, index: int, planned:
             bad.append("청구내역이 빔")
         if not parse_amount(s["REQ_AMT"]):
             bad.append("청구액이 빔")
-        if item.req_div in ("17", "85") and not _link(frame, "REQ_DIV_LNK"):
+        if needs_evidence and not _link(frame, "REQ_DIV_LNK"):
             bad.append("증빙이 붙지 않음")
         return not bad, " · ".join(bad)
 
@@ -765,6 +780,22 @@ def _sheet_rows(frame) -> int:
         return int(frame.evaluate(SHEET_ROWS_JS) or 0)
     except Exception:  # noqa: BLE001
         return 0
+
+
+def _evidence_by_person(frame, item: card.CardItem, ask: Ask, wait) -> tuple[bool, str, bool]:
+    """(17) · (85) · (90) 밖의 청구구분(폴더 이름의 청구종류 번호, 담당자 2026-11-11) — 앱은 라디오만 골랐다. 증빙 단추가 보이면 그 창은
+    미실측이라 사람이 작성하고([계속] 뒤 #REQ_DIV_LNK 로 본다), 안 보이면 (90) 처럼 증빙 없이 간다. 돌려주는 셋째 값 = 증빙이 필요한지."""
+    wait(0.3)
+    try:
+        shown = bool(frame.evaluate(EVIDENCE_BUTTONS_JS))
+    except Exception:  # noqa: BLE001
+        shown = False
+    if not shown:
+        return True, "", False
+    ok, why = _ask_until(lambda: (bool(_link(frame, "REQ_DIV_LNK")), "증빙이 아직 없음"), ask,
+                         lambda w: (f"{item.name}: 청구구분 {item.req_div_name} — {w}. 증빙 [신규등록] (또는 [등록]) 창을 작성하고 "
+                                    "그 창의 [저장] 을 누른 뒤 [계속]."), wait)
+    return ok, why, True
 
 
 def _goods_by_person(frame, item: card.CardItem, ask: Ask, wait) -> tuple[bool, str]:

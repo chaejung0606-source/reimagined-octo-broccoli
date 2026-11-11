@@ -108,6 +108,51 @@ def test_item_folder_name_parts():
     assert (got.used, got.amount) == (D(2026, 9, 15), 1500)
 
 
+def test_claim_kind_number_after_category_name():
+    """담당자 2026-11-11 "비목명 다음에 청구종류를 작성" · "청구종류 번호로 입력할게요 회의비=17" — 그 번호의 청구구분을 ERP 에서 고른다."""
+    period = (D(2026, 9, 9), D(2026, 10, 8))
+    cases = {
+        "교육연구프로그램개발운영비 17 1015 사업단 운영회의": ("03", D(2026, 10, 15), "17", "사업단 운영회의"),
+        "03_교육연구프로그램개발운영비 85 1002 특강 다과": ("03", D(2026, 10, 2), "85", "특강 다과"),
+        "기타운영경비 90 0920 클로드 구독": ("09", D(2026, 9, 20), "90", "클로드 구독"),
+        "기타운영경비 16 0920 점심": ("09", D(2026, 9, 20), "16", "점심"),
+        # 세 자리 번호 120 은 '1월 20일' 로도 읽히지만 뒤에 사용일이 있으면 청구종류
+        "기타운영경비 120 1001 장비 적립": ("09", D(2026, 10, 1), "120", "장비 적립"),
+        "기타운영경비 (17) 0915 운영회의": ("09", D(2026, 9, 15), "17", "운영회의"),
+        # 이름으로 적어도 · 번호와 이름을 함께 적어도 · 띄어 쓰지 않아도
+        "기타운영경비 회의비 0915 운영회의": ("09", D(2026, 9, 15), "17", "운영회의"),
+        "기타운영경비 회의비(17) 0915 운영회의": ("09", D(2026, 9, 15), "17", "운영회의"),
+        "기타운영경비회의비 0915 운영회의": ("09", D(2026, 9, 15), "17", "운영회의"),
+        # 비목 폴더 아래에 두면 청구종류만
+        "17 0915 운영회의": ("", D(2026, 9, 15), "17", "운영회의"),
+        # 청구종류 없음 — 전과 같다
+        "기타운영경비 0915 사업단 운영회의": ("09", D(2026, 9, 15), "", "사업단 운영회의"),
+    }
+    for name, want in cases.items():
+        got = card.parse_item_name(name, period)
+        assert (got.code, got.used, got.req_div, got.title) == want, name
+    # ERP 에 같은 이름이 둘이면 번호를 적게 한다
+    twin = card.parse_item_name("기타운영경비 교육훈련내역 0920 교육", period)
+    assert (twin.code, twin.req_div) == ("09", "") and "(87) · (99)" in twin.div_note
+    assert card.parse_item_name("기타운영경비 99 0920 교육", period).req_div == "99"
+    # 비목이 아닌 번호 · 청구구분에 없는 번호는 떼지 않는다
+    assert card.parse_item_name("기타운영경비 0915 17명 회의", period).req_div == ""
+    assert card.req_div_of("09") == ("", "") and card.req_div_of("55") == ("", "")
+    assert card.REQ_DIV_NAMES["17"] == "회의비"
+
+
+def test_claim_kind_number_wins_over_files(tmp_path):
+    period = tmp_path / "26-09(09.09. ~ 10.08.)"
+    touch(period / "기타운영경비 17 0915 운영회의" / "0915 영수증.pdf")
+    touch(period / "기타운영경비 90 0916 다과" / "2026-09-16 수 다과회.hwpx")
+    touch(period / "기타운영경비 교육훈련내역 0917 교육" / "결제.pdf")
+    job = card.load_job(str(period), read_text=reader({}))
+    meeting, snack, twin = job.items
+    assert (meeting.req_div, meeting.req_div_from) == ("17", "폴더 이름 '17'") and "회의비인데 회의록이 없음" in meeting.notes
+    assert snack.req_div == "90" and any("회의록이 있는데 청구종류는 (90) 기타" in n for n in snack.notes)
+    assert twin.req_div == "90" and any("(87) · (99)" in n for n in twin.notes)       # 못 정하면 전처럼 파일로(기타)
+
+
 def test_category_folder_is_strict():
     assert card.is_category_folder("기타운영경비")
     assert card.is_category_folder("09_기타운영경비")

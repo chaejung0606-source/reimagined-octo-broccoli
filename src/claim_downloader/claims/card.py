@@ -1,9 +1,10 @@
 """카드청구 — 결제 기간 폴더를 읽어 비목마다 청구서 하나 · 결제 건마다 한 줄로 나눈다(담당자 설명 2026-10-20, docs/roadmap.md 3절).
 
-폴더 모양(담당자가 이미 쓰는 것 그대로 — `★★지출진행\\2. 카드\\<기간>\\<비목명> MMDD <건명>\\`):
+폴더 모양(담당자가 이미 쓰는 것 그대로 — `★★지출진행\\2. 카드\\<기간>\\<비목명> [청구종류 번호] MMDD <건명>\\`):
 
     26-09(09.09. ~ 10.08.)\\                  결제 기간 = 대표적요의 기간. '26.09.09. ~ 10.08.' 꼴도 읽는다
       기타운영경비 0915 사업단 운영회의\\        결제 1건: 비목 · 사용일(MMDD) · 건명. 금액(`45,000원`)은 있으면 쓴다
+      교육연구프로그램개발운영비 17 1015 운영회의\\   청구종류 번호(17 회의비 · 85 소모성물품 · 90 기타 …)를 비목명 바로 뒤에(담당자 2026-11-11)
         0915 영수증.pdf · 2026-09-15 월 운영회의.hwpx · 서명부.pdf
       기타운영경비\\                            비목 이름만 있는 폴더 아래에 결제 건 폴더를 두어도 된다
         0920 사무용품 구입\\ …
@@ -13,7 +14,8 @@
 '금액' · '회의비 사용처' 칸) → 물품 표 엑셀 합계 → 공문 순으로 찾는다. 같은 날 같은 금액이 여럿이면 가맹점 · 카드 뒷자리 · 승인번호로
 좁히고, 그래도 여럿이면 사람에게(`pick`).
 
-청구구분: 회의록이 있으면 (17) 회의비, 물품 표가 있으면 (85) 소모성물품, 둘 다 없으면 (90) 기타. 폴더 이름의 `[회의비]` `[소모품]` `[기타]` 가 먼저.
+청구구분: 폴더 이름의 청구종류(비목명 뒤의 번호 '17' · 이름 '회의비', 괄호 `[회의비]` · `(85)`)가 먼저 — ERP 에서 그 번호의 청구구분을 고른다.
+없으면 회의록이 있으면 (17) 회의비, 물품 표가 있으면 (85) 소모성물품, 둘 다 없으면 (90) 기타.
 
 AI 를 쓰지 않는다(pypdf · zipfile · openpyxl). 그림으로만 된 영수증은 못 읽는다 — 그때는 회의록 · 폴더 이름의 금액을 쓴다.
 ERP 카드청구 화면 자동화는 실측 뒤(roadmap 3절) — 이 파일은 폴더 읽기 · 검토 · 결제 건 고르기 규칙만 있다. Qt 없음.
@@ -32,10 +34,26 @@ from . import notice as notice_mod
 from .schema import CATEGORY_CODES, category_code, parse_amount
 
 START_DAY = 9            # 결제 기간은 9일 ~ 다음 달 8일(14절 '카드청구')
-REQ_DIV_NAMES = {"17": "회의비", "85": "소모성물품", "90": "기타"}
-# 폴더 이름의 청구구분 표시 — `[회의비]` · `(85)` 같은 것
-REQ_DIV_TAGS = {"17": ("회의비", "회의", "17"), "85": ("소모성물품", "소모품", "물품", "85"), "90": ("기타", "90")}
-TAG_RE = re.compile(r"[\[(（]\s*([^\])）]{1,8}?)\s*[\])）]")
+# 카드청구 화면의 청구구분 보기(실측 14절 '카드청구 작성 화면' — name=REQ_DIV_CD). 앱이 증빙 창까지 하는 것은 (17) 회의비뿐이고,
+# (85) 와 그 밖의 것은 앱이 라디오만 고르고 증빙 창은 사람이(미실측). (90) 기타는 증빙이 없다.
+REQ_DIV_NAMES = {
+    "17": "회의비", "33": "여비(국내)", "34": "여비(국외)", "22": "물품구매(카드)", "23": "도서구매(카드)", "89": "용역구매(카드)",
+    "85": "소모성물품", "86": "위탁수행내역", "16": "식대", "87": "교육훈련내역", "99": "교육훈련내역", "60": "학회비", "72": "원고료",
+    "73": "번역료", "84": "강사료", "83": "자문료", "97": "학회참가", "98": "세미나참가", "120": "연구장비통합계정적립", "90": "기타",
+}
+# 폴더 이름의 청구종류 — 비목명 바로 뒤(담당자 2026-11-11 "비목명 다음에 청구종류를 작성 · 청구종류에 맞게 erp에서 청구종류를 선택")나
+# `[회의비]` · `(85)` 같은 괄호 표시. 낱말은 normnm(띄어쓰기 · 괄호 뗌)으로 견준다. 옛 표시 '회의' · '소모품' · '물품' 도 그대로 받는다.
+REQ_DIV_WORDS = {
+    "회의비": "17", "회의": "17", "여비": "33", "국내여비": "33", "여비국내": "33", "국외여비": "34", "여비국외": "34",
+    "물품구매": "22", "물품구매카드": "22", "도서구매": "23", "도서구매카드": "23", "용역구매": "89", "용역구매카드": "89",
+    "소모성물품": "85", "소모품": "85", "물품": "85", "위탁수행내역": "86", "위탁수행": "86", "식대": "16",
+    "학회비": "60", "원고료": "72", "번역료": "73", "강사료": "84", "자문료": "83", "학회참가": "97", "세미나참가": "98",
+    "연구장비통합계정적립": "120", "기타": "90",
+}
+# ERP 에 같은 이름이 둘 — (87) · (99) 교육훈련내역. 이름에 번호를 적어야 고른다
+REQ_DIV_TWINS = {"교육훈련내역": ("87", "99"), "교육훈련": ("87", "99")}
+TAG_RE = re.compile(r"[\[(（]\s*([^\])）]{1,12}?)\s*[\])）]")
+DIV_TOKEN_RE = re.compile(r"^\(?(\d{2,3})\)?(.*)$")
 AMOUNT_IN_NAME_RE = re.compile(r"(?<![\d,])(\d{1,3}(?:,\d{3})+|\d+)\s*원")
 # 사용일 — '0915' · '09.15' · '9.15'. 뒤에 '원' 이 오면 금액이다
 DATE_IN_NAME_RE = re.compile(r"(?<![\d,.])(\d{1,2})\.?(\d{2})(?![\d,]|\s*원)")
@@ -168,27 +186,89 @@ class ItemName:
     req_div: str = ""
     head: str = ""          # 사용일 앞 글자(비목 자리) — 비목을 못 읽었을 때 알림에 쓴다
     mmdd: tuple[int, int] | None = None     # 이름의 사용일(월, 일) — 기간을 못 읽어도 결제 건 폴더인지는 이것으로
+    div_word: str = ""      # 이름에서 읽은 청구종류 글자(비목명 뒤 · 괄호 표시)
+    div_note: str = ""      # 청구종류로 보이는데 정하지 못한 까닭(같은 이름 둘 등)
+
+
+def req_div_of(text: str) -> tuple[str, str]:
+    """청구종류 글자 → (청구구분 번호, 못 정한 까닭). '회의비' · '(17)' · '17회의비' · '회의비(17)' · '식대'. 청구종류가 아니면 ('', '')."""
+    word = normnm(text)
+    if not word:
+        return "", ""
+    if word in REQ_DIV_WORDS:
+        return REQ_DIV_WORDS[word], ""
+    if word in REQ_DIV_TWINS:
+        return "", f"청구종류 '{text.strip()}' 은 ERP 에 " + " · ".join(f"({c})" for c in REQ_DIV_TWINS[word]) + " 둘 — 이름에 (87) 처럼 번호를 적어 주세요"
+    hit = DIV_TOKEN_RE.match(re.sub(r"\s+", "", str(text)))
+    if hit:
+        number, rest = hit.group(1), normnm(hit.group(2))
+        if number in REQ_DIV_NAMES and (not rest or rest == normnm(REQ_DIV_NAMES[number]) or REQ_DIV_WORDS.get(rest) == number
+                                        or number in REQ_DIV_TWINS.get(rest, ())):
+            return number, ""
+    tail = re.match(r"^(.*?)\(?(\d{2,3})\)?$", re.sub(r"\s+", "", str(text)))     # '회의비(17)'
+    if tail and tail.group(1) and tail.group(2) in REQ_DIV_NAMES:
+        number, rest = tail.group(2), normnm(tail.group(1))
+        if rest == normnm(REQ_DIV_NAMES[number]) or REQ_DIV_WORDS.get(rest) == number or number in REQ_DIV_TWINS.get(rest, ()):
+            return number, ""
+    return "", ""
+
+
+def _split_div(head: str) -> tuple[str, str, str, str]:
+    """사용일 앞 글자 '<비목명> <청구종류>' → (비목 자리, 청구구분, 읽은 글자, 못 정한 까닭). 뒤쪽 낱말 1~3개를 청구종류로 보되,
+    떼고 남은 글자가 비목으로 읽히거나(비어 있으면 위 비목 폴더) 할 때만 뗀다 — 비목 이름 안의 낱말을 잘못 떼지 않게."""
+    words = head.split()
+    for size in (3, 2, 1):
+        if len(words) < size:
+            continue
+        tail = " ".join(words[-size:])
+        code, note = req_div_of(tail)
+        if not (code or note):
+            continue
+        rest = " ".join(words[:-size])
+        if rest.strip(" _-") and not _category_of(rest.strip(" _-")):
+            continue
+        return rest, code, tail, note
+    # 띄어 쓰지 않은 '기타운영경비회의비' — 끝이 청구종류 이름이고 앞이 비목이면
+    squashed = normnm(head)
+    for word in sorted(set(REQ_DIV_WORDS) | set(REQ_DIV_TWINS), key=len, reverse=True):
+        if len(word) >= 2 and squashed.endswith(word) and len(squashed) > len(word):
+            for cut in range(len(head) - 1, 0, -1):
+                if normnm(head[cut:]) == word:
+                    rest = head[:cut]
+                    if _category_of(rest.strip(" _-")):
+                        code, note = req_div_of(head[cut:])
+                        return rest, code, head[cut:].strip(), note
+                    break
+    return head, "", "", ""
 
 
 def parse_item_name(name: str, period: tuple[dt.date, dt.date] | None = None) -> ItemName:
-    """결제 건 폴더 이름 '<비목명> MMDD <건명> [금액원] [회의비]' 을 나눈다. 사용일 해는 기간에서 정한다."""
+    """결제 건 폴더 이름 '<비목명> [청구종류] MMDD <건명> [금액원] [회의비]' 을 나눈다. 사용일 해는 기간에서 정한다.
+    청구종류는 비목명 바로 뒤에 적는다(담당자 2026-11-11) — '교육연구프로그램개발운영비 회의비 1015 사업단 운영회의'."""
     out = ItemName()
     rest = name
     for hit in list(TAG_RE.finditer(rest)):
-        tag = normnm(hit.group(1))
-        for code, words in REQ_DIV_TAGS.items():
-            if tag in words:
+        code, note = req_div_of(hit.group(1))
+        if code or note:
+            if code:
                 out.req_div = out.req_div or code
-                rest = rest.replace(hit.group(0), " ")
-                break
+            out.div_word = out.div_word or hit.group(1).strip()
+            out.div_note = out.div_note or note
+            rest = rest.replace(hit.group(0), " ")
     amount = AMOUNT_IN_NAME_RE.search(rest)
     if amount:
         out.amount = parse_amount(amount.group(1))
         rest = rest[:amount.start()] + " " + rest[amount.end():]
-    date_hit = _date_token(rest)
+    date_hit = _item_date(rest)
     if date_hit:
         out.mmdd = (int(date_hit.group(1)), int(date_hit.group(2)))
         out.head = rest[:date_hit.start()].strip(" _-")
+        head, div, word, note = _split_div(out.head)
+        if div or note:
+            out.head = head.strip(" _-")
+            out.req_div = out.req_div or div
+            out.div_word = out.div_word or word
+            out.div_note = out.div_note or note
         out.code = _category_of(out.head)
         out.used = _use_date(int(date_hit.group(1)), int(date_hit.group(2)), period)
         out.title = re.sub(r"\s+", " ", rest[date_hit.end():]).strip(" _-")
@@ -201,6 +281,18 @@ def _date_token(text: str):
     for hit in DATE_IN_NAME_RE.finditer(text):
         if 1 <= int(hit.group(1)) <= 12 and 1 <= int(hit.group(2)) <= 31:
             return hit
+    return None
+
+
+def _item_date(text: str):
+    """결제 건 이름의 사용일 — 청구종류 번호 '120'(연구장비통합계정적립)은 '1월 20일' 로도 읽히므로, 따로 떨어진 청구종류 번호 뒤에
+    다른 날짜가 있으면 그 번호는 건너뛴다('기타운영경비 120 1015 …')."""
+    hits = [h for h in DATE_IN_NAME_RE.finditer(text) if 1 <= int(h.group(1)) <= 12 and 1 <= int(h.group(2)) <= 31]
+    for index, hit in enumerate(hits):
+        alone = (hit.start() == 0 or text[hit.start() - 1].isspace()) and (hit.end() == len(text) or text[hit.end()].isspace())
+        if alone and hit.group(0) in REQ_DIV_NAMES and index + 1 < len(hits):
+            continue
+        return hit
     return None
 
 
@@ -690,6 +782,8 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
     item = CardItem(folder=folder, name=name, code=parsed.code or code_hint, used=parsed.used, title=parsed.title)
     if parsed.head and not parsed.code and not code_hint:
         item.notes.append(f"'{parsed.head}' 을 비목으로 읽지 못함")
+    if parsed.div_note:
+        item.notes.append(parsed.div_note)
     if parsed.used and period and not (period[0] <= parsed.used <= period[1]):
         item.notes.append(f"사용일 {parsed.used:%m-%d} 이 결제 기간 밖")
     item.files = _files_under(folder)
@@ -769,7 +863,9 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
 
     # 청구구분 — 이름 표시 → 회의록 → 물품 표 → 기타
     if parsed.req_div:
-        item.req_div, item.req_div_from = parsed.req_div, "폴더 이름"
+        item.req_div, item.req_div_from = parsed.req_div, f"폴더 이름 '{parsed.div_word}'" if parsed.div_word else "폴더 이름"
+        if minutes_files and parsed.req_div != "17":
+            item.notes.append(f"회의록이 있는데 청구종류는 {item.req_div_name} — 맞는지 확인")
     elif minutes_files:
         item.req_div, item.req_div_from = "17", "회의록"
         if item.goods:

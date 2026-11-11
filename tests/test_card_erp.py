@@ -149,6 +149,51 @@ def test_plan_for_other_and_goods(tmp_path):
     assert card_erp.main_summary(job.sheets[0], test_mode=True).startswith("[시험] 09_[그밖의사업운영경비] 카드 결제 건")
 
 
+def test_plan_for_a_claim_kind_number(tmp_path):
+    """폴더 이름의 청구종류 번호(담당자 2026-11-11) — (17) · (85) · (90) 밖의 번호는 앱이 청구구분만 고르고 증빙 창은 사람이."""
+    period = tmp_path / "26-09"
+    touch(period / "기타운영경비 16 0920 점심 12,000원" / "결제.pdf")
+    item = card.load_job(str(period), read_text=reader({})).items[0]
+    assert (item.req_div, item.req_div_name) == ("16", "(16) 식대")
+    lines = card_erp.plan_item(item, 0).lines
+    assert any("(16) 식대: 앱이 청구구분을 고르고" in line for line in lines)
+    assert any("증빙이 없으면 09_점심" in line for line in lines)
+
+
+class EvidenceFrame:
+    """증빙 단추 · 붙은 증빙 링크만 흉내 — 사람이 [계속] 을 누르면 증빙이 붙는다."""
+    def __init__(self, buttons: bool):
+        self.buttons, self.link = buttons, ""
+
+    def evaluate(self, js, arg=None):
+        if js == card_erp.EVIDENCE_BUTTONS_JS:
+            return self.buttons
+        if js == card_erp.LINK_TEXT_JS:
+            return self.link
+        raise AssertionError(js)
+
+
+def test_other_claim_kinds_ask_a_person_only_when_evidence_buttons_show():
+    item = card.CardItem(folder="x", name="기타운영경비 16 0920 점심", code="09", req_div="16", title="점심")
+    asked: list[str] = []
+    quiet = EvidenceFrame(buttons=False)
+    assert card_erp._evidence_by_person(quiet, item, lambda m: asked.append(m) or True, lambda s: None) == (True, "", False)
+    assert asked == []                                                          # 증빙 단추가 없으면 (90) 처럼
+    frame = EvidenceFrame(buttons=True)
+
+    def person(message):
+        asked.append(message)
+        frame.link = "식대:점심"                                                # 사람이 증빙 창을 작성했다
+        return True
+
+    ok, _why, needs = card_erp._evidence_by_person(frame, item, person, lambda s: None)
+    assert (ok, needs, len(asked)) == (True, True, 1)                          # 한 번 묻고, 증빙이 붙어 이어 간다
+    assert "(16) 식대" in asked[0] and "[신규등록]" in asked[0]
+    stopped = EvidenceFrame(buttons=True)
+    ok, why, needs = card_erp._evidence_by_person(stopped, item, lambda m: False, lambda s: None)
+    assert (ok, needs) == (False, True) and "멈춤" in why
+
+
 # ── 이 청구서인지 · 기록 ───────────────────────────────────────────────
 class FakeFrame:
     def __init__(self, **values):
