@@ -180,6 +180,12 @@ def test_claim_folder_name_is_the_summary():
     assert card.parse_item_name("261399_(17)_x", parent).mmdd is None                # 없는 날짜는 결제 건 폴더가 아님
     got = card.parse_item_name("1107_(90)_콘텐트 최신화 클로드 결제(1월분) 33,000원", parent)
     assert (got.used, got.req_div, got.title, got.amount) == (D(2026, 11, 7), "90", "콘텐트 최신화 클로드 결제(1월분)", 33000)
+    # 금액은 이름 끝에 — '_45,000원' · '_45000원' · '_45,000'(원 없이 콤마만) · '(45,000원)'
+    for name in ("261012_(17)_안전한지피유_45,000원", "261012_(17)_안전한지피유 45,000원", "261012_(17)_안전한지피유_45000원",
+                 "261012_(17)_안전한지피유_45,000", "261012_(17)_안전한지피유(45,000원)", "261012_(17)_안전한지피유_(45,000)"):
+        got = card.parse_item_name(name, parent)
+        assert (got.used, got.req_div, got.title, got.amount) == (D(2026, 10, 12), "17", "안전한지피유", 45000), name
+    assert card.parse_item_name("261012_(17)_회의 2", parent).amount is None      # 콤마 없는 끝 숫자는 건명
 
 
 def test_claim_folders_become_one_sheet_each(tmp_path):

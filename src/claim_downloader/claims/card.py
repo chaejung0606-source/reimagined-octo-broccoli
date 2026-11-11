@@ -57,6 +57,10 @@ REQ_DIV_TWINS = {"교육훈련내역": ("87", "99"), "교육훈련": ("87", "99"
 TAG_RE = re.compile(r"[\[(（]\s*([^\])）]{1,12}?)\s*[\])）]")
 DIV_TOKEN_RE = re.compile(r"^\(?(\d{2,3})\)?(.*)$")
 AMOUNT_IN_NAME_RE = re.compile(r"(?<![\d,])(\d{1,3}(?:,\d{3})+|\d+)\s*원")
+# 이름 끝의 콤마 금액은 '원' 이 없어도 금액 — '261012_(17)_안전한지피유_45,000'(담당자가 폴더 이름에 금액을 적는다 2026-11-11).
+# 콤마가 없는 끝 숫자는 건명일 수 있어('회의 2') 보지 않는다
+AMOUNT_AT_END_RE = re.compile(r"[\s_]+[(\[]?\s*(\d{1,3}(?:,\d{3})+)\s*[)\]]?\s*$")
+EMPTY_BRACKETS_RE = re.compile(r"[\[(（]\s*[\])）]")
 # 사용일 — '0915' · '09.15' · '9.15'. 뒤에 '원' 이 오면 금액이다
 # 결제 건 폴더 이름 맨 앞의 해가 든 사용일 — '261012_(17)_안전한지피유'(YYMMDD, 담당자 2026-11-11) · '20261012_…'
 FULL_DATE_IN_NAME_RE = re.compile(r"^\s*(?:20)?(\d{2})(\d{2})(\d{2})(?=$|[\s_\-(])")
@@ -315,10 +319,11 @@ def parse_item_name(name: str, period: tuple[dt.date, dt.date] | None = None) ->
             out.div_word = out.div_word or hit.group(1).strip()
             out.div_note = out.div_note or note
             rest = rest.replace(hit.group(0), " ")
-    amount = AMOUNT_IN_NAME_RE.search(rest)
+    amount = AMOUNT_IN_NAME_RE.search(rest) or AMOUNT_AT_END_RE.search(rest)
     if amount:
         out.amount = parse_amount(amount.group(1))
         rest = rest[:amount.start()] + " " + rest[amount.end():]
+        rest = EMPTY_BRACKETS_RE.sub(" ", rest)                  # '건명(45,000원)' 의 남은 괄호
     full = FULL_DATE_IN_NAME_RE.match(rest)
     used = _date(2000 + int(full.group(1)), int(full.group(2)), int(full.group(3))) if full else None
     if used:
