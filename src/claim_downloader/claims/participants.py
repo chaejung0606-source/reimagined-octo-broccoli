@@ -17,7 +17,9 @@ EMP_LINE_RE = re.compile(r"^\s*\((\d{5,13})\)")
 NAME_RE = re.compile(r"^[가-힣]{2,6}$|^[A-Za-z][A-Za-z .'-]{1,40}$")
 FILE_WORDS = ("참여연구원", "참여인력", "PrjPartInfo")
 SUFFIXES = (".xlsx", ".xlsm", ".pdf")
-HOME_ORG_WORDS = ("강원대",)
+HOME_ORG_WORDS = ("강원대", "kangwon")
+# 사업단 이름은 적는 사람마다 조금씩 다르다('데이터보안·활용혁신융합대학사업단' · '데이터보안활용 사업단' · 'COSS') — 비슷하면 같은 곳으로(담당자 2026-11-12)
+HOME_GROUP_WORDS = ("데이터보안", "혁신융합", "coss")
 # 학교 안 조직 — 소속 칸에 학교 이름 없이 이렇게만 적힌 경우(담당자: '학과명이면' 내부)
 # 현황표 PDF 는 긴 학과명을 꺾어 '정보보호학' 처럼 끝이 잘리기도 한다 — '…학' 으로 끝나도 학교 안으로 본다
 DEPT_RE = re.compile(r"(학과|학부|전공|대학원|사업단|산학협력단|대학|학)$")
@@ -129,17 +131,27 @@ def find_file(setting: str, *folders: str) -> str:
     return ""
 
 
-def is_internal_org(org: str) -> bool:
-    """담당자 규칙 — 소속이 비었거나 · 강원대(학교) · 학과명(학교 이름 없이 학과 · 학부 · 사업단 …)이면 학교 안 사람."""
-    # 회의록 PDF 글자에서 학번이 학과에 붙어 읽히기도 한다('…학과202600001' — 담당자 2026-11-12) — 끝의 번호는 소속이 아니다
+def _org_text(org: str) -> str:
+    """소속 글 — 띄어쓰기 · 가운뎃점 · 문장부호를 빼고 영문은 작게. 끝에 붙어 읽힌 번호도 뺀다
+    (회의록 PDF 글자에서 학번이 학과에 붙어 읽히기도 한다 — '…학과202600001', 담당자 2026-11-12)."""
     text = re.sub(r"\(?\d{5,13}\)?$", "", _squash(org))
+    return re.sub(r"[·ㆍ・•\-_.,/]", "", text).lower()
+
+
+def is_internal_org(org: str) -> bool:
+    """담당자 규칙 — 소속이 비었거나 · 강원대(학교) · 데이터보안활용사업단(이름이 비슷하면 같은 곳) · 학과명(학교 이름 없이 학과 · 학부 · 사업단 …)이면 학교 안 사람.
+    참여인력이 될 수 있는 것도 이 소속뿐이다(담당자 2026-11-12 "소속이 강원대나 데이터보안활용사업단일때만 참여인력으로 보기. 소속이 안 적혀있는 경우도 있음")."""
+    text = _org_text(org)
     if not text:
         return True
     if any(word in text for word in HOME_ORG_WORDS):
         return True
     if re.search(r"대학교|대학원대학|기업|회사|㈜|\(주\)|재단|협회|공사|공단|연구원$|청$|시청|도청|군청", text):
-        return False                   # 다른 학교 · 회사 · 기관
-    return bool(DEPT_RE.search(text))
+        return False                   # 다른 학교 · 회사 · 기관('한림대학교 데이터보안…' 도)
+    if any(word in text for word in HOME_GROUP_WORDS):
+        return True
+    # '컴퓨터공학과(석사)' 처럼 끝에 괄호가 붙어도 학과로 — 괄호 앞을 본다
+    return bool(DEPT_RE.search(re.sub(r"(\([^()]*\))+$", "", text)))
 
 
 def _digits(text) -> str:
@@ -153,9 +165,10 @@ def classify(attendees: list[tuple[str, str]], members: list[Member], numbers: d
              number_from: dict[str, str] | None = None) -> list[Attendee]:
     """회의록 참석자 (소속, 이름) → 참여인력 · 내부참석자 · 외부참석자.
 
-    **명단에 이름이 있으면 참여인력**(담당자 2026-11-12 "이름이 참여인력 명단에 있으면 참여인력으로 봐주세요") — 소속이 학교 밖으로 적혔어도,
-    증빙의 학번 · 사번이 명단의 직번과 달라도(학생은 학번 · 명단은 직번일 수 있다) 이름이 명단에 **하나**면 그 사람으로 보고 '확인할 것' 을 남긴다.
-    같은 이름이 여럿이면 번호가 같은 사람, 없으면 사람에게(note).
+    **소속이 강원대 · 사업단이거나 비었고 명단에 이름이 있으면 참여인력**(담당자 2026-11-12 "이름이 참여인력 명단에 있으면 참여인력으로 봐주세요" ·
+    "소속이 강원대나 데이터보안활용사업단일때만 참여인력으로 보기. 소속이 안 적혀있는 경우도 있음") — 증빙의 학번 · 사번이 명단의 직번과 달라도(학생은 학번 ·
+    명단은 직번일 수 있다) 이름이 명단에 **하나**면 그 사람으로 보고 '확인할 것' 을 남긴다. 같은 이름이 여럿이면 번호가 같은 사람, 없으면 사람에게(note).
+    소속이 다른 학교 · 회사 · 기관이면 명단에 같은 이름이 있어도 외부참석자(동명이인).
 
     numbers 는 증빙(회의록 표 · 서명부 · AI 가 읽은 것)에서 이름마다 찾은 학번 · 사번(열쇠는 띄어쓰기 뺀 이름, idnums) — 명단에 없는 사람은
     그 번호로 인적정보조회에서 찾는다(담당자 2026-11-11 "증빙자료에 사번이나 학번이 있으면 그 번호로 먼저 조회")."""
@@ -168,24 +181,22 @@ def classify(attendees: list[tuple[str, str]], members: list[Member], numbers: d
         found = by_name.get(_squash(name), [])
         no = _digits(numbers.get(_squash(name), ""))
         source = number_from.get(_squash(name), "증빙") if no else ""
-        inside = is_internal_org(org)
+        if not is_internal_org(org):
+            # 참여인력은 소속이 강원대 · 사업단(또는 비었을 때)만 — 다른 학교 · 회사 사람은 이름이 명단에 있어도 동명이인으로 본다(담당자 2026-11-12).
+            # 외부참석자는 ERP 에서 찾지 않는다 — 회의록등록 창의 성명 · 소속 칸에 글로 넣는다(번호를 쓸 곳이 없다)
+            note = "참여연구원 명단에 같은 이름이 있음 — 소속이 학교 밖이라 외부참석자로" if found else ""
+            out.append(Attendee(name, org, "external", note=note))
+            continue
         same = [m for m in found if no and _digits(m.emp_no) == no]
         if same:
             out.append(Attendee(name, org, "part", same[0].emp_no, no_from=f"{ROSTER} · {source}"))
         elif len(found) == 1:
-            hints = []
-            if not inside:
-                hints.append(f"회의록의 소속({org})은 학교 밖이지만 참여연구원 명단에 이름이 있어 참여인력으로 넣음")
-            if no:
-                hints.append(f"증빙의 학번 · 사번이 참여연구원 명단의 직번({found[0].emp_no})과 다르지만 이름이 명단에 있어 참여인력으로 넣음")
-            hint = " · ".join(hints) + " — 같은 사람인지 확인하세요" if hints else ""
+            hint = (f"증빙의 학번 · 사번이 참여연구원 명단의 직번({found[0].emp_no})과 다르지만 이름이 명단에 있어 참여인력으로 넣음"
+                    " — 같은 사람인지 확인하세요") if no else ""
             out.append(Attendee(name, org, "part", found[0].emp_no, no_from=ROSTER, hint=hint))
         elif len(found) > 1:
             out.append(Attendee(name, org, "internal", no, no_from=source,
                                 note=f"참여연구원 명단에 같은 이름이 {len(found)}명 — 직번을 보고 고르세요"))
-        elif not inside:
-            # 외부참석자는 ERP 에서 찾지 않는다 — 회의록등록 창의 성명 · 소속 칸에 글로 넣는다(넣기 전 ERP 참여인력 목록에 같은 이름이 있으면 참여인력으로 — attendees.regroup)
-            out.append(Attendee(name, org, "external"))
         else:
             out.append(Attendee(name, org, "internal", no, no_from=source))
     return out

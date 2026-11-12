@@ -297,10 +297,10 @@ def _meeting_entries(item: card.CardItem, values: dict, people: list, need: int)
                      + (f" · {len(content)}자" if content else ""),
                      f"{MIN_CONTENT}자보다 짧음 — ERP 가 저장을 막음" if short else _meeting_check(m, "content", not content)))
     who_src = _source(m, "attendees") + " → 참여연구원 명단으로 나눔"
-    for kind, how in (("part", "참여연구원 명단에 이름이 있음 — 앱이 [행 추가] 창에서 고름(직번 · 학번이 있으면 번호로 먼저, 이름이 맞는 줄이 하나일 때)"),
+    for kind, how in (("part", "소속이 강원대 · 사업단(또는 빔)이고 참여연구원 명단에 이름이 있음 — 앱이 [행 추가] 창에서 고름(직번 · 학번이 있으면 번호로 먼저, 이름이 맞는 줄이 하나일 때)"),
                       ("internal", "넣을 때 그 과제의 ERP 참여인력 목록에 이름이 있으면 참여인력으로, 아니면 [행 추가] 창에서 고름(학번 · 사번이 있으면 번호로 먼저, "
                                   "없거나 못 찾으면 이름 · 소속으로)"),
-                      ("external", "넣을 때 그 과제의 ERP 참여인력 목록에 이름이 있으면 참여인력으로, 아니면 앱이 성명 · 소속을 넣음")):
+                      ("external", "소속이 학교 밖 — 앱이 성명 · 소속을 넣음(ERP 에서 찾지 않음, 참여인력 목록에 같은 이름이 있어도 동명이인으로 봄)")):
         group = [p for p in people if p.kind == kind]
         if group:
             # 번호를 어디서 읽었나 — 참여연구원 명단 말고 증빙(회의록 표 · 서명부 · AI)에서 온 것만 적는다
@@ -349,7 +349,7 @@ def plan_item(item: card.CardItem, index: int, members: list[part_mod.Member] | 
             who = [p.label() for p in people if p.kind == kind]
             if who:
                 lines.append(f"  {part_mod.Attendee('', kind=kind).kind_name}: " + ", ".join(who)
-                             + {"external": " — 앱이 넣음(ERP 참여인력 목록에 이름이 있으면 참여인력으로)", "part": " — 앱이 [행 추가] 창에서 고름(직번 · 이름이 하나일 때)",
+                             + {"external": " — 앱이 넣음", "part": " — 앱이 [행 추가] 창에서 고름(직번 · 이름이 하나일 때)",
                                   "internal": " — 앱이 [행 추가] 창에서 고름(학번 · 사번이 있으면 번호로 먼저, 없으면 이름 · 소속이 하나일 때)"}[kind])
         if item.snack:
             lines.append(f"다과비({item.snack_from}) — 회의록등록 창에서 식비청구 '아니오' · 회의비(다과)(B) "
@@ -979,16 +979,16 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
             if not done.get("ok"):
                 missing.append(f"{key} 를 넣지 못함")
         # 참여인력인지는 ERP 의 참여인력선택 목록으로 — 참여연구원 명단 파일이 없으면 학교 사람이 모두 내부참석자로 갔다(담당자 2026-11-12
-        # "지금 참여인력을 내부참석자로 입력했습니다"). 그 목록에 이름이 있는 사람은 참여인력으로 넣는다 — 회의록 소속이 학교 밖으로 적힌 사람도
-        # (같은 날 "이름이 참여인력 명단에 있으면 참여인력으로 봐주세요"). 외부참석자를 글로 넣기 전에 본다
+        # "지금 참여인력을 내부참석자로 입력했습니다"). 그 목록에 이름이 있는 학교 안 사람은 참여인력으로 넣는다(같은 날 "이름이 참여인력 명단에 있으면
+        # 참여인력으로 봐주세요" · "소속이 강원대나 데이터보안활용사업단일때만 참여인력으로 보기" — 외부참석자는 목록에 같은 이름이 있어도 돌리지 않는다)
         on_tables = {_squash(x.get("name")) for x in _inside_names(popup)} | {_squash(n) for n in _external_names(popup)}
-        if any(p.kind in ("internal", "external") and _squash(p.name) not in on_tables for p in people):
+        if any(p.kind == "internal" and _squash(p.name) not in on_tables for p in people):
             rows = attendees.part_rows(popup, log, wait)
             if rows is not None:
                 people, moved, notes = attendees.regroup(rows, people, skip=on_tables)
                 for note in notes:
                     log("  " + note)
-                log(f"  참여인력선택 목록 {len(rows)}줄 — 회의록의 사람 중 {moved}명이 목록에 이름이 있어 참여인력으로 넣습니다")
+                log(f"  참여인력선택 목록 {len(rows)}줄 — 내부참석자로 본 사람 중 {moved}명이 목록에 이름이 있어 참여인력으로 넣습니다")
                 if moved:
                     result.lines.append(f"ERP 참여인력 목록에 이름이 있는 {moved}명은 참여인력으로")
         externals = [p for p in people if p.kind == "external"]

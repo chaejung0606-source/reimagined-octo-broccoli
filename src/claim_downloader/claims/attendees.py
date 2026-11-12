@@ -513,29 +513,28 @@ def on_part_list(rows: list[dict], person: part_mod.Attendee) -> tuple[str | Non
 
 
 def regroup(rows: list[dict], people: list[part_mod.Attendee], skip=()) -> tuple[list[part_mod.Attendee], int, list[str]]:
-    """내부참석자 · 외부참석자 가운데 그 과제의 참여인력 목록에 이름이 있는 사람을 참여인력으로(목록의 사번으로 찾게) — (새 목록, 돌린 수, 기록 줄).
-    담당자 2026-11-12 "이름이 참여인력 명단에 있으면 참여인력으로 봐주세요" — 회의록 소속이 학교 밖으로 적힌 사람도.
+    """내부참석자 가운데 그 과제의 참여인력 목록에 이름이 있는 사람을 참여인력으로(목록의 사번으로 찾게) — (새 목록, 돌린 수, 기록 줄).
+    담당자 2026-11-12 "이름이 참여인력 명단에 있으면 참여인력으로 봐주세요" · "소속이 강원대나 데이터보안활용사업단일때만 참여인력으로 보기" —
+    외부참석자(소속이 다른 학교 · 회사)는 목록에 같은 이름이 있어도 동명이인으로 보고 돌리지 않는다(classify 가 소속으로 이미 나눴다).
     skip 은 이미 회의록등록 창의 표에 든 이름(띄어쓰기 뺀 것) — 건드리지 않는다. 기록 줄에는 이름을 쓰지 않는다('N번째 사람' — 로그 보내기로 나간다)."""
     out, moved, notes = [], 0, []
     skip = {_squash(n) for n in skip}
     for order, person in enumerate(people, 1):
-        if person.kind not in ("internal", "external") or _squash(person.name) in skip:
+        if person.kind != "internal" or _squash(person.name) in skip:
             out.append(person)
             continue
         emp_no, how = on_part_list(rows, person)
         if emp_no is None:
-            notes.append(f"{order}번째 사람: {person.kind_name}로 — {how}")
+            notes.append(f"{order}번째 사람: 내부참석자로 — {how}")
             out.append(person)
             continue
-        notes.append(f"{order}번째 사람: 참여인력으로 — {how}" + (" (회의록 소속은 학교 밖)" if person.kind == "external" else ""))
-        why = []
-        if person.kind == "external":
-            why.append(f"회의록의 소속({person.org})은 학교 밖이지만 ERP 참여인력 목록에 같은 이름이 있어 참여인력으로 넣음")
+        notes.append(f"{order}번째 사람: 참여인력으로 — {how}")
         if "사번이 다름" in how:
-            why.append("증빙의 학번 · 사번이 ERP 참여인력 목록의 사번과 다르지만 이름이 목록에 있어 참여인력으로 넣음")
-        elif "소속은" in how and person.kind != "external":
-            why.append("ERP 참여인력 목록에서 이름으로 참여인력으로 넣었지만 그 목록의 소속이 회의록과 다름")
-        hint = " · ".join(why) + " — 같은 사람인지 확인하세요" if why else person.hint
+            hint = "증빙의 학번 · 사번이 ERP 참여인력 목록의 사번과 다르지만 이름이 목록에 있어 참여인력으로 넣음 — 같은 사람인지 확인하세요"
+        elif "소속은" in how:
+            hint = "ERP 참여인력 목록에서 이름으로 참여인력으로 넣었지만 그 목록의 소속이 회의록과 다름 — 같은 사람인지 확인하세요"
+        else:
+            hint = person.hint
         out.append(replace(person, kind="part", emp_no=emp_no or person.emp_no, hint=hint, note="",
                            no_from=f"{ERP_PART_LIST}({how})" if emp_no else person.no_from))
         moved += 1
