@@ -1124,16 +1124,19 @@ class ErpSession:
             page.remove_listener("dialog", on_dialog)
 
     # ── 카드 ─────────────────────────────────────────────────────────────
-    def card_members(self, job) -> list:
-        """참여연구원 명단 — 설정의 파일, 없으면 카드 폴더 · 그 위 폴더의 '참여연구원 …' 엑셀 · PDF. 없으면 [] (참석자는 모두 내부참석자로)."""
+    def card_members(self, job, project: str = "") -> list:
+        """참여인력 명단 — 지난번 넣을 때 읽어 둔 그 과제의 ERP 참여인력 목록(지금 것이라 먼저) + 설정의 참여연구원 명단 파일(없으면 카드 폴더 · 그 위 폴더).
+        둘 다 없으면 [] (학교 안 사람은 내부참석자로 보고, 넣을 때 ERP 참여인력 목록으로 다시 나눈다)."""
         import os
         from .claims import participants
         folder = getattr(job, "folder", "") or ""
         path = participants.find_file(str(getattr(self._load_settings(), "participants_file", "") or ""),
                                       folder, os.path.dirname(folder))
-        members = participants.read(path) if path else []
-        self.log("참여연구원 명단: %s" % (f"{os.path.basename(path)} — {len(members)}명" if path else "없음 (설정 → 일반청구에서 고르세요)"))
-        return members
+        from_file = participants.read(path) if path else []
+        from_erp, at = participants.remembered(self._project(project))
+        self.log("참여인력 명단: 파일 %s · ERP 참여인력 목록 %s" % (f"{os.path.basename(path)} {len(from_file)}명" if path else "없음",
+                                                       f"{len(from_erp)}명({at} 읽음)" if from_erp else "아직 없음"))
+        return participants.merged(from_erp, from_file)
 
     def fill_card(self, job, sheet_index: int, dry_run: bool = True, ask=None, on_item=None, project_no: str = "",
                   test_mode: bool = False):
@@ -1143,7 +1146,7 @@ class ErpSession:
         새 카드청구 화면을 띄운다(담당자 허락 2026-10-20, 설정 auto_new_sheet). 못 띄우면 사람에게 띄우게 묻는다."""
         from .claims import card_erp
         sheet = job.sheets[sheet_index]
-        members = self.card_members(job)
+        members = self.card_members(job, project_no)
         summary = card_erp.main_summary(sheet, test_mode)
         if dry_run:
             return card_erp.run(None, None, job, sheet, self.log, ask=lambda _m: False, dry_run=True, members=members, test_mode=test_mode)
@@ -1207,6 +1210,15 @@ class ErpSession:
                                   test_mode=test_mode, find_frame=lambda: card_erp.find_card_form(context))
         finally:
             page.remove_listener("dialog", on_dialog)
+        if report.part_list:
+            # 다음 미리 보기가 참여인력을 가리게 — 시험으로 넣었어도 목록은 진짜 ERP 목록이다
+            try:
+                from .claims import participants
+                kept = participants.remember_list(project, report.part_list)
+                if kept:
+                    self.log(f"ERP 참여인력 목록 {kept}명을 과제 {project} 의 것으로 기억 — 다음 미리 보기부터 참여인력을 가립니다")
+            except Exception as error:  # noqa: BLE001 — 못 남겨도 넣은 것은 그대로
+                self.log("ERP 참여인력 목록을 기억하지 못했습니다: %s" % (str(error).splitlines()[0] if str(error) else type(error).__name__))
         if not test_mode:
             try:
                 card_erp.record_sheet(job, sheet, report)

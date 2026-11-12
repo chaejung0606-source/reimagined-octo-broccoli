@@ -1301,10 +1301,13 @@ class ClaimPage(QWidget):
         self._show_form(row)
         self._sync_buttons()
 
-    def _card_members(self, job) -> list:
-        """참여연구원 명단 — 미리 보기용(넣을 때는 브라우저 스레드가 다시 읽는다)."""
+    def _card_members(self, job, row: int = -1) -> list:
+        """참여인력 명단 — 미리 보기용(넣을 때는 브라우저 스레드가 다시 읽는다). 지난번 넣을 때 기억해 둔 그 과제의 ERP 참여인력 목록이 먼저,
+        그다음 설정의 참여연구원 명단 파일(session.card_members 와 같은 차례)."""
         path = part_mod.find_file(str(getattr(settings.load(), "participants_file", "") or ""), job.folder, os.path.dirname(job.folder))
-        return part_mod.read(path) if path else []
+        project = self._projects[row] if 0 <= row < len(self._projects) and self._projects[row] else self._last_project()
+        from_erp, _at = part_mod.remembered(project)
+        return part_mod.merged(from_erp, part_mod.read(path) if path else [])
 
     def _card_rows(self, job, sheet, results) -> list[ReportRow]:
         by_index = {r.index: r for r in results}
@@ -1339,7 +1342,7 @@ class ClaimPage(QWidget):
             return
         sheet = job.sheets[index]
         report = card_erp.run(None, None, job, sheet, lambda _m: None, ask=lambda _m: False, dry_run=True,
-                              members=self._card_members(job), test_mode=self.test_mode.isChecked())
+                              members=self._card_members(job, row), test_mode=self.test_mode.isChecked())
         self.card_panel.set_plans(index, report.results)
         show_report(self, title="미리 보기", heading=f"ERP 에 넣지 않았습니다 — 카드 {sheet.main_summary or '(비목 모름)'}", tone="info",
                     summary=[f"대표적요: {report.summary}", f"결제 {len(report.results)}건 · {sum(i.amount or 0 for i in sheet.items if i.status != 'saved'):,}원"]
@@ -1364,7 +1367,7 @@ class ClaimPage(QWidget):
             return
         test = self.test_mode.isChecked()
         plan = card_erp.run(None, None, job, sheet, lambda _m: None, ask=lambda _m: False, dry_run=True,
-                            members=self._card_members(job), test_mode=test)
+                            members=self._card_members(job, row), test_mode=test)
         self.card_panel.set_plans(index, plan.results)
         project = self._projects[row] if row < len(self._projects) else self._last_project()
         if not show_report(

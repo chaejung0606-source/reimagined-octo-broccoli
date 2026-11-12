@@ -202,6 +202,7 @@ class ItemResult:
     note: str = ""
     review: list[str] = field(default_factory=list)     # 저장했지만 [신청] 전에 사람이 볼 것
     entries: list[Entry] = field(default_factory=list)  # 미리 보기 — 넣을 값 하나하나
+    part_list: list[dict] | None = None                  # 회의록등록 창에서 읽은 ERP 참여인력 목록(session 이 과제마다 기억 — 미리 보기용)
 
 
 @dataclass
@@ -215,6 +216,7 @@ class CardReport:
     messages: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)       # 청구서 전체에 대한 신청 전 확인할 것
     appl_ok: bool = True
+    part_list: list[dict] | None = None                  # 마지막으로 읽은 ERP 참여인력 목록(ItemResult.part_list)
 
     @property
     def saved(self) -> int:
@@ -280,7 +282,7 @@ def _meeting_check(m: card.Minutes, key: str, missing: bool) -> str:
     return ""
 
 
-def _meeting_entries(item: card.CardItem, values: dict, people: list, need: int) -> list[Entry]:
+def _meeting_entries(item: card.CardItem, values: dict, people: list, need: int, listed: bool = True) -> list[Entry]:
     """회의록등록 창에 들어갈 칸 — 시간 · 장소 · 목적 · 내용 · 참석자 · 회의비 · 인원."""
     m = item.meeting or card.Minutes()
     out = []
@@ -296,7 +298,9 @@ def _meeting_entries(item: card.CardItem, values: dict, people: list, need: int)
     out.append(Entry("내용", (content[:90] + "…" if len(content) > 90 else content) or "?", _source(m, "content")
                      + (f" · {len(content)}자" if content else ""),
                      f"{MIN_CONTENT}자보다 짧음 — ERP 가 저장을 막음" if short else _meeting_check(m, "content", not content)))
-    who_src = _source(m, "attendees") + " → 참여연구원 명단으로 나눔"
+    # 참여인력 명단 = 설정의 참여연구원 명단 파일 + 지난번 넣을 때 읽어 둔 ERP 참여인력 목록(participants.remembered). 둘 다 없으면 미리 보기는 참여인력을 못 가린다
+    who_src = _source(m, "attendees") + (" → 참여인력 명단으로 나눔" if listed else
+                                         " → 참여인력 명단이 아직 없음(설정의 참여연구원 명단 · 한 번 넣으면 앱이 그 과제의 ERP 참여인력 목록을 기억)")
     for kind, how in (("part", "소속이 강원대 · 사업단(또는 빔)이고 참여연구원 명단에 이름이 있음 — 앱이 [행 추가] 창에서 고름(직번 · 학번이 있으면 번호로 먼저, 이름이 맞는 줄이 하나일 때)"),
                       ("internal", "넣을 때 그 과제의 ERP 참여인력 목록에 이름이 있으면 참여인력으로, 아니면 [행 추가] 창에서 고름(학번 · 사번이 있으면 번호로 먼저, "
                                   "없거나 못 찾으면 이름 · 소속으로)"),
@@ -307,8 +311,11 @@ def _meeting_entries(item: card.CardItem, values: dict, people: list, need: int)
             froms = sorted({p.no_from.replace(part_mod.ROSTER + " · ", "") for p in group
                             if p.emp_no and p.no_from and p.no_from != part_mod.ROSTER})
             src = f"{who_src} · 학번 · 사번: {', '.join(froms)} · {how}" if froms else f"{who_src} · {how}"
+            checks = ["AI 가 읽은 사람 — 회의록등록 창에서 확인"] if m.sources.get("attendees") == "ai" else []
+            if kind == "internal" and not listed:
+                checks.append("참여인력 명단이 없어 미리 보기에서는 참여인력을 가리지 못함 — 넣을 때 ERP 참여인력 목록에 이름이 있으면 참여인력으로 넣음")
             out.append(Entry(part_mod.Attendee("", kind=kind).kind_name, f"{len(group)}명: " + ", ".join(p.label() for p in group), src,
-                             "AI 가 읽은 사람 — 회의록등록 창에서 확인" if m.sources.get("attendees") == "ai" else ""))
+                             " · ".join(checks)))
     short_heads = need - len(people)
     out.append(Entry("인원", f"{len(people)}명 (1인 {DEFAULT_LIMIT:,}원 한도로 {need}명 이상)",
                      "회의록 참석자 수",
@@ -341,7 +348,7 @@ def plan_item(item: card.CardItem, index: int, members: list[part_mod.Member] | 
         entries.append(Entry("청구내역", item.summary, "건명"))
     elif item.req_div == "17":
         values, people, missing = meeting_plan(item, members or [])
-        entries.extend(_meeting_entries(item, values, people, need_heads(item.amount or 0, DEFAULT_LIMIT)))
+        entries.extend(_meeting_entries(item, values, people, need_heads(item.amount or 0, DEFAULT_LIMIT), listed=bool(members)))
         lines.append(f"회의록등록: {values['CFRC_ST_DTM'] or '?'}~{values['CFRC_END_DTM'] or '?'}"
                      + (" (끝 시각은 회의록에 없어 시작 + 1시간)" if item.meeting and item.meeting.end_guessed else "")
                      + f" · 장소 {values['CFRC_PLCE'] or '?'} · 목적 {values['CFRC_PURS'][:30] or '?'}")
@@ -717,6 +724,8 @@ def _run(page, frame, job, sheet, summary, log, ask, wait, live, should_stop, on
             ok, note = False, "오류: " + (str(error).splitlines()[0][:100] if str(error) else type(error).__name__)
         report.messages.extend(live)
         live.clear()
+        if result.part_list:
+            report.part_list = result.part_list
         result.note = note
         if ok == "skipped":
             result.status = "skipped"
@@ -985,6 +994,7 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
         if any(p.kind == "internal" and _squash(p.name) not in on_tables for p in people):
             rows = attendees.part_rows(popup, log, wait)
             if rows is not None:
+                result.part_list = rows
                 people, moved, notes = attendees.regroup(rows, people, skip=on_tables)
                 for note in notes:
                     log("  " + note)

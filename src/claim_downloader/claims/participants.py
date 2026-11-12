@@ -9,6 +9,8 @@ Qt · Playwright 없음. pypdf · openpyxl 은 쓸 때만 들여온다.
 """
 from __future__ import annotations
 
+import datetime as dt
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -114,6 +116,72 @@ def read(path: str) -> list[Member]:
     if not path or not os.path.isfile(path):
         return []
     return read_pdf(path) if path.lower().endswith(".pdf") else read_xlsx(path)
+
+
+# 넣을 때 ERP 참여인력선택 창에서 읽은 그 과제의 참여인력(이름 · 사번 · 소속)을 과제마다 기억해 둔다 — 미리 보기(브라우저 없음)도 참여인력을
+# 가리게(담당자 2026-11-12 미리 보기 그림: 참여연구원 명단 파일이 없어 참여인력 두 사람이 '내부참석자' 로 보였다 — "참여인력인데").
+# 실명 · 사번이 든 파일이라 사용자 폴더에만 둔다(.gitignore · NEVER_PACK · CI).
+PART_LIST_NAME = "_참여인력목록.json"
+PART_LIST_LABEL = "ERP 참여인력 목록"
+
+
+def _part_list_path():
+    from .. import settings
+    return settings.data_dir() / PART_LIST_NAME
+
+
+def _read_part_lists() -> dict:
+    try:
+        data = json.loads(_part_list_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data.get("projects", {}) if isinstance(data, dict) and isinstance(data.get("projects"), dict) else {}
+
+
+def remember_list(project: str, rows: list[dict]) -> int:
+    """ERP 참여인력선택 목록의 줄(cells — k_EMP_NM · k_EMP_NO · k_BLNG_DEPT_NM)을 그 과제의 것으로 남긴다. 남긴 사람 수(이름 없는 줄은 뺌)."""
+    project = re.sub(r"\D", "", str(project or ""))
+    people = []
+    for cells in rows or []:
+        name = re.sub(r"\s+", "", str(cells.get("k_EMP_NM", "") or ""))
+        if not name:
+            continue
+        people.append({"name": name, "no": re.sub(r"\D", "", str(cells.get("k_EMP_NO", "") or "")),
+                       "dept": str(cells.get("k_BLNG_DEPT_NM", "") or cells.get("k_DEPT_NM", "") or "").strip()})
+    if not project or not people:
+        return 0
+    lists = _read_part_lists()
+    lists[project] = {"at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"), "people": people}
+    path = _part_list_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"v": 1, "projects": lists}, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+    return len(people)
+
+
+def remembered(project: str) -> tuple[list[Member], str]:
+    """그 과제에서 지난번 읽어 둔 ERP 참여인력 목록 — (사람들, 읽은 때). 없으면 ([], '')."""
+    entry = _read_part_lists().get(re.sub(r"\D", "", str(project or "")), {})
+    people = entry.get("people", []) if isinstance(entry, dict) else []
+    out = [Member(str(p.get("name", "")), str(p.get("no", "")), str(p.get("dept", ""))) for p in people if isinstance(p, dict) and p.get("name")]
+    return out, str(entry.get("at", "")) if out else ""
+
+
+def merged(*lists: list[Member]) -> list[Member]:
+    """명단 여럿을 하나로 — 이름마다 앞 목록의 것만 쓴다(같은 사람이 두 목록에 있어 '같은 이름 둘' 이 되지 않게). 부르는 곳은 ERP 목록을 앞에 둔다(지금 것이라)."""
+    out: list[Member] = []
+    taken: set[str] = set()
+    for members in lists:
+        here: set[str] = set()
+        for m in members or []:
+            name = _squash(m.name)
+            if not name or name in taken:
+                continue
+            here.add(name)
+            out.append(m)
+        taken |= here
+    return out
 
 
 def find_file(setting: str, *folders: str) -> str:

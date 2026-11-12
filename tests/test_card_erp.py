@@ -856,6 +856,7 @@ def test_one_participant_is_added_when_nobody_from_the_minutes_is_on_the_partici
             arbitrary = [r for r in result.review if r.startswith("임의로 넣은 참여인력(확인 필요): 가")]
             assert arbitrary and "ERP 는 참여인력이 한 명 이상이어야 저장되는데" in arbitrary[0], result.review
             assert page.evaluate("window.saved")["heads"] == 3                         # 창에 있던 사람 · 라 · 임의 1명
+            assert [c.get("k_EMP_NO") for c in result.part_list or []] == ["100001", "100002", "100004"]   # 읽은 ERP 목록을 결과에 남김(미리 보기용)
             browser.close()
     except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
         if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):
@@ -942,3 +943,32 @@ def test_snack_and_per_person_limit_fill_arbitrary_participants_and_save_without
         if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):
             pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
         raise
+
+
+# ── 미리 보기도 참여인력을 가리게 — 넣을 때 읽은 ERP 참여인력 목록을 과제마다 기억 (담당자 2026-11-12) ──────────────
+def test_erp_participant_list_is_remembered_per_project_and_used_by_the_preview():
+    """담당자 2026-11-12 미리 보기 그림 — 참여연구원 명단 파일이 없어 참여인력 두 사람이 '내부참석자' 로 보였다("참여인력인데").
+    넣을 때 회의록등록 창에서 읽은 ERP 참여인력 목록을 과제마다 남기고, 미리 보기는 그 목록으로 나눈다. 이름 · 번호는 가짜."""
+    rows = [{"k_EMP_NO": "100001", "k_EMP_NM": "가", "k_BLNG_DEPT_NM": "가나다학과"},
+            {"k_EMP_NO": "100002", "k_EMP_NM": "나 ", "k_BLNG_DEPT_NM": "자유전공학부"},
+            {"k_EMP_NO": "", "k_EMP_NM": ""}]
+    assert participants.remembered("202408470003") == ([], "")
+    assert participants.remember_list("2024-0847-0003", rows) == 2                # 이름 없는 줄은 뺌 · 과제번호는 숫자만
+    members, at = participants.remembered("202408470003")
+    assert [(m.name, m.emp_no, m.dept) for m in members] == [("가", "100001", "가나다학과"), ("나", "100002", "자유전공학부")] and at
+    assert participants.remembered("202409710003") == ([], "")                  # 다른 과제는 따로
+    assert participants.remember_list("202408470003", []) == 0 and participants.remembered("202408470003")[0]   # 빈 목록으로 지우지 않음
+    # 같은 이름은 앞 목록(ERP)의 것만 — 명단 파일과 겹쳐 '같은 이름 둘' 이 되지 않게
+    both = participants.merged(members, [participants.Member("가", "999999"), participants.Member("다", "100003")])
+    assert [(m.name, m.emp_no) for m in both] == [("가", "100001"), ("나", "100002"), ("다", "100003")]
+    # 미리 보기: 명단이 있으면 학교 안 사람이 참여인력으로, 없으면 내부참석자 + '미리 보기에서는 못 가림'
+    item = card.CardItem(folder="x", name="261012_(17)_회의", req_div="17", amount=100000, used=D(2026, 10, 12),
+                         meeting=card.Minutes(attendees=[("가나다학과", "가"), ("자유전공학부", "나"), ("한림대학교", "가"), ("", "라")]))
+    plan = card_erp.plan_item(item, 0, both)
+    part = next(e for e in plan.entries if e.label == "참여인력")
+    assert part.value.startswith("2명: 가(100001)") and "참여인력 명단으로 나눔" in part.source
+    assert next(e for e in plan.entries if e.label == "외부참석자").value.startswith("1명: 가")   # 학교 밖 동명이인은 외부
+    bare = card_erp.plan_item(item, 0, [])
+    inside = next(e for e in bare.entries if e.label == "내부참석자")
+    assert inside.value.startswith("3명") and "미리 보기에서는 참여인력을 가리지 못함" in inside.check
+    assert "참여인력 명단이 아직 없음" in inside.source
