@@ -31,7 +31,7 @@ import zipfile
 from dataclasses import dataclass, field
 
 from ..naming import BIMOK_NM, normnm
-from . import idnums
+from . import idnums, minutes_pdf
 from . import notice as notice_mod
 from .schema import CATEGORY_CODES, category_code, parse_amount
 
@@ -522,7 +522,7 @@ class Minutes:
 # 회의록등록 창의 칸 이름 — 미리 보기 · 확인할 것 글에 쓴다
 MEETING_LABELS = {"used": "회의일자", "start": "시작 시각", "end": "끝 시각", "place": "장소", "agenda": "목적(안건)",
                   "content": "내용", "attendees": "참석자"}
-SOURCE_TEXT = {"hwpx": "회의록(.hwpx)", "ai": "AI 가 회의록에서 읽음", "guess": "시작 + 1시간(끝 시각이 회의록에 없음)"}
+SOURCE_TEXT = {"hwpx": "회의록(.hwpx)", "pdf": "회의록 PDF 글자", "ai": "AI 가 회의록에서 읽음", "guess": "시작 + 1시간(끝 시각이 회의록에 없음)"}
 
 
 def _squash(text) -> str:
@@ -670,15 +670,59 @@ def _ai_minutes(ai: dict | None, folder: str) -> Minutes | None:
     return out
 
 
-def _fill_minutes(minutes: Minutes, ai: Minutes) -> None:
-    """회의록 생성의 .hwpx 에서 읽은 것이 먼저 — 빈 칸만 AI 가 읽은 것으로."""
+def _fill_minutes(minutes: Minutes, ai: Minutes, source: str = "ai") -> None:
+    """먼저 읽은 것(회의록 생성의 .hwpx · 회의록 PDF 글자)이 먼저 — 빈 칸만 다음 것(회의록 PDF 글자 · AI)으로."""
     for key in ("used", "place", "agenda", "start", "end", "content", "attendees"):
         if not getattr(minutes, key) and getattr(ai, key):
             setattr(minutes, key, getattr(ai, key))
-            minutes.sources[key] = "ai"
+            minutes.sources[key] = ai.sources.get(key, source)
     for key, no in ai.numbers.items():          # 회의록 표에 번호가 없는 사람만 — AI 가 서명부에서 읽었을 수 있다
         if key not in minutes.numbers:
             minutes.numbers[key], minutes.number_from[key] = no, ai.number_from.get(key, "AI")
+
+
+MINUTES_PDF_FILES = 6           # 회의록인지 글자로 볼 PDF 수(결제 건 폴더 하나에)
+MINUTES_PDF_PAGES = 4           # 회의 내용이 다음 쪽으로 넘어가기도 한다
+
+
+def _read_pages(read_text, path: str, pages: int) -> str:
+    try:
+        return read_text(path, pages=pages)
+    except TypeError:                                    # 쪽 수를 받지 않는 읽기(시험)
+        return read_text(path)
+
+
+def pdf_minutes(pdfs: list[str], read_text=pdf_text) -> tuple[Minutes | None, list[str]]:
+    """학생이 낸 회의록 PDF(한글에서 PDF 로 저장한 표 양식 — 글자가 있다)에서 회의일시 · 장소 · 주제 · 안건 · 내용 · 참석자(학번)를 앱이 읽는다
+    (minutes_pdf — 담당자 2026-11-12 "아직 못읽는 것 같습니다" · 회의록 그림). 이름에 '회의록' 이 든 PDF 먼저, 그다음 글자가 회의록 같은 PDF.
+    돌려주는 둘째 것은 기록 줄(값 없이 — 찾은 칸 이름 · 못 읽었으면 가린 글 모양)."""
+    named = [p for p in pdfs if "회의록" in os.path.basename(p).replace(" ", "")]
+    others = [p for p in pdfs if p not in named and not any(w in os.path.basename(p).lower() for w in RECEIPT_NAME_WORDS)
+              and not any(w in os.path.basename(p) for w in ("공문", "서명부", "계획", "견적", "사진"))]
+    log: list[str] = []
+    for path in (named + others)[:MINUTES_PDF_FILES]:
+        name = os.path.basename(path)
+        text = _read_pages(read_text, path, MINUTES_PDF_PAGES)
+        if not text.strip():
+            if path in named:
+                log.append(f"회의록 PDF 에 글자가 없음(스캔한 그림) — AI 로 읽습니다: {name}")
+            continue
+        if not minutes_pdf.looks_like(text, name):
+            continue
+        parsed = minutes_pdf.parse(text)
+        if parsed.score() < 2:
+            log.append(f"회의록 PDF 의 칸을 글자로 못 나눔 — AI 로 읽습니다: {name} · 글 모양(이름 · 내용은 가림):")
+            log += ["    " + line for line in minutes_pdf.shape(text)]
+            continue
+        out = Minutes(path=path, used=parsed.used, place=parsed.place, agenda=parsed.agenda, start=parsed.start, end=parsed.end,
+                      content=list(parsed.content), attendees=[(org, who) for org, who, _no in parsed.people])
+        for _org, who, no in parsed.people:
+            if no:
+                out.numbers[_squash(who)], out.number_from[_squash(who)] = no, name
+        mark_sources(out, "pdf")
+        log.append(f"회의록 PDF 글자로 읽음: {name} — " + " · ".join(parsed.found) + "".join(f" · {n}" for n in parsed.notes))
+        return out, log
+    return None, log
 
 
 def ai_found_text(ai: dict) -> str:
@@ -948,6 +992,7 @@ class CardItem:
     shop_address: str = ""         # 가맹점 주소(영수증 글자에서. 없으면 ERP 회의록등록 창의 #CARD_ADDR 로 — 넣을 때)
     ai_read: bool = False          # card_ai 가 이 폴더(지금 파일 그대로)를 읽은 결과를 썼다 — 다시 읽지 않는다
     ai_found: str = ""             # AI 가 찾은 것 한 줄(값 없이 — 기록 · 자세히 칸)
+    read_log: list[str] = field(default_factory=list)    # 폴더를 읽으며 남길 기록 줄(값 없이 — 회의록 PDF 를 어떻게 읽었나)
     receipts: list[str] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)       # 확인할 것
@@ -1186,9 +1231,13 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
     ai_receipts = _ai_receipts(ai, folder)
     ai_meeting = _ai_minutes(ai, folder)
 
+    # 회의록 PDF — 학생이 낸 회의록은 이름에 '회의록' 이 없기도 해 글자로 알아본다. 영수증 · 공문으로 보지 않게 먼저
+    from_pdf, item.read_log = pdf_minutes(pdfs, read_text)
     # 영수증 — 이름이 영수증 같은 PDF 먼저, 없으면 글자가 영수증 같은 PDF(회의록 · 공문 · 서명부 빼고)
-    named = [p for p in pdfs if any(w in os.path.basename(p).lower() for w in RECEIPT_NAME_WORDS)]
-    others = [p for p in pdfs if p not in named and not any(w in os.path.basename(p) for w in NOT_RECEIPT_WORDS)]
+    named = [p for p in pdfs if any(w in os.path.basename(p).lower() for w in RECEIPT_NAME_WORDS)
+             and not (from_pdf and p == from_pdf.path)]
+    others = [p for p in pdfs if p not in named and not any(w in os.path.basename(p) for w in NOT_RECEIPT_WORDS)
+              and not (from_pdf and p == from_pdf.path)]
     receipts: list[Receipt] = []
     for path in (named + others)[:8]:
         text = read_text(path)
@@ -1209,6 +1258,13 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
     minutes_files = [p for p in item.files if _is_minutes(p)]
     minutes = next((m for m in (read_minutes(p) for p in minutes_files if p.lower().endswith((".hwpx", ".docx")))
                     if m.amount or m.merchant), None)
+    if from_pdf is not None:
+        if minutes is None:
+            minutes = from_pdf
+        else:
+            _fill_minutes(minutes, from_pdf, "pdf")   # 회의록 생성의 .hwpx 가 먼저 — 빈 칸만
+        if from_pdf.path not in minutes_files:
+            minutes_files.append(from_pdf.path)
     if ai_meeting is not None:
         if minutes is None:
             minutes = ai_meeting
@@ -1234,7 +1290,7 @@ def read_item(folder: str, period: tuple[dt.date, dt.date] | None, code_hint: st
     notice = None
     want_notice = not item.code or not (parsed.amount or receipts or minutes or item.goods) or bool(minutes_files) or parsed.req_div == "17"
     if want_notice:
-        candidates = [p for p in pdfs if p not in item.receipts and not _is_minutes(p)]
+        candidates = [p for p in pdfs if p not in item.receipts and not _is_minutes(p) and not (from_pdf and p == from_pdf.path)]
         notice = notice_mod.find(candidates, read_texts=lambda ps: [read_text(p) for p in ps]) if candidates else None
         if notice is not None and not notice.path:
             notice = None

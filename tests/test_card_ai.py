@@ -356,20 +356,18 @@ def test_claim_page_explains_a_fully_saved_card_sheet_and_resets_it(tmp_path, mo
     assert not any(i.status == "saved" for i in page._cards[0].sheets[0].items)
 
 
-def test_results_read_before_numbers_are_read_again(tmp_path):
-    """2026-11-11 담당자 "학번으로 검색해야 정확합니다" — 참석자의 학번(no)을 읽기 전 판의 결과는 다시 읽는다(참석자가 없는 결과는 그대로)."""
+def test_results_read_before_numbers_are_still_used(tmp_path):
+    """학번(no) 칸이 없던 판(2026-11-11 전)의 결과도 그대로 쓴다 — 한때 다시 읽게 했더니 다시 읽는 동안 11건 모두 회의 시각 · 장소 · 참석자가 비었다
+    (담당자 2026-11-12 "아직 못읽는 것 같습니다"). 학번은 회의록 PDF 글자 · 서명부 · 신청 엑셀에서 앱이 읽는다."""
     _claim, folder = make_item_folder(tmp_path)
     files = card._files_under(str(folder))
     old = card_ai.clean(AI_DATA)
     for person in old["meeting"]["attendees"]:
         person.pop("no")                                         # 그 판의 모양
     card_ai.remember(str(folder), files, old)
-    assert card_ai.before_numbers(old) and card_ai.lookup(str(folder), files) is None
-    no_people = card_ai.clean({**AI_DATA, "meeting": {**AI_DATA["meeting"], "attendees": []}})
-    card_ai.remember(str(folder), files, no_people)
-    assert card_ai.lookup(str(folder), files) is not None
-    card_ai.remember(str(folder), files, card_ai.clean(AI_DATA))
-    assert card_ai.lookup(str(folder), files)["meeting"]["attendees"][0]["no"] == "202400011"
+    got = card_ai.lookup(str(folder), files)
+    assert got is not None and got["meeting"]["place"] == "공학관 세미나실"
+    assert not hasattr(card_ai, "before_numbers")
 
 
 def test_claim_folder_sheets_give_student_numbers_but_are_not_evidence(tmp_path):

@@ -82,17 +82,9 @@ def lookup(folder: str, files: list[str]) -> dict | None:
     if not isinstance(entry, dict) or entry.get("sig") != signature(folder, files):
         return None
     data = entry.get("data")
-    if not isinstance(data, dict) or before_numbers(data):
-        return None
-    return data
-
-
-def before_numbers(data: dict) -> bool:
-    """참석자의 학번 · 사번(no)을 읽기 전 판(2026-11-11 전)의 결과 — 다시 읽는다(담당자 2026-11-11 "학번으로 검색해야 정확합니다":
-    그 판으로 읽은 학생 회의록은 참석자 이름만 남아 ERP 에서 이름으로 찾았다). 참석자가 없는 결과는 그대로 쓴다."""
-    meeting = data.get("meeting")
-    people = meeting.get("attendees") if isinstance(meeting, dict) else None
-    return bool(people) and all(isinstance(p, dict) and "no" not in p for p in people)
+    # 학번 칸(no)이 없던 판(2026-11-11 전)의 결과도 그대로 쓴다 — 한때 다시 읽게 했더니 다시 읽는 동안 회의 시각 · 장소 · 참석자가 모두 비어 보였다
+    # (담당자 2026-11-12 "아직 못읽는 것 같습니다"). 학번은 회의록 PDF 글자 · 서명부 · 신청 엑셀에서 앱이 읽는다(card.pdf_minutes · attendee_numbers)
+    return data if isinstance(data, dict) else None
 
 
 def remember(folder: str, files: list[str], data: dict) -> None:

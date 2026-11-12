@@ -1161,6 +1161,9 @@ class ClaimPage(QWidget):
         if quiet:
             return
         self._append_log("카드 폴더 읽음: " + " / ".join(job.summary_lines()))
+        for item in job.items:                     # 회의록 PDF 를 글자로 읽었나 · 못 읽었으면 그 글 모양(이름 · 내용은 가림)
+            for line in item.read_log:
+                self._append_log(f"  {item.name}: {line}" if not line.startswith("    ") else line)
         for problem in self._problems[row]:
             self._append_log("  확인: " + problem)
 
