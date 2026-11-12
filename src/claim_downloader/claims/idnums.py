@@ -97,7 +97,7 @@ def _numbers_on(line: str) -> list[tuple[int, str]]:
 
 def pairs_in_text(text: str, names) -> list[tuple[str, str]]:
     """글에서 (이름, 번호) 짝 — 한 줄에 이름 하나 · 번호 하나면 그 둘, 이름 · 번호가 번갈아 같은 수로 나오면 차례로,
-    이름만 있는 줄 바로 다음 줄이 번호 하나뿐이면 그 둘(표 칸이 줄마다 나뉘어 읽힌 PDF · .hwpx 칸 글자)."""
+    이름만 있는 줄 뒤 세 줄 안에 번호만 든 줄이 있으면(사이에 다른 이름이 없을 때) 그 둘(표 칸이 줄마다 나뉘어 읽힌 PDF — 학번이 소속 다음 열이어도)."""
     patterns = [(name, _name_re(name)) for name in dict.fromkeys(n for n in names if n)]
     patterns = [(name, pat) for name, pat in patterns if pat is not None]
     out: list[tuple[str, str]] = []
@@ -117,9 +117,16 @@ def pairs_in_text(text: str, names) -> list[tuple[str, str]]:
             continue
         numbers = _numbers_on(line)
         if not numbers:
-            nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
-            if len(names_at) == 1 and re.fullmatch(r"\(?\d{6,13}\)?", nxt) and not _phone_like(clean(nxt)):
-                out.append((names_at[0][1], clean(nxt)))
+            # 표 칸이 줄마다 나뉘어 읽힌 PDF — 이름 줄 뒤 세 줄 안에 번호만 든 줄(사이에 소속 같은 글 줄이 끼어도 — 학번이 다른 열일 때,
+            # 담당자 2026-11-12). 그 사이에 다른 이름이 나오면 그 사람의 번호일 수 있어 멈춘다
+            if len(names_at) == 1:
+                for nxt in (lines[j].strip() for j in range(i + 1, min(i + 4, len(lines)))):
+                    if any(pat.search(nxt) for _n, pat in patterns):
+                        break
+                    if re.fullmatch(r"\(?\d{6,13}\)?", nxt):
+                        if not _phone_like(clean(nxt)):
+                            out.append((names_at[0][1], clean(nxt)))
+                        break
             continue
         if len(names_at) == 1 and len(numbers) == 1:
             out.append((names_at[0][1], numbers[0][1]))

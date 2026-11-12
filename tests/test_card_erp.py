@@ -12,7 +12,7 @@ import os
 import openpyxl
 import pytest
 
-from claim_downloader.claims import attendees, card, card_erp, participants
+from claim_downloader.claims import attendees, card, card_erp, idnums, participants
 from claim_downloader.claims.form import STATE_JS
 from claim_downloader.minutes.docx import build_docx
 from claim_downloader.minutes.hwpx import build_hwpx
@@ -432,6 +432,68 @@ def test_minutes_table_takes_numbers_out_of_the_name_cell(tmp_path):
         got = card.read_minutes(str(path))
         assert got.attendees == [("강원대학교", "가"), ("가나다학과", "나")], name
         assert got.numbers == {"가": "202600001"} and got.number_from == {"가": "회의록 표"}, name
+
+
+def _docx_table(path, rows):
+    """표 하나뿐인 .docx — 줄마다 칸 글자(학생이 고쳐 쓴 회의록 · 서명부 모양을 흉내)."""
+    import zipfile
+    cell = lambda t: f"<w:tc><w:p><w:r><w:t>{t}</w:t></w:r></w:p></w:tc>"  # noqa: E731
+    body = "".join("<w:tr>" + "".join(cell(t) for t in row) + "</w:tr>" for row in rows)
+    xml = ('<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+           f"<w:body><w:tbl>{body}</w:tbl></w:body></w:document>")
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("word/document.xml", xml)
+    return str(path)
+
+
+def _hwpx_table(path, rows):
+    import zipfile
+    cells = ""
+    body = ""
+    for r, row in enumerate(rows):
+        cells = "".join(f'<hp:tc><hp:subList><hp:p><hp:run><hp:t>{t}</hp:t></hp:run></hp:p></hp:subList>'
+                        f'<hp:cellAddr colAddr="{c}" rowAddr="{r}"/><hp:cellSpan colSpan="1" rowSpan="1"/></hp:tc>' for c, t in enumerate(row))
+        body += f"<hp:tr>{cells}</hp:tr>"
+    xml = f'<?xml version="1.0" encoding="UTF-8"?><hs:sec xmlns:hs="s" xmlns:hp="p"><hp:p><hp:run><hp:tbl>{body}</hp:tbl></hp:run></hp:p></hs:sec>'
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("Contents/section0.xml", xml)
+    return str(path)
+
+
+def test_minutes_numbers_in_another_column_without_a_number_header(tmp_path):
+    """담당자 2026-11-12 "다른 열에 학번이 있을 수도 있습니다" — 머리가 '성명' · '학과' · '비고' · 'ID' 여도, 소속 칸에 함께 적었어도 번호를 읽는다.
+    전화 · 번호가 둘인 줄은 쓰지 않는다(이름으로 찾는다)."""
+    rows = [["회의일시", "2026. 10. 12. (월) 17:00"],
+            ["학과", "성명", "연락처", "비고"],
+            ["컴퓨터공학과", "가나다", "010-1234-5678", "202600001"],
+            ["AI융합학과", "라마바", "01022223333", "( 202600002 )"],
+            ["가나다학과", "사아자", "", ""],
+            ["가나다학과", "차카타", "202600003", "202600004"]]
+    got = card.read_minutes(_docx_table(tmp_path / "m.docx", rows))
+    assert got.attendees == [("컴퓨터공학과", "가나다"), ("AI융합학과", "라마바"), ("가나다학과", "사아자"), ("가나다학과", "차카타")]
+    assert got.numbers == {"가나다": "202600001", "라마바": "202600002"} and set(got.number_from.values()) == {"회의록 표"}
+    rows = [["소속", "이름", "ID", "서명"],
+            ["컴퓨터공학과", "가나다", "202600001", ""],
+            ["컴퓨터공학과(202600005)", "라마바", "", ""],
+            ["강원대학교", "사아자", "학번: 202600006", ""]]
+    got = card.read_minutes(_hwpx_table(tmp_path / "m.hwpx", rows))
+    assert got.attendees == [("컴퓨터공학과", "가나다"), ("컴퓨터공학과", "라마바"), ("강원대학교", "사아자")]
+    assert got.numbers == {"가나다": "202600001", "라마바": "202600005", "사아자": "202600006"}
+    # 다른 표(금액 · 날짜)는 참석자 표로 보지 않는다
+    assert card.minutes_rows(_docx_table(tmp_path / "x.docx", [["품명", "금액"], ["커피", "45000"]]))[0] == []
+
+
+def test_sign_sheet_tables_are_read_row_by_row_so_the_number_column_can_be_anywhere(tmp_path):
+    """서명부 · 참석자 명단(.docx · .hwpx)은 칸이 아니라 줄로 읽는다 — 성명과 학번 사이에 학과 칸이 끼어도 같은 줄의 번호. PDF 처럼 칸이 줄마다 나뉜 글도."""
+    rows = [["연번", "성명", "학과", "학번", "서명"], ["1", "가나다", "컴퓨터공학과", "202600001", ""], ["2", "라마바", "AI융합학과", "202600002", ""]]
+    for name, build in (("서명부.docx", _docx_table), ("서명부.hwpx", _hwpx_table)):
+        sheet = build(tmp_path / name, rows)
+        assert card.table_lines(sheet)[1] == "1 가나다 컴퓨터공학과 202600001"
+        m = card.Minutes(attendees=[("컴퓨터공학과", "가나다"), ("AI융합학과", "라마바")])
+        card.attendee_numbers(m, [sheet], read_text=lambda path, pages=3: "")
+        assert m.numbers == {"가나다": "202600001", "라마바": "202600002"} and m.number_from["가나다"] == name, name
+    text = "연번\n성명\n학과\n학번\n1\n가나다\n컴퓨터공학과\n202600001\n2\n라마바\nAI융합학과\n202600002"
+    assert idnums.numbers_for_names([text], ["가나다", "라마바"]) == {"가나다": "202600001", "라마바": "202600002"}
 
 
 def test_sign_sheet_numbers_are_used_to_find_people_first(tmp_path):

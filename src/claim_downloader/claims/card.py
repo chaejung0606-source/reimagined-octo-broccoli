@@ -760,25 +760,89 @@ def minutes_rows(path: str) -> tuple[list[tuple[str, str, str]], list[str]]:
             continue
         if not in_people:
             heads = {col: t.replace(" ", "") for col, t in texts.items()}
-            if "소속" in heads.values() and "이름" in heads.values():
-                org_col = next(c for c, t in heads.items() if t == "소속")
-                name_col = next(c for c, t in heads.items() if t == "이름")
-                no_col = next((c for c, t in heads.items() if len(t) <= 9 and any(w in t for w in NUMBER_HEADS)), None)
+            # 회의록 생성의 표는 왼쪽에 '참석자' 라벨 칸이 있고 그 오른쪽이 '소속 · 이름' — '이름' · '성명' 이 딱 맞는 칸이 먼저
+            name_col = next((c for c, t in heads.items() if t in ("이름", "성명")), None)
+            if name_col is None:
+                name_col = next((c for c, t in heads.items() if _is_name_head(t)), None)
+            org_col = next((c for c, t in heads.items() if t == "소속"), None)
+            if org_col is None:
+                org_col = next((c for c, t in heads.items() if _is_org_head(t)), None)
+            no_col = next((c for c, t in heads.items() if len(t) <= 12 and any(w in t for w in NUMBER_HEADS)), None)
+            # 회의록 생성의 표는 '소속 · 이름', 학생이 고쳐 쓴 표는 '성명' · '학과' · '학번' 처럼 머리가 다르기도 하다 — 이름 머리와
+            # 소속이나 학번 머리가 같은 줄에 있을 때만 참석자 표로 본다(다른 표를 잘못 읽지 않게)
+            if name_col is not None and (org_col is not None or no_col is not None):
                 in_people = True
             continue
         spans = {col: span for col, span, _p in row}
         carried = any(col == org_col and paras is None for col, _s, paras in row)      # docx 의 합쳐진 칸
-        if org_col in texts:
+        org_no = ""
+        if org_col is not None and org_col in texts:
             org, org_left = texts[org_col], spans.get(org_col, 1)
+            if spans.get(org_col, 1) == 1 and re.search(r"[가-힣A-Za-z]", org):
+                bare_org, org_no = idnums.split_name(org)                    # '컴퓨터공학과(202412345)' — 소속 칸에 번호를 함께 적은 꼴
+                if org_no:
+                    org = bare_org
         elif not carried and org_left <= 0:
             org = ""
         name, no = idnums.split_name(texts.get(name_col, ""))
         if no_col is not None and idnums.clean(texts.get(no_col, "")):
             no = idnums.clean(texts.get(no_col, ""))
+        if not no:
+            # 학번 · 사번이 머리글 없는 다른 열(비고 · ID · 번호 …)에 있을 수도 있다(담당자 2026-11-12) — 그 줄에서 번호로만 된 칸이 하나면 그것
+            no = org_no or _row_number(texts, skip={name_col, org_col})
         if name:
             attendees.append((org, name, no))
         org_left -= 1
     return attendees, content
+
+
+NAME_HEADS = ("이름", "성명", "참석자명", "참석자성명")     # '참석자' 만은 아니다 — 회의록 생성 표의 왼쪽 라벨 칸
+ORG_HEADS = ("소속", "학과", "부서", "기관", "소속기관", "학과(부서)", "소속(학과)", "학과명", "전공")
+CELL_NUMBER_RE = re.compile(r"\(?\s*(\d{6,13})\s*\)?")
+
+
+def _is_name_head(text: str) -> bool:
+    return text in NAME_HEADS or (len(text) <= 8 and text.startswith(("이름", "성명")))
+
+
+def _is_org_head(text: str) -> bool:
+    return text in ORG_HEADS or (len(text) <= 8 and text.startswith("소속"))
+
+
+def _row_number(texts: dict, skip: set) -> str:
+    """참석자 줄의 다른 칸에서 학번 · 사번 — 숫자만 든 칸(괄호 · 띄어쓰기는 봐 줌)이나 '학번 : …' 처럼 이름표가 붙은 번호.
+    전화(010 …) · 날짜 · 금액(점 · 하이픈 · 쉼표가 든 것)은 아니다. 서로 다른 번호가 둘 이상이면 어느 것인지 몰라 쓰지 않는다(이름으로 찾는다)."""
+    found: set[str] = set()
+    for col, text in texts.items():
+        if col in skip or not text:
+            continue
+        hit = CELL_NUMBER_RE.fullmatch(text.strip())
+        if hit and not idnums._phone_like(hit.group(1)):
+            found.add(hit.group(1))
+        found.update(no for no in idnums.labeled(text) if not idnums._phone_like(no))
+    return next(iter(found)) if len(found) == 1 else ""
+
+
+def table_lines(path: str) -> list[str]:
+    """.hwpx · .docx 의 표를 줄마다 한 줄로(칸 글자를 띄어 이음) — 서명부 · 참석자 명단 표에서 이름과 학번이 다른 열에 있어도 같은 줄로 읽게.
+    표 밖 문단은 칸 글자 그대로(minutes_texts). 못 읽으면 []."""
+    lower = path.lower()
+    member, row_tag, cell_tag, text_tag = (("Contents/section0.xml", "hp:tr", "hp:tc", "hp:t") if lower.endswith(".hwpx") else
+                                           ("word/document.xml", "w:tr", "w:tc", "w:t") if lower.endswith(".docx") else ("", "", "", ""))
+    if not member:
+        return []
+    try:
+        with zipfile.ZipFile(path) as z:
+            xml = z.read(member).decode("utf-8", "replace")
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return []
+    lines = []
+    for tr in re.findall(rf"<{row_tag}\b.*?</{row_tag}>", xml, re.S):
+        cells = [" ".join(t for t in _cell_text(tc, text_tag) if t) for tc in re.findall(rf"<{cell_tag}\b.*?</{cell_tag}>", tr, re.S)]
+        line = " ".join(c for c in cells if c).strip()
+        if line:
+            lines.append(line)
+    return lines or minutes_texts(path)
 
 
 @dataclass
@@ -1025,7 +1089,7 @@ def _texts_for_numbers(path: str, read_text) -> str:
         except TypeError:                                    # 쪽 수를 받지 않는 읽기(시험)
             return read_text(path)
     if lower.endswith((".hwpx", ".docx")):
-        return "\n".join(minutes_texts(path))
+        return "\n".join(table_lines(path))          # 표는 줄마다 — 이름과 학번이 다른 열이어도 같은 줄
     if lower.endswith((".xlsx", ".xlsm")):
         try:
             import openpyxl
