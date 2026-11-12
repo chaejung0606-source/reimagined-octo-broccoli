@@ -38,3 +38,32 @@ def test_setup_ps1_is_utf8_bom_crlf_and_follows_the_update_branch():
     assert not re.search(r"(?<!\r)\n", text), "setup.ps1 줄바꿈은 CRLF"
     from claim_downloader import updater
     assert f"$Branch = '{updater.BRANCH}'" in text or f'$Branch = "{updater.BRANCH}"' in text
+
+
+def test_ready_marker_version_matches_across_bat_and_vbs():
+    """준비 표시(setup-claim-vN)가 .bat · .vbs 에서 모두 같은 판이어야 한다(CLAUDE.md 3절).
+
+    의존성을 바꾸면 이 판을 올려 설치된 PC 가 재설치 때 새 의존성을 받는데, 세 참조(.bat 둘 · .vbs 하나) 중
+    하나라도 안 올리면 그 PC 는 새 의존성 없이 앱을 띄우다 죽거나 판 올림이 헛돈다. 셋이 같은지 코드로 지킨다.
+    """
+    versions: set[str] = set()
+    for path in _windows_scripts():
+        text = path.read_bytes().decode("cp949")
+        versions.update(re.findall(r"setup-claim-v(\d+)", text))
+    assert versions, "준비 표시(setup-claim-vN)를 찾지 못했습니다"
+    assert len(versions) == 1, f"준비 표시 판이 .bat · .vbs 에서 어긋납니다: {sorted(versions)} — 세 곳을 함께 올리세요"
+
+
+def test_pypdf_pin_is_at_least_the_dos_fixed_version():
+    """pypdf 핀 하한이 DoS CVE(CVE-2026-119203~119209)가 고쳐진 6.21.4 이상이어야 한다.
+
+    pypdf 는 외부 PDF(청구서 · 카드 영수증 · 회의록 · 출장신청서)를 읽으므로 핀을 내리면 그 DoS 를 다시 안는다.
+    """
+    import tomllib
+
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pins = [d for d in data["project"]["dependencies"] if d.replace(" ", "").startswith("pypdf")]
+    assert len(pins) == 1, f"pyproject 의 pypdf 핀을 하나 찾지 못했습니다: {pins}"
+    match = re.search(r">=\s*(\d+)\.(\d+)\.(\d+)", pins[0])
+    assert match, f"pypdf 핀에 >= 하한이 없습니다: {pins[0]!r}"
+    assert tuple(int(g) for g in match.groups()) >= (6, 21, 4), f"pypdf 핀이 6.21.4 미만입니다: {pins[0]!r}"
