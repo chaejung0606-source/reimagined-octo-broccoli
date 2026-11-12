@@ -93,7 +93,7 @@ def normalize(text: str) -> str:
     text = str(text or "").translate(_WIDE)
     # 글꼴에 없는 글자(쌍점 · 하이픈)가 제어 문자나 사용자 정의 영역 글자로 읽히기도 한다 — '17\x1b00' · '17\ue09200' → '1700'
     # (시각 · 전화로 다시 읽는다)
-    text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f\ue000-\uf8ff]", "", text)
+    text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f\ue000-\uf8ff\u200b-\u200f\u2060\ufeff\u00ad]", "", text)   # 보이지 않는 글자(폭 없는 띄어쓰기 등)도
     if re.search(r"(?<!\d)\d \d \d \d(?!\d)", text):             # 한 글자씩 띄운 숫자
         text = re.sub(r"(?<!\d)\d(?: \d)+(?!\d)", lambda m: m.group(0).replace(" ", ""), text)
     return "\n".join(re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines())

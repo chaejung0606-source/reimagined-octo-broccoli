@@ -1004,7 +1004,9 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
             # "지금 참여인력을 내부참석자로 입력했습니다"). 그 목록에 있는 사람은 참여인력으로 넣는다
             rows = attendees.part_rows(popup, log, wait)
             if rows is not None:
-                left, moved = attendees.regroup(rows, left, day)
+                left, moved, notes = attendees.regroup(rows, left)
+                for note in notes:
+                    log("  " + note)
                 log(f"  참여인력선택 목록 {len(rows)}줄 — 내부참석자로 본 사람 중 {moved}명이 이 과제의 참여인력이라 참여인력으로 넣습니다")
                 if moved:
                     result.lines.append(f"ERP 참여인력 목록에 있는 {moved}명은 참여인력으로")
@@ -1022,10 +1024,19 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
         heads = before = _heads(popup)
         target = max(need, heads + len(left), 1)           # 아무도 없으면 저장되지 않는다
         arbitrary: list[str] = []
+        no_part = not any(x.get("kind") == "part" for x in _inside_names(popup))
+        if no_part:
+            # ERP 는 참여인력이 한 명도 없으면 회의록을 저장하지 않는다(담당자 PC 2026-11-12 14:47 — '참여인력은 필수입력값 입니다. 추가해주시기 바랍니다.'
+            # 뒤 창이 그대로 열려 멈췄다). 회의록의 사람 가운데 참여인력이 없으면 참여인력선택에서 한 명을 임의로 넣고 확인할 것으로(담당자 2026-11-11 규칙)
+            one = attendees.fill_up(popup, 1, log, wait, lambda: [x["name"] for x in _inside_names(popup)],
+                                    avoid=[p.name for p in left], taken_nos=[x.get("no", "") for x in _inside_names(popup)], day=day)
+            arbitrary += one.added
+            result.lines += one.lines
+            heads = _heads(popup)
         if target > heads:
             filled = attendees.fill_up(popup, target - heads, log, wait, lambda: [x["name"] for x in _inside_names(popup)],
                                        avoid=[p.name for p in left], taken_nos=[x.get("no", "") for x in _inside_names(popup)], day=day)
-            arbitrary = filled.added
+            arbitrary += filled.added
             result.lines += filled.lines
             heads = _heads(popup)
             if heads and "참석자 이름" in missing:          # 회의록에 참석자가 없었다 — 임의로 채우고 확인할 것으로(묻지 않는다)
@@ -1037,6 +1048,7 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
         if arbitrary:
             because = " · ".join(x for x in (f"회의록에서 못 정한 사람 {len(left)}명" if left else "",
                                              "회의록에 참석자가 없음" if not people else "",
+                                             "ERP 는 참여인력이 한 명 이상이어야 저장되는데 회의록의 사람 가운데 참여인력이 없음" if no_part else "",
                                              f"1인 {limit:,}원 한도로 {need}명 이상 필요" if need > before else "") if x)
             result.review.append(f"임의로 넣은 참여인력(확인 필요): {', '.join(arbitrary)} — {because or '사람이 모자라서'}. "
                                  "회의에 없었으면 회의록등록에서 빼고 실제 참석자로 바꾸세요")

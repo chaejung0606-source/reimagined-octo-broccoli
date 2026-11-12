@@ -349,7 +349,7 @@ def test_attendees_press_only_row_add_search_row_check_and_confirm():
     assert text.count(".click(") == 3 and "popup.locator(ARROW_SELECTOR % item[\"n\"]).first.click(timeout=5000)" in text
     arrow = text.split("def _to_basket(", 1)[1].split("\ndef ", 1)[0]
     assert 'i["kind"] == "down"' in arrow and 'not i["kind"]' in arrow and "CONFIRM" not in arrow and "evaluate(CLICK" not in arrow
-    assert "data-coss-arrow" in attendees.ARROW_SELECTOR and "kind = 'up'" in attendees.ARROW_JS and ".click(" not in attendees.ARROW_JS
+    assert "data-coss-arrow" in attendees.ARROW_SELECTOR and "score < 0 ? 'up'" in attendees.ARROW_JS and "funup" in attendees.ARROW_JS and ".click(" not in attendees.ARROW_JS
     assert text.split("def _one(", 1)[1].index("_check(popup") < text.split("def _one(", 1)[1].index("_to_basket(")
     assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", text)) == {"SEARCH_ID", "PART_CONFIRM_ID"}
     assert re.findall(r"evaluate\(CLICK_TEXT_JS,\s*([A-Za-z_]+)\)", text) == ["CONFIRM_TEXT"] and attendees.CONFIRM_TEXT == "확인"

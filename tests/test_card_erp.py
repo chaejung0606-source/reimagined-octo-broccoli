@@ -423,26 +423,30 @@ def test_attendees_are_picked_in_the_two_finder_windows_only_when_certain():
 
 
 def test_internal_people_on_the_erp_participant_list_become_participants():
-    """담당자 2026-11-12 "지금 참여인력을 내부참석자로 입력했습니다" — 참여연구원 명단 파일이 없으면 학교 사람이 모두 내부참석자였다.
-    ERP 참여인력선택 목록에 있는 사람(번호가 있으면 번호 · 이름, 없으면 이름 · 소속)은 참여인력으로. 이름 · 번호는 가짜."""
+    """담당자 2026-11-12 "지금 참여인력을 내부참석자로 입력했습니다" · "아직도 참여인력을 못찾습니다" — 참여연구원 명단 파일이 없으면 학교 사람이 모두 내부참석자였다.
+    ERP 참여인력선택 목록에 있는 사람은 참여인력으로: 번호가 있으면 번호 · 이름, 없으면 이름(같은 이름이 하나면 소속이 달라도 — 목록의 소속은 사업단일 수 있다).
+    참여기간으로 다시 거르지 않는다(창이 회의일자로 거른 목록). 이름 · 번호는 가짜."""
     rows = [{"k_EMP_NO": "100001", "k_EMP_NM": "가", "k_BLNG_DEPT_NM": "가나다학과"},
             {"k_EMP_NO": "100002", "k_EMP_NM": "나", "k_BLNG_DEPT_NM": "자유전공학부(자연계열)"},
-            {"k_EMP_NO": "100003", "k_EMP_NM": "다", "k_BLNG_DEPT_NM": "가나다학과", "k_PART_TRM_DT": "2025-03-01 ~ 2026-02-28"},
+            {"k_EMP_NO": "100003", "k_EMP_NM": "다", "k_BLNG_DEPT_NM": "데이터보안활용혁신융합대학사업단", "k_PART_TRM_DT": "2025-03-01 ~ 2026-02-28"},
             {"k_EMP_NO": "100004", "k_EMP_NM": "라", "k_BLNG_DEPT_NM": "가나다학과"},
             {"k_EMP_NO": "100005", "k_EMP_NM": "라", "k_BLNG_DEPT_NM": "마바사학과"}]
-    people = [participants.Attendee("가", "가나다학과", "internal"),                       # 이름 · 소속 → 참여인력
+    people = [participants.Attendee("가", "가나다학과", "internal"),                       # 이름 · 소속
               participants.Attendee("나", "자유전공학부", "internal"),                       # 소속이 '…(자연계열)' 이어도
-              participants.Attendee("다", "가나다학과", "internal"),                         # 참여기간이 회의일을 안 덮음 → 그대로
-              participants.Attendee("라", "", "internal"),                                  # 같은 이름 둘 → 그대로
+              participants.Attendee("다", "가나다학과", "internal"),                         # 목록의 소속이 사업단 — 이름이 하나라 참여인력(확인할 것)
+              participants.Attendee("라", "", "internal"),                                  # 같은 이름 둘 · 소속 없음 → 그대로
               participants.Attendee("가", "가나다학과", "internal", "202600009"),           # 번호가 다름 → 다른 사람
               participants.Attendee("바", "아자학과", "internal", "202600001"),             # 목록에 없음
               participants.Attendee("라", "마바사학과", "internal", "100005"),               # 번호 · 이름
               participants.Attendee("하", "", "external")]
-    got, moved = attendees.regroup(rows, people, day=dt.date(2026, 10, 12))
-    assert moved == 3
-    assert [(p.kind, p.emp_no) for p in got] == [("part", "100001"), ("part", "100002"), ("internal", ""), ("internal", ""),
+    got, moved, notes = attendees.regroup(rows, people)
+    assert moved == 4
+    assert [(p.kind, p.emp_no) for p in got] == [("part", "100001"), ("part", "100002"), ("part", "100003"), ("internal", ""),
                                                   ("internal", "202600009"), ("internal", "202600001"), ("part", "100005"), ("external", "")]
     assert got[0].no_from == "ERP 참여인력 목록(이름 · 소속)" and got[6].no_from == "ERP 참여인력 목록(번호 · 이름)"
+    assert "소속이 회의록과 다름" in got[2].hint and not got[0].hint
+    assert notes[3] == "4번째 사람: 내부참석자로 — 같은 이름 2줄" and "번호와 목록의 사번이 다름" in notes[4]
+    assert "목록 5줄에 같은 이름이 없음" in notes[5] and not any(n in "".join(notes) for n in ("가", "나", "100001"))   # 기록에 이름 · 사번 없음
 
 
 def test_participant_list_is_read_once_and_the_window_closed_then_they_go_in_as_participants():
@@ -464,9 +468,10 @@ def test_participant_list_is_read_once_and_the_window_closed_then_they_go_in_as_
             rows = attendees.part_rows(minutes, lines.append, wait)
             assert [r["k_EMP_NO"] for r in rows] == ["100001", "100002", "100004"]
             assert len(context.pages) == 1                                       # [확인] 없이 창만 닫았다
+            assert any("참여인력선택 목록 3줄 · 이름 읽힌 줄 3 · 열 " in line and "k_EMP_NM" in line for line in lines)
             assert card_erp._inside_names(minutes) == before                       # 아무도 들어가지 않았다
-            people, moved = attendees.regroup(rows, [participants.Attendee("바", "산학협력단", "internal"),
-                                                     participants.Attendee("라", "마바사학과", "internal")])
+            people, moved, _notes = attendees.regroup(rows, [participants.Attendee("바", "산학협력단", "internal"),
+                                                             participants.Attendee("라", "마바사학과", "internal")])
             assert moved == 1
             names = lambda: [x["name"] for x in card_erp._inside_names(minutes)]  # noqa: E731
             report = attendees.add(minutes, people, lines.append, wait, names)
@@ -631,7 +636,8 @@ def test_finder_windows_search_by_number_first_then_by_name():
 def _server(pages: dict):
     """모의 ERP 응답 — Playwright 는 처리기의 인자가 둘이면 요청을 둘째로 넘기므로 인자 하나짜리 함수로."""
     def serve(route):
-        route.fulfill(status=200, content_type="text/html; charset=utf-8", body=pages[route.request.url])
+        body = pages.get(route.request.url)
+        route.fulfill(status=200 if body is not None else 404, content_type="text/html; charset=utf-8", body=body or "")
     return serve
 
 
@@ -798,6 +804,81 @@ function save() { if (!confirm('저장하시겠습니까?')) return;
 </script></body></html>"""
 MEETING_WINDOW = (MINUTES_WITH_FINDERS.replace('<input type="button" id="btnRowAdd2"', MEETING_FIELDS + '<input type="button" id="btnRowAdd2"', 1)
                   .replace("</script></body></html>", MEETING_SCRIPT))
+
+
+def test_one_participant_is_added_when_nobody_from_the_minutes_is_on_the_participant_list():
+    """담당자 PC 2026-11-12 14:47 — 회의록 사람을 모두 내부참석자로 넣고 [저장] 하자 ERP 가 '참여인력은 필수입력값 입니다' 로 막았고 창이 그대로 열려 멈췄다.
+    참여인력이 한 명도 없으면 참여인력선택에서 한 명을 임의로 넣고 확인할 것으로 남긴 뒤 저장한다(사람 수는 1인 한도로는 넉넉해도)."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    executable = os.environ.get("CHROMIUM_PATH", "/opt/pw-browsers/chromium")
+    pages = {"http://erp.test/card": CARD_FORM, "http://erp.test/minutes": MEETING_WINDOW.replace('value="160,000"', 'value="50,000"'),
+             "http://erp.test/part": PART_WINDOW, "http://erp.test/multi": MULTI_WINDOW}
+    item = card.CardItem(folder="x", name="261012_(17)_가나다", code="07", used=D(2026, 10, 12), amount=50000, req_div="17",
+                         meeting_region="춘천",
+                         meeting=card.Minutes(start="17:00", end="18:00", place="공학관 413호", agenda="실습 준비",
+                                              content=["멘토링에서 안내받은 내용으로 실습 준비 사항을 논의하였음."],
+                                              attendees=[("마바사학과", "라")], numbers={"라": "202400001"}))
+    try:
+        with sync_api.sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=executable if os.path.exists(executable) else None)
+            context = browser.new_context()
+            context.route("http://erp.test/**", lambda route: route.fulfill(status=200, content_type="text/html; charset=utf-8",
+                                                                            body=pages[route.request.url]))
+            page = context.new_page()
+            page.goto("http://erp.test/card")
+            wait = lambda s: page.wait_for_timeout(int(s * 1000))  # noqa: E731
+            logs: list[str] = []
+            asked: list[str] = []
+            result = card_erp.ItemResult(index=0, name=item.name)
+            ok, why = card_erp._minutes(page, page.main_frame, item, logs.append, lambda m: asked.append(m) or False, wait, [], result, [])
+            assert (ok, asked) == (True, []), (why, asked, logs)
+            assert any("1번째 사람: 내부참석자로 — 목록 3줄에 같은 이름이 없음" in line for line in logs), logs
+            arbitrary = [r for r in result.review if r.startswith("임의로 넣은 참여인력(확인 필요): 가")]
+            assert arbitrary and "ERP 는 참여인력이 한 명 이상이어야 저장되는데" in arbitrary[0], result.review
+            assert page.evaluate("window.saved")["heads"] == 3                         # 창에 있던 사람 · 라 · 임의 1명
+            browser.close()
+    except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
+        if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):
+            pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
+        raise
+
+
+def test_real_erp_arrows_are_told_apart_by_their_picture_not_their_alt_text():
+    """실제 ERP(2026-11-12 기록): ⬆ 은 <img id=btnRowDel alt='추가' src=…funup…>, ⬇ 은 <img id=btnRowAdd alt='삭제' src=…fundown…> — alt 가 거꾸로라
+    글자로만 가리면 ⬆ 을 먼저 눌렀다. 그림 주소 · id 로 가려 ⬇ 만 누른다."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    executable = os.environ.get("CHROMIUM_PATH", "/opt/pw-browsers/chromium")
+    window = _arrow_window("fnA", "fnB")
+    window = window.replace('<a href="#none" onclick="fnA()" style="display:inline-block;width:20px;height:20px;background:#e33"></a> ',
+                            "").replace('<a href="#none" onclick="fnB()" style="display:inline-block;width:20px;height:20px;background:#33e"></a>',
+                                        '<img id="btnRowDel" class="f_right" alt="추가" width="20" height="20" style="cursor:pointer" '
+                                        'src="../../img/comm/button/btn_bg_funup_off.gif" onclick="window.opener.upPressed = true; fnB()"> '
+                                        '<img id="btnRowAdd" class="f_right" alt="삭제" width="20" height="20" style="cursor:pointer" '
+                                        'src="../../img/comm/button/btn_bg_fundown_off.gif" onclick="fnA()">')
+    assert "btnRowDel" in window and "fnA()" in window
+    pages = {"http://erp.test/minutes": MINUTES_WITH_FINDERS, "http://erp.test/part": PART_WINDOW, "http://erp.test/multi": window}
+    try:
+        with sync_api.sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=executable if os.path.exists(executable) else None)
+            context = browser.new_context()
+            context.route("http://erp.test/**", _server(pages))
+            context.on("dialog", lambda d: d.dismiss())
+            minutes = context.new_page()
+            minutes.goto("http://erp.test/minutes")
+            wait = lambda s, m=minutes: m.wait_for_timeout(int(s * 1000))  # noqa: E731
+            lines: list[str] = []
+            names = lambda m=minutes: [x["name"] for x in card_erp._inside_names(m)]  # noqa: E731
+            report = attendees.add(minutes, [participants.Attendee("라", "", "internal", "202400001", no_from="서명부.pdf")],
+                                   lines.append, wait, names)
+            assert report.added == ["라"], lines
+            arrows = next(line for line in lines if "⬇ 단추를 찾습니다" in line)
+            assert "[up] img btnRowDel" in arrows and "[down] img btnRowAdd" in arrows
+            assert not minutes.evaluate("window.upPressed")                       # ⬆ 은 누르지 않았다
+            browser.close()
+    except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
+        if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):
+            pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
+        raise
 
 
 def test_snack_and_per_person_limit_fill_arbitrary_participants_and_save_without_asking():

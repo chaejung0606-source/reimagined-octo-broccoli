@@ -125,12 +125,22 @@ ARROW_JS = r"""() => {
   const describe = e => [e.id, e.className && e.className.baseVal === undefined ? e.className : '', e.getAttribute('onclick'), e.title,
     e.getAttribute('alt'), e.getAttribute('aria-label'), e.getAttribute('src'),
     (e.querySelector('img') || {}).src, (e.querySelector('i,span') || {}).className, txt(e)].filter(x => x).join(' ').slice(0, 300);
+  // 내림 · 올림 가리기 — 그림 주소가 가장 믿을 만하고(보이는 화살표), 그다음 id · onclick · title, 글자(alt)는 가장 약하게.
+  // 실제 ERP(2026-11-12 기록): ⬆ 은 <img id=…Del alt='추가' src=…btn_bg_funup_off.gif>, ⬇ 은 <img id=…Add alt='삭제' src=…btn_bg_fundown_off.gif> —
+  // alt 가 거꾸로 붙어 있어 글자만 보면 ⬆ 을 먼저 눌렀다
   const items = cands.map((e, n) => {
     const d = describe(e);
     const low = d.toLowerCase();
-    let kind = '';
-    if (/down|add|plus|insert|append|추가|아래|내리|↓|▼|⬇/.test(low)) kind = 'down';
-    else if (/(^|[^a-z])up|up(btn|_|-|\.|$)|remove|minus|delete|_del|del_|삭제|위로|올리|↑|▲|⬆/.test(low)) kind = 'up';
+    const src = ((e.getAttribute('src') || '') + ' ' + ((e.querySelector('img') || {}).src || '')).toLowerCase();
+    const code = [e.id, e.getAttribute('onclick'), e.title, e.getAttribute('aria-label'),
+      e.className && e.className.baseVal === undefined ? e.className : ''].filter(x => x).join(' ').toLowerCase();
+    let score = 0;
+    if (/down/.test(src)) score += 4; else if (/(^|[^a-z])up|up([_.\-]|$)|funup/.test(src)) score -= 4;
+    if (/down|add|plus|insert|append/.test(code)) score += 2;
+    if (/(^|[^a-z])up|up(btn|[_.\-(]|$)|remove|minus|delete|_del|del_|del($|[^a-z])|rowdel/.test(code)) score -= 2;
+    if (/추가|아래|내리|↓|▼|⬇/.test(low)) score += 1;
+    if (/삭제|위로|올리|↑|▲|⬆/.test(low)) score -= 1;
+    const kind = score > 0 ? 'down' : score < 0 ? 'up' : '';
     e.setAttribute('data-coss-arrow', String(n));
     const r = e.getBoundingClientRect();
     return {n, kind, x: Math.round(r.left), tag: e.tagName.toLowerCase(), shape: d.slice(0, 120)};
@@ -456,42 +466,61 @@ def part_rows(minutes, log: Callable[[str], None], wait: Callable[[float], None]
             return None
         _rows_shown(popup, wait)
         rows, _tops = _scan_all(popup, wait)
-        return [r["cells"] for r in rows]
+        cells = [r["cells"] for r in rows]
+        cols = sorted({k for c in cells for k, v in c.items() if str(v).strip()})
+        named = sum(1 for c in cells if _squash(c.get(COL_NAME)))
+        # 값 없이 열 이름 · 수만 — 이름 열을 못 읽었는지(열 이름이 다른지) 기록으로 본다
+        log(f"  참여인력선택 목록 {len(cells)}줄 · 이름 읽힌 줄 {named} · 열 {', '.join(cols[:12]) or '없음'}")
+        return cells
     finally:
         _close(popup)
 
 
-def on_part_list(rows: list[dict], person: part_mod.Attendee, day=None) -> tuple[str, str] | None:
-    """이 사람이 참여인력 목록에 있나 — (목록의 사번, 근거). 번호가 있으면 번호 · 이름이 같은 줄 하나, 없으면 이름이 같은 줄 하나
-    (회의록에 소속이 있으면 소속도 맞는 줄). 참여기간을 읽을 수 있으면 회의일이 든 줄만. 아니면 None."""
+def on_part_list(rows: list[dict], person: part_mod.Attendee) -> tuple[str | None, str]:
+    """이 사람이 참여인력 목록에 있나 — (목록의 사번 · 없으면 None, 근거 또는 못 돌린 까닭).
+    번호가 있으면 번호 · 이름이 같은 줄 하나. 없으면 이름이 같은 줄 — 하나면 그 줄(소속이 회의록과 달라도 — ERP 목록의 소속은 학과가 아니라 사업단 등일 수 있다,
+    그때는 근거에 '소속 다름'), 여럿이면 소속이 맞는 줄 하나. 참여기간으로 다시 거르지 않는다 — 창이 회의일자(#START_DATE)로 이미 거른 목록이다."""
     name = _squash(person.name)
-    same = [c for c in rows if name and _squash(c.get(COL_NAME)) == name and _covers(c.get("k_PART_TRM_DT", ""), day) is not False]
+    same = [c for c in rows if name and _squash(c.get(COL_NAME)) == name]
     if not same:
-        return None
+        return None, f"목록 {len(rows)}줄에 같은 이름이 없음"
     no = _digits(person.emp_no)
     if no:
         hit = [c for c in same if _digits(c.get(COL_NO)) == no]
-        how = "번호 · 이름"
-    else:
-        key = _org_key(person.org)
-        hit = [c for c in same if not key or _dept_match(c, key) or not any(str(c.get(col, "")).strip() for col in DEPT_COLS)]
-        how = "이름 · 소속" if key else "이름"
-    return (str(hit[0].get(COL_NO, "")).strip(), how) if len(hit) == 1 else None
+        if len(hit) == 1:
+            return str(hit[0].get(COL_NO, "")).strip(), "번호 · 이름"
+        return None, ("같은 이름은 있지만 증빙의 번호와 목록의 사번이 다름" if not hit else f"번호 · 이름이 같은 줄 {len(hit)}개")
+    key = _org_key(person.org)
+    if len(same) == 1:
+        has_dept = any(str(same[0].get(col, "")).strip() for col in DEPT_COLS)
+        if key and has_dept and not _dept_match(same[0], key):
+            return str(same[0].get(COL_NO, "")).strip(), "이름(소속은 회의록과 다름)"
+        return str(same[0].get(COL_NO, "")).strip(), "이름 · 소속" if key and has_dept else "이름"
+    hit = [c for c in same if key and _dept_match(c, key)]
+    if len(hit) == 1:
+        return str(hit[0].get(COL_NO, "")).strip(), "이름 · 소속"
+    return None, f"같은 이름 {len(same)}줄"
 
 
-def regroup(rows: list[dict], people: list[part_mod.Attendee], day=None) -> tuple[list[part_mod.Attendee], int]:
-    """내부참석자 가운데 그 과제의 참여인력 목록에 있는 사람을 참여인력으로(목록의 사번으로 찾게) — (새 목록, 돌린 수)."""
-    out, moved = [], 0
-    for person in people:
-        hit = on_part_list(rows, person, day) if person.kind == "internal" and not person.note else None
-        if hit is None:
+def regroup(rows: list[dict], people: list[part_mod.Attendee]) -> tuple[list[part_mod.Attendee], int, list[str]]:
+    """내부참석자 가운데 그 과제의 참여인력 목록에 있는 사람을 참여인력으로(목록의 사번으로 찾게) — (새 목록, 돌린 수, 기록 줄).
+    기록 줄에는 이름을 쓰지 않는다('N번째 사람' — 로그 보내기로 나간다)."""
+    out, moved, notes = [], 0, []
+    for order, person in enumerate(people, 1):
+        if person.kind != "internal" or person.note:
             out.append(person)
             continue
-        emp_no, how = hit
-        out.append(replace(person, kind="part", emp_no=emp_no or person.emp_no,
+        emp_no, how = on_part_list(rows, person)
+        if emp_no is None:
+            notes.append(f"{order}번째 사람: 내부참석자로 — {how}")
+            out.append(person)
+            continue
+        notes.append(f"{order}번째 사람: 참여인력으로 — {how}")
+        hint = "ERP 참여인력 목록에서 이름으로 참여인력으로 넣었지만 그 목록의 소속이 회의록과 다름 — 같은 사람인지 확인하세요" if "소속은" in how else person.hint
+        out.append(replace(person, kind="part", emp_no=emp_no or person.emp_no, hint=hint,
                            no_from=f"{ERP_PART_LIST}({how})" if emp_no else person.no_from))
         moved += 1
-    return out, moved
+    return out, moved, notes
 
 
 def add(minutes, people: list[part_mod.Attendee], log: Callable[[str], None], wait: Callable[[float], None],
