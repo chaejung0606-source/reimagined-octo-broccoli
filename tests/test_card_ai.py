@@ -391,3 +391,21 @@ def test_claim_folder_sheets_give_student_numbers_but_are_not_evidence(tmp_path)
     assert not any(p.endswith(".xlsx") for p in item.files)      # 증빙(첨부)은 결제 건 폴더 안의 것만
     _values, plan, _missing = card_erp.meeting_plan(item, [])
     assert [(a.kind, a.emp_no) for a in plan] == [("internal", "202600011"), ("internal", "202600012")]
+
+
+def test_student_minutes_pdf_text_gives_the_student_numbers(tmp_path):
+    """담당자 2026-11-12 회의록 그림 — 학생이 낸 회의록 PDF 의 참석자 표 '구분 | 이름 | 학과 | 학번 | 연락처'. AI 가 참석자를 읽어도 학번은 그 PDF 글자에서
+    앱이 직접 읽는다(전에는 회의록 파일 자체를 빼고 다른 서류만 봤다). 학번이 '-' 인 지도교수는 이름으로, 전화번호는 번호가 아니다. 이름 · 번호는 가짜."""
+    claim, folder = make_item_folder(tmp_path)
+    text = ("WE-Meet 프로젝트 회의록\n회의 일시 2026. 10. 12. 16:00 ~ 18:00 장 소 공학관 514호\n참 석 자 구분 이름 학과 학번 연락처\n"
+            "지도교수 학생가 컴퓨터공학과 - 033-250-0000\n팀장 학생나 컴퓨터공학과 202600011 010-1111-2222\n"
+            "팀원 학생다\n융합보안학과\n202600012\n010-3333-4444")
+    ai = card_ai.clean({**AI_DATA, "meeting": {**AI_DATA["meeting"], "attendees": [
+        {"org": "컴퓨터공학과", "name": "학생가"}, {"org": "컴퓨터공학과", "name": "학생나"}, {"org": "융합보안학과", "name": "학생다"}]}})
+    job = card.load_job(str(claim), read_text=lambda path, pages=3: text if path.endswith(MINUTES_PDF) else "",
+                        ai_lookup=lambda f, files: ai)
+    m = job.sheets[0].items[0].meeting
+    assert m.path.endswith(MINUTES_PDF)
+    assert m.numbers == {"학생나": "202600011", "학생다": "202600012"} and m.number_from["학생나"] == MINUTES_PDF
+    _values, plan, _missing = card_erp.meeting_plan(job.sheets[0].items[0], [])
+    assert [(a.name, a.emp_no) for a in plan] == [("학생가", ""), ("학생나", "202600011"), ("학생다", "202600012")]

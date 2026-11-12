@@ -1137,7 +1137,11 @@ def attendee_numbers(minutes: Minutes, files: list[str], read_text=pdf_text, ext
     names = [name for _org, name in minutes.attendees if _squash(name) not in minutes.numbers]
     if not names:
         return
-    paths = [p for p in files if p != minutes.path and p.lower().endswith(NUMBER_SUFFIXES)][:NUMBER_FILES]
+    # 회의록 파일 자체도 본다 — 학생이 낸 회의록 PDF 는 AI 가 참석자를 읽지만, 그 글자의 '구분 | 이름 | 학과 | 학번 | 연락처' 줄에서
+    # 학번을 앱이 직접 읽는 것이 더 확실하다(담당자 2026-11-12 회의록 그림). .hwpx 회의록은 minutes_rows 가 이미 읽어 번호가 있는 사람은 names 에서 빠졌다
+    mine = os.path.normcase(os.path.normpath(minutes.path)) if minutes.path else ""
+    own = [p for p in files if mine and os.path.normcase(os.path.normpath(p)) == mine]
+    paths = [p for p in own + [p for p in files if p not in own] if p.lower().endswith(NUMBER_SUFFIXES)][:NUMBER_FILES]
     paths += [p for p in extra if p not in paths]
     cache = {} if cache is None else cache
     texts = {}
