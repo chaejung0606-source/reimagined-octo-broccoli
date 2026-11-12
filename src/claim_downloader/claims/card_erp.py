@@ -298,7 +298,8 @@ def _meeting_entries(item: card.CardItem, values: dict, people: list, need: int)
                      f"{MIN_CONTENT}자보다 짧음 — ERP 가 저장을 막음" if short else _meeting_check(m, "content", not content)))
     who_src = _source(m, "attendees") + " → 참여연구원 명단으로 나눔"
     for kind, how in (("part", "앱이 [행 추가] 창에서 고름(직번 · 학번이 있으면 번호로 먼저, 이름이 맞는 줄이 하나일 때)"),
-                      ("internal", "앱이 [행 추가] 창에서 고름(학번 · 사번이 있으면 번호로 먼저, 없거나 못 찾으면 이름 · 소속으로)"),
+                      ("internal", "넣을 때 그 과제의 ERP 참여인력 목록에 있으면 참여인력으로, 아니면 [행 추가] 창에서 고름(학번 · 사번이 있으면 번호로 먼저, "
+                                  "없거나 못 찾으면 이름 · 소속으로)"),
                       ("external", "앱이 성명 · 소속을 넣음(ERP 에서 찾지 않음)")):
         group = [p for p in people if p.kind == kind]
         if group:
@@ -997,6 +998,16 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
         inside = [p for p in people if p.kind in ("part", "internal")]
         reasons: dict[str, str] = {}
         left = _missing_inside(inside, _inside_names(popup))
+        day = _day(s["CFRC_DT"]) or item.used
+        if any(p.kind == "internal" for p in left):
+            # 참여인력인지는 ERP 의 참여인력선택 목록으로 — 참여연구원 명단 파일이 없으면 학교 사람이 모두 내부참석자로 갔다(담당자 2026-11-12
+            # "지금 참여인력을 내부참석자로 입력했습니다"). 그 목록에 있는 사람은 참여인력으로 넣는다
+            rows = attendees.part_rows(popup, log, wait)
+            if rows is not None:
+                left, moved = attendees.regroup(rows, left, day)
+                log(f"  참여인력선택 목록 {len(rows)}줄 — 내부참석자로 본 사람 중 {moved}명이 이 과제의 참여인력이라 참여인력으로 넣습니다")
+                if moved:
+                    result.lines.append(f"ERP 참여인력 목록에 있는 {moved}명은 참여인력으로")
         if left:
             picked = attendees.add(popup, left, log, wait, lambda: [x["name"] for x in _inside_names(popup)])
             result.lines += picked.lines
@@ -1012,7 +1023,6 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
         target = max(need, heads + len(left), 1)           # 아무도 없으면 저장되지 않는다
         arbitrary: list[str] = []
         if target > heads:
-            day = _day(s["CFRC_DT"]) or item.used
             filled = attendees.fill_up(popup, target - heads, log, wait, lambda: [x["name"] for x in _inside_names(popup)],
                                        avoid=[p.name for p in left], taken_nos=[x.get("no", "") for x in _inside_names(popup)], day=day)
             arbitrary = filled.added

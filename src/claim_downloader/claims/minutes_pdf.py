@@ -299,9 +299,17 @@ def _is_phone(token: str) -> bool:
     return bool(PHONE_RE.fullmatch(token.strip()) or re.fullmatch(r"0\d{8,10}", token.strip()))
 
 
+def unglue(text: str) -> str:
+    """칸 사이 띄어쓰기 없이 붙어 읽힌 칸을 떼어 낸다 — 담당자 2026-11-12 실제: 글자를 좁혀 쓴 학과 칸 다음의 학번이 '데 이 터 … 학 과202600001' 으로
+    붙어 나와 학과가 '…과202600001' 이라는 낯선 소속이 됐고 그 사람이 외부참석자로 들어갔다. 글자 · 괄호 뒤에 바로 붙은 6~13자리 번호, 번호 뒤에 바로 붙은 전화."""
+    text = re.sub(r"(?<=[가-힣A-Za-z)\]])(?=\(?\d{6,13}\)?(?!\d))", " ", text)
+    text = re.sub(r"(?<=[가-힣A-Za-z)\]])(?=0\d{1,2}-\d{3,4}-\d{4})", " ", text)
+    return re.sub(r"(?<=\d)(?=0\d{1,2}-\d{3,4}-\d{4}(?!\d))", " ", text)
+
+
 def _people(region: str, value: str = "") -> tuple[list[tuple[str, str, str]], str]:
     """참석자 칸의 글 → (소속, 이름, 번호) 줄들과 읽은 방법('표' · '이름 나열' · ''). region 은 표를 찾을 넓은 글, value 는 '참석자' 칸의 값만."""
-    raw = region.split()
+    raw = unglue(region).split()
     merged = _merge_spaced(raw)
     # 머리글 — 처음 나오는 머리글 낱말이 이어진 무리(이름 열이 있어야). 띄운 글자는 머리글에서만 붙인다(학과 칸 '데 이 터 …' 는 그대로)
     start = next((i for i, (t, _e) in enumerate(merged) if _head_kind(t)), None)

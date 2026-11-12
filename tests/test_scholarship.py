@@ -365,7 +365,7 @@ def _crowd(n, hits):
 
 
 def test_person_scan_scrolls_past_the_drawn_rows():
-    """실제 ERP 18:10 — '김형준' 검색이 21행만 읽혀 학번을 못 찾고 멈췄다. 끝까지 내려가 찾는다."""
+    """실제 ERP 18:10 — 흔한 이름 검색이 21행만 읽혀 학번을 못 찾고 멈췄다. 끝까지 내려가 찾는다."""
     grid, logs = FakeGrid(_crowd(30, {25})), []
     index, why, where = person._scan(grid, "가나다", "202600001", logs.append, lambda s: None)
     assert index is not None and why == "학번 일치" and where is grid

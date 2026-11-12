@@ -422,6 +422,64 @@ def test_attendees_are_picked_in_the_two_finder_windows_only_when_certain():
         raise
 
 
+def test_internal_people_on_the_erp_participant_list_become_participants():
+    """담당자 2026-11-12 "지금 참여인력을 내부참석자로 입력했습니다" — 참여연구원 명단 파일이 없으면 학교 사람이 모두 내부참석자였다.
+    ERP 참여인력선택 목록에 있는 사람(번호가 있으면 번호 · 이름, 없으면 이름 · 소속)은 참여인력으로. 이름 · 번호는 가짜."""
+    rows = [{"k_EMP_NO": "100001", "k_EMP_NM": "가", "k_BLNG_DEPT_NM": "가나다학과"},
+            {"k_EMP_NO": "100002", "k_EMP_NM": "나", "k_BLNG_DEPT_NM": "자유전공학부(자연계열)"},
+            {"k_EMP_NO": "100003", "k_EMP_NM": "다", "k_BLNG_DEPT_NM": "가나다학과", "k_PART_TRM_DT": "2025-03-01 ~ 2026-02-28"},
+            {"k_EMP_NO": "100004", "k_EMP_NM": "라", "k_BLNG_DEPT_NM": "가나다학과"},
+            {"k_EMP_NO": "100005", "k_EMP_NM": "라", "k_BLNG_DEPT_NM": "마바사학과"}]
+    people = [participants.Attendee("가", "가나다학과", "internal"),                       # 이름 · 소속 → 참여인력
+              participants.Attendee("나", "자유전공학부", "internal"),                       # 소속이 '…(자연계열)' 이어도
+              participants.Attendee("다", "가나다학과", "internal"),                         # 참여기간이 회의일을 안 덮음 → 그대로
+              participants.Attendee("라", "", "internal"),                                  # 같은 이름 둘 → 그대로
+              participants.Attendee("가", "가나다학과", "internal", "202600009"),           # 번호가 다름 → 다른 사람
+              participants.Attendee("바", "아자학과", "internal", "202600001"),             # 목록에 없음
+              participants.Attendee("라", "마바사학과", "internal", "100005"),               # 번호 · 이름
+              participants.Attendee("하", "", "external")]
+    got, moved = attendees.regroup(rows, people, day=dt.date(2026, 10, 12))
+    assert moved == 3
+    assert [(p.kind, p.emp_no) for p in got] == [("part", "100001"), ("part", "100002"), ("internal", ""), ("internal", ""),
+                                                  ("internal", "202600009"), ("internal", "202600001"), ("part", "100005"), ("external", "")]
+    assert got[0].no_from == "ERP 참여인력 목록(이름 · 소속)" and got[6].no_from == "ERP 참여인력 목록(번호 · 이름)"
+
+
+def test_participant_list_is_read_once_and_the_window_closed_then_they_go_in_as_participants():
+    sync_api = pytest.importorskip("playwright.sync_api")
+    executable = os.environ.get("CHROMIUM_PATH", "/opt/pw-browsers/chromium")
+    pages = {"http://erp.test/minutes": MINUTES_WITH_FINDERS, "http://erp.test/part": PART_WINDOW, "http://erp.test/multi": MULTI_WINDOW}
+    try:
+        with sync_api.sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=executable if os.path.exists(executable) else None)
+            context = browser.new_context()
+            context.route("http://erp.test/**", lambda route: route.fulfill(status=200, content_type="text/html; charset=utf-8",
+                                                                            body=pages[route.request.url]))
+            context.on("dialog", lambda d: d.dismiss())
+            minutes = context.new_page()
+            minutes.goto("http://erp.test/minutes")
+            wait = lambda s: minutes.wait_for_timeout(int(s * 1000))  # noqa: E731
+            lines: list[str] = []
+            before = card_erp._inside_names(minutes)
+            rows = attendees.part_rows(minutes, lines.append, wait)
+            assert [r["k_EMP_NO"] for r in rows] == ["100001", "100002", "100004"]
+            assert len(context.pages) == 1                                       # [확인] 없이 창만 닫았다
+            assert card_erp._inside_names(minutes) == before                       # 아무도 들어가지 않았다
+            people, moved = attendees.regroup(rows, [participants.Attendee("바", "산학협력단", "internal"),
+                                                     participants.Attendee("라", "마바사학과", "internal")])
+            assert moved == 1
+            names = lambda: [x["name"] for x in card_erp._inside_names(minutes)]  # noqa: E731
+            report = attendees.add(minutes, people, lines.append, wait, names)
+            assert report.added == ["바", "라"]
+            on = card_erp._inside_names(minutes)
+            assert [(x["kind"], x["name"], x["no"]) for x in on if x not in before] == [("part", "바", "100004"), ("internal", "라", "202400001")]
+            browser.close()
+    except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
+        if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):
+            pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
+        raise
+
+
 # ── 증빙의 학번 · 사번으로 먼저 찾기 (담당자 2026-11-11) ─────────────────────────────────────────────
 def test_minutes_table_takes_numbers_out_of_the_name_cell(tmp_path):
     """회의록 이름 칸에 '이름(학번)' 으로 적었으면 번호를 떼어 내 ERP 에서 번호로 먼저 찾는다 — 이름 칸에는 이름만."""

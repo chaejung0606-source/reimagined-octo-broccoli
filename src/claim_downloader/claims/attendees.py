@@ -16,6 +16,10 @@
   앱은 체크한 뒤 표가 비면 ⬇ 를 사람처럼 누른다(`ARROW_JS` 로 그 사이의 작은 단추를 찾아 '내림' 먼저, 못 가리면 왼쪽부터 둘까지 — '올림' 은 누르지 않음, 구조 저장 전).
   [확인] 뒤 내부참석자 표에 고른 사람마다 줄(사번 읽기전용 · 성명 · 돋보기 · 소속)이 생기고 `#EMP_COUNT` 가 는다.
 
+**참여인력인지는 ERP 의 참여인력선택 목록으로 가린다**(담당자 2026-11-12 회의록등록 그림 — "지금 참여인력을 내부참석자로 입력했습니다": 참여연구원 명단 파일이 없으면
+학교 사람은 모두 내부참석자로 갔다). `regroup` 이 넣기 전에 참여인력선택 창을 한 번 열어 그 과제의 참여인력 목록만 읽고 닫은 뒤(`part_rows` — [확인] 없이 창 닫기),
+내부참석자 가운데 그 목록에 있는 사람(번호가 있으면 번호 · 이름, 없으면 이름 — 소속이 적혀 있으면 소속도 — 이 맞는 줄 하나)을 참여인력으로 돌려 참여인력선택에서 넣는다.
+
 앱은 **한 사람씩** 창을 열어(검색이 앞 체크를 지울 수 있어서) 검색 → 맞는 줄이 **하나로 확실할 때만** 체크 → [확인] → 회의록등록 창에 그 이름이 생겼는지 본다.
 못 정하면 그 창을 닫고(창 닫기 — ERP 단추가 아니다) 까닭을 돌려준다 — card_erp 가 '신청 전 확인할 것' 에 그 이름을 남긴다.
 회의록의 사람이 불분명하거나 1인 한도(회의비 · 다과비 5만원)로 사람이 모자라면 `fill_up` 이 참여인력선택에서 **아무나** 골라 채운다
@@ -433,6 +437,61 @@ def _one(minutes, person: part_mod.Attendee, multi: bool, log: Callable[[str], N
     finally:
         if not done:
             _close(popup)
+
+
+DEPT_COLS = ("k_DEPT_NM", "k_UP_DEPT_NM", "k_BLNG_DEPT_NM")
+ERP_PART_LIST = "ERP 참여인력 목록"
+
+
+def part_rows(minutes, log: Callable[[str], None], wait: Callable[[float], None]) -> list[dict] | None:
+    """참여인력선택 창을 열어 그 과제의 참여인력 목록(줄마다 cells)을 읽고 닫는다 — 체크 · [확인] 없이 창 닫기. 못 읽으면 None."""
+    assert PART_ADD_ID in ALLOWED_IDS
+    popup, why = open_popup(minutes, minutes, PART_ADD_ID, PART_PROBE_JS, log)
+    if popup is None:
+        log("  참여인력선택 창을 열지 못해 참여인력 목록을 보지 못함: " + why)
+        return None
+    try:
+        if not wait_until(lambda: popup.evaluate(PART_PROBE_JS) is True, wait, tries=40):
+            log("  참여인력선택 창이 아니라 참여인력 목록을 보지 못함")
+            return None
+        _rows_shown(popup, wait)
+        rows, _tops = _scan_all(popup, wait)
+        return [r["cells"] for r in rows]
+    finally:
+        _close(popup)
+
+
+def on_part_list(rows: list[dict], person: part_mod.Attendee, day=None) -> tuple[str, str] | None:
+    """이 사람이 참여인력 목록에 있나 — (목록의 사번, 근거). 번호가 있으면 번호 · 이름이 같은 줄 하나, 없으면 이름이 같은 줄 하나
+    (회의록에 소속이 있으면 소속도 맞는 줄). 참여기간을 읽을 수 있으면 회의일이 든 줄만. 아니면 None."""
+    name = _squash(person.name)
+    same = [c for c in rows if name and _squash(c.get(COL_NAME)) == name and _covers(c.get("k_PART_TRM_DT", ""), day) is not False]
+    if not same:
+        return None
+    no = _digits(person.emp_no)
+    if no:
+        hit = [c for c in same if _digits(c.get(COL_NO)) == no]
+        how = "번호 · 이름"
+    else:
+        key = _org_key(person.org)
+        hit = [c for c in same if not key or _dept_match(c, key) or not any(str(c.get(col, "")).strip() for col in DEPT_COLS)]
+        how = "이름 · 소속" if key else "이름"
+    return (str(hit[0].get(COL_NO, "")).strip(), how) if len(hit) == 1 else None
+
+
+def regroup(rows: list[dict], people: list[part_mod.Attendee], day=None) -> tuple[list[part_mod.Attendee], int]:
+    """내부참석자 가운데 그 과제의 참여인력 목록에 있는 사람을 참여인력으로(목록의 사번으로 찾게) — (새 목록, 돌린 수)."""
+    out, moved = [], 0
+    for person in people:
+        hit = on_part_list(rows, person, day) if person.kind == "internal" and not person.note else None
+        if hit is None:
+            out.append(person)
+            continue
+        emp_no, how = hit
+        out.append(replace(person, kind="part", emp_no=emp_no or person.emp_no,
+                           no_from=f"{ERP_PART_LIST}({how})" if emp_no else person.no_from))
+        moved += 1
+    return out, moved
 
 
 def add(minutes, people: list[part_mod.Attendee], log: Callable[[str], None], wait: Callable[[float], None],

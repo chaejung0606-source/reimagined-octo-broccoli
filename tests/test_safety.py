@@ -353,7 +353,10 @@ def test_attendees_press_only_row_add_search_row_check_and_confirm():
     assert text.split("def _one(", 1)[1].index("_check(popup") < text.split("def _one(", 1)[1].index("_to_basket(")
     assert set(re.findall(r"evaluate\(CLICK_ID_JS,\s*([A-Za-z_]+)\)", text)) == {"SEARCH_ID", "PART_CONFIRM_ID"}
     assert re.findall(r"evaluate\(CLICK_TEXT_JS,\s*([A-Za-z_]+)\)", text) == ["CONFIRM_TEXT"] and attendees.CONFIRM_TEXT == "확인"
-    assert re.findall(r"open_popup\(minutes, minutes, ([A-Za-z_]+),", text) == ["button", "PART_ADD_ID"]
+    assert re.findall(r"open_popup\(minutes, minutes, ([A-Za-z_]+),", text) == ["button", "PART_ADD_ID", "PART_ADD_ID"]
+    # 참여인력선택 목록 읽기(2026-11-12 — 참여인력인지 ERP 목록으로 가린다)는 창을 열어 읽고 닫기만: 체크 · [확인] · 검색 없음
+    peek = text.split("def part_rows(", 1)[1].split("\ndef ", 1)[0]
+    assert "_close(popup)" in peek and not any(w in peek for w in ("_check(", "CLICK_", "_search(", ".click(", "SET_TEXT_JS"))
     assert "assert button in ALLOWED_IDS" in text and "assert PART_ADD_ID in ALLOWED_IDS" in text
     assert attendees.ALLOWED_IDS == {"btnRowAdd", "btnRowAdd1", "btn_search", "btnItem"}
     assert re.findall(r"evaluate\(SET_TEXT_JS,\s*\[([a-z_]+),", text) == ["field_id"]

@@ -131,7 +131,8 @@ def find_file(setting: str, *folders: str) -> str:
 
 def is_internal_org(org: str) -> bool:
     """담당자 규칙 — 소속이 비었거나 · 강원대(학교) · 학과명(학교 이름 없이 학과 · 학부 · 사업단 …)이면 학교 안 사람."""
-    text = _squash(org)
+    # 회의록 PDF 글자에서 학번이 학과에 붙어 읽히기도 한다('…학과202600001' — 담당자 2026-11-12) — 끝의 번호는 소속이 아니다
+    text = re.sub(r"\(?\d{5,13}\)?$", "", _squash(org))
     if not text:
         return True
     if any(word in text for word in HOME_ORG_WORDS):
