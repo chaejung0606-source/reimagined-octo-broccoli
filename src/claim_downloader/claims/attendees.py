@@ -188,17 +188,23 @@ def _dept_match(cells: dict, key: str) -> bool:
 
 
 def choose_part(rows: list[dict], person: part_mod.Attendee) -> tuple[int | None, str]:
-    """참여인력선택 목록(cells 의 줄들)에서 이 사람의 줄 — 이름이 같고, 명단에 직번이 있으면 직번도 같은 줄이 하나일 때만."""
+    """참여인력선택 목록(cells 의 줄들)에서 이 사람의 줄 — 이름이 같은 줄. 같은 이름이 여럿이면 직번이 같은 줄 하나.
+    같은 이름이 하나면 명단의 직번과 목록의 사번이 달라도 그 줄(담당자 2026-11-12 "이름이 참여인력 명단에 있으면 참여인력으로" — 근거에 '다름')."""
     same = [i for i, c in enumerate(rows) if _squash(c.get(COL_NAME)) == _squash(person.name)]
     if not same:
         return None, NOT_LISTED
     if person.emp_no:
-        same = [i for i in same if _digits(rows[i].get(COL_NO)) == _digits(person.emp_no)]
-        if not same:
-            return None, "이름은 있지만 직번이 같은 줄이 없음"
+        hit = [i for i in same if _digits(rows[i].get(COL_NO)) == _digits(person.emp_no)]
+        if len(hit) == 1:
+            return hit[0], "참여인력 목록에서 직번 · 이름으로"
+        if not hit and len(same) == 1:
+            return same[0], "참여인력 목록에서 이름으로(명단의 직번과 목록의 사번이 다름)"
+        if not hit:
+            return None, f"같은 이름이 {len(same)}줄인데 직번이 같은 줄이 없음"
+        same = hit
     if len(same) > 1:
         return None, f"같은 이름이 {len(same)}줄"
-    return same[0], "참여인력 목록에서 " + ("직번 · 이름" if person.emp_no else "이름") + "으로"
+    return same[0], "참여인력 목록에서 이름으로"
 
 
 def choose_person(rows: list[dict], person: part_mod.Attendee) -> tuple[int | None, str, bool]:
@@ -478,8 +484,9 @@ def part_rows(minutes, log: Callable[[str], None], wait: Callable[[float], None]
 
 def on_part_list(rows: list[dict], person: part_mod.Attendee) -> tuple[str | None, str]:
     """이 사람이 참여인력 목록에 있나 — (목록의 사번 · 없으면 None, 근거 또는 못 돌린 까닭).
-    번호가 있으면 번호 · 이름이 같은 줄 하나. 없으면 이름이 같은 줄 — 하나면 그 줄(소속이 회의록과 달라도 — ERP 목록의 소속은 학과가 아니라 사업단 등일 수 있다,
-    그때는 근거에 '소속 다름'), 여럿이면 소속이 맞는 줄 하나. 참여기간으로 다시 거르지 않는다 — 창이 회의일자(#START_DATE)로 이미 거른 목록이다."""
+    **이름이 목록에 있으면 참여인력**(담당자 2026-11-12 "이름이 참여인력 명단에 있으면 참여인력으로 봐주세요"): 같은 이름이 하나면 그 줄 — 증빙의 번호가
+    목록의 사번과 달라도(학생은 학번 · 목록은 사번일 수 있다), 소속이 회의록과 달라도(목록의 소속은 학과가 아니라 사업단 등일 수 있다) 근거에 '다름' 을 적는다.
+    같은 이름이 여럿이면 번호 · 이름이 같은 줄, 아니면 소속이 맞는 줄 하나. 참여기간으로 다시 거르지 않는다 — 창이 회의일자(#START_DATE)로 이미 거른 목록이다."""
     name = _squash(person.name)
     same = [c for c in rows if name and _squash(c.get(COL_NAME)) == name]
     if not same:
@@ -489,7 +496,10 @@ def on_part_list(rows: list[dict], person: part_mod.Attendee) -> tuple[str | Non
         hit = [c for c in same if _digits(c.get(COL_NO)) == no]
         if len(hit) == 1:
             return str(hit[0].get(COL_NO, "")).strip(), "번호 · 이름"
-        return None, ("같은 이름은 있지만 증빙의 번호와 목록의 사번이 다름" if not hit else f"번호 · 이름이 같은 줄 {len(hit)}개")
+        if len(hit) > 1:
+            return None, f"번호 · 이름이 같은 줄 {len(hit)}개"
+        if len(same) == 1:
+            return str(same[0].get(COL_NO, "")).strip(), "이름(증빙의 번호와 목록의 사번이 다름)"
     key = _org_key(person.org)
     if len(same) == 1:
         has_dept = any(str(same[0].get(col, "")).strip() for col in DEPT_COLS)
@@ -499,25 +509,34 @@ def on_part_list(rows: list[dict], person: part_mod.Attendee) -> tuple[str | Non
     hit = [c for c in same if key and _dept_match(c, key)]
     if len(hit) == 1:
         return str(hit[0].get(COL_NO, "")).strip(), "이름 · 소속"
-    return None, f"같은 이름 {len(same)}줄"
+    return None, f"같은 이름 {len(same)}줄" + (" · 번호가 같은 줄 없음" if no else "")
 
 
-def regroup(rows: list[dict], people: list[part_mod.Attendee]) -> tuple[list[part_mod.Attendee], int, list[str]]:
-    """내부참석자 가운데 그 과제의 참여인력 목록에 있는 사람을 참여인력으로(목록의 사번으로 찾게) — (새 목록, 돌린 수, 기록 줄).
-    기록 줄에는 이름을 쓰지 않는다('N번째 사람' — 로그 보내기로 나간다)."""
+def regroup(rows: list[dict], people: list[part_mod.Attendee], skip=()) -> tuple[list[part_mod.Attendee], int, list[str]]:
+    """내부참석자 · 외부참석자 가운데 그 과제의 참여인력 목록에 이름이 있는 사람을 참여인력으로(목록의 사번으로 찾게) — (새 목록, 돌린 수, 기록 줄).
+    담당자 2026-11-12 "이름이 참여인력 명단에 있으면 참여인력으로 봐주세요" — 회의록 소속이 학교 밖으로 적힌 사람도.
+    skip 은 이미 회의록등록 창의 표에 든 이름(띄어쓰기 뺀 것) — 건드리지 않는다. 기록 줄에는 이름을 쓰지 않는다('N번째 사람' — 로그 보내기로 나간다)."""
     out, moved, notes = [], 0, []
+    skip = {_squash(n) for n in skip}
     for order, person in enumerate(people, 1):
-        if person.kind != "internal" or person.note:
+        if person.kind not in ("internal", "external") or _squash(person.name) in skip:
             out.append(person)
             continue
         emp_no, how = on_part_list(rows, person)
         if emp_no is None:
-            notes.append(f"{order}번째 사람: 내부참석자로 — {how}")
+            notes.append(f"{order}번째 사람: {person.kind_name}로 — {how}")
             out.append(person)
             continue
-        notes.append(f"{order}번째 사람: 참여인력으로 — {how}")
-        hint = "ERP 참여인력 목록에서 이름으로 참여인력으로 넣었지만 그 목록의 소속이 회의록과 다름 — 같은 사람인지 확인하세요" if "소속은" in how else person.hint
-        out.append(replace(person, kind="part", emp_no=emp_no or person.emp_no, hint=hint,
+        notes.append(f"{order}번째 사람: 참여인력으로 — {how}" + (" (회의록 소속은 학교 밖)" if person.kind == "external" else ""))
+        why = []
+        if person.kind == "external":
+            why.append(f"회의록의 소속({person.org})은 학교 밖이지만 ERP 참여인력 목록에 같은 이름이 있어 참여인력으로 넣음")
+        if "사번이 다름" in how:
+            why.append("증빙의 학번 · 사번이 ERP 참여인력 목록의 사번과 다르지만 이름이 목록에 있어 참여인력으로 넣음")
+        elif "소속은" in how and person.kind != "external":
+            why.append("ERP 참여인력 목록에서 이름으로 참여인력으로 넣었지만 그 목록의 소속이 회의록과 다름")
+        hint = " · ".join(why) + " — 같은 사람인지 확인하세요" if why else person.hint
+        out.append(replace(person, kind="part", emp_no=emp_no or person.emp_no, hint=hint, note="",
                            no_from=f"{ERP_PART_LIST}({how})" if emp_no else person.no_from))
         moved += 1
     return out, moved, notes

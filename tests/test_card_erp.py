@@ -78,8 +78,10 @@ def test_attendee_rule_blank_knu_or_department_is_inside():
         assert not participants.is_internal_org(org), org
     members = [participants.Member("김책임", "100001"), participants.Member("이연구", "900001"), participants.Member("이연구", "900002")]
     got = participants.classify([("강원대학교", "김책임"), ("", "홍길동"), ("한림대학교", "김책임"), ("가나다학과", "이연구")], members)
-    assert [(a.kind, a.emp_no) for a in got] == [("part", "100001"), ("internal", ""), ("external", ""), ("internal", "")]
-    assert "외부참석자로" in got[2].note and "2명" in got[3].note
+    # 명단에 이름이 있으면 참여인력 — 소속이 학교 밖으로 적혔어도(담당자 2026-11-12 "이름이 참여인력 명단에 있으면 참여인력으로 봐주세요")
+    assert [(a.kind, a.emp_no) for a in got] == [("part", "100001"), ("internal", ""), ("part", "100001"), ("internal", "")]
+    assert "학교 밖" in got[2].hint and "확인" in got[2].hint and not got[0].hint and "2명" in got[3].note
+    assert participants.classify([("한림대학교", "모르는사람")], members)[0].kind == "external"
 
 
 # ── 회의록 표 ────────────────────────────────────────────────────────
@@ -303,7 +305,10 @@ def test_minutes_window_names_and_the_empty_external_row_in_a_browser():
 def test_choose_part_needs_one_row_and_the_same_emp_no():
     rows = [{"k_EMP_NO": "100001", "k_EMP_NM": "가"}, {"k_EMP_NO": "100002", "k_EMP_NM": "나"}, {"k_EMP_NO": "100003", "k_EMP_NM": "나"}]
     assert attendees.choose_part(rows, participants.Attendee("가", kind="part", emp_no="100001"))[0] == 0
-    assert attendees.choose_part(rows, participants.Attendee("가", kind="part", emp_no="999999"))[0] is None
+    # 이름이 하나면 직번이 달라도 그 줄(근거에 '다름' — 이름으로 고른 것이라 신청 전 확인)
+    assert attendees.choose_part(rows, participants.Attendee("가", kind="part", emp_no="999999")) == (0, "참여인력 목록에서 이름으로(명단의 직번과 목록의 사번이 다름)")
+    assert attendees.choose_part(rows, participants.Attendee("나", kind="part", emp_no="100003"))[0] == 2
+    assert attendees.choose_part(rows, participants.Attendee("나", kind="part", emp_no="999999"))[0] is None
     assert attendees.choose_part(rows, participants.Attendee("나", kind="part"))[1] == "같은 이름이 2줄"
     assert attendees.choose_part(rows, participants.Attendee("다", kind="part"))[1] == attendees.NOT_LISTED
 
@@ -435,18 +440,27 @@ def test_internal_people_on_the_erp_participant_list_become_participants():
               participants.Attendee("나", "자유전공학부", "internal"),                       # 소속이 '…(자연계열)' 이어도
               participants.Attendee("다", "가나다학과", "internal"),                         # 목록의 소속이 사업단 — 이름이 하나라 참여인력(확인할 것)
               participants.Attendee("라", "", "internal"),                                  # 같은 이름 둘 · 소속 없음 → 그대로
-              participants.Attendee("가", "가나다학과", "internal", "202600009"),           # 번호가 다름 → 다른 사람
+              participants.Attendee("가", "가나다학과", "internal", "202600009"),           # 번호가 달라도 이름이 하나 → 참여인력(확인할 것)
               participants.Attendee("바", "아자학과", "internal", "202600001"),             # 목록에 없음
               participants.Attendee("라", "마바사학과", "internal", "100005"),               # 번호 · 이름
-              participants.Attendee("하", "", "external")]
-    got, moved, notes = attendees.regroup(rows, people)
-    assert moved == 4
+              participants.Attendee("하", "", "external"),                                  # 목록에 없는 외부참석자 → 그대로
+              participants.Attendee("다", "한림대학교", "external"),                         # 회의록 소속이 학교 밖이어도 이름이 목록에 → 참여인력
+              participants.Attendee("라", "", "internal", "202600002"),                     # 같은 이름 둘 · 번호가 둘 다 아님 → 그대로
+              participants.Attendee("가", "가나다학과", "internal", note="명단에 같은 이름 2명"),  # 명단 동명이인이어도 ERP 목록에서 하나면
+              participants.Attendee("사", "", "external")]                                   # 이미 창의 표에 든 사람 — 건드리지 않음
+    got, moved, notes = attendees.regroup(rows + [{"k_EMP_NO": "100006", "k_EMP_NM": "사"}], people, skip=["사 "])
+    assert moved == 7
     assert [(p.kind, p.emp_no) for p in got] == [("part", "100001"), ("part", "100002"), ("part", "100003"), ("internal", ""),
-                                                  ("internal", "202600009"), ("internal", "202600001"), ("part", "100005"), ("external", "")]
+                                                  ("part", "100001"), ("internal", "202600001"), ("part", "100005"), ("external", ""),
+                                                  ("part", "100003"), ("internal", "202600002"), ("part", "100001"), ("external", "")]
     assert got[0].no_from == "ERP 참여인력 목록(이름 · 소속)" and got[6].no_from == "ERP 참여인력 목록(번호 · 이름)"
     assert "소속이 회의록과 다름" in got[2].hint and not got[0].hint
+    assert "사번과 다르지만" in got[4].hint and "학교 밖" in got[8].hint and not got[10].note
     assert notes[3] == "4번째 사람: 내부참석자로 — 같은 이름 2줄" and "번호와 목록의 사번이 다름" in notes[4]
-    assert "목록 5줄에 같은 이름이 없음" in notes[5] and not any(n in "".join(notes) for n in ("가", "나", "100001"))   # 기록에 이름 · 사번 없음
+    assert "목록 6줄에 같은 이름이 없음" in notes[5] and notes[7] == "8번째 사람: 외부참석자로 — 목록 6줄에 같은 이름이 없음"
+    assert "같은 이름 2줄 · 번호가 같은 줄 없음" in notes[9] and len(notes) == 11                  # 표에 든 사람은 기록도 없음
+    assert not any(n in "".join(notes) for n in ("100001", "100005", "한림", "가나다", "마바사"))      # 기록에 사번 · 소속 없음(이름도 — 'N번째 사람')
+    assert all(n.split(":")[0].endswith("번째 사람") for n in notes)
 
 
 def test_participant_list_is_read_once_and_the_window_closed_then_they_go_in_as_participants():
@@ -586,12 +600,14 @@ def test_classify_uses_the_evidence_number_before_the_name():
                                 {"신": "서명부.pdf"})
     by = {p.name: p for p in got}
     assert (by["라"].kind, by["라"].emp_no, by["라"].note) == ("part", "200002", "")        # 동명이인이어도 번호로 한 사람
-    assert (by["가"].kind, by["가"].emp_no) == ("internal", "202600009") and "참여연구원 명단의 같은 이름" in by["가"].hint
+    # 번호가 명단의 직번과 달라도 이름이 명단에 하나면 참여인력(담당자 2026-11-12) — 확인할 것으로
+    assert (by["가"].kind, by["가"].emp_no) == ("part", "100001") and "직번(100001)과 다르지만" in by["가"].hint
     assert (by["신"].kind, by["신"].emp_no, by["신"].no_from) == ("internal", "202600005", "서명부.pdf")
     assert (by["외"].kind, by["외"].emp_no) == ("external", "")
     assert (by["무"].kind, by["무"].emp_no) == ("internal", "")
-    # 번호가 없으면 전처럼 — 명단의 같은 이름이 둘이면 사람에게
+    # 번호가 없거나 같은 이름 누구와도 다르면 — 명단의 같은 이름이 둘이면 사람에게
     assert participants.classify([("", "라")], members)[0].note.startswith("참여연구원 명단에 같은 이름이 2명")
+    assert participants.classify([("", "라")], members, {"라": "202600001"})[0].note.startswith("참여연구원 명단에 같은 이름이 2명")
 
 
 def test_finder_windows_search_by_number_first_then_by_name():
