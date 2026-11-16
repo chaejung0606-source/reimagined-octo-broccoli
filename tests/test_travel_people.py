@@ -1892,3 +1892,58 @@ def test_hipass_picture_with_two_days_is_split_per_receipt(qapp, tmp_path, isola
     assert filled == 2 and len(tolls.paths) == 1 and tolls.parts[0] is None
     assert tolls.item(0, 1).text() == "2026-10-29" and tolls.item(0, 2).text() == "26,100"
     assert "2026-10-29 · 2026-10-30" in tolls.item(0, 1).toolTip()
+
+
+def test_each_traveler_keeps_own_period():
+    """담당자 2026-11-16 — 신청서의 출장기간은 10.29~10.30 인데 10.30 체류 증빙이 '출장기간 밖'. 같은 곳의 하루 출장 신청서와 한 그룹으로 합쳐지며
+    첫 신청서의 기간(10.29 하루)만 남았다. 사람이 다르고 기간이 다르면 그룹을 나누고, 합칠 때는 두 기간을 다 덮는다."""
+    two_days = application.parse_text("출장자 연구원 홍길동\n출장기간 2026. 10. 29.(목) ~ 2026. 10. 30.(금)\n출장지 가나이공대(대구)\n")
+    one_day = application.parse_text("출장자 연구원 김철수\n출장기간 2026. 10. 29.(목) ~ 2026. 10. 29.(목)\n출장지 가나이공대(대구)\n")
+    for apps in ([one_day, two_days], [two_days, one_day]):
+        merged = application.merge(apps)
+        periods = {tuple(t.travelers): (t.start, t.end) for t in merged.trips}
+        assert periods == {("홍길동",): (date(2026, 10, 29), date(2026, 10, 30)), ("김철수",): (date(2026, 10, 29), date(2026, 10, 29))}
+    same = application.merge([two_days, application.parse_text(
+        "출장자 연구원 김철수\n출장기간 2026. 10. 29.(목) ~ 2026. 10. 30.(금)\n출장지 가나이공대(대구)\n")])
+    assert len(same.trips) == 1 and same.trips[0].travelers == ["홍길동", "김철수"]       # 같은 기간 · 같은 곳은 한 그룹
+    nameless = application.merge([one_day, application.parse_text("출장기간 2026. 10. 29.(목) ~ 2026. 10. 30.(금)\n출장지 가나이공대(대구)\n")])
+    assert [(t.start, t.end) for t in nameless.trips] == [(date(2026, 10, 29), date(2026, 10, 30))]   # 합치면 두 기간을 다 덮는다
+
+
+def test_traveler_not_on_application_gets_period_from_evidence(qapp, tmp_path, isolated_home):
+    """신청서에 없는데 파일 이름 맨 앞에 있는 사람은 고른 출장 그룹에 더하지만, 그 사람의 기간은 신청서가 모른다 — 증빙 일자로 맞추고 알린다.
+    '출장기간 밖' 으로 칠할 때는 어느 기간과 견줬는지 함께 보인다."""
+    from claim_downloader.ui.pages import travel as travel_page
+    folder = tmp_path / "출장비 지급(26.10.29. 대구)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(
+        "출장자 연구원 김철수\n출장기간 2026. 10. 29.(목) ~ 2026. 10. 29.(목)\n출장지 가나이공대(대구)\n", encoding="utf-8")
+    _image(folder / "김철수_체류증빙_2026-10-29.png")
+    _image(folder / "홍길동_체류증빙_2026-10-29.png")
+    _image(folder / "홍길동_체류증빙_2026-10-30.png")
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.show()
+    page.load_folder(str(folder))
+    page._go("files")
+    trips = {t.name: t for t in page.trips()}
+    assert set(trips) == {"김철수", "홍길동"}
+    hong, kim = trips["홍길동"], trips["김철수"]
+    assert (hong.start, hong.end) == (date(2026, 10, 29), date(2026, 10, 30))
+    assert (kim.start, kim.end) == (date(2026, 10, 29), date(2026, 10, 29))          # 신청서의 사람은 신청서 기간 그대로
+    assert not any("출장기간 밖" in hint for _, _, hint in model.checks(hong))
+    assert any("증빙 일자에 맞춰" in n for n in model.review(hong)) and not kim.notes
+    # 먼 날짜의 증빙이 섞였으면 넓히지 않고, 칠할 때는 견준 기간을 보인다
+    far = model.Trip(name="홍길동", start=date(2026, 10, 29), end=date(2026, 10, 29),
+                     stay=[model.Evidence(path=Path("a.png"), day=date(2026, 12, 1))])
+    assert model.fit_period(far) == "" and (far.start, far.end) == (date(2026, 10, 29), date(2026, 10, 29))
+    hint = [h for _, _, h in model.checks(far) if "밖" in h][0]
+    assert "2026-12-01" in hint and "(2026-10-29)" in hint and "② 출장 그룹" in hint
+
+
+def test_yes_no_column_is_not_part_of_place():
+    """출장지 칸 오른쪽의 여비지급 대상여부 '예' 가 출장지 끝에 붙어 나와도('구) 예') 출장지에 넣지 않는다."""
+    head = GONGMUN[:GONGMUN.index("데이터보안·활\n용혁신융합대학\n사업단")]
+    body = ("데이터보안·활\n용혁신융합대학\n사업단\n비전임산학협력\n중점교수 홍길동\n견학 및 벤치마\n킹\n"
+            "2026.10.29. (목) 09:00 가나이공대(대\n~ 구) 예\n2026.10.30. (금) 18:00\n출장목적 업무회의\n")
+    app = application.parse_text(head + body)
+    assert (app.start, app.end) == (date(2026, 10, 29), date(2026, 10, 30)) and app.places == ["가나이공대(대구)"]

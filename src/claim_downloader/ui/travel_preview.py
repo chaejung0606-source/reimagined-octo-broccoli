@@ -474,7 +474,10 @@ class PreviewPanel(QWidget):
                 text = f"{where}자차 이동경로 — {' · '.join(fields)}"
             else:
                 ev = self._evidence(ref)
-                text = f"{where}{model.KIND_NAMES.get(ref[0], '')} · {self._shown(ev.path) if ev else ''} — {' · '.join(fields)}"
+                # '출장기간 밖' 은 어느 기간과 견줬는지 함께(담당자 2026-11-16 — 신청서 기간이 맞는데 왜 밖인지 몰랐다)
+                shown = [f"일자 {ev.day:%m-%d} — 출장기간({model.period_text(trip.start, trip.end)}) 밖"
+                         if f == "일자(출장기간 밖)" and ev is not None and ev.day else f for f in fields]
+                text = f"{where}{model.KIND_NAMES.get(ref[0], '')} · {self._shown(ev.path) if ev else ''} — {' · '.join(shown)}"
             item = QListWidgetItem(text)
             item.setToolTip(text)
             item.setData(Qt.UserRole, ref)
@@ -597,6 +600,12 @@ class PreviewPanel(QWidget):
             form.addRow("출장지", place)
             self._editor_fields["place"] = place
         self.editor_layout.addLayout(form)
+        if "일자(출장기간 밖)" in flagged and trip is not None:
+            # 무엇과 견줘 '밖' 인지 — 출장기간이 틀렸으면 일자가 아니라 ② 의 기간을 고쳐야 한다(담당자 2026-11-16)
+            period = WrapLabel(f"이 출장자의 출장기간은 {model.period_text(trip.start, trip.end)} 입니다(출장증빙 화면 ② 의 출장 그룹). "
+                               "이 일자가 출장 날이 맞으면 ② 에서 출장기간을 고치세요.")
+            period.setObjectName("muted")
+            self.editor_layout.addWidget(period)
         if kind == model.STAY:
             note = WrapLabel(f"출장지의 시 · 군: {', '.join(want)} — 영수증 가맹점 주소가 그 안이어야 합니다." if want else
                              "출장지 글에서 시 · 군을 못 찾았습니다 — 출장지에 '원주시' 처럼 시 · 군을 넣거나, 네이버 지도에서 찾은 곳이면 그 주소로 봅니다.")

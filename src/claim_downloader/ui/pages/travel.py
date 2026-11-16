@@ -165,7 +165,7 @@ class _FitTable(QTableWidget):
 
 
 class EvidenceTable(QTableWidget):
-    """항목 하나의 증빙 표 — 파일을 끌어다 놓거나 [파일 넣기]. 일자 · 금액 · 출장자는 짐작해 채우고 사람이 고친다."""
+    """항목 하나의 증빙 표(보이지 않는 값 그릇 — 2026-11-16 ③ 은 출장자별 표 하나). 일자 · 금액 · 출장자는 짐작해 채우고 미리 보기에서 고친다."""
 
     changed = Signal()
 
@@ -1445,6 +1445,10 @@ class TravelPage(QWidget):
         everyone = {n for g in groups for n in g["names"]}
         self._extra = [n for n in in_files if n not in everyone]
         groups[chosen]["names"] += self._extra
+        if app is not None:
+            # 신청서는 있는데 거기에 없는 사람 — 그 사람의 기간은 신청서가 모르므로 증빙 일자에 맞춘다(trips · model.fit_period).
+            # 신청서가 아예 없으면 기간은 사람이 ② 에 적는다(오늘 날짜에 맞춰 넓히지 않게)
+            groups[chosen]["extra"] = list(self._extra)
         self._groups = groups
         self._group_i = chosen
         if app and app.origin:
@@ -1516,7 +1520,7 @@ class TravelPage(QWidget):
         QTimer.singleShot(0, self._ai_start)
         if scan.unsorted:
             names = ", ".join(p.name for p in scan.unsorted[:6]) + (" …" if len(scan.unsorted) > 6 else "")
-            note += f". 이름으로 항목을 못 정해 넣지 않은 파일 {len(scan.unsorted)}개: {names} — 필요하면 그 항목의 [파일 넣기]"
+            note += f". 이름으로 항목을 못 정해 넣지 않은 파일 {len(scan.unsorted)}개: {names} — 넣을 파일이면 파일 이름에 항목(체류 · 대중교통 · 하이패스 · 숙박)을 넣고 [폴더에서 다시 읽기]"
         self.scan_note.setText(note)
 
     def _review_text(self, app: application.Application | None, names: list[str], scan: model.Scan) -> str:
@@ -1850,6 +1854,8 @@ class TravelPage(QWidget):
                if n not in self._all_people()]
         if new and self._group() is not None:
             self._group()["names"] += new
+            if self._apps:
+                self._group()["extra"] = self._group().get("extra", []) + new
             self._extra += new
             self._load_group(self._group_i)
             scan = model.scan_folder(Path(folder), self._all_people())
@@ -2284,6 +2290,9 @@ class TravelPage(QWidget):
                 trip = model.for_traveler(base, name, people, fuel=fuel)
                 if len(groups) > 1:
                     model.keep_period(trip, base.start, base.end, shared_only=seen.get(name, 0) <= 1)
+                if group is not None and name and name in group.get("extra", ()):
+                    # 신청서에 없이 이 그룹에 더한 출장자 — 그 사람의 기간은 신청서가 모르므로 증빙 일자에 맞춘다(사람이 다른 그룹으로 옮겨 기간을 적었으면 그 기간)
+                    model.fit_period(trip)
                 driver = name or "출장자"
                 keys = sorted(k for k in self._routes if k[0] == driver)
                 if keys and fuel not in ("", model.NO_CAR):

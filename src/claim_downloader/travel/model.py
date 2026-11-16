@@ -83,6 +83,7 @@ class Trip:
     fuel: str = ""          # 자차 연료 종류(휘발유 · 경유 · LPG …) — 자차 쪽 머리 줄에 적는다(담당자 2026-11-10)
     place_regions: dict = field(default_factory=dict)   # 출장지 글 → 시 · 군(출장지 글에 시 · 군이 없을 때 네이버에서 찾은 그곳 주소로 — 화면이 채움)
     dropped: list = field(default_factory=list)         # 같은 영수증이라 한 번만 넣고 뺀 증빙 — [(항목, 뺀 증빙, 남긴 증빙)](dedupe)
+    notes: list = field(default_factory=list)           # 이 출장에 따로 알릴 것(신청서에 없는 출장자의 기간을 증빙 일자로 넓힘 등 — fit_period)
 
     @property
     def days(self) -> int:
@@ -685,6 +686,13 @@ UNCLEAR_HINTS = {
     "가맹점 지역(다름)": "영수증 가맹점이 출장지와 다른 시 · 군입니다", "km": "이동 거리(km)가 없습니다",
     "지도 그림": "네이버 지도 최단거리 그림이 없습니다", "연료": "차량 연료가 없습니다",
 }
+def out_of_period(trip: Trip, e: Evidence) -> str:
+    """'출장기간 밖' 을 어느 기간과 견줬는지까지 — 담당자 2026-11-16: 신청서의 기간은 10.29~10.30 인데 '출장기간 밖' 만 보여 까닭을 알 수 없었다."""
+    day = f"{e.day:%Y-%m-%d}" if e.day else ""
+    return (f"일자({day})가 이 출장자의 출장기간({period_text(trip.start, trip.end)}) 밖입니다 — 출장 날이 맞으면 "
+            f"② 출장 그룹의 기간을 고치세요")
+
+
 # 출장 전체에 대한 확인(review) 중 증빙마다 따로 적는 것 — checks() 가 증빙 줄로 나눠 적으므로 전체 줄에서는 뺀다
 _PER_EVIDENCE = re.compile(r"^(대중교통 증빙 \d+건|체류 증빙 \d+건 — 영수증 가맹점|하이패스가 있어 자차)|출장기간 밖의 날짜")
 
@@ -697,7 +705,8 @@ def checks(trip: Trip, root: Path | None = None) -> list[tuple[tuple, str, str]]
         fields = unclear(trip, kind, e)
         if fields:
             part = f" ({e.part + 1}번째 영수증)" if e.part is not None else ""
-            out.append((e.ref, f"{KIND_NAMES[kind]} · {shown_name(e.path, root)}{part}", " / ".join(UNCLEAR_HINTS.get(f, f) for f in fields)))
+            out.append((e.ref, f"{KIND_NAMES[kind]} · {shown_name(e.path, root)}{part}",
+                        " / ".join(out_of_period(trip, e) if f == "일자(출장기간 밖)" else UNCLEAR_HINTS.get(f, f) for f in fields)))
     route = route_unclear(trip)
     if route and trip.fuel != NO_CAR:
         out.append((route_key(trip), "자차 이동경로", " / ".join(UNCLEAR_HINTS.get(f, f) for f in route)))
@@ -911,6 +920,41 @@ def for_traveler(trip: Trip, name: str, names: list[str], fuel: str | None = Non
     return out
 
 
+FIT_MAX_DAYS = 14   # 증빙 일자로 넓힐 때 이보다 긴 기간이 되면 넓히지 않는다(먼 날짜의 다른 출장 증빙이 섞인 것)
+
+
+def period_text(start: date | None, end: date | None) -> str:
+    if not start:
+        return "기간 모름"
+    end = end or start
+    return f"{start:%Y-%m-%d}" + (f" ~ {end:%m-%d}" if end != start else "")
+
+
+def fit_period(trip: Trip) -> str:
+    """신청서에 없는 출장자(파일 이름 맨 앞에서 읽은 사람) — 그 사람의 출장기간은 신청서가 알려 주지 않는다. 고른 출장 그룹의 기간을 그대로 쓰면
+    그 사람의 남은 날 증빙이 '출장기간 밖' 으로 칠해지고(담당자 2026-11-16 — 10.29~10.30 출장의 10.30 체류 증빙), 거꾸로 그 사람이 가지 않은 날이
+    '체류 증빙이 없는 날' 로 잡힌다. 그래서 기간을 증빙 일자(처음 ~ 끝)에 맞추고 알림 글을 남긴다(trip.notes — review 맨 앞).
+    그룹 기간과 증빙 일자를 함께 덮는 기간이 FIT_MAX_DAYS 를 넘으면(먼 날짜의 다른 출장 증빙 · 잘못 읽은 일자) 맞추지 않는다."""
+    if not (trip.start and trip.end):
+        return ""
+    days = [e.day for e in trip.stay + trip.public + trip.tolls if e.day]
+    for e in trip.lodging:
+        if e.day:
+            days += [e.day, e.day + timedelta(days=max(1, e.nights or 1))]
+    if not days:
+        return ""
+    start, end = min(days), max(days)
+    if (start, end) == (trip.start, trip.end):
+        return ""
+    if (max(end, trip.end) - min(start, trip.start)).days + 1 > FIT_MAX_DAYS:
+        return ""          # 그룹 기간과 멀리 떨어진 증빙 — 일자를 잘못 읽었거나 다른 출장 것이라 기간을 옮기지 않고 칠해 둔다
+    note = (f"신청서에서 이 출장자의 출장을 찾지 못해 출장기간을 증빙 일자에 맞춰 {period_text(trip.start, trip.end)} → "
+            f"{period_text(start, end)} 로 잡았습니다 — 다르면 ② 출장 그룹에서 이 사람의 기간을 고치세요")
+    trip.start, trip.end = start, end
+    trip.notes = list(trip.notes) + [note]        # 출장 그룹의 다른 사람과 같은 목록을 나눠 쓰지 않게(Trip 은 얕게 복사된다)
+    return note
+
+
 def dedupe(trip: Trip) -> Trip:
     """같은 영수증(승인번호가 같음)이 두 파일에 있으면 하나만 둔다 — 담당자 2026-11-16 "아니 왜 똑같은게 두번 들어가죠?"(같은 카드 승인전표가
     PDF 와 그림으로 둘 다 폴더에 있었다). 남기는 것: 파일 이름 끝에 체류 차례 번호가 있는 것(담당자가 '1,2' 로 나눈 파일) → 이름 차례.
@@ -975,7 +1019,7 @@ def short_date(d: date) -> str:
 
 def review(trip: Trip) -> list[str]:
     """출장자별 증빙 확인(담당자 2026-11-10 "출장자별로 증빙 확인") — 막지 않는 알림. 체류 빠진 날 · 기간 밖 날짜 · 교통비 · 자차 이동경로 · 숙박 박 수."""
-    out = []
+    out = list(trip.notes)
     if not trip.stay:
         out.append("체류 증빙이 없습니다")
     if trip.start and trip.end:

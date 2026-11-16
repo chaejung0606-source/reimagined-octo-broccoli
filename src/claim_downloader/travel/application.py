@@ -435,6 +435,7 @@ def _place_between(lines: list[str], first: int, last: int) -> list[str]:
             break
         # 출장지 오른쪽 칸(여비지급 대상여부 '예' · '아니오')이 같은 줄에 붙어 나온다 — 뺀다
         text = _drop_headers(text)
+        text = re.sub(r"\s+(?:예|아니오|아니요)$", "", text)      # '구) 예' 처럼 출장지 끝에 붙어 나온 여비지급 대상여부
         if re.search(r"[가-힣A-Za-z]", text) and text not in _YES_NO:
             pieces.append(text)
         k += 1
@@ -658,9 +659,14 @@ def _row_trips(lines: list[str], names: list[str]) -> list[TripEntry]:
 
 
 def _separate(a: TripEntry, b: TripEntry) -> bool:
-    """기간이 겹쳐도 다른 출장 그룹 — 둘 다 출장자가 적혀 있고 겹치는 사람이 없으며 출장지가 다를 때(같은 날 다른 곳에 간 사람들)."""
-    return (bool(a.travelers) and bool(b.travelers) and not set(a.travelers) & set(b.travelers)
-            and bool(a.places) and bool(b.places) and a.places != b.places)
+    """기간이 겹쳐도 다른 출장 그룹 — 둘 다 출장자가 적혀 있고 겹치는 사람이 없으며, 출장지가 다르거나(같은 날 다른 곳에 간 사람들)
+    기간이 다를 때(담당자 2026-11-16 — 10.29~10.30 출장자가 같은 곳 하루 출장자의 신청서와 한 그룹으로 묶여 기간이 10.29 하루가 됐고,
+    10.30 체류 증빙이 '출장기간 밖' 으로 칠해졌다. 사람마다 기간이 다르면 그룹을 나눠야 사람마다 제 기간을 가진다)."""
+    if not (a.travelers and b.travelers) or set(a.travelers) & set(b.travelers):
+        return False
+    if a.places and b.places and a.places != b.places:
+        return True
+    return (a.start, a.end or a.start) != (b.start, b.end or b.start)
 
 
 def _add_trip(trips: list[TripEntry], trip: TripEntry) -> None:
@@ -679,6 +685,10 @@ def _add_trip(trips: list[TripEntry], trip: TripEntry) -> None:
     same.origin = same.origin or trip.origin
     if same.start is None:
         same.start, same.end = trip.start, trip.end
+    elif trip.start:
+        # 합친 출장은 두 기간을 다 덮는다 — 첫 기간만 남기면 뒤 신청서 사람의 남은 날이 '출장기간 밖' 이 된다
+        same.end = max(same.end or same.start, trip.end or trip.start)
+        same.start = min(same.start, trip.start)
 
 
 def _trips_by_row(head: TripEntry | None, rows: list[TripEntry], names: list[str]) -> list[TripEntry]:
