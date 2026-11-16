@@ -47,7 +47,7 @@ from ..art import Art
 from ..log_button import LogSendButton, warn
 from ..sheet_sync import instance as sheet_sync
 from ..report_dialog import ReportRow, show_report
-from ..flow import CURRENT, FlowArea, FlowStep
+from ..flow import CURRENT, FlowArea, FlowStep, RestartButton
 from ..flowlogic import DOWNLOAD_ORDER, download_stage, flow_states
 from ..widgets import Card, EmptyState, Pill, PillDelegate, muted_label
 from ..worker import SessionWorker
@@ -324,6 +324,8 @@ class DownloadPage(QWidget):
         self.list_button.setObjectName("ghost")
         self.list_button.clicked.connect(self._reread)
         step.add_side(self.list_button)
+        self.restart_button = RestartButton(self.start_over, self._restart_question)
+        step.add_side(self.restart_button)
         self.counts = muted_label("")
         step.add(self.counts)
         self.list_stack = QStackedWidget()
@@ -541,6 +543,7 @@ class DownloadPage(QWidget):
         # ④
         # 받은 뒤 브라우저 창을 닫으면 ③ 은 접혀 [브라우저 열기] 가 안 보인다 — ④ 의 이 단추가 다시 연다(2026-11-16 검수)
         self.list_button.setEnabled(not busy)
+        self.restart_button.setEnabled(not busy)
         self.list_button.setText("목록 다시 읽기" if self._browser_open else "브라우저 다시 열기")
         remaining = len(self._remaining())
         can_run = not busy and self._browser_open and remaining > 0 and self._listed
@@ -600,6 +603,34 @@ class DownloadPage(QWidget):
         self._auto_run = False
         self._set_state("준비", "neutral", "")
         self._sync_buttons()
+
+    def _restart_question(self) -> str:
+        """[새로 시작] 을 누르면 묻는 글 — 읽어 둔 목록에 아직 안 받은 건이 있을 때만(다 받았으면 묻지 않는다)."""
+        remaining = len(self._remaining()) if self._listed else 0
+        if not remaining:
+            return ""
+        return (f"읽어 둔 목록에 아직 받지 않은 서류 {remaining}건이 있습니다.\n\n"
+                "목록을 비우고 ① 받을 서류부터 새로 시작할까요? 받은 파일은 그대로이고, 다시 읽으면 남은 건이 또 나옵니다.")
+
+    def start_over(self) -> None:
+        """④ [새로 시작] — 읽어 둔 목록 · 받은 결과를 비우고 ① 받을 서류부터(담당자 2026-11-16). 받을 서류 · 과제 체크와
+        브라우저 · ERP 로그인은 그대로 둔다 — 다음 받기에 다시 쓰는 일이 많고, 로그인은 사람이 해야 한다."""
+        if self._busy:
+            return
+        self._docs_picked = self._picked = False
+        self._listed = self._reading = False
+        self._auto_run = False
+        self._attempted = False
+        self._selection = None
+        self._targets, self._status, self._running_rows = [], [], []
+        self._run_ok = self._run_failed = 0
+        self.table.setRowCount(0)
+        self.banner.hide()
+        self._set_state("준비", "neutral", "")
+        self._sync_empty()
+        self._sync_buttons()
+        self.counts_changed.emit()              # 홈 '이어서 작업하기' 가 남은 건을 더 보이지 않게
+        self.area.to_top()
 
     # ── 다른 화면이 묻는 것 ────────────────────────────────────────────
     def is_running(self) -> bool:

@@ -21,7 +21,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QVBoxLayo
 from ... import settings
 from ..art import Art
 from ..log_button import LogSendButton, warn
-from ..flow import CURRENT, HIDDEN, ChoiceCard, FlowStep
+from ..flow import CURRENT, HIDDEN, ChoiceCard, FlowStep, RestartButton
 from ..flowlogic import STRUCTURE_ORDER, flow_states, structure_stage
 from ..report_dialog import save_structure_to_desktop, show_structure_saved
 from ..widgets import Pill, muted_label
@@ -149,6 +149,9 @@ class StructurePage(QWidget):
         """④ 저장한 파일 보내기 — 모음 파일 하나면 된다."""
         step = FlowStep("4", "저장한 파일을 보내 주세요", "화면 여러 개를 차례로 저장했으면 모음 파일 하나만 보내 주세요. "
                         "다른 화면도 저장하려면 그 화면을 띄우고 위 [화면 구조 저장] 을 다시 누르세요.", editable=False)
+        # 다른 사이트의 화면을 저장하려면 ① 부터(담당자 2026-11-16 '마지막 단계에 새로 시작') — 저장한 파일 · 모음은 그대로
+        self.restart_button = RestartButton(self.start_over)
+        step.add_side(self.restart_button)
         self.last = muted_label("")
         self.last.setWordWrap(True)
         step.add(self.last)
@@ -204,6 +207,7 @@ class StructurePage(QWidget):
         self.front_button.setEnabled(not self._busy)
         self.save_button.setEnabled(opened and (not self._busy or waiting))
         self.step_site.edit_button.setEnabled(not self._busy)
+        self.restart_button.setEnabled(not (self._asked and self._busy))     # 여는 중 · 읽는 중이면 그 결과가 올 때까지
 
         save_note = self._save_note(name, sites)
         if self._site in ("parking", "navermap") and self._open_note and not self._busy:
@@ -249,6 +253,14 @@ class StructurePage(QWidget):
         self._open_note = ""
         self.state.set_status("준비", "neutral")
         self._sync()
+
+    def start_over(self) -> None:
+        """④ [새로 시작] — ① 어느 사이트부터. 저장한 파일 · 모음 파일과 열어 둔 브라우저는 그대로(묻지 않는다)."""
+        if self._asked and self._busy:
+            return
+        self._asked = False
+        self.last.setText("")
+        self._edit_site()
 
     def _open(self) -> None:
         if not self._site:

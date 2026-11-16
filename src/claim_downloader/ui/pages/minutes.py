@@ -44,7 +44,7 @@ from ...minutes.backends import claude_cli
 from .. import ai_status
 from ..art import Art
 from ..log_button import LogSendButton, warn
-from ..flow import CURRENT, HIDDEN, FlowArea, FlowStep
+from ..flow import CURRENT, HIDDEN, FlowArea, FlowStep, RestartButton
 from ..flowlogic import MINUTES_ORDER, flow_states, minutes_stage
 from ..minutes_worker import MinutesWorker
 from ..widgets import Card, Pill, PillDelegate, WrapLabel, muted_label
@@ -254,6 +254,8 @@ class MinutesPage(QWidget):
         step = FlowStep("3", "결과", editable=False)
         self.result_state = Pill("", "neutral")
         step.add_side(self.result_state)
+        self.restart_button = RestartButton(self.start_over, self._restart_question)
+        step.add_side(self.restart_button)
         self.result_text = WrapLabel("")
         self.result_text.setObjectName("body")
         step.add(self.result_text)
@@ -311,6 +313,7 @@ class MinutesPage(QWidget):
             button.setEnabled(can_edit)
         self.platform.set_enabled_for_run(can_edit)
         self.clear_button.setEnabled(can_edit and bool(self._dirs))
+        self.restart_button.setEnabled(can_edit)
         self.start_button.setEnabled(can_edit and bool(self._dirs) and self._available is True)
         todo = len(self._todo_rows())
         self.start_button.setText("작업 중…" if running else "작업 시작" if not self._dirs or not todo
@@ -444,6 +447,21 @@ class MinutesPage(QWidget):
         self._set_progress(0, 0)
         self._set_state("준비", "neutral", GUIDE_START)
         self._sync_buttons()
+
+    def _restart_question(self) -> str:
+        """[새로 시작] 을 누르면 묻는 글 — 아직 만들지 않은(실패 · 건너뜀) 회의가 목록에서 빠질 때만."""
+        todo = len(self._todo_rows())
+        if not todo:
+            return ""
+        return (f"아직 회의록을 만들지 않은 회의 {todo}건이 목록에서 빠집니다(만든 회의록 파일은 그대로입니다).\n\n"
+                "목록을 비우고 ① 회의 폴더 넣기부터 새로 시작할까요?")
+
+    def start_over(self) -> None:
+        """③ [새로 시작] — 회의 목록을 비우고 ① 부터(담당자 2026-11-16). 만든 회의록은 회의 폴더에 그대로 있다."""
+        if self._running:
+            return
+        self._clear()
+        self.area.to_top()
 
     # 끌어다 놓기 — 로컬 폴더만 받는다
     def dragEnterEvent(self, event) -> None:  # noqa: N802

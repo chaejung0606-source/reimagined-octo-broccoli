@@ -58,7 +58,7 @@ from ...claims import scholarship as sch
 from .. import ai_status, folder_picker, project_box
 from ..art import Art
 from ..log_button import LogSendButton, warn
-from ..flow import HIDDEN, ChoiceCard, FlowArea, FlowStep
+from ..flow import HIDDEN, ChoiceCard, FlowArea, FlowStep, RestartButton
 from ..flowlogic import CLAIM_ORDER, claim_stage, flow_states
 from .. import result_store
 from ..report_dialog import ReportRow, entry_report, report_to_data, show_report
@@ -671,6 +671,8 @@ class ClaimPage(QWidget):
         step = FlowStep("4", "ERP 에 넣으세요", editable=False)
         self.browser_state = Pill("브라우저 닫힘", "neutral")
         step.add_side(self.browser_state)
+        self.restart_button = RestartButton(self.start_over, self._restart_question)
+        step.add_side(self.restart_button)
         # 한 줄 — 왼쪽은 누를 단추(브라우저 · 넣기 · 넣은 뒤 할 것), 오른쪽은 넣는 방법(미리 보기만 · 시험 · 팝업 자동 선택).
         # 두 줄이면 1320×860 창에서 ③ 이 화면 아래로 밀려 스크롤해야 보였다.
         options = QHBoxLayout()
@@ -746,6 +748,7 @@ class ClaimPage(QWidget):
         for card in self.kind_cards.values():
             card.setEnabled(can_edit)
         self.clear_button.setEnabled(can_edit and bool(self._dirs))
+        self.restart_button.setEnabled(can_edit)
         self.table.setEnabled(not self._erp_running)          # 넣는 중에는 다른 줄로 옮기지 않게
         if not busy:
             self._stopping = False
@@ -847,8 +850,10 @@ class ClaimPage(QWidget):
             self.step_put.title.setText(f"{'첨부만 다시 올리세요' if self._reattaching(self._current) else 'ERP 에 넣으세요'} — {name}")
             project = self._projects[self._current] if self._current < len(self._projects) else ""
             self.step_put.title.setToolTip(f"{name} · {kinds.name_of(self._kind(self._current))}" + (f" · 과제 {project}" if project else ""))
-        self.step_add.edit_button.setEnabled(not self.is_running())
-        self.step_kind.edit_button.setEnabled(not self.is_running())
+        # 카드 AI 읽기(뒤 스레드)는 폴더를 더 넣거나 종류를 고르는 것과 부딪치지 않는다 — 넣는 중일 때만 막는다
+        # ([새로 시작] 뒤 AI 가 아직 읽는 중이어도 ① 에서 종류를 고를 수 있게, add_folder 와 같은 기준)
+        self.step_add.edit_button.setEnabled(not self._erp_running)
+        self.step_kind.edit_button.setEnabled(not self._erp_running)
         for key, card in self.kind_cards.items():
             # [바꾸기] 로 다시 편 ① 에도 지금 고른 종류가 보이게 — 다시 고르지 않고 폴더를 넣으면 그 종류로 들어간다
             card.set_selected(key == chosen and self._kind_picked)
@@ -867,14 +872,14 @@ class ClaimPage(QWidget):
             self.browser_state.set_status("로그인 기다리는 중", "warning")
 
     def _open_folders(self) -> None:
-        if self.is_running():
+        if self._erp_running:
             return
         self._folders_open = True
         self._sync_flow()
 
     def _open_kinds(self) -> None:
         """① [바꾸기] — 폴더가 없으면 ① 로 돌아가고, 있으면 ① 을 펼쳐 다른 종류의 폴더를 더 넣게 한다(넣은 폴더의 종류는 ③ 오른쪽 칸에서)."""
-        if self.is_running():
+        if self._erp_running:
             return
         if self._dirs:
             self._kind_open = True
@@ -884,7 +889,7 @@ class ClaimPage(QWidget):
 
     def _choose_kind(self, key: str) -> None:
         """① 의 카드 — 다음에 넣는 폴더의 청구 종류. 고르면 ① 이 접히고 ② (폴더 넣기)가 떠오른다."""
-        if self.is_running():
+        if self._erp_running:
             return
         index = self.add_kind.findData(key)
         if index < 0:
@@ -1044,6 +1049,25 @@ class ClaimPage(QWidget):
         self._set_state("준비", "neutral", GUIDE_START)
         self._show_form(-1)
         self._sync_buttons()
+
+    def _restart_question(self) -> str:
+        """[새로 시작] 을 누르면 묻는 글 — 아직 임시저장까지 하지 않은 폴더가 목록에서 빠질 때만(다 넣었으면 묻지 않는다)."""
+        left = sum(1 for status in self._status if status != "saved")
+        if not left:
+            return ""
+        return (f"아직 ERP 에 임시저장까지 하지 않은 지출 폴더 {left}개가 목록에서 빠집니다.\n"
+                "폴더의 파일과 ERP 에 넣은 청구서는 그대로이고, 앱에서 고친 대표적요 · 체크는 사라집니다.\n\n"
+                "목록을 비우고 ① 청구 종류부터 새로 시작할까요?")
+
+    def start_over(self) -> None:
+        """④ [새로 시작] — 지출 목록을 비우고 ① 청구 종류부터(담당자 2026-11-16). '목록 비우기' 와 달리 고른 청구 종류도 풀어
+        ① 부터 보이게 한다. 브라우저 · ERP 로그인 · 넣는 방법(미리 보기만 · 시험 · 팝업 자동 선택)은 그대로."""
+        if self._erp_running:
+            return
+        self._reattach_pending = -1
+        self._kind_picked = False
+        self._clear()
+        self.area.to_top()
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802
         if not self._erp_running and any(os.path.isdir(u.toLocalFile()) for u in event.mimeData().urls()):

@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 from ... import parking_ledger, parking_link, parking_screens, settings
 from ..art import Art
 from ..log_button import LogSendButton
-from ..flow import CURRENT, ChoiceCard, FlowArea, FlowStep
+from ..flow import CURRENT, ChoiceCard, FlowArea, FlowStep, RestartButton
 from ..flowlogic import PARKING_ORDER, flow_states, parking_stage
 from ..widgets import Field, Pill, WrapLabel, muted_label
 from ..worker import SessionWorker
@@ -170,6 +170,9 @@ class ParkingPage(QWidget):
         self.links_button.setToolTip("브라우저에 사이트의 '할인 링크' 목록을 띄웁니다 — 링크마다 [QR 보기] 로 QR 을 봅니다")
         self.links_button.clicked.connect(self._show_links)
         step.add_side(self.links_button)
+        # '관리대장' 은 ② 의 표가 마지막 단계다(③ 이 없다) — 그때만 여기에 [새로 시작]
+        self.work_restart_button = RestartButton(self.start_over)
+        step.add_side(self.work_restart_button)
         self.work = {APPLY: self._build_apply(), LINK: self._build_link(), HISTORY: self._build_history()}
         for key, holder in self.work.items():
             step.add(holder, 1 if key == HISTORY else 0)
@@ -180,6 +183,8 @@ class ParkingPage(QWidget):
         step = FlowStep("3", "결과", editable=False)
         self.result_state = Pill("", "neutral")
         step.add_side(self.result_state)
+        self.restart_button = RestartButton(self.start_over)
+        step.add_side(self.restart_button)
         self.result = WrapLabel("")
         self.result.setObjectName("body")
         step.add(self.result)
@@ -476,6 +481,27 @@ class ParkingPage(QWidget):
             self._has_result = False
             self._sync()
 
+    def start_over(self) -> None:
+        """마지막 단계의 [새로 시작] — ① 무엇을 할까요부터(담당자 2026-11-16). 칸 · 이번 결과를 비우고 링크 유효기간은 지금부터로.
+        관리대장(파일 · 구글 시트)과 사이트 로그인은 그대로 — 묻지 않는다(사라지는 것은 화면의 '이번에 적용한 차' 목록뿐)."""
+        if self._busy:
+            return
+        self._picked = self._chosen = False
+        self._has_result = False
+        self._done_cars = []
+        self._applying = ""
+        self._pending_link = None
+        self._open_note = ""
+        self.car_edit.clear()
+        self.name_edit.clear()
+        now = dt.datetime.now().replace(second=0, microsecond=0)
+        self.start_edit.setDateTime(_qdt(now))
+        self.end_edit.setDateTime(_qdt(now.replace(hour=23, minute=59)))
+        self.result.setText("")
+        self.result_state.set_status("", "neutral")
+        self._sync()
+        self.area.to_top()
+
     # ── 브라우저 · 공통 ─────────────────────────────────────────────────
     def _open(self) -> None:
         if self._busy:
@@ -537,6 +563,7 @@ class ParkingPage(QWidget):
             step.set_note(self._open_note if states[key] == CURRENT else "")
         # 단계가 제목 줄 오른쪽 것을 다시 보이게 하므로 그 뒤에 — 링크 일에만 쓰는 단추
         self.links_button.setVisible(job == LINK)
+        self.work_restart_button.setVisible(job == HISTORY)
         self.result_links_button.setVisible(job == LINK and self.result_state.text() == "등록됨")
         failed_apply = job == APPLY and self._has_result and self.result_state.text() == "못 함"
         self.direct_button.setVisible(failed_apply)
@@ -547,5 +574,5 @@ class ParkingPage(QWidget):
         self.area.filler.setVisible(not (job == HISTORY and self._picked))
         self.step_what.edit_button.setEnabled(not self._busy)
         for button in (self.open_button, self.register_button, self.links_button, self.apply_button, self.result_links_button,
-                       self.direct_button, self.record_button):
+                       self.direct_button, self.record_button, self.restart_button, self.work_restart_button):
             button.setEnabled(not self._busy)

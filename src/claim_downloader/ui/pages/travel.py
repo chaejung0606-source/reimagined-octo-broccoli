@@ -51,7 +51,7 @@ from ..tokens import COLORS
 from ..travel_fuel_card import fuel_box
 from ..travel_preview import MAKE as PREVIEW_MAKE
 from ..travel_preview import PreviewPanel, TravelPreview
-from ..flow import CURRENT, DONE, HIDDEN, OPEN, FlowArea, FlowStep
+from ..flow import CURRENT, DONE, HIDDEN, OPEN, FlowArea, FlowStep, RestartButton
 from ..log_button import LogSendButton
 from ..widgets import Pill, WrapLabel, muted_label
 
@@ -784,6 +784,28 @@ class TravelPage(QWidget):
         if hasattr(self, "route_table"):
             self._on_route_inputs()
 
+    def _restart_question(self) -> str:
+        """[새로 시작] 을 누르면 묻는 글 — 아직 출장증빙을 만들지 않은 폴더가 목록에서 빠질 때만(다 만들었으면 묻지 않는다)."""
+        left = [f for f in self._folders(checked=False) if f not in self._done_folders]
+        if not left:
+            return ""
+        return (f"아직 출장증빙을 만들지 않은 폴더 {len(left)}개가 목록에서 빠지고, 읽은 출장신청서 · 출장자 · ③ ④ 에서 고친 값이 사라집니다.\n"
+                "폴더의 파일과 이미 만든 출장증빙 PDF 는 그대로입니다.\n\n"
+                "목록을 비우고 ① 폴더 고르기부터 새로 시작할까요?")
+
+    def start_over(self) -> None:
+        """⑤ [새로 시작] — 폴더 목록 · 읽은 것 · 만든 표시를 모두 비우고 ① 부터(담당자 2026-11-16). 폴더의 파일 · 만든 PDF 는 그대로.
+        뒤에서 도는 AI 읽기 · 네이버 지도 찾기의 결과는 표 · 구간이 비어 있어 들어오지 않는다(_on_ai_done · _on_routes)."""
+        self._clear_current()
+        self.folder_list.clear()
+        self._done_folders.clear()
+        self._ai_tried.clear()
+        self.folder_note.setText("")
+        self.route_notice.hide()
+        self._mark_folders()
+        self._go("folder")
+        self.area.to_top()
+
     def _forget_pictures(self) -> None:
         """미리 보기가 기억해 둔 증빙 그림을 잊는다 — 같은 이름의 파일을 고쳤으면 새 그림으로 그리게."""
         if hasattr(self, "preview_panel"):
@@ -1299,6 +1321,8 @@ class TravelPage(QWidget):
         # 단계 이름 '출장증빙 내보내기'(담당자 2026-11-16) — 출장자가 여럿이면 사람마다 PDF 를 따로 만들어 폴더에 둔다
         step = FlowStep("5", "출장증빙 내보내기", "출장자마다 PDF 를 따로 만들어 폴더에 저장합니다 — '<이름> 출장증빙_yy.mm.dd.pdf'. "
                         "같은 이름이 있으면 덮어쓰지 않고 _2.")
+        self.restart_button = RestartButton(self.start_over, self._restart_question)
+        step.add_side(self.restart_button)
         self.plan_label = WrapLabel("")
         self.plan_label.setObjectName("body")
         step.add(self.plan_label)
@@ -1920,6 +1944,9 @@ class TravelPage(QWidget):
     def _on_ai_finished(self, stopped: str) -> None:
         self._ai_running = max(0, self._ai_running - 1)
         if self._ai_running:
+            return
+        if not self.folder_edit.text().strip():
+            self.ai_note.hide()                 # [새로 시작] · 폴더를 뺀 뒤 끝난 읽기 — 비운 화면에 앞 폴더의 소식을 띄우지 않는다
             return
         if stopped in ("login", "limit", "balance"):
             reason = {"login": "Claude 로그인이 풀려", "limit": "Claude 사용 한도에 걸려", "balance": "Claude 잔액이 모자라"}[stopped]

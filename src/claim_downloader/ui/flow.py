@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -209,6 +210,33 @@ class ChoiceCard(QFrame):
             self.chosen.emit(self.key)
             return
         super().keyPressEvent(event)
+
+
+RESTART_TEXT = "새로 시작"
+RESTART_TIP = ("이 업무를 ① 단계부터 새로 시작합니다 — 화면에 읽어 둔 목록 · 고른 값을 비웁니다.\n"
+               "만든 파일 · ERP 에 넣은 것 · 관리대장 · 진행 기록은 그대로입니다.")
+
+
+class RestartButton(QPushButton):
+    """마지막 단계의 [새로 시작] — 이 업무를 ① 부터 다시(담당자 2026-11-16 "업무카드별로 마지막 단계에 이 업무카드를 새로 시작할 수 있는
+    버튼"). 업무 화면 여섯이 마지막 단계의 제목 줄 오른쪽에 같은 이름 · 같은 자리로 둔다.
+
+    question 이 글을 돌려주면(아직 끝내지 않은 것이 화면에서 사라질 때) 한 번 묻고, 비면 묻지 않는다 — 다 끝난 뒤 다음 일을 시작할 때
+    한 번 더 누를 일을 만들지 않게. 비우는 일은 화면의 restart(start_over)가 한다(무엇을 비울지는 업무마다 다르다)."""
+
+    def __init__(self, restart, question=None, parent: QWidget | None = None):
+        super().__init__(RESTART_TEXT, parent)
+        self.setToolTip(RESTART_TIP)
+        self._restart = restart
+        self._question = question
+        self.clicked.connect(self._clicked)
+
+    def _clicked(self) -> None:
+        text = self._question() if self._question is not None else ""
+        if text and QMessageBox.question(self.window(), "새로 시작", text,
+                                         QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes) != QMessageBox.Yes:
+            return
+        self._restart()
 
 
 # 마친 단계(네모)의 고른 값 칸 — 줄 폭이 모자랄 때 이만큼은 남기고(글자가 더 길면) 나머지는 '…' 으로 줄인다
@@ -464,6 +492,10 @@ class FlowArea(QScrollArea):
 
     def add(self, widget: QWidget, stretch: int = 0) -> None:
         self.steps.insertWidget(self.steps.indexOf(self.filler), widget, stretch)
+
+    def to_top(self) -> None:
+        """[새로 시작] 뒤 — ① 이 보이게 맨 위로."""
+        self.verticalScrollBar().setValue(0)
 
     def show_to(self, widget: QWidget) -> None:
         """떠오른 단계가 창 아래에 있으면 보이는 곳까지 내린다 — 자리가 잡힌 뒤에."""
