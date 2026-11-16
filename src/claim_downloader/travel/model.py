@@ -1160,6 +1160,7 @@ class Scan:
     route_map: Path | None = None
     route_maps: list = field(default_factory=list)      # [가는 길, 오는 길] — 이름에 '가는' · '오는' 이 든 지도 그림
     unsorted: list[Path] = field(default_factory=list)
+    skipped: list[Path] = field(default_factory=list)    # '기타' 같은 빼 둔 폴더 · 숨은 파일이라 읽지 않은 것(skip_part)
 
 
 APPLICATION_WORDS = ("출장신청", "출장명령", "출장계획", "출장품의", "출장신고")   # 출장신청서(travel/application.py 가 읽는다)
@@ -1191,7 +1192,7 @@ def looks_like_trip(folder: Path, depth: int = 3) -> bool:
     """출장 폴더처럼 보이는지 — 아래(depth 단계까지)에 출장신청서나 증빙 파일(항목 낱말 · 이름_ 이 붙은 파일)이 있으면."""
     try:
         for path in folder.rglob("*"):
-            if len(path.relative_to(folder).parts) > depth or not path.is_file():
+            if len(path.relative_to(folder).parts) > depth or not path.is_file() or skip_part(path.relative_to(folder)):
                 continue
             squashed = re.sub(r"\s+", "", path.stem)
             if any(w in squashed for w in APPLICATION_WORDS):
@@ -1203,6 +1204,28 @@ def looks_like_trip(folder: Path, depth: int = 3) -> bool:
     return False
 
 
+# 증빙으로 쓰지 않을 파일을 모아 두는 하위 폴더 — 카드청구(claims/card.SKIP_DIRS)와 같은 '기타' 에 흔한 이름 몇. 담당자 2026-11-16 "폴더에 체류증빙이
+# 1,2 각각 하나씩 밖에 없는데 계속 2개로 나오네요" — 앱은 하위 폴더까지 읽어 담당자가 보는 폴더 밖의 같은 영수증 PDF 를 함께 넣었다.
+SKIP_DIRS = ("기타", "제외", "사용안함", "미사용", "안씀", "이전", "백업", "old", "backup")
+
+
+def skip_part(rel: Path) -> bool:
+    """출장 폴더 안의 상대 경로가 빼 둔 폴더('기타' …) 안이거나 숨은 · 임시 파일이면."""
+    for part in rel.parts[:-1]:
+        if part.startswith(".") or re.sub(r"\s+", "", part).lower() in SKIP_DIRS:
+            return True
+    name = rel.name
+    return name.startswith((".", "~$")) or name.lower() in ("thumbs.db", "desktop.ini")
+
+
+def _hidden(path: Path) -> bool:
+    """윈도우 탐색기가 숨기는 파일(숨김 속성) — 사람에게 안 보이는 파일은 넣지 않는다."""
+    try:
+        return bool(getattr(path.stat(), "st_file_attributes", 0) & 0x2)
+    except OSError:
+        return False
+
+
 def scan_folder(folder: Path, names: list[str] | None = None) -> Scan:
     """출장 폴더를 훑어 항목별 파일을 고른다. 파일 이름이 먼저, 없으면 위 폴더 이름(출장 폴더 아래 몇 단계든).
     출장비 증빙 넷이 아닌데 이름이 앞에 붙은 파일(참가확인서 · 공문 등)은 기타 증빙 — 출장신청서 · 만든 출장증빙은 빼고(담당자 2026-11-10)."""
@@ -1211,6 +1234,9 @@ def scan_folder(folder: Path, names: list[str] | None = None) -> Scan:
         if not path.is_file() or path.suffix.lower() not in FILE_SUFFIXES:
             continue
         rel = path.relative_to(folder)
+        if skip_part(rel) or _hidden(path):
+            out.skipped.append(path)
+            continue
         squashed = re.sub(r"\s+", "", path.stem)
         if "출장증빙" in squashed or any(w in squashed for w in APPLICATION_WORDS):
             continue

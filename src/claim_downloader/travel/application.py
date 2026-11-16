@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from .model import _FULL_DATE, APPLICATION_WORDS, _make, pdf_text, split_places
+from .model import _FULL_DATE, APPLICATION_WORDS, _make, pdf_text, skip_part, split_places
 
 # 파일 이름에 APPLICATION_WORDS(model — 띄어쓰기 무시)가 있으면 출장신청서로 본다 — 국내 출장신청서(MMDD).pdf · 출장명령서 · 출장계획서
 READABLE = (".pdf", ".hwpx", ".txt")
@@ -110,8 +110,8 @@ def find(folder: Path) -> list[Path]:
             depth = len(path.relative_to(folder).parts)
         except ValueError:
             continue
-        if depth > 3 or not path.is_file() or path.name.startswith(("~$", ".")):
-            continue
+        if depth > 3 or not path.is_file() or skip_part(path.relative_to(folder)):
+            continue                                   # '기타' 같은 빼 둔 폴더 · 임시 파일(model.skip_part)
         stem = _squash(path.stem)
         if "출장증빙" in stem or not any(w in stem for w in APPLICATION_WORDS):
             continue

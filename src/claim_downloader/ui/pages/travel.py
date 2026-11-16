@@ -670,7 +670,8 @@ class TravelPage(QWidget):
         path = QFileDialog.getExistingDirectory(self, "출장 폴더들이 든 상위 폴더", self._trip_root())
         if not path:
             return
-        found = [d for d in sorted(Path(path).iterdir()) if d.is_dir() and model.looks_like_trip(d)]
+        found = [d for d in sorted(Path(path).iterdir())
+                 if d.is_dir() and not model.skip_part(Path(d.name) / "x") and model.looks_like_trip(d)]   # '기타' 폴더는 출장 폴더가 아니다
         added = self._add_folders(found)
         self.folder_note.setText(f"'{Path(path).name}' 아래에서 출장 폴더 {added}개를 넣었습니다 — 만들지 않을 폴더는 체크를 푸세요."
                                  if found else f"'{Path(path).name}' 바로 아래에 출장신청서나 증빙 파일이 든 폴더가 없습니다.")
@@ -1408,6 +1409,28 @@ class TravelPage(QWidget):
             out[path] = (st.st_mtime_ns, st.st_size)
         return out
 
+    def _where_note(self, scan: model.Scan) -> str:
+        """하위 폴더에서 읽은 증빙 · '기타' 같은 폴더라 빼 둔 파일 — 담당자가 보는 폴더 밖의 파일이 섞이면 어디인지 알게(2026-11-16)."""
+        root = self._root()
+        if root is None:
+            return ""
+        nested: dict[str, int] = {}
+        for path in [p for files in scan.files.values() for p in files]:
+            try:
+                rel = path.relative_to(root)
+            except ValueError:
+                continue
+            if len(rel.parts) > 1:
+                key = "/".join(rel.parts[:-1])
+                nested[key] = nested.get(key, 0) + 1
+        out = ""
+        if nested:
+            where = ", ".join(f"'{k}' {n}개" for k, n in list(nested.items())[:5]) + (" …" if len(nested) > 5 else "")
+            out += f". 하위 폴더의 증빙도 넣었습니다({where}) — 넣지 않을 파일은 '기타' 폴더로 옮기세요"
+        if scan.skipped:
+            out += f". '기타' 같은 폴더 · 숨은 파일 {len(scan.skipped)}개는 넣지 않았습니다"
+        return out
+
     def _fill_from_scan(self, scan: model.Scan, changed: set | None = None) -> None:
         """훑은 증빙을 표에 — changed 가 None 이면 처음부터(표를 비우고), 아니면 폴더가 바뀐 만큼만 맞춘다(그대로인 파일의 고친 값은 둔다)."""
         sig = self._file_sig(scan)
@@ -1431,6 +1454,7 @@ class TravelPage(QWidget):
         note = f"폴더에서 증빙 {added}개를 넣었습니다" + (f" — {' · '.join(lines)}" if lines else "")
         if merged and (dropped or added_new):
             note = f"폴더의 파일이 바뀌어 다시 맞췄습니다(뺀 줄 {dropped} · 새로 읽은 파일 {added_new}) — " + note
+        note += self._where_note(scan)
         QTimer.singleShot(0, self._ai_start)
         if scan.unsorted:
             names = ", ".join(p.name for p in scan.unsorted[:6]) + (" …" if len(scan.unsorted) > 6 else "")
@@ -2317,9 +2341,13 @@ class TravelPage(QWidget):
                     if ref or where:
                         item.setForeground(QColor(COLORS["warning"]) if col == len(heads) + 1 else QColor(COLORS["text"]))
                     table.setItem(row, col, item)
+            root = self._root()
+            files = {1: trip.stay, 2: trip.public, 3: trip.tolls, 4: trip.lodging, 5: trip.other}
             for col, text in enumerate(heads):
                 item = QTableWidgetItem(text)
-                item.setToolTip(text)
+                listed = files.get(col) or []
+                # 어떤 파일을 읽었는지 — 담당자 2026-11-16 "폴더에 체류증빙이 1,2 각각 하나씩 밖에 없는데 계속 2개로 나오네요"
+                item.setToolTip("\n".join(dict.fromkeys(model.shown_name(e.path, root) for e in listed)) if listed else text)
                 item.setData(REF_ROLE, (index, ()))
                 table.setItem(first, col, item)
                 if len(items) > 1:

@@ -1623,8 +1623,8 @@ def test_same_receipt_twice_and_folder_changes(qapp, tmp_path, isolated_home):
         "출장자 연구원 홍길동\n출장기간 2026. 10. 29.(목) ~ 2026. 10. 30.(금)\n출장지 부산 가나다컨벤션\n", encoding="utf-8")
     one, two = _image(folder / "홍길동_체류 증빙1.png"), _image(folder / "홍길동_체류 증빙2.png")
     old = _image(folder / "홍길동_체류 증빙 1029.png")                 # 같은 영수증을 먼저 둔 것
-    (folder / "이전").mkdir()
-    sub = _image(folder / "이전" / "홍길동_체류 증빙3.png")
+    (folder / "원본").mkdir()
+    sub = _image(folder / "원본" / "홍길동_체류 증빙3.png")
     page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
     page.show()
     page.load_folder(str(folder))
@@ -1636,7 +1636,7 @@ def test_same_receipt_twice_and_folder_changes(qapp, tmp_path, isolated_home):
     trip = page.trips()[0]
     same = [r for r in model.review(trip) if "같은 날" in r]
     assert len(same) == 1 and "홍길동_체류 증빙1.png" in same[0] and "홍길동_체류 증빙 1029.png" in same[0]
-    assert any(where.endswith("이전/홍길동_체류 증빙3.png") for _ref, where, _text in model.checks(trip, page._root()))
+    assert any(where.endswith("원본/홍길동_체류 증빙3.png") for _ref, where, _text in model.checks(trip, page._root()))
     # 기간을 고치면 번호 일자도 따라간다 · 사람이 고친 일자는 그대로
     row2 = stay.paths.index(two)
     stay.item(row2, 1).setText("2026-10-31")
@@ -1761,3 +1761,36 @@ def test_ai_fills_blank_cells_and_same_receipt_once(qapp, tmp_path, isolated_hom
     page._reload(str(folder))
     qapp.processEvents()
     assert len(calls) == 1 and public.item(0, 2).text() == "29,800"
+
+
+def test_skip_dirs_and_where_files_come_from(qapp, tmp_path, isolated_home):
+    """담당자 2026-11-16 "폴더에 체류증빙이 1,2 각각 하나씩 밖에 없는데 계속 2개로 나오네요" — 앱은 하위 폴더까지 읽는다. '기타' 같은 폴더 ·
+    숨은 · 임시 파일은 넣지 않고(카드청구와 같은 규칙), 하위 폴더에서 읽은 증빙은 ③ 에 어느 폴더인지 알린다."""
+    from claim_downloader.ui.pages import travel as travel_page
+    folder = tmp_path / "출장비 지급(26.10.29. 부산)"
+    (folder / "기타").mkdir(parents=True)
+    (folder / "원본").mkdir()
+    (folder / "국내 출장신청서.txt").write_text(
+        "출장자 연구원 홍길동\n출장기간 2026. 10. 29.(목) ~ 2026. 10. 30.(금)\n출장지 부산 가나컨벤션\n", encoding="utf-8")
+    _image(folder / "홍길동_체류 증빙1.png")
+    _image(folder / "홍길동_체류 증빙2.png")
+    _image(folder / "기타" / "홍길동_체류 증빙.png")                 # 빼 둔 옛 파일
+    _image(folder / "원본" / "홍길동_대중교통 증빙.png")
+    _image(folder / "~$홍길동_체류 증빙3.png")
+    scan = model.scan_folder(folder)
+    assert sorted(p.name for p in scan.files[model.STAY]) == ["홍길동_체류 증빙1.png", "홍길동_체류 증빙2.png"]
+    assert len(scan.skipped) == 2
+    other = tmp_path / "옛 출장"
+    (other / "기타").mkdir(parents=True)
+    _image(other / "기타" / "홍길동_체류 증빙.png")
+    assert not model.looks_like_trip(other)                          # '기타' 에만 증빙이 있으면 출장 폴더로 보지 않는다
+    assert model.skip_part(Path("기 타/a.png")) and model.skip_part(Path("Old/a.png")) and not model.skip_part(Path("체류/a.png"))
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.show()
+    page.load_folder(str(folder))
+    page._go("files")
+    note = page.scan_note.text()
+    assert "'원본' 1개" in note and "2개는 넣지 않았습니다" in note
+    tip = page.people_table.item(0, 1).toolTip()
+    assert tip.splitlines() == ["홍길동_체류 증빙1.png", "홍길동_체류 증빙2.png"]
+    assert page.people_table.item(0, 2).toolTip() == "원본/홍길동_대중교통 증빙.png"
