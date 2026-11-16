@@ -922,6 +922,44 @@ def test_same_route_is_found_once_and_can_be_shared(qapp, tmp_path, isolated_hom
     assert page.make_button.text().startswith("출장증빙 내보내기")
 
 
+def test_drop_current_folder_and_read_again(qapp, tmp_path, isolated_home, monkeypatch):
+    """담당자 2026-11-16 "폴더 내 파일을 수정해가지고 다시 만들기를 시작하려고 하는데 고른 줄 빼기를 눌러도 빠지지 않고 다시 시작할 수 있는
+    기능이 없네요" — 지금 폴더도 뺄 수 있고(읽은 것을 비움), [처음부터 다시 읽기] 는 고친 파일로 처음부터."""
+    from claim_downloader.ui.pages import travel as travel_page
+    folder = tmp_path / "출장비 지급(26.11.10. 원주)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(LABELED.replace("홍길동, 연구원 김철수", "홍길동"), encoding="utf-8")
+    _image(folder / "홍길동_체류증빙 1110.png")
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.show()
+    page.load_folder(str(folder))
+    page._go("files")
+    monkeypatch.setattr(travel_page.TravelPreview, "exec", lambda self: travel_page.PREVIEW_MAKE)
+    page._make()
+    assert str(folder) in page._done_folders
+    page.preview_panel._cache["x"] = "옛 그림"
+    # 파일을 고쳤다 — 이름 맨 앞에 다른 사람
+    _image(folder / "김철수 체류증빙 1110.png")
+    page._go("folder")
+    assert not page.reload_button.isHidden()
+    page.reload_button.click()
+    assert page._stage == "review" and page.name_edit.text() == "홍길동, 김철수" and str(folder) not in page._done_folders
+    assert not page.preview_panel._cache                                # 고친 파일은 새 그림으로
+    # ③ 의 [폴더에서 다시 읽기] 도 새 사람을 더한다
+    _image(folder / "이영희_체류증빙 1110.png")
+    page._rescan()
+    assert page.name_edit.text() == "홍길동, 김철수, 이영희" and page.tables["stay"].rowCount() == 3
+    # 지금 폴더를 뺀다 — 고른 줄이 없으면 지금 줄
+    page._go("folder")
+    page.folder_list.setCurrentRow(0)
+    page.folder_list.clearSelection()
+    page._drop_folders()
+    assert page.folder_list.count() == 0 and page.folder_edit.text() == "" and page._stage == "folder"
+    assert all(t.rowCount() == 0 for t in page.tables.values()) and not page._groups and page.reload_button.isHidden()
+    page.load_folder(str(folder))                                       # 다시 넣으면 새로
+    assert page.name_edit.text() == "홍길동, 김철수, 이영희"
+
+
 def test_no_car_fuel_means_no_car_evidence(qapp, tmp_path, isolated_home):
     """담당자 2026-11-16 "동승하는 경우가 있어 해당없음 옵션을 추가해 해당없음을 선택하면 자차 증빙 없어도 됨"."""
     from claim_downloader.ui.pages import travel as travel_page

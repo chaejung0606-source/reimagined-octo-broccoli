@@ -468,7 +468,8 @@ class TravelPage(QWidget):
         self.folder_list = FolderList()
         self.folder_list.dropped.connect(lambda paths: self._add_folders(paths, start=True))
         self.folder_list.itemChanged.connect(lambda _item: self._sync())
-        self.folder_list.itemDoubleClicked.connect(lambda item: self.load_folder(item.data(Qt.UserRole)))
+        self.folder_list.itemDoubleClicked.connect(lambda item: self._reload(item.data(Qt.UserRole)))
+        self.folder_list.setToolTip("두 번 누르면 그 폴더를 처음부터 다시 읽습니다")
         step.add(self.folder_list)
         row = QHBoxLayout()
         add = QPushButton("폴더 추가")
@@ -479,7 +480,13 @@ class TravelPage(QWidget):
         parent.clicked.connect(self._pick_parent)
         drop = QPushButton("고른 줄 빼기")
         drop.setObjectName("ghost")
+        drop.setToolTip("목록에서 고른 폴더를 뺍니다 — 지금 하던 폴더면 읽은 것도 비웁니다(폴더의 파일은 그대로)")
         drop.clicked.connect(self._drop_folders)
+        # 폴더의 파일을 고친 뒤 처음부터 — 출장신청서 · 출장자 · 증빙을 다시 읽는다(담당자 2026-11-16 "폴더 내 파일을 수정해가지고
+        # 다시 만들기를 시작하려고 하는데 … 다시 시작할 수 있는 기능이 없네요")
+        self.reload_button = QPushButton("처음부터 다시 읽기")
+        self.reload_button.setToolTip("폴더의 파일을 고쳤으면 — 출장신청서 · 출장자 · 증빙을 처음부터 다시 읽습니다(② 에서 고친 값은 지워집니다)")
+        self.reload_button.clicked.connect(lambda: self._reload(self.folder_edit.text().strip()))
         self.start_button = QPushButton("")
         self.start_button.setObjectName("primary")
         self.start_button.clicked.connect(self._start_folders)
@@ -487,6 +494,7 @@ class TravelPage(QWidget):
         row.addWidget(parent)
         row.addWidget(drop)
         row.addStretch(1)
+        row.addWidget(self.reload_button)
         row.addWidget(self.start_button)
         step.add_layout(row)
         self.folder_note = muted_label("")
@@ -538,12 +546,69 @@ class TravelPage(QWidget):
                                  if found else f"'{Path(path).name}' 바로 아래에 출장신청서나 증빙 파일이 든 폴더가 없습니다.")
 
     def _drop_folders(self) -> None:
+        """고른 줄을 뺀다 — 고른 줄이 없으면 지금 줄. 지금 하던 폴더를 빼면 읽은 것(출장자 · 증빙 · 경로)도 비운다(폴더의 파일은 그대로)."""
+        items = self.folder_list.selectedItems() or ([self.folder_list.currentItem()] if self.folder_list.currentItem() else [])
+        if not items:
+            QMessageBox.information(self, "고른 줄 빼기", "뺄 폴더를 목록에서 먼저 누르세요.")
+            return
         current = self.folder_edit.text().strip()
-        for item in self.folder_list.selectedItems():
-            if item.data(Qt.UserRole) == current:
-                continue                          # 지금 하는 폴더는 빼지 않는다
+        dropped_current = False
+        for item in items:
+            path = item.data(Qt.UserRole)
+            dropped_current = dropped_current or path == current
+            self._done_folders.discard(path)
             self.folder_list.takeItem(self.folder_list.row(item))
+        if dropped_current:
+            self._clear_current()
+        self._mark_folders()
         self._sync()
+
+    def _clear_current(self) -> None:
+        """지금 폴더에서 읽은 것을 모두 비운다 — 다시 고르거나 다시 읽을 때 앞 폴더의 출장자 · 증빙 · 경로가 섞이지 않게."""
+        self.folder_edit.setText("")
+        self._review, self._apps, self._scan = None, [], model.Scan()
+        self._groups, self._group_i, self._extra = [], 0, []
+        self._fuel_of.clear()
+        self._goal_of.clear()
+        self._ask_reason.clear()
+        self._routes.clear()
+        self._searching.clear()
+        self._pending_route = None
+        self._made = []
+        self._loading_group = True
+        try:
+            self.name_edit.setText("")
+            self.dest_edit.setText("")
+            for edit in list(self.via_edits):
+                self._drop_via(edit.parentWidget(), edit)
+        finally:
+            self._loading_group = False
+        for table in self.tables.values():
+            table.clear_all()
+        self._forget_pictures()
+        self.review_label.setText("")
+        self.result_label.setText("")
+        self._uncheck_route()
+        self._stage = "folder"
+        if hasattr(self, "route_table"):
+            self._on_route_inputs()
+
+    def _forget_pictures(self) -> None:
+        """미리 보기가 기억해 둔 증빙 그림을 잊는다 — 같은 이름의 파일을 고쳤으면 새 그림으로 그리게."""
+        if hasattr(self, "preview_panel"):
+            self.preview_panel._cache.clear()
+            self.preview_panel._needs.clear()
+            self.preview_panel._selected = ()
+
+    def _reload(self, folder: str) -> None:
+        """그 폴더를 처음부터 다시 읽는다 — 출장신청서 · 출장자 · 증빙 · 경로를 비우고 ② 부터(만든 표시도 지운다)."""
+        if not folder:
+            QMessageBox.information(self, "처음부터 다시 읽기", "다시 읽을 폴더를 목록에서 먼저 고르세요.")
+            return
+        self._done_folders.discard(folder)
+        self._clear_current()
+        self.log("출장 폴더를 처음부터 다시 읽습니다")
+        self.load_folder(folder)
 
     def _start_folders(self) -> None:
         current = self.folder_edit.text().strip()
@@ -1506,10 +1571,23 @@ class TravelPage(QWidget):
         return self.start_edit.date().year()
 
     def _rescan(self) -> None:
+        """증빙 파일만 다시 읽는다(② 에서 고친 출장자 · 기간 · 출장지는 그대로) — 파일 이름 맨 앞에 새 사람이 생겼으면 고른 그룹에 더한다."""
         folder = self.folder_edit.text().strip()
-        if folder and Path(folder).is_dir():
-            self._fill_from_scan(model.scan_folder(Path(folder), self._all_people()))
-            self._on_route_inputs()
+        if not folder or not Path(folder).is_dir():
+            return
+        self._forget_pictures()
+        scan = model.scan_folder(Path(folder), self._all_people())
+        new = [n for n in model.names_in_files((p for files in scan.files.values() for p in files), root=Path(folder))
+               if n not in self._all_people()]
+        if new and self._group() is not None:
+            self._group()["names"] += new
+            self._extra += new
+            self._load_group(self._group_i)
+            scan = model.scan_folder(Path(folder), self._all_people())
+            self.log(f"폴더를 다시 읽어 파일 이름에서 출장자 {len(new)}명을 더했습니다")
+        self._scan = scan
+        self._fill_from_scan(scan)
+        self._on_route_inputs()
 
     def _on_evidence(self) -> None:
         self._on_route_inputs()
@@ -1892,6 +1970,7 @@ class TravelPage(QWidget):
             label = f"다음 폴더로 — {Path(nxt).name}" if nxt else "모두 만들었습니다"
         self.start_button.setVisible(bool(folders))
         self.start_button.setEnabled(bool(folders) and label != "모두 만들었습니다")
+        self.reload_button.setVisible(bool(folder))
         self.start_button.setText(label)
         self.folder_list.setToolTip("체크한 폴더를 차례로 합니다 — 두 번 누르면 그 폴더로 바로 갑니다" if many else "")
         start, end = self.start_edit.date().toPython(), self.end_edit.date().toPython()
