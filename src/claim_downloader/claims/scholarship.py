@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import re
 import time
 import traceback
@@ -27,7 +28,7 @@ from .. import settings
 from ..minutes.logbook import log as file_log
 from ..minutes.textfile import _read_text
 from . import attach, idnums, kinds, nation as nation_mod, person, roster as roster_mod
-from .checks import FIX, INFO, Note
+from .checks import CHECK, FIX, INFO, Note
 from .schema import CATEGORY_CODES
 from .nation import same_country  # noqa: F401 — 테스트 · 화면이 scholarship.same_country 로 부른다
 from .form import PROBE_JS, SET_SELECT_JS, SET_TEXT_JS, read_state, save_draft
@@ -308,11 +309,16 @@ class Job:
         # ERP 청구내역 표에서는 줄을 적요로 구분한다 — 같은 적요가 둘이면 어느 줄이 누구 것인지 모른다
         summaries = [self.row_summary(i) for i in range(len(self.people))]
         same = sorted({t for t in summaries if t and summaries.count(t) > 1})
+        chosen = self.selected if len(self.selected) == len(summaries) else [True] * len(summaries)
         for text in same:
+            # 넣을 사람 둘 이상이 같은 적요면 넣기를 막는다 — 같은 이름 두 학생(학번이 다름)이 한 줄로 보여, 신청 전 대조가 정상 줄을
+            # '두 번 들어감' 으로 지우라 하고 첨부만 다시 올리기는 남의 서류를 붙였다(2026-11-16 검수). 한쪽만 넣으면 알리기만.
+            both = sum(1 for t, on in zip(summaries, chosen) if t == text and on) > 1
             out.append(Note(f"개별 적요가 같은 줄이 둘 이상입니다: {text} — {self.spec.rules_file} 로 구분되게 고치세요",
+                            level=FIX if both else CHECK,
                             what=f"개별 적요가 같은 줄이 둘 이상: {text} — ERP 청구내역에서 어느 줄이 누구 것인지 모릅니다",
                             where=f"적요 규칙 파일 「{self.spec.rules_file}」(사용자 폴더)",
-                            todo="행적요에 이름 · 교과목이 들어가게 고친 뒤 [다시 읽기]"))
+                            todo="같은 이름이면 그 파일의 '행적요:' 줄을 '행적요: {대표적요}_{이름}({학번})' 처럼 학번이 들어가게 고친 뒤 [다시 읽기]"))
         return out
 
     def _project_text(self) -> str:
@@ -335,10 +341,15 @@ class Job:
 
 
 def _files_under(folder: str) -> list[str]:
+    """공통 · 개별증빙 폴더의 파일 — '기타' · '사용안함' · '이전' 같은 폴더와 숨은 · 임시 파일은 붙이지 않는다(카드청구 · 출장증빙과 같은 규칙,
+    2026-11-16 검수: '공통증빙/기타/지난달_명단_사용안함.pdf' 가 모든 학생 줄에 붙었다)."""
+    from ..travel.model import skip_part
     out = []
-    for root, _dirs, files in os.walk(folder):
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in sorted(dirs) if not skip_part(Path(d) / "x")]
         for fn in sorted(files):
-            out.append(os.path.join(root, fn))
+            if not skip_part(Path(fn)):
+                out.append(os.path.join(root, fn))
     return attach.attachable(out)
 
 
@@ -441,9 +452,11 @@ def assign_person_files(files: list[str], base: str, people: list[roster_mod.Per
         rel = os.path.relpath(path, base).replace("\\", "/")
         key = _squash(rel)
         hits: set[int] = set()
-        for name, indexes in by_name.items():
-            if name and name in key:
-                hits.update(_rows_of_student(key, indexes, people))
+        # '이은' 과 '이은지' 처럼 한 이름이 다른 이름에 들어 있으면 긴 이름만 — 둘 다 걸려 '어느 학생 것인지 모름' 이 되면 고칠 길이 없었다(2026-11-16 검수)
+        found = [name for name in by_name if name and name in key]
+        found = [name for name in found if not any(name != other and name in other for other in found)]
+        for name in found:
+            hits.update(_rows_of_student(key, by_name[name], people))
         if not hits:
             hits.update(_rows_of_group(key, people))
         # 한 학생의 줄만 맞았을 때만 붙인다 — 두 학생에 걸리면 사람이 정한다
@@ -512,8 +525,10 @@ def keep_edits(job: Job, old: Job) -> None:
     job.tab = old.tab
     if old.kind == job.kind and old.main_summary and old.main_summary != old.default_summary:
         job.main_summary = old.main_summary
+    # 사람이 풀었거나 넣어서 풀린 체크만 이어받는다 — 금액이 비어 앱이 저절로 푼 체크까지 이어받으면, 금액을 적고 [다시 읽기] 해도
+    # 그 학생이 빠진 채 넣어졌다(2026-11-16 검수). 앱이 처음에 켜 두었던(이름 · 금액이 있던) 사람의 체크가 풀린 것만 센다.
     unchecked = {(_squash(p.name), p.student_no, _squash(p.course))
-                 for p, on in zip(old.people, old.selected) if not on}
+                 for p, on in zip(old.people, old.selected) if not on and bool(p.name) and p.amount is not None and p.amount > 0}
     for i, p in enumerate(job.people):
         if (_squash(p.name), p.student_no, _squash(p.course)) in unchecked:
             job.selected[i] = False
@@ -795,7 +810,8 @@ def run(page, frame, job: Job, log: Callable[[str], None], ask: Ask, wait: Calla
         result = new_result(job, index)
         live.clear()
         try:
-            ok, note = _run_person(page, frame, job, index, log, ask, wait, live, result, auto_pick)
+            ok, note = _run_person(page, frame, job, index, log, ask, wait, live, result, auto_pick,
+                                   first=not any(r.status == "saved" for r in report.results))
         except Exception as error:  # noqa: BLE001 — 한 사람에서 터져도 어디까지 됐는지는 알려 준다
             log("%s 청구 오류(%s)\n%s" % (job.spec.name, p.name, traceback.format_exc()))
             ok, note = False, "오류: " + (str(error).splitlines()[0][:100] if str(error) else type(error).__name__)
@@ -879,8 +895,9 @@ def sheet_owner(job: Job, req_cnt: str, rows: list[str], appr: str = "") -> tupl
     if not job.test_mode and any(test_mark in re.sub(r"\s+", "", t) for t in rows):
         # 시험 청구서의 줄 '[시험] 02_…' 에도 진짜 대표적요 '02_…' 가 들어 있다 — 진짜 줄을 시험 청구서에 잇지 않는다
         return False, f"작성 화면이 시험 청구서입니다(결의번호 {req_cnt or '?'} · 청구내역 {len(rows)}줄)"
-    if rows and main and all(main in re.sub(r"\s+", "", t) for t in rows):
-        return True, f"이 폴더의 청구서(청구내역 {len(rows)}줄의 적요가 대표적요와 같음)에 이어서"
+    from . import sheet_check
+    if rows and main and sheet_check.belongs(job, rows):
+        return True, f"이 폴더의 청구서(청구내역 {len(rows)}줄의 적요가 이 명단의 적요와 같음)에 이어서"
     return False, f"작성 화면이 이미 저장된 다른 청구서입니다(결의번호 {req_cnt or '?'} · 청구내역 {len(rows)}줄)"
 
 
@@ -946,7 +963,7 @@ def _ask_until(check: Callable[[], tuple[bool, str]], ask: Ask, message_for: Cal
 
 
 def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages: list[str],
-                result: PersonResult, auto_pick: bool) -> tuple[bool, str]:
+                result: PersonResult, auto_pick: bool, first: bool = False) -> tuple[bool, str]:
     p = job.people[index]
     summary = job.row_summary(index)
     log("── %d. %s (학번 %s · %s원)" % (index + 1, p.name, p.student_no or "—", f"{p.amount:,}" if p.amount else "—"))
@@ -1092,6 +1109,14 @@ def _run_person(page, frame, job: Job, index: int, log, ask: Ask, wait, messages
         # 전에는 [계속] 마다 처음부터 다시 올려 사람이 올린 것과 겹쳤다(2026-10-14 점검).
         want = len(attach.attachable(list(files)))
         base = attach.file_count(frame)
+        if first and base > 0:
+            # 이번 넣기의 첫 사람인데 첨부문서 칸에 벌써 파일이 있다 — 앞에서 [저장] 전에 멈춘 줄의 파일일 수 있다. 그대로 올리면 같은 줄에 겹치거나
+            # (그 사람을 빼고 넣으면) 다음 학생 줄에 앞 학생의 신분증 · 통장이 붙는다(2026-11-16 검수). 사람이 보고 지운 뒤 [계속].
+            log("%d. %s — 첨부문서 칸에 이미 %d개가 있습니다" % (index + 1, p.name, base))
+            if not ask("%d. %s — 첨부문서 칸에 이미 파일 %d개가 있습니다. 앞에서 저장하기 전에 멈춘 줄의 파일일 수 있습니다 — ERP 작성 화면의 "
+                       "첨부문서 목록에서 지운 뒤 [계속] 을 누르세요(이 학생의 파일이 맞으면 그대로 [계속])." % (index + 1, p.name, base)):
+                return False, "첨부문서 칸에 앞 파일이 남아 멈춤"
+            base = attach.file_count(frame)
         rep = attach.upload(page, frame, files, log, wait=wait, messages=messages)
         result.lines.extend(rep.lines())
         if not rep.ok:

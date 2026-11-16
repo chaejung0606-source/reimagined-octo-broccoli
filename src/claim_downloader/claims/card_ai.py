@@ -122,7 +122,10 @@ def needs(item: card_mod.CardItem) -> list[str]:
     if item.status == "saved" or not media_files(item.files):
         return []
     out = []
-    if item.amount is None:
+    # 금액을 공문 · 물품 표(계획 금액)에서만 읽었는데 글자로 못 읽은 영수증 그림이 있으면 그 영수증을 읽는다 — 계획 금액으로 결제 건을 찾다
+    # '그 금액인 결제 건이 없음' 으로 멈췄다(2026-11-16 검수)
+    planned = item.amount_from in ("물품 표", "공문") and any(str(n).startswith("글자를 못 읽는 영수증") for n in item.notes)
+    if item.amount is None or planned:
         out.append("금액")
     if item.req_div == "17" and meeting_gaps(item):
         out.append("회의 내용")

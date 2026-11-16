@@ -906,7 +906,8 @@ class ErpSession:
         cfg = self._load_settings()
         return re.sub(r"\D", "", project_no or getattr(cfg, "project_no", "") or settings_mod.DEFAULT_PROJECT_NO)
 
-    def _duplicate_check(self, summary: str, project: str, ask, test_mode: bool, fallback=None) -> str:
+    def _duplicate_check(self, summary: str, project: str, ask, test_mode: bool, fallback=None, own_req_cnt: str = "",
+                         reattach: bool = True) -> str:
         """넣기 전 — 그 과제의 ERP 결의서내역에 대표적요가 같은 청구서가 있으면 묻는다. 멈추면 그 까닭, 이어 가면 ''.
 
         담당자 요청(2026-10-19): 앱에 넣은 이력보다 실제 ERP 내역에 같은 것이 있는지가 먼저다 — ERP 에서 지운 청구서를 앱 이력 때문에
@@ -932,9 +933,14 @@ class ErpSession:
         self.log("ERP 결의서내역에 대표적요가 같은 청구서가 있습니다: " + found)
         # 보완요청 · 임시저장 청구서가 있으면 첨부만 다시 올리는 길을 띠에서 바로 — 담당자 2026-10-23 "보완요청 와서 첨부문서 수정해야 한다고 … 그냥 장학금
         # 청구하는 것처럼 파일만 다시 올려달라고"(이 띠에서 [ERP 에서 지운 뒤 다시] 를 읽고 막혔다). 글에 REATTACH_CHOICE 가 들면 화면이 그 단추를 보인다.
-        editable = any(any(w in str(r.get("state") or "") for w in claim_reattach.STATE_WORDS) for r in rows)
+        editable = reattach and any(any(w in str(r.get("state") or "") for w in claim_reattach.STATE_WORDS) for r in rows)
         hint = (f"첨부문서만 바꾸려는 것이면(보완요청 · 임시저장) {claim_reattach.REATTACH_CHOICE} — 값은 넣지 않고 청구내역 줄마다 첨부를 모두 지운 뒤 "
                 "폴더의 지금 파일을 올려 [저장] 합니다.\n") if editable else ""
+        if own_req_cnt and any(str(r.get("seq") or "") == own_req_cnt for r in rows):
+            # 앱이 넣다가 멈춘 이 청구서다(자동 로그아웃 · 앱 다시 켜기 · 같은 탭 자리에 다른 청구서를 띄움) — [계속] 하면 남은 건이 새 청구서로
+            # 갈라진다. 그 청구서를 띄우면 남은 건만 이어 넣는다(2026-11-16 검수 — 카드청구)
+            hint = (f"결의번호 {own_req_cnt} 는 앱이 넣다가 멈춘 이 청구서입니다 — 결의서내역에서 그 줄을 골라 [상세조회/변경] 으로 띄운 뒤 "
+                    "다시 누르면 남은 건만 이어 넣습니다(이때는 [멈추기]).\n") + hint
         if not ask(f"ERP 결의서내역에 대표적요 '{summary}' 청구서가 이미 있습니다 — {found}.\n" + hint
                    + "새 청구서로 또 넣으면 같은 지출이 두 번 청구됩니다. 다시 넣는 것이면 ERP 에서 그 청구서를 지운 뒤 다시 누르고, 이미 올린 폴더로 "
                    "시험하는 것이면 아래 [시험] 을 켜고 다시 누르세요.\n그래도 새 청구서에 넣으려면 [계속], 아니면 [멈추기]."):
@@ -1163,7 +1169,8 @@ class ErpSession:
             own, why = card_erp.sheet_owner(frame, sheet, summary)
             continuing = own and why != "새 카드청구서"
         if not continuing:
-            stop = self._duplicate_check(summary, project, ask, test_mode, lambda: card_erp.record_warning(job, sheet))
+            stop = self._duplicate_check(summary, project, ask, test_mode, lambda: card_erp.record_warning(job, sheet),
+                                         own_req_cnt=sheet.req_cnt, reattach=False)
             if stop:
                 report.blocked = stop
                 self.log("카드청구 멈춤 — " + stop)

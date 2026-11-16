@@ -462,3 +462,30 @@ def test_meeting_payment_flags_a_shop_outside_the_meeting_region(tmp_path):
     assert any("지역이 다름" in n and "서울" in n for n in first.notes)
     assert second.meeting_region == "춘천" and second.shop_address.startswith("강원 춘천시")
     assert not any("지역이 다름" in n for n in second.notes)
+
+
+def test_qa_20261116_card_fixes():
+    """2026-11-16 검수 — 승인번호가 다르면 고르지 않고, 같으면 금액이 달라도 고름 · 할인 영수증은 결제금액 · 이름의 '2026 원주' 는 금액 아님 ·
+    역할이 붙은 소속은 학교 안 · 다른 학교 약칭은 밖 · '오전 … ~ 오후 …' 시각."""
+    import datetime as dt
+
+    from claim_downloader.claims import card, minutes_pdf, participants
+
+    day = dt.date(2026, 10, 15)
+    item = card.CardItem(folder="x", name="x", used=day, amount=45000, approval="30012345", merchant="스타벅스")
+    other = card.Payment(index=3, used=day, amount=45000, balance=45000, shop="메가커피", approval="30099999")
+    assert card.pick(item, [other])[0] is None and "승인번호가 다름" in card.pick(item, [other])[1]
+    same = card.Payment(index=5, used=day, amount=48000, balance=48000, shop="스타벅스", approval="030012345")
+    index, why = card.pick(item, [same])
+    assert index == 5 and "금액" in why and "다름" in why                      # 승인번호가 같으면(앞 0 무시) 금액이 달라도 그 줄
+    receipt = card.read_receipt("주문금액 합계 48,000원\n쿠폰 할인 -3,000원\n결제금액 45,000원\n승인번호 30012345")
+    assert receipt.amount == 45000
+    assert card.AMOUNT_IN_NAME_RE.search("261015_(17)_2026 원주 워크숍 회의") is None
+    assert card.AMOUNT_IN_NAME_RE.search("261015_(17)_회의_45,000원").group(1) == "45,000"
+    for org in ("컴퓨터공학과 교수", "정보통신공학과 석사과정", "지도교수", "학부생", "사업단 직원", "강원대 컴퓨터공학과", "IT대학 컴퓨터공학과"):
+        assert participants.is_internal_org(org), org
+    for org in ("서울대 컴퓨터공학과", "한림대 소프트웨어학부", "한림대학교 데이터보안", "(주)가나"):
+        assert not participants.is_internal_org(org), org
+    assert minutes_pdf._when("2026. 10. 15.(수) 오전 11시 30분 ~ 오후 1시")[1:] == ("11:30", "13:00")
+    assert minutes_pdf._when("2026.10.15 12:30~1:30")[1:] == ("12:30", "13:30")
+    assert minutes_pdf._when("2026.10.15 10:00~12:00")[1:] == ("10:00", "12:00")

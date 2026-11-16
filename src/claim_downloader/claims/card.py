@@ -57,7 +57,8 @@ REQ_DIV_WORDS = {
 REQ_DIV_TWINS = {"교육훈련내역": ("87", "99"), "교육훈련": ("87", "99")}
 TAG_RE = re.compile(r"[\[(（]\s*([^\])）]{1,12}?)\s*[\])）]")
 DIV_TOKEN_RE = re.compile(r"^\(?(\d{2,3})\)?(.*)$")
-AMOUNT_IN_NAME_RE = re.compile(r"(?<![\d,])(\d{1,3}(?:,\d{3})+|\d+)\s*원")
+# '원' 뒤에 한글이 이어지면 금액이 아니다 — '2026 원주 워크숍' · '2026 원격회의' 를 2,026원으로 읽었다(2026-11-16 검수)
+AMOUNT_IN_NAME_RE = re.compile(r"(?<![\d,])(\d{1,3}(?:,\d{3})+|\d+)\s*원(?![가-힣])")
 # 이름 끝의 콤마 금액은 '원' 이 없어도 금액 — '261012_(17)_안전한지피유_45,000'(담당자가 폴더 이름에 금액을 적는다 2026-11-11).
 # 콤마가 없는 끝 숫자는 건명일 수 있어('회의 2') 보지 않는다
 AMOUNT_AT_END_RE = re.compile(r"[\s_]+[(\[]?\s*(\d{1,3}(?:,\d{3})+)\s*[)\]]?\s*$")
@@ -97,6 +98,7 @@ NOT_RECEIPT_WORDS = ("회의록", "서명부", "공문", "계획", "결과", "�
 
 STRONG_AMOUNT_WORDS = ("승인금액", "결제금액", "합계", "총액", "총금액", "총결제", "청구금액", "받을금액", "결제요청금액")
 WEAK_AMOUNT_WORDS = ("금액", "total", "amount")
+PAID_AMOUNT_WORDS = ("승인금액", "결제금액", "받을금액", "결제요청금액", "실결제", "최종결제")
 MONEY_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*원|(?<![\d.,])(\d{1,3}(?:,\d{3})+)(?![\d,])")
 DATE_RE = re.compile(r"(20\d{2})\s*[.\-/년]\s*(\d{1,2})\s*[.\-/월]\s*(\d{1,2})")
 CARD_NO_RE = re.compile(r"카\s*드\s*번\s*호\s*[:：]?\s*([0-9*Xx×\-\s]{8,30})")
@@ -189,10 +191,14 @@ def claim_period(name: str, parent: tuple[dt.date, dt.date] | None = None) -> tu
     hit = PERIOD_SHORT_RE.search(name or "")
     if hit:
         m1, d1, m2, d2 = (int(g) for g in hit.groups())
-        year = parent[0].year if parent else dt.date.today().year
+        today = dt.date.today()
+        year = parent[0].year if parent else today.year
         start = _date(year, m1, d1)
         if start and parent and (parent[0] - start).days > 60:
             start = _date(year + 1, m1, d1)               # 위 기간이 12월이고 이 청구서가 1월인 때
+        elif start and not parent and (start - today).days > 120:
+            # 위 기간 폴더가 없으면 오늘의 해 — 1월에 지난해 11월 · 12월 결제를 청구하면 앞으로 올 기간이 되어 모든 건이 '목록에 없음' 이었다(2026-11-16 검수)
+            start = _date(year - 1, m1, d1)
         if start:
             end = _date(start.year + (1 if (m2, d2) < (m1, d1) else 0), m2, d2)
             if end and start <= end:
@@ -416,19 +422,23 @@ def read_receipt(text: str, path: str = "") -> Receipt:
     """카드 영수증 · 매출전표 글자에서 금액(합계 · 승인금액 줄의 가장 큰 값) · 카드 뒷자리 · 승인번호 · 가맹점 · 날짜."""
     out = Receipt(path=path)
     lines = [line.strip() for line in text.splitlines()]
+    paid: list[int] = []
     strong: list[int] = []
     weak: list[int] = []
     for i, line in enumerate(lines):
         flat = line.replace(" ", "").lower()
-        bucket = strong if any(w in flat for w in STRONG_AMOUNT_WORDS) else weak if any(w in flat for w in WEAK_AMOUNT_WORDS) else None
+        # 실제로 결제한 금액 줄이 먼저 — '주문금액 합계 48,000 / 쿠폰 할인 -3,000 / 결제금액 45,000' 을 48,000 으로 읽어
+        # 승인번호까지 맞는 결제 건을 금액이 다르다고 버렸다(2026-11-16 검수)
+        bucket = (paid if any(w in flat for w in PAID_AMOUNT_WORDS) else strong if any(w in flat for w in STRONG_AMOUNT_WORDS)
+                  else weak if any(w in flat for w in WEAK_AMOUNT_WORDS) else None)
         if bucket is None or any(w in flat for w in ("공급가", "부가세", "세액", "봉사료", "면세")) and bucket is weak:
             continue
         values = _money_in(line)
         if not values and i + 1 < len(lines):
             values = _money_in(lines[i + 1])         # 글자 뽑기에서 값이 다음 줄로 떨어진 PDF
         bucket.extend(values)
-    if strong or weak:
-        out.amount = max(strong or weak)
+    if paid or strong or weak:
+        out.amount = max(paid or strong or weak)
     hit = CARD_NO_RE.search(text)
     if hit:
         tail = re.sub(r"[\s\-]", "", hit.group(1))
@@ -1559,15 +1569,25 @@ def shop_match(ours: str, theirs: str) -> bool:
     return len(a) >= 2 and len(b) >= 2 and (a in b or b in a)
 
 
+def _approval_key(value) -> str:
+    """승인번호 견주기 — 숫자만, 앞자리 0 무시(목록은 숫자로 읽혀 앞 0 이 빠질 수 있다)."""
+    return re.sub(r"\D", "", str(value or "")).lstrip("0")
+
+
 def pick(item: CardItem, payments: list[Payment], taken=()) -> tuple[int | None, str]:
     """결제 건 폴더 하나에 맞는 목록 줄 — 하나로 확실할 때만 그 index, 아니면 (None, 까닭).
     승인번호가 같은 줄 → 아니면 사용일이 같고 남은 금액(또는 사용금액)이 같은 줄 → 여럿이면 카드 뒷자리 · 가맹점으로 좁힌다.
     금액을 모르면 고르지 않는다(그날 결제가 하나뿐이어도 다른 카드 · 다른 건일 수 있다) — 가맹점까지 맞을 때만."""
     pool = [p for p in payments if p.index not in taken and (p.balance is None or p.balance > 0)]
-    if item.approval:
-        same = [p for p in pool if p.approval and p.approval == item.approval]
-        if len(same) == 1 and (item.amount is None or item.amount in (same[0].balance, same[0].amount)):
-            return same[0].index, f"승인번호 {item.approval} 가 같음"
+    mine = _approval_key(item.approval)
+    if mine:
+        same = [p for p in pool if _approval_key(p.approval) == mine]
+        if len(same) == 1:
+            # 승인번호가 맞으면 그 줄 — 금액이 달라도(영수증의 할인 전 합계를 읽은 것일 수 있다) 고르고 다르다고 알린다(2026-11-16 검수)
+            if item.amount is None or item.amount in (same[0].balance, same[0].amount):
+                return same[0].index, f"승인번호 {item.approval} 가 같음"
+            return same[0].index, (f"승인번호 {item.approval} 가 같음 — 금액은 폴더 {item.amount:,}원 · 목록 "
+                                   f"{(same[0].balance or same[0].amount or 0):,}원으로 다름(확인)")
     if not item.used:
         return None, "사용일을 몰라 고르지 않음"
     day = [p for p in pool if p.used == item.used]
@@ -1594,6 +1614,9 @@ def pick(item: CardItem, payments: list[Payment], taken=()) -> tuple[int | None,
         return None, f"금액을 몰라 고르지 않음 — 그날 후보: {found.label()}"
     if item.card_last and found.card_last and found.card_last != item.card_last:
         return None, f"카드 뒷자리가 다름(영수증 …{item.card_last} · 목록 …{found.card_last})"
+    if mine and _approval_key(found.approval) and _approval_key(found.approval) != mine:
+        # 영수증 승인번호와 다른 결제 건 — 그날 같은 금액이 그 줄 하나여도 다른 결제다(원래 결제가 이미 청구됐거나 날짜가 틀림, 2026-11-16 검수)
+        return None, f"승인번호가 다름(영수증 {item.approval} · 목록 {found.approval}) — 그날 후보: {found.label()}"
     why = ["사용일"] + (["금액"] if item.amount is not None else []) + (["가맹점"] if shop_hit else [])
     return found.index, " · ".join(why) + " 이 맞는 줄 하나"
 

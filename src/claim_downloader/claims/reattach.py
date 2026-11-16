@@ -104,6 +104,7 @@ class RowPlan:
     summary: str               # 이 줄의 적요 — 청구내역 표에서 줄을 찾는 데
     files: list[str] = field(default_factory=list)
     note: str = ""
+    others: tuple = ()         # 같은 명단의 다른 줄 적요 — 줄을 연 뒤 다른 사람 · 교과목 줄이 열렸는지 가린다(row_loaded)
 
     @property
     def names(self) -> list[str]:
@@ -141,12 +142,19 @@ class Plan:
 def plan_for_job(job) -> Plan:
     """명단 청구(장학금 · 혁신인재지원금) — 체크한 사람마다 공통 + 개별 파일(Job.files_for)."""
     rows = []
+    summaries = [job.row_summary(i) for i in range(len(job.people))]
     for i in job.chosen():
         p = job.people[i]
         files = attach.attachable(job.files_for(i))
         label = p.name + (f" ({p.course})" if getattr(p, "course", "") else "")
-        rows.append(RowPlan(i, label, job.row_summary(i), files, "" if files else "올릴 파일 없음 — 건너뜀"))
+        others = tuple(t for k, t in enumerate(summaries) if k != i and t and t != summaries[i])
+        rows.append(RowPlan(i, label, summaries[i], files, "" if files else "올릴 파일 없음 — 건너뜀", others))
     problems = []
+    same = sorted({t for t in (r.summary for r in rows) if t and sum(1 for r in rows if r.summary == t) > 1})
+    if same:
+        # 같은 적요의 두 줄(같은 이름 두 학생)은 청구내역에서 어느 줄이 누구 것인지 몰라, 한 사람 서류를 두 줄 모두에 붙이고 다른 사람 첨부는 지웠다(2026-11-16 검수)
+        problems.append("개별 적요가 같은 줄이 둘 이상이라 어느 줄이 누구 것인지 모릅니다: " + " · ".join(same)
+                        + " — 규칙 파일의 행적요에 {학번} 을 넣어 구분하거나 한 사람씩 체크해 올리세요")
     if not job.main_summary:
         problems.append("대표적요가 비어 있습니다")
     if not rows:
@@ -242,14 +250,18 @@ def _state(frame, ids) -> dict:
     return {k: str((state.get(k) or {}).get("value", "") or "") for k in ids}
 
 
-def row_loaded(frame, summary: str, sheet_text: str) -> tuple[bool, str]:
-    """줄을 다시 연 뒤 — 입력 칸의 적요가 계획의 적요(또는 그 줄의 글자)와 같고 청구액이 있으면 열린 것."""
+def row_loaded(frame, summary: str, sheet_text: str, others: tuple = ()) -> tuple[bool, str]:
+    """줄을 다시 연 뒤 — 입력 칸의 적요가 계획의 적요(또는 그 줄의 글자)와 같고 청구액이 있으면 열린 것.
+    입력 칸의 적요가 같은 명단의 **다른** 줄 적요와 같으면 다른 줄이 열린 것 — 잘린 표 글자의 앞부분과 이어진다고 통과시키면 TA 교과목 줄끼리
+    증빙이 엇갈려 붙었다(2026-11-16 검수, 2026-10-26 보완요청과 같은 사고)."""
     st = _state(frame, ["REQ_PTCL", "REQ_AMT"])
     ptcl = _squash(st["REQ_PTCL"])
     if not ptcl:
         return False, "입력 칸의 적요가 비어 있음"
     want = _squash(summary)
-    same = bool(want) and (want in ptcl or ptcl in want)
+    same = want == ptcl or (bool(want) and (want in ptcl or ptcl in want))
+    if not want == ptcl and any(_squash(o) == ptcl for o in others):
+        return False, f"입력 칸에 다른 줄이 열림('{st['REQ_PTCL'][:40]}')"
     # 계획의 적요와 다르면 그 줄의 글자와 이어지는지 — 통째로 있거나 '앞부분 + …' 으로 잘린 채라도 있어야 한다(sheet_check.visible_prefix).
     # 앞 글자 몇 개만 견주면 같은 청구서의 모든 줄이 대표적요를 나눠 가져 어느 줄을 열었어도 통과했다(담당자 실제 2026-10-26: TA 교과목 줄이 섞임)
     from .sheet_check import visible_prefix
@@ -261,7 +273,8 @@ def row_loaded(frame, summary: str, sheet_text: str) -> tuple[bool, str]:
     return True, ""
 
 
-def open_row(frame, n: int, summary: str, sheet_text: str, wait: Callable[[float], None], log: Callable[[str], None]) -> tuple[bool, str]:
+def open_row(frame, n: int, summary: str, sheet_text: str, wait: Callable[[float], None], log: Callable[[str], None],
+             others: tuple = ()) -> tuple[bool, str]:
     """청구내역 n 번째 줄의 ○ 를 눌러 입력 칸에 그 줄이 들어올 때까지(실측 전 — 안 되면 부르는 쪽이 사람에게 묻는다)."""
     try:
         result = frame.evaluate(OPEN_ROW_JS, n) or {}
@@ -270,8 +283,8 @@ def open_row(frame, n: int, summary: str, sheet_text: str, wait: Callable[[float
     if not result.get("ok"):
         return False, "줄의 ○ 를 누르지 못함: " + str(result.get("why", ""))
     log("청구내역 %d번째 줄의 ○ 를 눌렀습니다" % (n + 1))
-    wait_until(lambda: row_loaded(frame, summary, sheet_text)[0], wait, tries=ROW_TRIES)
-    return row_loaded(frame, summary, sheet_text)
+    wait_until(lambda: row_loaded(frame, summary, sheet_text, others)[0], wait, tries=ROW_TRIES)
+    return row_loaded(frame, summary, sheet_text, others)
 
 
 def clear_files(frame, wait: Callable[[float], None], log: Callable[[str], None]) -> tuple[bool, int, str]:
@@ -321,11 +334,11 @@ def _reattach_row(page, frame, rp: RowPlan, res: RowResult, sheet_index: int, sh
                   messages: list[str]) -> tuple[bool, str]:
     res.sheet_row = sheet_index
     # ① 줄 다시 열기 — 실측 전: 안 되면 사람이 열고 [계속]
-    ok, why = open_row(frame, sheet_index, rp.summary, sheet_text, wait, log)
+    ok, why = open_row(frame, sheet_index, rp.summary, sheet_text, wait, log, rp.others)
     if not ok:
         log("줄 다시 열기 — " + why)
         ok, why = _ask_until(
-            lambda: row_loaded(frame, rp.summary, sheet_text), ask,
+            lambda: row_loaded(frame, rp.summary, sheet_text, rp.others), ask,
             lambda w: (f"청구내역 {sheet_index + 1}번째 줄({rp.label})을 다시 열지 못했습니다 — {w}. ERP 작성 화면에서 그 줄의 ○ 를 눌러"
                        "(ERP 의 방법으로) 입력 칸에 그 줄의 적요 · 청구액이 보이게 한 뒤 [계속]. 앱이 하게 고치려면 그 상태에서 "
                        "[화면 구조 저장] 을 보내 주세요."), wait)

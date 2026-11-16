@@ -177,14 +177,20 @@ def _when(value: str) -> tuple[dt.date | None, str, str]:
             except ValueError:
                 day = None
             rest = value[short.end():]
-    pm = "오후" in rest and "오전" not in rest
+    # 오전 · 오후는 그 시각 바로 앞의 것을 따른다 — '오전 11시 30분 ~ 오후 1시' 를 11:30~01:00 으로 읽었다(2026-11-16 검수)
     times = []
-    for h, m in TIME_RE.findall(rest):
+    for hit in TIME_RE.finditer(rest):
+        h, m = hit.group(1), hit.group(2)
         hour = int(h)
-        if pm and hour < 12:
+        before = rest[:hit.start()]
+        am_at, pm_at = before.rfind("오전"), before.rfind("오후")
+        if pm_at > am_at and hour < 12:
             hour += 12
         if hour < 24:
-            times.append(f"{hour:02d}:{m or '00'}")
+            times.append((hour, m or "00"))
+    if len(times) > 1 and (times[1][0], times[1][1]) < (times[0][0], times[0][1]) and times[1][0] < 12 and times[1][0] + 12 < 24:
+        times[1] = (times[1][0] + 12, times[1][1])        # '12:30~1:30' — 끝이 시작보다 이르면 오후
+    times = [f"{hh:02d}:{mm}" for hh, mm in times]
     if not times:
         # 글꼴에 쌍점이 없으면 '17:00' 이 '1700' 으로 읽히기도 한다(PDF 글꼴)
         times = [f"{h}:{m}" for h, m in re.findall(r"(?<![\d.])([01]\d|2[0-3])([0-5]\d)(?![\d.])", rest)]

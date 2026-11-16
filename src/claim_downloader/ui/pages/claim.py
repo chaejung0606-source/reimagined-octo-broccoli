@@ -1142,8 +1142,10 @@ class ClaimPage(QWidget):
             sch.keep_edits(job, old)                # 다시 읽어도 담당자가 고친 값 · 넣어서 체크를 푼 사람은 남긴다
         self._jobs[row] = job
         self._problems[row] = job.problems()
-        self._set_status(row, "read" if job.people and not any("합계" in p for p in self._problems[row])
-                         else "problem" if job.people else "failed")
+        # '확인할 것' 은 '표의 합계' 불일치(고칠 것)일 때만 — 글자에 '합계' 가 든 알림('합계 줄이 없음' · 확인)까지 '확인 필요' 로 두면
+        # 다음 폴더로 이어 넣기에서 그 폴더를 말없이 건너뛰었다(2026-11-16 검수)
+        mismatch = any("합계" in p and checks.as_note(p).level == checks.FIX for p in self._problems[row])
+        self._set_status(row, "read" if job.people and not mismatch else "problem" if job.people else "failed")
         self._append_log(f"{job.spec.name} 폴더 읽음: " + " / ".join(job.summary_lines()))
         for problem in self._problems[row]:
             self._append_log("  확인: " + problem)
@@ -1379,8 +1381,9 @@ class ClaimPage(QWidget):
                 columns=CARD_COLUMNS, rows=self._card_rows(job, sheet, plan.results), notes=job.problems(),
                 side_detail=True, stretch=CARD_STRETCH, detail_title="고른 결제 건 — 확인할 것 · ERP 에 넣을 값 · 읽은 곳",
                 footer=("결의서내역에서 대표적요가 같은 청구서를 먼저 찾고, 이어 넣는 것이 아니면 결의서내역의 [카드청구] 로 새 카드청구 화면을 앱이 띄웁니다. "
-                        "미청구 카드내역 [조회] · 결제 건 고르기 · 비목 · 청구구분 · 회의록등록 창(시간 · 장소 · 목적 · 내용 · 외부참석자) · 첨부 · [저장] 은 "
-                        "앱이, 참여인력 · 내부참석자와 소모성물품 [등록] 은 노란 띠가 뜨면 사람이 넣습니다."),
+                        "미청구 카드내역 [조회] · 결제 건 고르기 · 비목 · 청구구분 · 회의록등록 창(시간 · 장소 · 목적 · 내용 · 참여인력 · 내부참석자 · "
+                        "외부참석자) · 첨부 · [저장] 은 앱이 하고, 사람 수가 모자라면 참여인력을 임의로 채운 뒤 '신청 전 확인할 것' 으로 알립니다. "
+                        "소모성물품 [등록] 창은 노란 띠가 뜨면 사람이 넣습니다."),
                 accept_text=f"ERP 에 넣기 (결제 {len(left)}건)"):
             return
         self._erp_row = row

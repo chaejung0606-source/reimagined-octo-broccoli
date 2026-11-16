@@ -203,6 +203,7 @@ class ItemResult:
     review: list[str] = field(default_factory=list)     # 저장했지만 [신청] 전에 사람이 볼 것
     entries: list[Entry] = field(default_factory=list)  # 미리 보기 — 넣을 값 하나하나
     part_list: list[dict] | None = None                  # 회의록등록 창에서 읽은 ERP 참여인력 목록(session 이 과제마다 기억 — 미리 보기용)
+    appl_saved: str | None = None                        # [저장] 바로 뒤 대표적요 칸 — 앱이 다시 넣기 전 값(run 이 마지막 건으로 저장됐는지 본다)
 
 
 @dataclass
@@ -612,13 +613,14 @@ def _is_selected(state: dict) -> bool:
     return bool(state.get("EXP_DT") and state.get("REQ_AMT") and (state.get("LNK_REQ_SEQ_NO") or state.get("BUY_WHERE")))
 
 
-def _selection_matches(item: card.CardItem, state: dict) -> tuple[bool, str]:
+def _selection_matches(item: card.CardItem, state: dict, by_approval: bool = False) -> tuple[bool, str]:
+    """고른 결제 건이 폴더와 맞는지. 승인번호로 고른 줄이면(by_approval) 금액이 달라도 그 줄이 맞다 — 금액은 확인할 것으로 남긴다."""
     used = _day(state.get("EXP_DT", ""))
     amount = parse_amount(state.get("REQ_AMT"))
     bad = []
     if item.used and used and used != item.used:
         bad.append(f"사용일이 폴더({item.used:%m-%d})와 다름({used:%m-%d})")
-    if item.amount is not None and amount is not None and amount != item.amount:
+    if item.amount is not None and amount is not None and amount != item.amount and not by_approval:
         bad.append(f"청구액이 폴더({item.amount:,}원)와 다름({amount:,}원)")
     if not _is_selected(state):
         bad.append("결제 건이 골라지지 않음")
@@ -741,10 +743,14 @@ def _run(page, frame, job, sheet, summary, log, ask, wait, live, should_stop, on
             log("카드청구 멈춤 — %d. %s: %s" % (i + 1, item.name, note))
             break
     if report.saved:
-        try:
-            appl = _state(frame, ["APPL_CONT"])["APPL_CONT"]
-        except Exception:  # noqa: BLE001
-            appl = ""
+        # 마지막으로 저장한 건의 [저장] 바로 뒤 값으로 본다 — 앱이 다시 넣은 뒤 칸을 읽으면 늘 같아 이 알림이 결코 뜨지 않았다(2026-11-16 검수)
+        last = next((r for r in reversed(report.results) if r.status == "saved"), None)
+        appl = last.appl_saved if last is not None and last.appl_saved is not None else ""
+        if last is None or last.appl_saved is None:
+            try:
+                appl = _state(frame, ["APPL_CONT"])["APPL_CONT"]
+            except Exception:  # noqa: BLE001
+                appl = ""
         report.appl_ok = _squash(appl) == _squash(summary)
         if not report.appl_ok:
             # 대표적요는 줄을 [저장] 할 때 함께 저장되는 것으로 보인다(미실측) — 마지막 줄 뒤에 넣은 값은 저장되지 않았을 수 있다
@@ -769,9 +775,13 @@ def _run_item(page, frame, job, sheet, item: card.CardItem, index: int, planned:
         # 저장 뒤 화면이 다시 열리면 목록이 비어 있을 수 있다 — 다시 [조회]
         searched, _w = search(frame, job.start, job.end, log, wait)
         payments = read_payments(frame, wait) if searched else []
-    again, again_why = card.pick(item, payments)
+    # 넣을 때 다시 고른다(저장한 줄이 빠지며 줄 번호가 바뀐다). 계획 때처럼 같은 청구서의 다른 결제 건이 승인번호로 정해 둔 줄은 빼고 고른다 —
+    # 같은 날 · 같은 금액 둘 중 하나가 승인번호로 정해진 경우 다른 하나는 계획에서는 정해졌는데 넣을 때 다시 사람에게 물었다(2026-11-16 검수)
+    others = {card._approval_key(o.approval) for o in sheet.items if o is not item and o.approval}
+    taken = [p.index for p in payments if card._approval_key(p.approval) and card._approval_key(p.approval) in others]
+    again, again_why = card.pick(item, payments, taken)
     if key is not None and again is not None:
-        key = again
+        key, why = again, again_why
     elif key is not None:
         key, why = None, again_why
     if key is not None:
@@ -791,13 +801,19 @@ def _run_item(page, frame, job, sheet, item: card.CardItem, index: int, planned:
                 result.lines.append("건너뜀 — 미청구 카드내역에 없음")
                 return "skipped", "미청구 카드내역에 없어 건너뜀(이미 청구했을 수 있음)"
         else:
-            if not ask(f"{item.name}: 결제 건을 앱이 고르지 못했습니다 — {why}. 미청구 카드내역에서 사용일 {item.used:%m-%d} · "
-                       f"{item.amount:,}원 줄의 라디오를 직접 고른 뒤 [계속]."):
+            # 금액 · 사용일을 모르는 건도 있다 — 전에는 금액이 없으면 이 글을 만들다 오류로 멈췄다(2026-11-16 검수)
+            when = f"사용일 {item.used:%m-%d}" if item.used else "사용일"
+            much = f"{item.amount:,}원" if item.amount is not None else "금액을 모르는"
+            if not ask(f"{item.name}: 결제 건을 앱이 고르지 못했습니다 — {why}. 미청구 카드내역에서 {when} · {much} 줄의 라디오를 직접 고른 뒤 [계속]."):
                 return False, why + " — 멈춤"
-    ok, why = _ask_until(lambda: _selection_matches(item, _selected(frame)), ask,
-                         lambda w: f"{item.name}: {w}. 미청구 카드내역에서 맞는 줄을 고른 뒤 [계속].", wait)
+    by_approval = key is not None and why.startswith("승인번호") and "다름" in why
+    ok, why = _ask_until(lambda: _selection_matches(item, _selected(frame), by_approval), ask,
+                         lambda w: (f"{item.name}: {w}. 고른 줄이 맞는데 폴더 쪽 금액(폴더 이름 끝 · 영수증)이 틀렸으면 고친 뒤 다시 넣고, "
+                                    "줄이 틀렸으면 미청구 카드내역에서 맞는 줄을 고른 뒤 [계속]."), wait)
     if not ok:
         return False, why
+    if by_approval:
+        result.review.append(f"승인번호가 같은 결제 건을 골랐지만 금액이 폴더와 다릅니다 — 영수증 금액을 확인하세요({item.name})")
     chosen = _selected(frame)
     result.lines.append(f"결제 건: {chosen.get('EXP_DT')} · {chosen.get('BUY_WHERE')} · {chosen.get('REQ_AMT')}원")
 
@@ -847,7 +863,8 @@ def _run_item(page, frame, job, sheet, item: card.CardItem, index: int, planned:
 
     # 4. 첨부 — 앱이 한 번만 올리고, 안 되면 사람이 마저(장학금과 같은 규칙)
     files = attachments(item)
-    if item.minutes and not any(_is_minutes_pdf(p) for p in files):
+    # 이름에 '회의록' 이 없는 학생 회의록 PDF(앱이 글자로 알아본 것 — item.minutes)도 첨부된다 — 그때도 '없음' 이라 알려 사람이 또 붙였다(2026-11-16 검수)
+    if item.minutes and item.minutes not in files and not any(_is_minutes_pdf(p) for p in files):
         result.review.append("회의록 PDF 가 폴더에 없어 첨부하지 않음 — 한글에서 PDF 로 저장해 넣거나 ERP 에서 직접 첨부")
     if files:
         before = attach.file_count(frame)
@@ -900,7 +917,8 @@ def _run_item(page, frame, job, sheet, item: card.CardItem, index: int, planned:
     result.lines.append(f"임시저장 — 결의번호 {req_cnt or '?'} · 청구내역 {rows_before} → {rows_after}줄")
     if rows_after <= rows_before:
         result.review.append("저장했는데 청구내역 줄이 늘지 않음 — ERP 에서 확인")
-    if _squash(_state(frame, ["APPL_CONT"])["APPL_CONT"]) != _squash(summary):
+    result.appl_saved = _state(frame, ["APPL_CONT"])["APPL_CONT"]
+    if _squash(result.appl_saved) != _squash(summary):
         # 첫 저장 뒤에야 대표적요 칸이 보인다(④) — 다음 결제 건의 [저장] 때 함께 저장되게 넣어 둔다. 마지막 건 뒤에는 run 이 알린다
         _set(frame, "text", "APPL_CONT", summary)
     return True, "임시저장 됨"
@@ -1041,13 +1059,13 @@ def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: li
             # ERP 는 참여인력이 한 명도 없으면 회의록을 저장하지 않는다(담당자 PC 2026-11-12 14:47 — '참여인력은 필수입력값 입니다. 추가해주시기 바랍니다.'
             # 뒤 창이 그대로 열려 멈췄다). 회의록의 사람 가운데 참여인력이 없으면 참여인력선택에서 한 명을 임의로 넣고 확인할 것으로(담당자 2026-11-11 규칙)
             one = attendees.fill_up(popup, 1, log, wait, lambda: [x["name"] for x in _inside_names(popup)],
-                                    avoid=[p.name for p in left], taken_nos=[x.get("no", "") for x in _inside_names(popup)], day=day)
+                                    avoid=[p.name for p in left] + list(_external_names(popup)), taken_nos=[x.get("no", "") for x in _inside_names(popup)], day=day)
             arbitrary += one.added
             result.lines += one.lines
             heads = _heads(popup)
         if target > heads:
             filled = attendees.fill_up(popup, target - heads, log, wait, lambda: [x["name"] for x in _inside_names(popup)],
-                                       avoid=[p.name for p in left], taken_nos=[x.get("no", "") for x in _inside_names(popup)], day=day)
+                                       avoid=[p.name for p in left] + list(_external_names(popup)), taken_nos=[x.get("no", "") for x in _inside_names(popup)], day=day)
             arbitrary += filled.added
             result.lines += filled.lines
             heads = _heads(popup)

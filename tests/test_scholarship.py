@@ -1738,3 +1738,63 @@ def test_person_with_two_rows_in_staff_list_is_not_looked_up_elsewhere(monkeypat
     monkeypatch.setattr(person, "open_popup", lambda *a, **k: (popup, ""))
     report = person.search(object(), FakeRcvFrame(popup), "가나다", "123456", lambda m: None, wait=lambda s: None, tab=person.TAB_STAFF)
     assert not report.picked and report.tab == person.TAB_STAFF and "2개" in report.pick_note
+
+
+def test_qa_20261116_roster_fixes(tmp_path):
+    """2026-11-16 검수 — 금액을 적고 다시 읽으면 다시 체크 · 대표적요가 다른 대표적요를 품는 두 폴더를 섞지 않음 · 같은 적요 둘은 넣기를 막음 ·
+    '이은' / '이은지' 는 긴 이름 · '기타' 폴더 파일은 붙이지 않음."""
+    from claim_downloader.claims import checks, reattach, sheet_check
+
+    folder = tmp_path / "(가) 서포터즈"
+    (folder / "공통증빙" / "기타").mkdir(parents=True)
+    (folder / "개별증빙").mkdir()
+    (folder / "공통증빙" / "공문.pdf").write_bytes(b"%PDF-1.4")
+    (folder / "공통증빙" / "기타" / "지난달_명단_사용안함.pdf").write_bytes(b"%PDF-1.4")
+    (folder / "개별증빙" / "이은지_청구서.pdf").write_bytes(b"%PDF-1.4")
+    make_ga(folder / "명단.xlsx", rows=[("이은", 202600001, "국민", "1", 12000, "25", 300000),
+                                       ("이은지", 202600002, "국민", "2", 12000, "25", None)], total=300000)
+    job = scholarship.load_job(str(folder))
+    assert job.selected == [True, False]                         # 금액이 빈 사람은 앱이 저절로 뺐다
+    assert [os.path.basename(f) for f in job.common_files] == ["공문.pdf"]
+    assert [os.path.basename(f) for f in job.person_files.get(1, [])] == ["이은지_청구서.pdf"] and not job.unmatched
+    make_ga(folder / "명단.xlsx", rows=[("이은", 202600001, "국민", "1", 12000, "25", 300000),
+                                       ("이은지", 202600002, "국민", "2", 12000, "25", 300000)])
+    again = scholarship.load_job(str(folder))
+    scholarship.keep_edits(again, job)
+    assert again.selected == [True, True]                         # 금액을 적고 다시 읽으면 넣을 사람
+    # 대표적요 '…근로장학금' 은 '…근로장학금 추가' 폴더의 줄에 들어 있지만 그 폴더의 청구서가 아니다
+    again.main_summary = "02_2026년도 9월 (가)형 근로장학금"
+    other = ["1 02_2026년도 9월 (가)형 근로장학금 추가_이은 300,000", "2 02_2026년도 9월 (가)형 근로장학금 추가_김철수 300,000"]
+    assert not sheet_check.belongs(again, other)
+    assert scholarship.sheet_owner(again, "401", other, "40")[0] is False
+    own = ["1 02_2026년도 9월 (가)형 근로장학금_이은 300,000", "2 02_2026년도 9월 (가)형 근로장학금_이은... 300,000"]
+    assert sheet_check.belongs(again, own) and scholarship.sheet_owner(again, "401", own, "40")[0] is True
+    # 같은 이름 두 학생 — 넣을 둘이 같은 적요면 넣기를 막고(고칠 것), 첨부만 다시 올리기도 하지 않는다
+    make_ga(folder / "명단.xlsx", rows=[("홍길동", 202600001, "국민", "1", 12000, "25", 300000),
+                                       ("홍길동", 202600099, "국민", "2", 12000, "25", 300000)])
+    twins = scholarship.load_job(str(folder))
+    same = [n for n in twins.problems() if "개별 적요가 같은 줄" in n]
+    assert same and checks.as_note(same[0]).level == checks.FIX and "{학번}" in checks.as_note(same[0]).todo
+    twins.selected = [True, False]
+    assert checks.as_note([n for n in twins.problems() if "개별 적요가 같은 줄" in n][0]).level == checks.CHECK
+    twins.selected = [True, True]
+    assert any("개별 적요가 같은 줄" in p for p in reattach.plan_for_job(twins).problems)
+
+
+def test_reattach_refuses_when_another_row_opened():
+    """줄을 연 뒤 입력 칸의 적요가 같은 명단의 다른 줄 적요면 열린 줄이 다르다 — 잘린 표 글자와 이어진다고 통과시키면 교과목 증빙이 엇갈렸다."""
+    from claim_downloader.claims import reattach
+
+    class Frame:
+        def __init__(self, ptcl):
+            self.ptcl = ptcl
+
+        def evaluate(self, _js, ids=None):
+            return {"REQ_PTCL": {"value": self.ptcl}, "REQ_AMT": {"value": "300,000"}}
+
+    want = "02_2026년도 9월 (나)형 근로장학금(진규정_컴퓨터아키텍처)"
+    other = "02_2026년도 9월 (나)형 근로장학금(진규정_첨단ICT 기술이해)"
+    sheet = "1 02_2026년도 9월 (나)형 근로장학금(진규정_ ... 300,000"
+    assert reattach.row_loaded(Frame(want), want, sheet, (other,))[0]
+    ok, why = reattach.row_loaded(Frame(other), want, sheet, (other,))
+    assert not ok and "다른 줄" in why

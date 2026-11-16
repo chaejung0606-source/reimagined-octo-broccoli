@@ -106,6 +106,26 @@ def match_rows(job, sheet_rows: list[str]) -> tuple[dict[int, list[int]], list[i
     return hits, strangers, len(by_name)
 
 
+def belongs(job, sheet_rows: list[str]) -> bool:
+    """청구내역 줄이 모두 이 명단의 줄인지 — 줄마다 이 명단의 개별 적요가 통째로 있거나, 잘려 보이면 보이는 데까지 이 명단의 적요와 같아야 한다.
+    대표적요가 줄 글자 안에 들어 있기만 하면 이 폴더 것으로 보던 것은 '…근로장학금' 과 '…근로장학금 추가' 처럼 대표적요가 다른 대표적요를 품는
+    두 폴더를 섞었다(2026-11-16 검수 — B 폴더의 청구서에 A 폴더 학생을 이어 넣고, 겹치는 학생은 '이미 있음' 으로 건너뜀)."""
+    wanted = [_squash(job.row_summary(i)) for i in range(len(job.people))]
+    main = _squash(job.main_summary)
+    if not sheet_rows or not main:
+        return False
+    for text in sheet_rows:
+        flat = _squash(text)
+        if any(s and s in flat for s in wanted):
+            continue
+        if not any(e in flat for e in _ELLIPSIS):
+            return False                          # 잘리지 않았는데 이 명단의 적요가 통째로 없다 — 다른 폴더의 줄
+        seen = visible_prefix(flat, main)
+        if not (seen == len(main) or seen >= PREFIX_MIN) or not any(visible_prefix(flat, s) >= seen for s in wanted if s):
+            return False
+    return True
+
+
 def present(job, sheet_rows: list[str]) -> dict[int, list[int]]:
     """이미 청구내역에 들어 있는 사람 {index: [줄 번호]} — 이 폴더의 청구서에 이어 넣기 전에 두 번 넣지 않으려고(scholarship.run).
     한 줄도 이 명단과 맞지 않으면(다른 청구서이거나 표 글자가 예상과 다르면) 빈 dict."""
