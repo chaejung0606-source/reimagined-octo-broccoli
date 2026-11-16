@@ -1580,3 +1580,85 @@ def _png_size(path) -> tuple[int, int]:
     with open(path, "rb") as f:
         head = f.read(24)
     return struct.unpack(">II", head[16:24])
+
+
+def test_stay_order_number_is_the_trip_day():
+    """담당자 2026-11-16 "체류일자가 여러일자의 경우 1,2,3,4로 순서를 나누겠음" — 체류 증빙 파일 이름 끝의 번호는 출장 N일째."""
+    assert [model.stay_order(s) for s in ("홍길동_체류 증빙1", "체류증빙_2", "체류 증빙(3)", "체류 증빙 4", "체류1")] == [1, 2, 3, 4, 1]
+    assert [model.stay_order(s) for s in ("홍길동_체류 증빙", "체류 증빙 1029", "체류 증빙_10.29", "체류증빙0", "체류 증빙1 영수증사진")] == [
+        None, None, None, None, None]
+    assert model.order_day(2, date(2026, 10, 29), date(2026, 10, 30)) == date(2026, 10, 30)
+    assert model.order_day(3, date(2026, 10, 29), date(2026, 10, 30)) is None        # 출장기간을 넘는 번호는 일자가 아니다
+    assert model.order_day(1, None, None) is None
+    root = Path("/x/출장")
+    assert model.shown_name(root / "이전" / "a.pdf", root) == "이전/a.pdf" and model.shown_name(root / "a.pdf", root) == "a.pdf"
+
+
+def test_header_words_are_not_the_place():
+    """2026-11-16 담당자 미리 보기에 출장지 '대상여부' — 머리 줄 '출장지' 오른쪽 칸 '여비지급 대상여부' 를 출장지로 읽었다.
+    사람이 여럿인 표에서는 다음 사람 줄의 소속도 출장지에 붙었다."""
+    row = ("데이터보안·활\n용혁신융합대학\n사업단\n연구원 {name}\n학술대회 참가\n2026.10.29. (목) 09:00 가나다컨벤션\n(부산)\n예~\n"
+           "2026.10.30. (금) 18:00\n")
+    body = "".join(row.format(name=n) for n in ("홍길동", "김철수", "이영희")) + "출장목적 학회참가\n"
+    for head in ("소속 직급 성명 출장내용 출장기간 출장지\n여비지급\n대상여부\n",
+                 "소속 직급 성명 출장내용 출장기간\n출장지 여비지급\n대상여부\n",
+                 "소속 직급 성명 출장내용 출장기간\n출장지\n여비지급\n대상여부\n",
+                 "소속 직급 성명 출장내용 출장기간 출장지 여비지급\n대상여부\n"):
+        app = application.parse_text("다음과 같이 출장을 명함\n" + head + body)
+        assert app.places == ["가나다컨벤션 (부산)"], head
+        assert app.travelers == ["홍길동", "김철수", "이영희"] and (app.start, app.end) == (date(2026, 10, 29), date(2026, 10, 30))
+    assert application.clean_place("여비지급 대상여부") == [] and application.clean_place("벡스코 대상여부") == ["벡스코"]
+
+
+def test_same_receipt_twice_and_folder_changes(qapp, tmp_path, isolated_home):
+    """담당자 2026-11-16 "체류증빙이 2개가 있고 다 다른데 미리보기에서 체류증빙1만 2번 들어가있음" — 같은 날의 체류 증빙 둘(같은 영수증을
+    PDF 와 그림으로)은 알리고, 폴더에서 파일을 지우거나 고치면 앱으로 돌아올 때 맞춘다(그대로인 파일의 고친 값은 둔다)."""
+    from PySide6.QtCore import QDate
+
+    from claim_downloader.travel import render
+    from claim_downloader.ui.pages import travel as travel_page
+    folder = tmp_path / "출장비 지급(26.10.29. 부산)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(
+        "출장자 연구원 홍길동\n출장기간 2026. 10. 29.(목) ~ 2026. 10. 30.(금)\n출장지 부산 가나다컨벤션\n", encoding="utf-8")
+    one, two = _image(folder / "홍길동_체류 증빙1.png"), _image(folder / "홍길동_체류 증빙2.png")
+    old = _image(folder / "홍길동_체류 증빙 1029.png")                 # 같은 영수증을 먼저 둔 것
+    (folder / "이전").mkdir()
+    sub = _image(folder / "이전" / "홍길동_체류 증빙3.png")
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.show()
+    page.load_folder(str(folder))
+    page._go("files")
+    stay = page.tables["stay"]
+    days = {p.name: stay.item(r, 1).text() for r, p in enumerate(stay.paths)}
+    assert days == {"홍길동_체류 증빙1.png": "2026-10-29", "홍길동_체류 증빙2.png": "2026-10-30",
+                    "홍길동_체류 증빙 1029.png": "2026-10-29", "홍길동_체류 증빙3.png": ""}      # 3 은 이틀 출장을 넘는다
+    trip = page.trips()[0]
+    same = [r for r in model.review(trip) if "같은 날" in r]
+    assert len(same) == 1 and "홍길동_체류 증빙1.png" in same[0] and "홍길동_체류 증빙 1029.png" in same[0]
+    assert any(where.endswith("이전/홍길동_체류 증빙3.png") for _ref, where, _text in model.checks(trip, page._root()))
+    # 기간을 고치면 번호 일자도 따라간다 · 사람이 고친 일자는 그대로
+    row2 = stay.paths.index(two)
+    stay.item(row2, 1).setText("2026-10-31")
+    page.start_edit.setDate(QDate(2026, 10, 28))
+    days = {p.name: stay.item(r, 1).text() for r, p in enumerate(stay.paths)}
+    assert days["홍길동_체류 증빙1.png"] == "2026-10-28" and days["홍길동_체류 증빙2.png"] == "2026-10-31"
+    page.start_edit.setDate(QDate(2026, 10, 29))
+    # 폴더에서 옛 파일을 지우고 이전 폴더 것도 지웠다 — 앱으로 돌아오면 맞춘다(바뀐 것이 없으면 아무것도 안 함)
+    assert page._rescan(quiet=True) is False
+    page.preview_panel._cache[old] = "옛 그림"
+    old.unlink()
+    sub.unlink()
+    assert page._rescan(quiet=True) is True
+    assert sorted(p.name for p in stay.paths) == ["홍길동_체류 증빙1.png", "홍길동_체류 증빙2.png"]
+    assert stay.item(stay.paths.index(two), 1).text() == "2026-10-31" and old not in page.preview_panel._cache
+    assert not [r for r in model.review(page.trips()[0]) if "같은 날" in r]
+    # 고친 파일은 다시 읽는다(사람이 고친 값은 그 파일이 바뀌었으니 새로)
+    import os
+    os.utime(two, ns=(two.stat().st_atime_ns, two.stat().st_mtime_ns + 5_000_000_000))
+    assert page._rescan(quiet=True) is True
+    assert stay.item(stay.paths.index(two), 1).text() == "2026-10-30"
+    # 미리 보기는 지운 파일의 옛 그림을 쓰지 않는다
+    cache = {old: [object()]}
+    cells = render._cells(model.Block([old, one]), cache, {})
+    assert cells[0].image is None and "없는 파일" in cells[0].caption and old not in cache

@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QEvent, QRectF, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
@@ -447,6 +449,11 @@ class PreviewPanel(QWidget):
         pages = [h.page for h in self._hits if h.ref == ref]
         return min(pages) if pages else None
 
+    def _shown(self, path: Path) -> str:
+        """파일 이름 — 출장 폴더의 하위 폴더에 있으면 '하위 폴더/파일'(어디 있는 파일인지 찾게)."""
+        root = getattr(self.source, "_root", None)
+        return model.shown_name(path, root() if callable(root) else None)
+
     def _fill_todo(self, trip: model.Trip) -> None:
         self.todo_list.clear()
         count = 0
@@ -457,7 +464,7 @@ class PreviewPanel(QWidget):
                 text = f"{where}자차 이동경로 — {' · '.join(fields)}"
             else:
                 ev = self._evidence(ref)
-                text = f"{where}{model.KIND_NAMES.get(ref[0], '')} · {ev.path.name if ev else ''} — {' · '.join(fields)}"
+                text = f"{where}{model.KIND_NAMES.get(ref[0], '')} · {self._shown(ev.path) if ev else ''} — {' · '.join(fields)}"
             item = QListWidgetItem(text)
             item.setToolTip(text)
             item.setData(Qt.UserRole, ref)
@@ -522,7 +529,7 @@ class PreviewPanel(QWidget):
         title = QLabel(f"{model.KIND_NAMES.get(kind, '')} 증빙")
         title.setObjectName("cardTitle")
         self.editor_layout.addWidget(title)
-        name = WrapLabel(ev.path.name + (f" ({ev.part + 1}번째 영수증)" if ev.part is not None else ""))
+        name = WrapLabel(self._shown(ev.path) + (f" ({ev.part + 1}번째 영수증)" if ev.part is not None else ""))
         name.setObjectName("muted")
         self.editor_layout.addWidget(name)
         form = QFormLayout()

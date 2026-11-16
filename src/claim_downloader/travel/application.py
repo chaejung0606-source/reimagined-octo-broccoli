@@ -292,9 +292,21 @@ def _names_by_position(lines: list[str]) -> list[str]:
     return out
 
 
+# 출장 표 머리 줄의 다른 칸 이름 — 출장지 칸 오른쪽의 '여비지급 대상여부'. 칸 이름 '출장지' 다음 줄의 이 글을 출장지로 읽었다
+# (2026-11-16 담당자 미리 보기에 출장지 '대상여부'). 출장지 값에서 떼고, 남는 것이 없으면 출장지를 못 읽은 것으로 본다.
+HEADER_WORDS = ("여비지급대상여부", "여비지급여부", "여비지급", "지급대상여부", "대상여부", "지급여부")
+
+
+def _drop_headers(value: str) -> str:
+    text = value or ""
+    for word in HEADER_WORDS:
+        text = re.sub(r"\s*".join(map(re.escape, word)), " ", text)
+    return re.sub(r"\s+", " ", text).strip(" :：-·,")
+
+
 def clean_place(value: str) -> list[str]:
     """출장지 칸 → 곳 목록. 괄호 속 설명 · 주소 꼬리는 그대로 두되 너무 긴 글은 자른다."""
-    value = re.sub(r"\s+", " ", value or "").strip(" :：-")
+    value = _drop_headers(re.sub(r"\s+", " ", value or "").strip(" :：-"))
     if not value:
         return []
     return [p[:MAX_PLACE].strip() for p in split_places(value) if p.strip()]
@@ -414,7 +426,12 @@ def _place_between(lines: list[str], first: int, last: int) -> list[str]:
             break
         text = _PERIOD_BITS.sub(" ", _normalize(lines[k]))
         text = re.sub(r"\s+", " ", text).strip(" .,·-")
+        # 끝 날짜 줄 뒤는 출장지가 이어진 것이 분명할 때만 — 괄호로 시작하거나 앞 조각의 괄호가 안 닫혔을 때. 사람이 여럿인 표에서
+        # 다음 사람 줄의 소속('데이터보안·활' / '용혁신융합대학')을 출장지에 붙였다(2026-11-16)
+        if k > last and pieces and not (text.startswith("(") or "".join(pieces).count("(") > "".join(pieces).count(")")):
+            break
         # 출장지 오른쪽 칸(여비지급 대상여부 '예' · '아니오')이 같은 줄에 붙어 나온다 — 뺀다
+        text = _drop_headers(text)
         if re.search(r"[가-힣A-Za-z]", text) and text not in _YES_NO:
             pieces.append(text)
         k += 1
@@ -456,16 +473,28 @@ def _find_period(lines: list[str], year: int | None) -> tuple[date | None, date 
 
 
 def _header_order(lines: list[str]) -> tuple[int, list[str]] | None:
-    """칸 이름이 한 줄에 여럿 든 머리 줄('소속 직급 성명 … 출장기간 출장지') — (줄 번호, 그 줄의 칸들 차례)."""
-    for n, line in enumerate(lines):
-        squashed = _squash(line)
+    """칸 이름이 한 줄에 여럿 든 머리 줄('소속 직급 성명 … 출장기간 출장지') — (마지막 머리 줄 번호, 칸들 차례).
+    머리 줄이 PDF 에서 두세 줄로 나뉘어 나오기도 한다('… 출장내용 출장기간' / '출장지' / '여비지급') — 이어 붙여 본다."""
+    def keys_of(text: str) -> list[str]:
+        squashed = _squash(text)
         keys = []
         for key, labels in LABELS.items():
             spots = [squashed.find(_squash(w)) for w in labels if len(w) >= 2 and _squash(w) in squashed]
             if spots:
                 keys.append((min(spots), key))
-        if len(keys) >= 2 and {"period", "place"} <= {k for _, k in keys}:
-            return n, [k for _, k in sorted(keys)]
+        return [k for _, k in sorted(keys)]
+
+    for n, line in enumerate(lines):
+        for extra in range(3):
+            if n + extra >= len(lines):
+                break
+            if extra and (_FULL_DATE.search(lines[n + extra]) or len(_squash(lines[n + extra])) > 20):
+                break                                  # 값 줄(날짜 · 긴 글)까지 머리로 붙이지 않는다
+            keys = keys_of(" ".join(lines[n:n + extra + 1]))
+            if len(keys) >= 2 and {"period", "place"} <= set(keys):
+                return n + extra, keys
+            if extra == 0 and "period" not in keys:
+                break                                  # 기간 칸이 없는 줄에서 시작하지 않는다
     return None
 
 

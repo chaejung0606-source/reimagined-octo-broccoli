@@ -20,6 +20,7 @@ from PySide6.QtCore import QDate, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDateEdit,
@@ -93,6 +94,7 @@ NO_CAR_TEXT = "해당없음 (동승 · 자차 아님)"
 PEOPLE_COLUMNS = ("출장자", "체류", "대중교통", "하이패스", "숙박", "기타", "자차 최단거리", "확인할 증빙", "확인할 것")
 PEOPLE_SPAN = 7           # 앞 일곱 칸(출장자 · 개수 · 자차)은 그 사람의 확인할 것 줄들을 합쳐 한 칸
 REF_ROLE = Qt.UserRole + 8
+AUTO_ROLE = Qt.UserRole + 9      # 체류 일자 칸에 앱이 파일 이름의 차례 번호로 적은 값 — 사람이 고치면(값이 다르면) 다시 덮어쓰지 않는다
 ROUTE_COLUMNS = ("출장자", "구간", "출발 → 목적지", "km", "지도 그림", "상태")
 NAMING = "'이름_체류증빙' · '이름_하이패스 증빙' · '이름_숙박비 증빙' · '이름_대중교통 증빙'"
 FUELS = model.FUELS
@@ -173,10 +175,12 @@ class EvidenceTable(QTableWidget):
         self.person_col = len(COLUMNS[kind]) - 1
         self.paths: list[Path] = []
         self.parts: list[int | None] = []          # 줄마다 PDF 의 몇 번째 영수증인지(하이패스 '총 N 건' 인쇄를 영수증마다 한 줄로)
+        self.orders: list[int | None] = []         # 체류 증빙 파일 이름 끝의 차례 번호('체류 증빙2' → 2) — 일자를 못 읽었을 때 출장 N일째로
         self.year = lambda: date.today().year      # 화면이 출장 시작일의 해로 바꿔 끼운다 — '0528' 같은 이름의 해
         self.places = lambda: []                   # 화면이 출장지 목록으로 바꿔 끼운다 — 파일 경로로 출장지를 짐작
         self.people = lambda: []                   # 화면이 출장자 목록으로 바꿔 끼운다 — 파일 이름 맨 앞의 이름으로 출장자를 짐작
         self.root = lambda: None                   # 출장 폴더 — 위 폴더 이름으로 짐작할 때 그 아래만(윈도우 사용자 폴더 이름이 출장자가 되지 않게)
+        self.period_of = lambda person: (None, None)   # 화면이 그 출장자 그룹의 (시작일, 끝날)로 바꿔 끼운다 — 차례 번호를 일자로
         self.setHorizontalHeaderLabels(COLUMNS[kind])
         self.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         for col in range(1, self.columnCount()):
@@ -255,9 +259,10 @@ class EvidenceTable(QTableWidget):
         path = ev.path
         self.paths.append(path)
         self.parts.append(ev.part)
+        self.orders.append(model.stay_order(path.stem) if self.kind == model.STAY and ev.day is None else None)
         row = self.rowCount()
         self.insertRow(row)
-        name = QTableWidgetItem(path.name + (f" ({ev.part + 1}번째 영수증)" if ev.part is not None else ""))
+        name = QTableWidgetItem(model.shown_name(path, self.root()) + (f" ({ev.part + 1}번째 영수증)" if ev.part is not None else ""))
         name.setFlags(name.flags() & ~Qt.ItemIsEditable)
         name.setToolTip(str(path))
         self.setItem(row, 0, name)
@@ -305,7 +310,56 @@ class EvidenceTable(QTableWidget):
         self.setRowCount(0)
         self.paths.clear()
         self.parts.clear()
+        self.orders.clear()
         self.changed.emit()
+
+    def sync(self, paths: list[Path], year: int, changed: set) -> tuple[int, int]:
+        """폴더를 다시 읽은 대로 맞춘다 — 없어진 파일 · 바뀐 파일(changed)의 줄은 빼고, 새 파일 · 바뀐 파일은 다시 짐작해 넣는다.
+        그대로인 파일의 줄은 사람이 고친 값(일자 · 금액 …)을 그대로 둔다. (뺀 줄, 넣은 파일)."""
+        keep = set(paths) - set(changed)
+        drop = [row for row, path in enumerate(self.paths) if path not in keep]
+        self.blockSignals(True)
+        for row in reversed(drop):
+            self.removeRow(row)
+            del self.paths[row], self.parts[row], self.orders[row]
+        self.blockSignals(False)
+        new = [p for p in paths if p not in self.paths]
+        if new:
+            self.add_files(new, year)
+        elif drop:
+            self.mark_unclear()
+            self.changed.emit()
+        return len(drop), len(new)
+
+    def apply_orders(self) -> int:
+        """일자를 못 읽은 체류 증빙(그림 영수증)에 파일 이름의 차례 번호로 일자를 적는다 — '체류 증빙1' 은 출장 첫날, '체류 증빙2' 는 둘째 날
+        (담당자 2026-11-16 "체류일자가 여러일자의 경우 1,2,3,4로 순서를 나누겠음"). 그 출장자 그룹의 기간으로 셈하고, 기간을 넘는 번호는 적지 않는다.
+        사람이 일자를 고쳤으면(앱이 적은 값과 다르면) 덮어쓰지 않는다. 적은 줄 수."""
+        if self.kind != model.STAY:
+            return 0
+        count = 0
+        self.blockSignals(True)
+        for row, order in enumerate(self.orders):
+            if not order:
+                continue
+            item = self.item(row, 1)
+            if item is None:
+                item = QTableWidgetItem("")
+                self.setItem(row, 1, item)
+            text = item.text().strip()
+            if text and text != (item.data(AUTO_ROLE) or ""):
+                continue                               # 사람이 적은 일자
+            person = self.item(row, self.person_col)
+            start, end = self.period_of(person.text().strip() if person else "")
+            day = model.order_day(order, start, end)
+            shown = day.isoformat() if day else ""
+            if item.text() != shown:
+                item.setText(shown)
+            item.setData(AUTO_ROLE, shown)
+            item.setToolTip(f"파일 이름의 차례 번호 {order} → 출장 {order}일째" if day else "")
+            count += bool(day)
+        self.blockSignals(False)
+        return count
 
     def evidence(self, year: int) -> list[model.Evidence]:
         out = []
@@ -366,6 +420,7 @@ class TravelPage(QWidget):
         self._made: list[Path] = []
         self._apps: list[Path] = []              # 읽은 출장신청서 파일
         self._scan = model.Scan()
+        self._sig: dict = {}                     # 훑은 증빙 파일의 (고친 때, 크기) — 앱으로 돌아올 때 폴더가 바뀌었는지 본다
         self._done_folders: set[str] = set()     # 출장증빙을 만든 폴더(여러 폴더를 차례로 할 때)
         self._review: application.Application | None = None
         self._goal_of: dict[str, str] = {}       # 출장자마다 출장목적지(신청서 목적지가 분명하지 않아 사람이 적은 것)
@@ -566,7 +621,7 @@ class TravelPage(QWidget):
     def _clear_current(self) -> None:
         """지금 폴더에서 읽은 것을 모두 비운다 — 다시 고르거나 다시 읽을 때 앞 폴더의 출장자 · 증빙 · 경로가 섞이지 않게."""
         self.folder_edit.setText("")
-        self._review, self._apps, self._scan = None, [], model.Scan()
+        self._review, self._apps, self._scan, self._sig = None, [], model.Scan(), {}
         self._groups, self._group_i, self._extra = [], 0, []
         self._fuel_of.clear()
         self._goal_of.clear()
@@ -1007,6 +1062,7 @@ class TravelPage(QWidget):
             table.places = self._all_places
             table.people = self._all_people
             table.root = self._root
+            table.period_of = self._period_of
             self.tables[kind] = table
             holder.addWidget(table)
         step.add(self._build_route())
@@ -1017,6 +1073,13 @@ class TravelPage(QWidget):
     def _root(self) -> Path | None:
         folder = self.folder_edit.text().strip() if hasattr(self, "folder_edit") else ""
         return Path(folder) if folder else None
+
+    def _period_of(self, person: str) -> tuple:
+        """그 출장자 그룹의 (시작일, 끝날) — 공통 · 모르는 사람이면 고른 그룹."""
+        group = self._group_of(person) if person and person != model.SHARED else self._group()
+        if group is None:
+            return None, None
+        return group.get("start"), group.get("end") or group.get("start")
 
     def _build_lodging(self) -> QWidget:
         """숙박 상한 칸 — 숙박 영수증을 넣었을 때만 보인다(담당자 2026-10-27)."""
@@ -1140,6 +1203,9 @@ class TravelPage(QWidget):
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(350)
         self._preview_timer.timeout.connect(self._refresh_preview)
+        app = QApplication.instance()
+        if app is not None:
+            app.applicationStateChanged.connect(self._on_app_state)
         return step
 
     def _refresh_preview(self) -> None:
@@ -1246,18 +1312,43 @@ class TravelPage(QWidget):
         self._fill_group_table()
         return self._names()
 
-    def _fill_from_scan(self, scan: model.Scan) -> None:
-        for table in self.tables.values():
-            table.clear_all()
+    @staticmethod
+    def _file_sig(scan: model.Scan) -> dict:
+        """훑은 파일들의 (고친 때, 크기) — 폴더의 파일이 바뀌었는지 볼 때."""
+        out = {}
+        for path in [p for files in scan.files.values() for p in files] + [p for p in scan.route_maps if p] + [scan.route_map]:
+            if path is None:
+                continue
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            out[path] = (st.st_mtime_ns, st.st_size)
+        return out
+
+    def _fill_from_scan(self, scan: model.Scan, changed: set | None = None) -> None:
+        """훑은 증빙을 표에 — changed 가 None 이면 처음부터(표를 비우고), 아니면 폴더가 바뀐 만큼만 맞춘다(그대로인 파일의 고친 값은 둔다)."""
+        sig = self._file_sig(scan)
+        merged = changed is not None
+        dropped = added_new = 0
         for kind, paths in scan.files.items():
-            self.tables[kind].add_files(paths, self._year())
+            if merged:
+                d, a = self.tables[kind].sync(paths, self._year(), changed)
+                dropped, added_new = dropped + d, added_new + a
+            else:
+                self.tables[kind].clear_all()
+                self.tables[kind].add_files(paths, self._year())
+        self._sig = sig
         for kind, table in self.tables.items():
             table.show_people(self._all_people())
+        self.tables[model.STAY].apply_orders()
         # 폴더에 이미 둔 지도 그림('… 지도 가는 길' · '… 오는 길') — 자차 출장자가 한 명이면 그 사람 구간으로
         self._scan_maps = [p for p in scan.route_maps if p] or ([scan.route_map] if scan.route_map else [])
         added = sum(len(p) for p in scan.files.values())
         lines = [f"{model.KIND_NAMES[k]} {len(p)}개" for k, p in scan.files.items() if p]
         note = f"폴더에서 증빙 {added}개를 넣었습니다" + (f" — {' · '.join(lines)}" if lines else "")
+        if merged and (dropped or added_new):
+            note = f"폴더의 파일이 바뀌어 다시 맞췄습니다(뺀 줄 {dropped} · 새로 읽은 파일 {added_new}) — " + note
         if scan.unsorted:
             names = ", ".join(p.name for p in scan.unsorted[:6]) + (" …" if len(scan.unsorted) > 6 else "")
             note += f". 이름으로 항목을 못 정해 넣지 않은 파일 {len(scan.unsorted)}개: {names} — 필요하면 그 항목의 [파일 넣기]"
@@ -1462,6 +1553,8 @@ class TravelPage(QWidget):
         if self.end_edit.date() < self.start_edit.date():
             self.end_edit.setDate(self.start_edit.date())
         self._store_group()
+        if model.STAY in getattr(self, "tables", {}):
+            self.tables[model.STAY].apply_orders()       # 체류 증빙의 차례 번호 일자는 출장 시작일로 셈한다
         if hasattr(self, "group_table") and self._groups:
             self._fill_group_table()
         self._sync()
@@ -1570,13 +1663,22 @@ class TravelPage(QWidget):
     def _year(self) -> int:
         return self.start_edit.date().year()
 
-    def _rescan(self) -> None:
-        """증빙 파일만 다시 읽는다(② 에서 고친 출장자 · 기간 · 출장지는 그대로) — 파일 이름 맨 앞에 새 사람이 생겼으면 고른 그룹에 더한다."""
+    def _rescan(self, quiet: bool = False) -> bool:
+        """증빙 파일만 다시 읽는다(② 에서 고친 출장자 · 기간 · 출장지는 그대로) — 폴더에서 없어진 파일은 빼고, 새 파일 · 고친 파일은 다시 읽고,
+        그대로인 파일은 ③ · ④ 에서 고친 값을 둔다. 파일 이름 맨 앞에 새 사람이 생겼으면 고른 그룹에 더한다.
+        quiet 면(앱으로 돌아올 때 · 만들기 전) 바뀐 것이 없으면 아무것도 하지 않는다 — 담당자 2026-11-16: 폴더에서 파일을 고친 뒤에도 옛 파일이
+        미리 보기에 남아 같은 영수증이 두 번 보였다. 바뀌었으면 True."""
         folder = self.folder_edit.text().strip()
         if not folder or not Path(folder).is_dir():
-            return
-        self._forget_pictures()
+            return False
         scan = model.scan_folder(Path(folder), self._all_people())
+        old = getattr(self, "_sig", {})
+        sig = self._file_sig(scan)
+        if quiet and sig == old:
+            return False
+        changed = {p for p, v in sig.items() if p in old and old[p] != v}
+        gone = [p for p in old if p not in sig]
+        self._forget_pictures()
         new = [n for n in model.names_in_files((p for files in scan.files.values() for p in files), root=Path(folder))
                if n not in self._all_people()]
         if new and self._group() is not None:
@@ -1586,8 +1688,25 @@ class TravelPage(QWidget):
             scan = model.scan_folder(Path(folder), self._all_people())
             self.log(f"폴더를 다시 읽어 파일 이름에서 출장자 {len(new)}명을 더했습니다")
         self._scan = scan
-        self._fill_from_scan(scan)
+        self._fill_from_scan(scan, changed)
+        fresh = [p for p in self._file_sig(scan) if p not in old]
+        if quiet:
+            self.log(f"폴더의 파일이 바뀌어 증빙을 다시 맞췄습니다 — 새 파일 {len(fresh)} · 고친 파일 {len(changed)} · 없어진 파일 {len(gone)}")
         self._on_route_inputs()
+        return True
+
+    def _check_folder(self) -> None:
+        """앱으로 돌아오거나 화면을 다시 열면 폴더의 파일이 바뀌었는지 본다(③ 이후만)."""
+        if self._stage == "files" and self.isVisible():
+            self._rescan(quiet=True)
+
+    def _on_app_state(self, state) -> None:
+        if state == Qt.ApplicationActive:
+            QTimer.singleShot(150, self._check_folder)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        QTimer.singleShot(0, self._check_folder)
 
     def _on_evidence(self) -> None:
         self._on_route_inputs()
@@ -1597,6 +1716,7 @@ class TravelPage(QWidget):
         if not hasattr(self, "route_table") or self._loading_group:
             return
         self._store_group()
+        self.tables[model.STAY].apply_orders()          # 그룹 기간이 바뀌었으면 차례 번호 일자도(아래 _sync 가 미리 보기를 다시 그린다)
         keep = {}
         for name in self._drivers():
             for i, (origin, goal, label) in enumerate(self._legs_for(name)):
@@ -2036,7 +2156,7 @@ class TravelPage(QWidget):
             label = (trip.name or "(이름 없음)") + (f" ({trip.start:%m-%d})" if trip.name in twice and trip.start else "")
             heads = [label, f"{len(trip.stay)}개", f"{len(trip.public)}개", f"{len(trip.tolls)}개",
                      f"{nights}박" if trip.lodging else "—", f"{len(trip.other)}개" if trip.other else "—", route]
-            items = model.checks(trip) or [((), "", "확인할 것 없음")]
+            items = model.checks(trip, self._root()) or [((), "", "확인할 것 없음")]
             first = table.rowCount()
             for ref, where, text in items:
                 row = table.rowCount()
@@ -2165,6 +2285,8 @@ class TravelPage(QWidget):
         if not folder.is_dir():
             QMessageBox.warning(self, "출장증빙 만들기", f"저장할 폴더가 없습니다:\n{folder}")
             return
+        if self._rescan(quiet=True) and confirmed:
+            confirmed = False                     # 확인한 뒤 폴더의 파일이 바뀌었다 — 바뀐 것으로 다시 보게
         trips = [t for t in self.trips() if not model.blocking(t)]
         problems = model.traveler_problems(self.base_trip(), self._all_people())
         for trip in trips:

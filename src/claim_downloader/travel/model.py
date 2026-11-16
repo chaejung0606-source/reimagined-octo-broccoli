@@ -677,7 +677,7 @@ UNCLEAR_HINTS = {
 _PER_EVIDENCE = re.compile(r"^(대중교통 증빙 \d+건|체류 증빙 \d+건 — 영수증 가맹점|하이패스가 있어 자차)|출장기간 밖의 날짜")
 
 
-def checks(trip: Trip) -> list[tuple[tuple, str, str]]:
+def checks(trip: Trip, root: Path | None = None) -> list[tuple[tuple, str, str]]:
     """③ 의 출장자별 표 — 확인할 것을 증빙마다 한 줄로(담당자 2026-11-16 "세부내용을 확인할 것 칸을 확인할게 있는 증빙별로 행을 나눠서").
     (미리 보기에서 갈 곳(증빙 ref · 자차 route_key · 없으면 ()), 어느 증빙, 확인할 것). 증빙 → 자차 이동경로 → 출장 전체 차례."""
     out = []
@@ -685,7 +685,7 @@ def checks(trip: Trip) -> list[tuple[tuple, str, str]]:
         fields = unclear(trip, kind, e)
         if fields:
             part = f" ({e.part + 1}번째 영수증)" if e.part is not None else ""
-            out.append((e.ref, f"{KIND_NAMES[kind]} · {e.path.name}{part}", " / ".join(UNCLEAR_HINTS.get(f, f) for f in fields)))
+            out.append((e.ref, f"{KIND_NAMES[kind]} · {shown_name(e.path, root)}{part}", " / ".join(UNCLEAR_HINTS.get(f, f) for f in fields)))
     route = route_unclear(trip)
     if route and trip.fuel != NO_CAR:
         out.append((route_key(trip), "자차 이동경로", " / ".join(UNCLEAR_HINTS.get(f, f) for f in route)))
@@ -959,6 +959,9 @@ def review(trip: Trip) -> list[str]:
                    else "교통비 증빙(대중교통 · 하이패스)이 없습니다")
     if trip.fuel and trip.fuel != NO_CAR and not trip.tolls:
         out.append(f"차량 연료({trip.fuel})를 골랐는데 하이패스 증빙이 없습니다 — 자차는 하이패스 이용내역이 있어야 합니다(동승이면 '해당없음')")
+    for day, files in _same_day_stays(trip):
+        out.append(f"체류 증빙 {len(files)}건이 같은 날({short_date(day)})입니다 — 같은 영수증을 두 번 넣지 않았는지 보세요"
+                   f"(PDF 와 그림으로 하나씩 둔 것 등): {' · '.join(files)}")
     if trip.stay:
         wants = {r for e in trip.stay for r in stay_regions(trip, e)}
         other = [e for e in trip.stay if e.shop_region.strip() and stay_regions(trip, e)
@@ -983,6 +986,49 @@ def review(trip: Trip) -> list[str]:
         if not trip.fuel:
             out.append("하이패스가 있어 자차입니다 — 연료 종류가 없습니다")
     return out
+
+
+def _same_day_stays(trip: Trip) -> list[tuple[date, list[str]]]:
+    """같은 날의 체류 증빙이 둘 이상인 날 — (날, 파일 이름들). 담당자 2026-11-16: 같은 영수증이 PDF 와 그림으로 둘 다 들어가
+    미리 보기에 같은 영수증이 두 번 보였다(체류 증빙은 보통 하루에 하나). 하이패스처럼 한 파일의 여러 영수증은 아니다."""
+    days: dict = {}
+    for e in trip.stay:
+        if e.day:
+            days.setdefault(e.day, []).append(e.path.name)
+    return [(day, names) for day, names in sorted(days.items()) if len(names) > 1]
+
+
+# 체류 증빙 파일 이름 끝의 차례 번호 — '홍길동_체류 증빙1' · '체류증빙_2' · '체류 증빙(3)'. 담당자 2026-11-16 "체류일자가 여러일자의 경우
+# 1,2,3,4로 순서를 나누겠음" — 일자를 못 읽은 체류 증빙(그림 영수증)은 이 번호를 출장 N일째로 본다(stay_order → 화면이 출장 시작일 + N-1).
+_STAY_ORDER = re.compile(r"(?:증빙|체류|영수증)\s*[_\-]?\s*[(\[]?\s*(\d{1,2})\s*[)\]]?\s*$")
+
+
+def stay_order(stem: str) -> int | None:
+    """체류 증빙 파일 이름 끝의 차례 번호(1 부터) — 없으면 None. 날짜('1029') · 0 은 번호로 보지 않는다."""
+    m = _STAY_ORDER.search(stem or "")
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n if n >= 1 else None
+
+
+def order_day(order: int | None, start: date | None, end: date | None) -> date | None:
+    """차례 번호 → 출장 N일째(시작일 + N-1). 출장기간을 넘으면 None — 번호가 날의 차례가 아닌 것으로 본다."""
+    if not order or start is None:
+        return None
+    day = start + timedelta(days=order - 1)
+    return day if end is None or day <= end else None
+
+
+def shown_name(path: Path, root: Path | None = None) -> str:
+    """화면에 적는 파일 이름 — 출장 폴더 안의 하위 폴더에 있으면 '하위 폴더/파일'(어디 있는 파일인지 찾게, 담당자 2026-11-16)."""
+    if root is not None:
+        try:
+            rel = path.relative_to(root)
+        except ValueError:
+            return path.name
+        return "/".join(rel.parts)
+    return path.name
 
 
 # ── 네이버 지도 길찾기 글자에서 km ───────────────────────────────────────

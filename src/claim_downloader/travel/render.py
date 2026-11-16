@@ -276,7 +276,14 @@ def _cells(block: Block, cache: dict, needs: dict) -> list[_Cell]:
     for i, path in enumerate(block.images):
         caption = block.captions[i] if i < len(block.captions) else ""
         ref = block.refs[i] if i < len(block.refs) else ()
-        images = cache.setdefault(path, load_images(path))
+        if not path.exists():
+            # 폴더에서 지운 파일 — 기억해 둔 그림을 쓰지 않는다(2026-11-16 담당자: 고친 폴더의 옛 영수증이 미리 보기에 남았다)
+            cache.pop(path, None)
+            out.append(_Cell(None, f"{path.name} — 폴더에 없는 파일입니다", 1.0, 600, 260, ref))
+            continue
+        if path not in cache:
+            cache[path] = load_images(path)    # setdefault 는 있을 때도 그림을 다시 읽었다(미리 보기를 고칠 때마다 PDF 를 다시 그림)
+        images = cache[path]
         part = block.parts[i] if i < len(block.parts) else None
         if part is not None and part < len(images):
             images = [images[part]]
