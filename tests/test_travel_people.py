@@ -1794,3 +1794,101 @@ def test_skip_dirs_and_where_files_come_from(qapp, tmp_path, isolated_home):
     tip = page.people_table.item(0, 1).toolTip()
     assert tip.splitlines() == ["홍길동_체류 증빙1.png", "홍길동_체류 증빙2.png"]
     assert page.people_table.item(0, 2).toolTip() == "원본/홍길동_대중교통 증빙.png"
+
+
+def _hipass_image(path: Path, receipts: list[tuple[str, str]]) -> Path:
+    """하이패스 영수증 인쇄 화면을 본뜬 그림 — 테두리를 나눠 쓰는 상자 여럿(값은 지어낸 것)."""
+    from PySide6.QtGui import QColor, QImage, QPainter, QPen
+    w, h = 270, 360
+    image = QImage(w * len(receipts) + 10, h + 10, QImage.Format_RGB32)
+    image.fill(QColor("white"))
+    painter = QPainter(image)
+    painter.setPen(QPen(QColor("black"), 2))
+    for i, (when, amount) in enumerate(receipts):
+        x = 5 + i * w
+        painter.drawRect(x, 5, w, h)
+        for j, line in enumerate(["하이패스는", "영수증", "가나도로공사 가나영업소", when, "입구영업소 : 다라", f"1 종  {amount}(카드)"]):
+            painter.drawText(x + 20, 40 + j * 40, line)
+    painter.end()
+    image.save(str(path))
+    return path
+
+
+def test_hipass_picture_with_two_days_is_split_per_receipt(qapp, tmp_path, isolated_home, monkeypatch):
+    """담당자 2026-11-16 "이 하이패스 증빙에서 날짜를 식별 못하겠나요?" — 10월 29일 · 30일 영수증 두 장이 한 그림에 있어 AI 가 읽어도 일자가
+    하나로 정해지지 않아 비었다. 그림의 영수증 상자 수와 AI 가 읽은 수가 같으면 영수증마다 한 줄(그 상자만 오려 그림), 아니면 첫 날 · 합계로 한 줄."""
+    import time
+
+    from claim_downloader.travel import ai_read, render
+    from claim_downloader.ui.pages import travel as travel_page
+    folder = tmp_path / "출장비 지급(26.10.29. 춘천)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(
+        "출장자 연구원 홍길동\n출장기간 2026. 10. 29.(목) ~ 2026. 10. 30.(금)\n출장지 가나시 가나센터\n", encoding="utf-8")
+    two = _hipass_image(folder / "홍길동_하이패스 증빙.png", [("2026년10월30일 14시57분", "12,800원"), ("2026년10월29일 13시32분", "13,300원")])
+    other = tmp_path / "옛 출장"
+    other.mkdir()
+    lone = _hipass_image(other / "한 장.png", [("2026년10월29일 13시32분", "13,300원")])
+    assert len(render.receipt_images(two)) == 2 and len(render.receipt_images(lone)) == 1
+    assert len(render.load_images(two)) == 1                     # 그림 파일 전체는 여전히 오리지 않는다(휴대폰 캡처)
+    # 보이는 차례(왼쪽 → 오른쪽)로 읽는다
+    read = {"receipts": [{"date": "2026-10-30", "amount": 12800, "mode": "", "origin": "", "goal": "", "address": "", "approvalNo": "",
+                          "nights": None},
+                         {"date": "2026-10-29", "amount": 13300, "mode": "", "origin": "", "goal": "", "address": "", "approvalNo": "",
+                          "nights": None}]}
+    summary = ai_read.summary(model.TOLL, read)
+    assert summary["date"] == "2026-10-29" and summary["amount"] == 26100 and summary["days"] == ["2026-10-29", "2026-10-30"]
+    assert "여럿이면 보이는 차례로" in ai_read.build_prompt([(str(two), model.TOLL)], "x.json")
+    # 옛 판(차례를 정하지 않고)에서 읽은 여러 장은 다시 읽는다 — 한 장은 그대로
+    import json
+    ai_read.remember({str(two): read, str(lone): {"receipts": read["receipts"][1:]}})
+    data = json.loads(ai_read.cache_path().read_text(encoding="utf-8"))
+    for entry in data["items"].values():
+        entry.pop("v")
+    ai_read.cache_path().write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert ai_read.lookup(two) is None and ai_read.lookup(lone) is not None
+
+    calls = []
+    qapp.processEvents()
+
+    def fake_read(files):
+        files = [(p, k) for p, k in files if Path(p).is_relative_to(folder)]
+        if files:
+            calls.append([Path(p).name for p, _ in files])
+        return {p: read for p, _ in files}
+    monkeypatch.setattr(ai_read, "find_claude", lambda: "claude")
+    monkeypatch.setattr(ai_read, "read", fake_read)
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.show()
+    page.load_folder(str(folder))
+    page._go("files")
+    tolls = page.tables["toll"]
+    for _ in range(200):
+        qapp.processEvents()
+        if len(tolls.paths) == 2 and not page._ai_running:
+            break
+        time.sleep(0.02)
+    assert calls == [["홍길동_하이패스 증빙.png"]]
+    rows = [(tolls.parts[r], tolls.item(r, 1).text(), tolls.item(r, 2).text(), tolls.item(r, tolls.person_col).text()) for r in range(2)]
+    assert rows == [(0, "2026-10-30", "12,800", "홍길동"), (1, "2026-10-29", "13,300", "홍길동")]
+    assert tolls.ai_wanted() == []
+    trip = page.trips()[0]
+    assert sorted((e.day.isoformat(), e.amount, e.part) for e in trip.tolls) == [("2026-10-29", 13300, 1), ("2026-10-30", 12800, 0)]
+    assert model.route_days(trip).startswith("2026년 10월 29일")
+    pages = model.car_pages(trip)
+    assert [b.title[0] for b in pages[0].blocks] == ["2026년 10월 29일 목요일", "2026년 10월 30일 금요일"]
+    # 그릴 때는 그 상자만 — 칸마다 그림 한 장
+    images, _hits = render.preview(pages[:1], cache={}, needs={})
+    assert images
+    cells = render._cells(pages[0].blocks[0], {}, {})
+    assert len(cells) == 1 and cells[0].w < 400                   # 그림 전체(550 넓이)가 아니라 오른쪽 상자
+
+    # 상자 수가 다르면 나누지 않고 첫 날 · 합계로 한 줄(말풍선에 날짜들)
+    page._ai_tried.clear()
+    monkeypatch.setattr(render, "receipt_images", lambda path: [])
+    tolls.clear_all()
+    tolls.add_files([two], 2026)
+    filled = tolls.apply_ai(two, summary)
+    assert filled == 2 and len(tolls.paths) == 1 and tolls.parts[0] is None
+    assert tolls.item(0, 1).text() == "2026-10-29" and tolls.item(0, 2).text() == "26,100"
+    assert "2026-10-29 · 2026-10-30" in tolls.item(0, 1).toolTip()

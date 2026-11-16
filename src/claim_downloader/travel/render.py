@@ -170,6 +170,19 @@ def load_images(path: Path) -> list[QImage]:
     return out
 
 
+def receipt_images(path: Path) -> list[QImage]:
+    """영수증 상자마다 오린 그림 — PDF 는 load_images 그대로, 그림 파일도 테두리 상자를 오린다(상자가 없으면 여백만 잘라 하나).
+    하이패스 영수증 여러 장이 한 그림(인쇄 화면 캡처 · 스캔)에 든 줄을 영수증마다 나눌 때만 쓴다(담당자 2026-11-16 — 날짜가 다른 영수증 둘이
+    한 그림에 있어 일자를 정하지 못했다). 그림 파일 전체에 늘 쓰지 않는 까닭은 load_images 와 같다(휴대폰 캡처의 카드 모양 칸)."""
+    if path.suffix.lower() == ".pdf":
+        return load_images(path)
+    out = []
+    for image in _load(path):
+        boxes = frames(image)
+        out += [_boxed(image.copy(*box)) for box in boxes] if boxes else [trim(image)]
+    return out
+
+
 def _load(path: Path) -> list[QImage]:
     if path.suffix.lower() == ".pdf":
         from PySide6.QtPdf import QPdfDocument
@@ -279,12 +292,15 @@ def _cells(block: Block, cache: dict, needs: dict) -> list[_Cell]:
         if not path.exists():
             # 폴더에서 지운 파일 — 기억해 둔 그림을 쓰지 않는다(2026-11-16 담당자: 고친 폴더의 옛 영수증이 미리 보기에 남았다)
             cache.pop(path, None)
+            cache.pop((path, "boxes"), None)
             out.append(_Cell(None, f"{path.name} — 폴더에 없는 파일입니다", 1.0, 600, 260, ref))
             continue
-        if path not in cache:
-            cache[path] = load_images(path)    # setdefault 는 있을 때도 그림을 다시 읽었다(미리 보기를 고칠 때마다 PDF 를 다시 그림)
-        images = cache[path]
         part = block.parts[i] if i < len(block.parts) else None
+        # 그림 파일의 영수증 한 장 줄(하이패스 여러 장이 든 캡처)이면 상자마다 오린 그림에서 고른다 — PDF 는 load_images 가 이미 오린다
+        key = (path, "boxes") if part is not None and path.suffix.lower() != ".pdf" else path
+        if key not in cache:
+            cache[key] = receipt_images(path) if key != path else load_images(path)    # setdefault 는 있을 때도 그림을 다시 읽었다
+        images = cache[key]
         if part is not None and part < len(images):
             images = [images[part]]
         if not images:

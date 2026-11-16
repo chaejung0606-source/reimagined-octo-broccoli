@@ -255,6 +255,12 @@ class EvidenceTable(QTableWidget):
                 from ...travel import render
                 if len(render.load_images(path)) == len(found):
                     return [model.Evidence(path=path, day=day, amount=amount, part=i) for i, (day, amount) in enumerate(found)]
+                # 상자를 못 나누면 한 줄 — 첫 이용일 · 합계(전에는 글의 첫 날짜 · 첫 금액만 들어가 다른 날의 통행료가 빠졌다)
+                ev = model.guess(path, year)
+                days = [d for d, _ in found if d]
+                ev.day = min(days) if days else ev.day
+                ev.amount = sum(a for _, a in found)
+                return [ev]
         return [model.guess(path, year, route=self.kind == model.PUBLIC, stay=self.kind == model.STAY)]
 
     def _add_row(self, ev: model.Evidence) -> None:
@@ -365,6 +371,9 @@ class EvidenceTable(QTableWidget):
         cells = self.AI_CELLS.get(self.kind, {})
         if not found or not cells:
             return 0
+        split = self._split_tolls(path, found)
+        if split:
+            return split
         count = 0
         self.blockSignals(True)
         for row, own in enumerate(self.paths):
@@ -392,7 +401,12 @@ class EvidenceTable(QTableWidget):
                 if not text or item.text().strip() == text:
                     continue
                 item.setText(text)
-                item.setToolTip("영수증에서 AI(Claude Code)가 읽은 값 — 다르면 고치세요")
+                days = found.get("days") or []
+                if key == "date" and len(days) > 1:
+                    item.setToolTip(f"영수증에서 AI(Claude Code)가 읽은 값 — 한 파일에 이용일자가 여럿({' · '.join(days)})이라 첫 날로 적었습니다. "
+                                    "영수증마다 파일을 나누면 일자별로 묶입니다")
+                else:
+                    item.setToolTip("영수증에서 AI(Claude Code)가 읽은 값 — 다르면 고치세요")
                 count += 1
             if count:
                 self.ai_rows[row] = True
@@ -400,6 +414,50 @@ class EvidenceTable(QTableWidget):
         if count:
             self.mark_unclear()
             self.changed.emit()
+        return count
+
+    def _split_tolls(self, path: Path, found: dict) -> int:
+        """하이패스 영수증 여러 장이 든 그림 · 스캔 파일을 AI 가 읽었으면 영수증마다 한 줄로 나눈다(담당자 2026-11-16 — 10월 29일 · 30일 영수증이
+        한 그림에 있어 일자를 하나로 못 정해 비워 두었다). 그림의 영수증 상자 수와 AI 가 읽은 영수증 수가 같고, 영수증마다 일자가 있고,
+        그 파일 줄의 일자가 비었을 때만(사람이 적은 일자는 둔다). 상자 i 는 AI 가 보이는 차례로 읽은 i 번째 영수증. 채운 칸 수(못 나누면 0)."""
+        receipts = found.get("receipts") or []
+        if self.kind != model.TOLL or len(receipts) < 2 or not all(r.get("date") for r in receipts):
+            return 0
+        rows = [row for row, own in enumerate(self.paths) if own == path]
+        if len(rows) != 1 or self.parts[rows[0]] is not None:
+            return 0
+        row = rows[0]
+        day = self.item(row, 1)
+        if day is not None and day.text().strip():
+            return 0
+        try:
+            from ...travel import render
+            boxes = len(render.receipt_images(path))
+        except Exception:  # noqa: BLE001 — 그림을 못 읽으면 나누지 않는다(한 줄 그대로)
+            boxes = 0
+        if boxes != len(receipts):
+            return 0
+        person = self.item(row, self.person_col)
+        person = person.text() if person is not None else ""
+        self.blockSignals(True)
+        self.removeRow(row)
+        del self.paths[row], self.parts[row], self.orders[row], self.keys[row], self.ai_rows[row]
+        count = 0
+        tip = "영수증에서 AI(Claude Code)가 읽은 값 — 다르면 고치세요"
+        for i, receipt in enumerate(receipts):
+            self._add_row(model.Evidence(path=path, day=model.guess_day(receipt["date"], date.today().year),
+                                         amount=receipt.get("amount"), part=i))
+            new = self.rowCount() - 1
+            self.ai_rows[new] = True
+            self.item(new, self.person_col).setText(person)
+            for col in (1, 2):
+                item = self.item(new, col)
+                if item is not None and item.text().strip():
+                    item.setToolTip(tip)
+                    count += 1
+        self.blockSignals(False)
+        self.mark_unclear()
+        self.changed.emit()
         return count
 
     def apply_orders(self) -> int:
