@@ -57,6 +57,8 @@ class Evidence:
     ref: tuple = ()         # 화면 표의 어느 줄인지((항목, 줄)) — 미리 보기에서 고친 값을 그 줄에 적는다
     label: str = ""         # 기타 증빙의 내용(파일 이름에서 이름을 뗀 것 — '참가확인서')
     shop_region: str = ""   # 체류 영수증 가맹점 주소의 시 · 군 — 출장지와 같아야 한다(담당자 2026-11-10, stay_regions)
+    receipt_key: str = ""   # 영수증의 승인번호(숫자) — 같은 영수증이 두 파일(PDF 와 그림)에 있으면 한 번만 넣는다(dedupe, 2026-11-16)
+    ai: bool = False        # 그림 · 스캔 영수증이라 AI(Claude Code)가 읽은 값이 들었다 — 미리 보기에서 맞는지 본다(ai_read.py)
 
 
 @dataclass
@@ -80,6 +82,7 @@ class Trip:
     route_stops: list = field(default_factory=list)  # 자차 경유지 + 목적지(차례대로) — 경유지가 있을 때만(담당자 2026-11-10). 비면 출장지로
     fuel: str = ""          # 자차 연료 종류(휘발유 · 경유 · LPG …) — 자차 쪽 머리 줄에 적는다(담당자 2026-11-10)
     place_regions: dict = field(default_factory=dict)   # 출장지 글 → 시 · 군(출장지 글에 시 · 군이 없을 때 네이버에서 찾은 그곳 주소로 — 화면이 채움)
+    dropped: list = field(default_factory=list)         # 같은 영수증이라 한 번만 넣고 뺀 증빙 — [(항목, 뺀 증빙, 남긴 증빙)](dedupe)
 
     @property
     def days(self) -> int:
@@ -339,7 +342,8 @@ def guess(path: Path, year: int, route: bool = False, stay: bool = False) -> Evi
     day, amount = guess_day(stem, year), guess_amount(stem)
     origin, goal = guess_route(stem) if route else ("", "")
     shop = region_of(stem) if stay else ""
-    if (day is None or amount is None or (route and not (origin and goal)) or (stay and not shop)) and path.suffix.lower() == ".pdf":
+    key = ""
+    if path.suffix.lower() == ".pdf":
         text = pdf_text(path)
         day = day or guess_day(text, year)
         amount = amount or guess_amount(text)
@@ -347,7 +351,15 @@ def guess(path: Path, year: int, route: bool = False, stay: bool = False) -> Evi
             origin, goal = guess_route(text)
         if stay and not shop:
             shop = shop_region_of(text)
-    return Evidence(path=path, day=day, amount=amount, origin=origin, goal=goal, shop_region=shop)
+        key = approval_of(text)
+    return Evidence(path=path, day=day, amount=amount, origin=origin, goal=goal, shop_region=shop, receipt_key=key)
+
+
+def approval_of(text: str) -> str:
+    """영수증 글자의 승인번호(숫자만, 6자리 이상) — 같은 영수증인지 볼 때. 없으면 ''."""
+    from ..claims.card import read_receipt
+    digits = re.sub(r"\D", "", read_receipt(text or "").approval or "")
+    return digits if len(digits) >= 6 else ""
 
 
 # ── 체류 영수증의 가맹점 지역 — 출장지와 같은 시 · 군이어야 한다 ───────────────────
@@ -890,12 +902,38 @@ def for_traveler(trip: Trip, name: str, names: list[str], fuel: str | None = Non
     out.stay, out.public, out.lodging = mine(trip.stay), mine(trip.public), mine(trip.lodging)
     out.tolls = mine(trip.tolls, shared=not no_car)
     out.other = mine(trip.other)
+    dedupe(out)
     if no_car or (not single and not out.tolls):
         out.route_map, out.route_maps, out.legs, out.route_stops = None, [], [], []
         out.fuel = ""
     if fuel is not None:
         out.fuel = fuel
     return out
+
+
+def dedupe(trip: Trip) -> Trip:
+    """같은 영수증(승인번호가 같음)이 두 파일에 있으면 하나만 둔다 — 담당자 2026-11-16 "아니 왜 똑같은게 두번 들어가죠?"(같은 카드 승인전표가
+    PDF 와 그림으로 둘 다 폴더에 있었다). 남기는 것: 파일 이름 끝에 체류 차례 번호가 있는 것(담당자가 '1,2' 로 나눈 파일) → 이름 차례.
+    뺀 것은 trip.dropped 에 — 확인할 것에 한 줄로 알린다(review)."""
+    trip.dropped = []
+    for kind in (STAY, PUBLIC, LODGING):
+        items = getattr(trip, ITEM_ATTR[kind])
+        keep: dict[str, Evidence] = {}
+        for e in sorted(items, key=lambda e: (stay_order(e.path.stem) is None, e.path.name)):
+            if e.receipt_key and e.part is None:
+                keep.setdefault(e.receipt_key, e)
+        out = []
+        for e in items:
+            kept = keep.get(e.receipt_key) if e.receipt_key and e.part is None else None
+            if kept is not None and kept is not e:
+                trip.dropped.append((kind, e, kept))
+                continue
+            out.append(e)
+        setattr(trip, ITEM_ATTR[kind], out)
+    return trip
+
+
+ITEM_ATTR = {STAY: "stay", PUBLIC: "public", TOLL: "tolls", LODGING: "lodging", OTHER: "other"}
 
 
 def keep_period(trip: Trip, start: date | None, end: date | None, shared_only: bool = False) -> Trip:
@@ -959,6 +997,9 @@ def review(trip: Trip) -> list[str]:
                    else "교통비 증빙(대중교통 · 하이패스)이 없습니다")
     if trip.fuel and trip.fuel != NO_CAR and not trip.tolls:
         out.append(f"차량 연료({trip.fuel})를 골랐는데 하이패스 증빙이 없습니다 — 자차는 하이패스 이용내역이 있어야 합니다(동승이면 '해당없음')")
+    for kind, gone, kept in trip.dropped:
+        out.append(f"같은 영수증(승인번호 같음)이 두 파일에 있어 한 번만 넣었습니다 — {KIND_NAMES[kind]} · {kept.path.name} "
+                   f"(넣지 않은 것: {gone.path.name})")
     for day, files in _same_day_stays(trip):
         out.append(f"체류 증빙 {len(files)}건이 같은 날({short_date(day)})입니다 — 같은 영수증을 두 번 넣지 않았는지 보세요"
                    f"(PDF 와 그림으로 하나씩 둔 것 등): {' · '.join(files)}")

@@ -17,6 +17,8 @@ def isolated_home(tmp_path, monkeypatch):
     # 카드청구 화면이 결제 건을 AI 로 읽으려 해도 이 PC 의 진짜 claude 를 부르지 않게(claims/card_ai.py) — 부르는 테스트는 따로 바꿔 끼운다
     from claim_downloader.claims import card_ai
     monkeypatch.setattr(card_ai, "find_claude", lambda: "")
+    from claim_downloader.travel import ai_read                       # 출장증빙의 그림 영수증 AI 읽기도(travel/ai_read.py)
+    monkeypatch.setattr(ai_read, "find_claude", lambda: "")
     return home
 
 

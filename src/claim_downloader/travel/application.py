@@ -89,7 +89,7 @@ class Application:
     trips: list[TripEntry] = field(default_factory=list)   # 신청서에 적힌 출장들 — 둘 이상이면 폴더 이름의 날짜로 고른다
     chosen: int = 0
     everyone: list[str] = field(default_factory=list)      # 모든 출장의 출장자(고른 출장에 출장자가 따로 없을 때)
-    shape: list[str] = field(default_factory=list)         # 못 읽은 칸이 있을 때 글 모양(이름 가림) — 기록에 남긴다
+    shape: list[str] = field(default_factory=list)         # 신청서의 글 모양(이름 · 곳 가림) — 기록에 남긴다
 
     @property
     def destination(self) -> str:
@@ -309,7 +309,9 @@ def clean_place(value: str) -> list[str]:
     value = _drop_headers(re.sub(r"\s+", " ", value or "").strip(" :：-"))
     if not value:
         return []
-    return [p[:MAX_PLACE].strip() for p in split_places(value) if p.strip()]
+    # 요일 한 글자('목' — 2026-11-16 담당자 미리 보기에 출장지 '목') · 한 글자 조각은 곳 이름이 아니다
+    return [p[:MAX_PLACE].strip() for p in split_places(value)
+            if len(re.sub(r"[^가-힣A-Za-z0-9]", "", p)) >= 2]
 
 
 def vague_place(place: str) -> str:
@@ -409,7 +411,8 @@ def _period_block(lines: list[str]) -> tuple[date, date, int, int] | None:
 
 
 # 기간 칸 글 — 출장지 조각을 고를 때 뺀다
-_PERIOD_BITS = re.compile(r"20\d{2}\s*[.\-/년]\s*\d{1,2}\s*[.\-/월]\s*\d{1,2}\s*[.일]?|\d{1,2}:\d{2}|\([월화수목금토일]\)|[~∼〜]|부터|까지|"
+_PERIOD_BITS = re.compile(r"20\d{2}\s*[.\-/년]\s*\d{1,2}\s*[.\-/월]\s*\d{1,2}\s*[.일]?|\d{1,2}:\d{2}|\([월화수목금토일]\)|"
+                          r"(?<![가-힣])\(?\s*[월화수목금토일]\s*\)?(?![가-힣])|[~∼〜]|부터|까지|"
                           r"\(?\s*(?:당일|\d+\s*일간?|\d+\s*박\s*\d+\s*일)\s*\)?")
 
 
@@ -846,8 +849,7 @@ def read(path: Path) -> Application:
         app.notes.append(f"{path.name}: 글자를 읽지 못했습니다(스캔한 그림 PDF 일 수 있습니다) — 출장 정보를 직접 적어 주세요")
         return app
     app = parse_text(text, path)
-    if app.start is None or not app.places:
-        app.shape = shape(text)
+    app.shape = shape(text)          # 늘 — 읽은 값이 틀린 때(출장지 '대상여부' · '목', 2026-11-16)도 기록의 글 모양으로 고친다
     return app
 
 

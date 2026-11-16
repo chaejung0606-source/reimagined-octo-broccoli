@@ -44,7 +44,7 @@ from PySide6.QtWidgets import (
 )
 
 from ... import settings
-from ...travel import application, fuels, model, navermap
+from ...travel import ai_read, application, fuels, model, navermap
 from .. import folder_picker
 from ..art import Art
 from ..tokens import COLORS
@@ -176,6 +176,8 @@ class EvidenceTable(QTableWidget):
         self.paths: list[Path] = []
         self.parts: list[int | None] = []          # 줄마다 PDF 의 몇 번째 영수증인지(하이패스 '총 N 건' 인쇄를 영수증마다 한 줄로)
         self.orders: list[int | None] = []         # 체류 증빙 파일 이름 끝의 차례 번호('체류 증빙2' → 2) — 일자를 못 읽었을 때 출장 N일째로
+        self.keys: list[str] = []                  # 줄마다 영수증 승인번호(같은 영수증이 두 파일에 있으면 한 번만 — model.dedupe)
+        self.ai_rows: list[bool] = []              # 줄마다 AI(Claude Code)가 그림 · 스캔 영수증에서 읽은 값이 들었는지
         self.year = lambda: date.today().year      # 화면이 출장 시작일의 해로 바꿔 끼운다 — '0528' 같은 이름의 해
         self.places = lambda: []                   # 화면이 출장지 목록으로 바꿔 끼운다 — 파일 경로로 출장지를 짐작
         self.people = lambda: []                   # 화면이 출장자 목록으로 바꿔 끼운다 — 파일 이름 맨 앞의 이름으로 출장자를 짐작
@@ -260,6 +262,8 @@ class EvidenceTable(QTableWidget):
         self.paths.append(path)
         self.parts.append(ev.part)
         self.orders.append(model.stay_order(path.stem) if self.kind == model.STAY and ev.day is None else None)
+        self.keys.append(ev.receipt_key)
+        self.ai_rows.append(False)
         row = self.rowCount()
         self.insertRow(row)
         name = QTableWidgetItem(model.shown_name(path, self.root()) + (f" ({ev.part + 1}번째 영수증)" if ev.part is not None else ""))
@@ -311,6 +315,8 @@ class EvidenceTable(QTableWidget):
         self.paths.clear()
         self.parts.clear()
         self.orders.clear()
+        self.keys.clear()
+        self.ai_rows.clear()
         self.changed.emit()
 
     def sync(self, paths: list[Path], year: int, changed: set) -> tuple[int, int]:
@@ -321,7 +327,7 @@ class EvidenceTable(QTableWidget):
         self.blockSignals(True)
         for row in reversed(drop):
             self.removeRow(row)
-            del self.paths[row], self.parts[row], self.orders[row]
+            del self.paths[row], self.parts[row], self.orders[row], self.keys[row], self.ai_rows[row]
         self.blockSignals(False)
         new = [p for p in paths if p not in self.paths]
         if new:
@@ -330,6 +336,71 @@ class EvidenceTable(QTableWidget):
             self.mark_unclear()
             self.changed.emit()
         return len(drop), len(new)
+
+    # 항목마다 AI 로 채울 칸(칸 번호 → 읽은 값의 이름) — 비어 있는 칸만 채운다
+    AI_CELLS = {
+        model.STAY: {1: "date", SHOP_COL: "address"},
+        model.PUBLIC: {1: "date", 2: "amount", 3: "mode", 4: "origin", 5: "goal"},
+        model.TOLL: {1: "date", 2: "amount"},
+        model.LODGING: {1: "date", 2: "amount", 3: "nights"},
+    }
+
+    def ai_wanted(self) -> list[Path]:
+        """AI 로 읽을 파일 — 꼭 있어야 할 칸이 빈 줄(하이패스 '총 N 건' 의 영수증 한 장 줄은 PDF 글자로 이미 읽음)."""
+        cells = self.AI_CELLS.get(self.kind)
+        if not cells:
+            return []
+        out = []
+        for row, path in enumerate(self.paths):
+            if self.parts[row] is not None or path in out:
+                continue
+            cols = [c for c in cells if c != 3 or self.kind != model.LODGING]     # 박 수는 기본 1 이 들어 있다
+            if any(not (self.item(row, c).text().strip() if self.item(row, c) else "") for c in cols):
+                out.append(path)
+        return out
+
+    def apply_ai(self, path: Path, found: dict) -> int:
+        """AI 가 읽은 값(ai_read.summary)으로 그 파일 줄의 빈 칸만 채운다 — 파일 이름 · PDF 글자 · 차례 번호 · 사람이 적은 값이 먼저.
+        채운 칸 수."""
+        cells = self.AI_CELLS.get(self.kind, {})
+        if not found or not cells:
+            return 0
+        count = 0
+        self.blockSignals(True)
+        for row, own in enumerate(self.paths):
+            if own != path or self.parts[row] is not None:
+                continue
+            if found.get("approvalNo") and not self.keys[row]:
+                self.keys[row] = found["approvalNo"]
+            for col, key in cells.items():
+                item = self.item(row, col)
+                if item is None:
+                    item = QTableWidgetItem("")
+                    self.setItem(row, col, item)
+                value = found.get(key)
+                if key == "nights" and self.kind == model.LODGING:
+                    if not value or item.text().strip() not in ("", "1"):
+                        continue
+                elif item.text().strip() or not value:
+                    continue
+                if key == "amount":
+                    text = f"{value:,}"
+                elif key == "address":
+                    text = model.region_of(str(value))
+                else:
+                    text = str(value)
+                if not text or item.text().strip() == text:
+                    continue
+                item.setText(text)
+                item.setToolTip("영수증에서 AI(Claude Code)가 읽은 값 — 다르면 고치세요")
+                count += 1
+            if count:
+                self.ai_rows[row] = True
+        self.blockSignals(False)
+        if count:
+            self.mark_unclear()
+            self.changed.emit()
+        return count
 
     def apply_orders(self) -> int:
         """일자를 못 읽은 체류 증빙(그림 영수증)에 파일 이름의 차례 번호로 일자를 적는다 — '체류 증빙1' 은 출장 첫날, '체류 증빙2' 는 둘째 날
@@ -366,7 +437,7 @@ class EvidenceTable(QTableWidget):
         for row, path in enumerate(self.paths):
             cell = lambda col, row=row: (self.item(row, col).text() if self.item(row, col) else "")  # noqa: E731
             ev = model.Evidence(path=path, day=_parse_day(cell(1), year), part=self.parts[row], person=cell(self.person_col).strip(),
-                                ref=(self.kind, row))
+                                ref=(self.kind, row), receipt_key=self.keys[row], ai=self.ai_rows[row])
             if self.kind == model.OTHER:
                 ev.label = cell(2).strip()
             elif self.kind != model.STAY:
@@ -421,6 +492,10 @@ class TravelPage(QWidget):
         self._apps: list[Path] = []              # 읽은 출장신청서 파일
         self._scan = model.Scan()
         self._sig: dict = {}                     # 훑은 증빙 파일의 (고친 때, 크기) — 앱으로 돌아올 때 폴더가 바뀌었는지 본다
+        self._ai_worker = None                   # 그림 · 스캔 영수증을 AI 로 읽는 뒤 스레드(ui/travel_ai_worker.py) — 처음 쓸 때 만든다
+        self._ai_tried: set = set()              # 이번에 AI 로 읽으라고 맡긴 (파일, 서명) — 실패해도 [폴더에서 다시 읽기] 전에는 다시 맡기지 않는다
+        self._ai_running = 0                     # 맡긴 묶음 수(끝나면 줄어듦)
+        self._ai_filled = 0
         self._done_folders: set[str] = set()     # 출장증빙을 만든 폴더(여러 폴더를 차례로 할 때)
         self._review: application.Application | None = None
         self._goal_of: dict[str, str] = {}       # 출장자마다 출장목적지(신청서 목적지가 분명하지 않아 사람이 적은 것)
@@ -643,6 +718,8 @@ class TravelPage(QWidget):
         self._forget_pictures()
         self.review_label.setText("")
         self.result_label.setText("")
+        self.ai_note.setText("")
+        self.ai_note.hide()
         self._uncheck_route()
         self._stage = "folder"
         if hasattr(self, "route_table"):
@@ -1051,6 +1128,11 @@ class TravelPage(QWidget):
         self.scan_note = muted_label("")
         top.addWidget(self.scan_note, 1)
         step.add_layout(top)
+        # 그림 · 스캔 영수증을 AI 로 읽는 중 · 읽은 결과 한 줄(담당자 2026-11-16 KTX 영수증 "결제금액 및 일자, 이동편, 출발지 목적지 정보 다있음")
+        self.ai_note = WrapLabel("")
+        self.ai_note.setObjectName("muted")
+        self.ai_note.hide()
+        step.add(self.ai_note)
         # 항목별 증빙 표 — 보이지 않는 값 그릇(일자 · 금액 · 출장자 …). 미리 보기에서 고친 값이 여기에 적힌다(apply_edit)
         self._tables_holder = QWidget(self)
         self._tables_holder.hide()
@@ -1258,8 +1340,8 @@ class TravelPage(QWidget):
         if merged:
             self.log(application.log_line(merged, self._apps))
             for app in apps:
-                if app.shape and (merged.start is None or not merged.places):
-                    # 못 읽은 칸이 있으면 그 신청서의 글 모양(이름 · 곳은 □) — 기록을 받아 읽는 꼴을 넓힌다
+                if app.shape:
+                    # 신청서의 글 모양(이름 · 곳은 □) — 늘 남긴다: 읽은 값이 틀린 때(출장지 '대상여부' · '목', 2026-11-16)도 기록으로 고치게
                     self.log(f"출장신청서 글 모양 — {app.path.name} (칸 이름 · 숫자만, 다른 글자는 □):")
                     for line in app.shape:
                         self.log("  | " + line)
@@ -1349,6 +1431,7 @@ class TravelPage(QWidget):
         note = f"폴더에서 증빙 {added}개를 넣었습니다" + (f" — {' · '.join(lines)}" if lines else "")
         if merged and (dropped or added_new):
             note = f"폴더의 파일이 바뀌어 다시 맞췄습니다(뺀 줄 {dropped} · 새로 읽은 파일 {added_new}) — " + note
+        QTimer.singleShot(0, self._ai_start)
         if scan.unsorted:
             names = ", ".join(p.name for p in scan.unsorted[:6]) + (" …" if len(scan.unsorted) > 6 else "")
             note += f". 이름으로 항목을 못 정해 넣지 않은 파일 {len(scan.unsorted)}개: {names} — 필요하면 그 항목의 [파일 넣기]"
@@ -1678,6 +1761,8 @@ class TravelPage(QWidget):
             return False
         changed = {p for p, v in sig.items() if p in old and old[p] != v}
         gone = [p for p in old if p not in sig]
+        if not quiet:
+            self._ai_tried.clear()                # 사람이 다시 읽으라고 했다 — 못 읽었던 그림 영수증도 다시 맡긴다
         self._forget_pictures()
         new = [n for n in model.names_in_files((p for files in scan.files.values() for p in files), root=Path(folder))
                if n not in self._all_people()]
@@ -1694,6 +1779,70 @@ class TravelPage(QWidget):
             self.log(f"폴더의 파일이 바뀌어 증빙을 다시 맞췄습니다 — 새 파일 {len(fresh)} · 고친 파일 {len(changed)} · 없어진 파일 {len(gone)}")
         self._on_route_inputs()
         return True
+
+    # ── 그림 · 스캔 영수증 AI 읽기 ────────────────────────────────────────
+    def _ai_start(self) -> None:
+        """꼭 있어야 할 칸이 빈 증빙을 AI 로 읽는다 — 전에 읽은 것(캐시)은 바로 넣고, 남은 것만 뒤 스레드에 맡긴다."""
+        wanted: list[tuple[str, str]] = []
+        filled = 0
+        for kind, table in self.tables.items():
+            for path in table.ai_wanted():
+                cached = ai_read.lookup(path)
+                if cached is not None:
+                    filled += table.apply_ai(path, ai_read.summary(kind, cached))
+                    continue
+                mark = (ai_read.file_key(path), ai_read.signature(path))
+                if mark not in self._ai_tried:
+                    wanted.append((str(path), kind))
+        if filled:
+            self.log(f"출장 AI 읽기: 전에 읽은 그림 영수증으로 빈 칸 {filled}개를 채웠습니다")
+        if not wanted:
+            return
+        if not ai_read.available():
+            self.ai_note.setText(f"그림 · 스캔 영수증 {len(wanted)}개는 앱이 글자를 못 읽습니다 — 이 PC 에 Claude Code 가 없어 AI 로도 못 읽었습니다. "
+                                 "④ 미리 보기에서 빈 칸을 적어 주세요.")
+            self.ai_note.show()
+            return
+        for path, _kind in wanted:
+            self._ai_tried.add((ai_read.file_key(path), ai_read.signature(path)))
+        if self._ai_worker is None:
+            from ..travel_ai_worker import TravelAiWorker
+            self._ai_worker = TravelAiWorker()
+            self._ai_worker.log.connect(self.log)
+            self._ai_worker.started.connect(self._on_ai_started)
+            self._ai_worker.done.connect(self._on_ai_done)
+            self._ai_worker.finished.connect(self._on_ai_finished)
+        if not self._ai_running:
+            self._ai_filled = 0
+        self._ai_running += 1
+        self.ai_note.setText(f"그림 · 스캔 영수증 {len(wanted)}개를 AI(Claude Code)로 읽는 중입니다 — 몇십 초씩 걸립니다. 읽는 대로 빈 칸을 채웁니다.")
+        self.ai_note.show()
+        self._ai_worker.run(wanted)
+
+    def _on_ai_started(self, number: int, total: int) -> None:
+        self.ai_note.setText(f"그림 · 스캔 영수증을 AI(Claude Code)로 읽는 중 — {number}/{total}번째부터(몇십 초씩 걸립니다). 읽는 대로 빈 칸을 채웁니다.")
+        self.ai_note.show()
+
+    def _on_ai_done(self, results: dict) -> None:
+        for path, data in results.items():
+            for kind, table in self.tables.items():
+                if Path(path) in table.paths:
+                    self._ai_filled += table.apply_ai(Path(path), ai_read.summary(kind, data))
+
+    def _on_ai_finished(self, stopped: str) -> None:
+        self._ai_running = max(0, self._ai_running - 1)
+        if self._ai_running:
+            return
+        if stopped in ("login", "limit", "balance"):
+            reason = {"login": "Claude 로그인이 풀려", "limit": "Claude 사용 한도에 걸려", "balance": "Claude 잔액이 모자라"}[stopped]
+            self.ai_note.setText(f"{reason} 그림 · 스캔 영수증을 다 읽지 못했습니다 — 위쪽 AI 단추에서 확인한 뒤 ③ [폴더에서 다시 읽기] 를 누르세요. "
+                                 "못 읽은 칸은 ④ 미리 보기에서 적어도 됩니다.")
+        elif stopped:
+            self.ai_note.setText(f"그림 · 스캔 영수증 일부를 AI 로 읽지 못했습니다({stopped}) — ④ 미리 보기에서 빈 칸을 적거나 ③ [폴더에서 다시 읽기].")
+        else:
+            self.ai_note.setText(f"그림 · 스캔 영수증을 AI(Claude Code)로 읽어 빈 칸 {self._ai_filled}개를 채웠습니다 — ④ 미리 보기에서 맞는지 보세요"
+                                 "(칸에 마우스를 올리면 'AI 가 읽은 값').")
+        self.ai_note.show()
 
     def _check_folder(self) -> None:
         """앱으로 돌아오거나 화면을 다시 열면 폴더의 파일이 바뀌었는지 본다(③ 이후만)."""

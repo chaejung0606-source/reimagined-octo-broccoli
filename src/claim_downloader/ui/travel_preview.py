@@ -122,6 +122,16 @@ class PageView(QWidget):
             self.clicked.emit(hit)
 
 
+def show_in_folder(path: Path) -> None:
+    """탐색기에서 그 파일을 고른 채로 연다(윈도우). 다른 곳에서는 그 파일이 든 폴더를."""
+    import os
+    import subprocess
+    if os.name == "nt" and path.exists():
+        subprocess.Popen(["explorer", "/select,", str(path)])        # noqa: S603,S607 — 탐색기 열기만
+        return
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+
+
 class PreviewPanel(QWidget):
     """미리 보기 본문 — 쪽 그림 · 확인할 것 · 고치는 칸. 출장증빙 화면의 ④ 단계에 그대로 들어가고(담당자 2026-11-10 "5단계로 미리보기를"),
     만들기 전 확인 창(TravelPreview)도 이것을 쓴다.
@@ -532,6 +542,10 @@ class PreviewPanel(QWidget):
         name = WrapLabel(self._shown(ev.path) + (f" ({ev.part + 1}번째 영수증)" if ev.part is not None else ""))
         name.setObjectName("muted")
         self.editor_layout.addWidget(name)
+        if ev.ai:
+            note = WrapLabel("그림 · 스캔 영수증이라 AI(Claude Code)가 읽은 값이 들어 있습니다 — 원본과 다르면 고치세요.")
+            note.setObjectName("muted")
+            self.editor_layout.addWidget(note)
         form = QFormLayout()
         form.setSpacing(6)
         trip = self._trip
@@ -644,6 +658,12 @@ class PreviewPanel(QWidget):
             original.setAutoDefault(False)
             original.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))))
             row.addWidget(original)
+            where = QPushButton("폴더에서 보기")
+            where.setObjectName("ghost")
+            where.setAutoDefault(False)
+            where.setToolTip("탐색기에서 이 파일이 있는 곳을 엽니다 — 같은 영수증이 두 파일에 있으면 하나를 지우거나 옮기세요")
+            where.clicked.connect(lambda: show_in_folder(Path(path)))
+            row.addWidget(where)
         row.addStretch(1)
         self.editor_layout.addLayout(row)
 

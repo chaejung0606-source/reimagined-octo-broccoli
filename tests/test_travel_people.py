@@ -1662,3 +1662,102 @@ def test_same_receipt_twice_and_folder_changes(qapp, tmp_path, isolated_home):
     cache = {old: [object()]}
     cells = render._cells(model.Block([old, one]), cache, {})
     assert cells[0].image is None and "없는 파일" in cells[0].caption and old not in cache
+
+
+def _receipt_pdf(path: Path, lines: list[str]) -> Path:
+    """글자가 든 영수증 PDF(카드 승인전표 꼴) — pypdf 가 글자를 읽는다."""
+    from PySide6.QtGui import QFont, QPainter, QPdfWriter
+    writer = QPdfWriter(str(path))
+    writer.setResolution(150)
+    painter = QPainter(writer)
+    painter.setFont(QFont("Pretendard", 10))
+    for i, line in enumerate(lines):
+        painter.drawText(80, 120 + i * 60, line)
+    painter.end()
+    return path
+
+
+def test_ai_read_clean_and_summary():
+    """담당자 2026-11-16 KTX 영수증 "결제금액 및 일자, 이동편, 출발지 목적지 정보 다있음" — 그림 영수증은 AI 로 읽어 빈 칸만 채운다."""
+    from claim_downloader.travel import ai_read
+    files = ["/x/홍길동_대중교통 증빙.pdf", "/x/sub/홍길동_체류 증빙1.png"]
+    data = ai_read.clean({"files": [
+        {"file": "홍길동_대중교통 증빙.pdf", "receipts": [{"date": "2026년 10월 30일", "amount": "29,800원", "mode": "KTX", "origin": "동대구",
+                                                          "goal": "평택지제", "approvalNo": "9876-5432", "nights": "x"}]},
+        {"file": "/x/sub/홍길동_체류 증빙1.png", "receipts": [{"date": "2026.10.29", "amount": 13500, "address": "대구 동구 가나로 1"}]},
+        {"file": "모르는 파일.png", "receipts": [{"amount": 1}]}, "x"]}, files)
+    assert set(data) == set(files)
+    ktx = ai_read.summary(model.PUBLIC, data[files[0]])
+    assert (ktx["date"], ktx["amount"], ktx["mode"], ktx["origin"], ktx["goal"], ktx["approvalNo"]) == (
+        "2026-10-30", 29800, "열차", "동대구", "평택지제", "98765432")
+    two = ai_read.summary(model.PUBLIC, {"receipts": [
+        {"date": "2026-10-30", "amount": 8000, "mode": "시외버스", "origin": "춘천", "goal": "서울", "approvalNo": "", "address": "", "nights": None},
+        {"date": "2026-10-30", "amount": 2000, "mode": "시내버스", "origin": "서울", "goal": "강남", "approvalNo": "", "address": "", "nights": None}]})
+    assert (two["amount"], two["mode"], two["origin"], two["goal"], two["date"]) == (10000, "", "춘천", "강남", "2026-10-30")
+    assert ai_read.summary(model.STAY, {"receipts": []}) == {}
+    prompt = ai_read.build_prompt([(files[0], model.PUBLIC)], "/tmp/out.json")
+    assert "승차(출발)일" in prompt and "발행" in prompt and files[0] in prompt
+    assert "29800" not in ai_read.found_text(data) and "동대구" not in ai_read.found_text(data)        # 기록에는 값을 남기지 않는다
+
+
+def test_ai_fills_blank_cells_and_same_receipt_once(qapp, tmp_path, isolated_home, monkeypatch):
+    """그림 영수증의 빈 칸을 AI 로 채우고, 같은 영수증(승인번호 같음)이 PDF 와 그림으로 둘 다 있으면 한 번만 넣는다
+    (담당자 2026-11-16 "아니 왜 똑같은게 두번 들어가죠?" — 차례 번호를 붙인 그림 쪽을 남긴다)."""
+    import time
+
+    from claim_downloader.travel import ai_read
+    from claim_downloader.ui.pages import travel as travel_page
+    folder = tmp_path / "출장비 지급(26.10.29. 대구)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(
+        "출장자 연구원 홍길동\n출장기간 2026. 10. 29.(목) ~ 2026. 10. 30.(금)\n출장지 대구 가나컨벤션\n", encoding="utf-8")
+    pdf = _receipt_pdf(folder / "홍길동_체류 증빙.pdf", ["하나카드 승인전표", "거래일시 2026.10.29 20:00:00", "승인번호 12345678",
+                                                          "승인금액 13,500원", "가맹점주소 대구 동구 가나로 1"])
+    one, two = _image(folder / "홍길동_체류 증빙1.png"), _image(folder / "홍길동_체류 증빙2.png")
+    ktx = _image(folder / "홍길동_대중교통 증빙.png")
+    ai_read.remember({str(one): {"receipts": [{"date": "2026-10-29", "amount": 13500, "mode": "", "origin": "", "goal": "",
+                                               "address": "대구 동구 가나로 1", "approvalNo": "12345678", "nights": None}]}})
+    calls = []
+    qapp.processEvents()                     # 앞 시험의 화면들이 남긴 할 일(AI 읽기 시작)을 먼저 비운다 — 아래에서 claude 가 '있게' 바꾸므로
+
+    def fake_read(files):
+        files = [(p, k) for p, k in files if Path(p).is_relative_to(folder)]      # 앞 시험의 화면이 맡긴 것은 세지 않는다
+        if files:
+            calls.append([Path(p).name for p, _ in files])
+        out = {}
+        for path, _kind in files:
+            if path.endswith("대중교통 증빙.png"):
+                out[path] = {"receipts": [{"date": "2026-10-30", "amount": 29800, "mode": "열차", "origin": "동대구", "goal": "평택지제",
+                                           "address": "", "approvalNo": "98765432", "nights": None}]}
+            else:
+                out[path] = {"receipts": [{"date": "2026-10-30", "amount": 9000, "mode": "", "origin": "", "goal": "",
+                                           "address": "대구 중구 중앙대로 1", "approvalNo": "55556666", "nights": None}]}
+        return out
+    monkeypatch.setattr(ai_read, "find_claude", lambda: "claude")
+    monkeypatch.setattr(ai_read, "read", fake_read)
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.show()
+    page.load_folder(str(folder))
+    page._go("files")
+    public, stay = page.tables["public"], page.tables["stay"]
+    for _ in range(200):
+        qapp.processEvents()
+        if public.item(0, 2) and public.item(0, 2).text() and not page._ai_running:
+            break
+        time.sleep(0.02)
+    assert calls == [["홍길동_체류 증빙2.png", "홍길동_대중교통 증빙.png"]]        # 전에 읽은 증빙1 은 캐시로, PDF 는 글자로
+    assert [public.item(0, c).text() for c in range(1, 6)] == ["2026-10-30", "29,800", "열차", "동대구", "평택지제"]
+    days = {p.name: (stay.item(r, 1).text(), stay.item(r, travel_page.SHOP_COL).text()) for r, p in enumerate(stay.paths)}
+    assert days == {"홍길동_체류 증빙.pdf": ("2026-10-29", "대구"), "홍길동_체류 증빙1.png": ("2026-10-29", "대구"),
+                    "홍길동_체류 증빙2.png": ("2026-10-30", "대구")}       # 차례 번호 일자는 AI 가 덮지 않는다
+    assert "빈 칸" in page.ai_note.text() and not page.ai_note.isHidden()
+    trip = page.trips()[0]
+    assert sorted(e.path.name for e in trip.stay) == ["홍길동_체류 증빙1.png", "홍길동_체류 증빙2.png"]
+    assert [(k, gone.path, kept.path) for k, gone, kept in trip.dropped] == [(model.STAY, pdf, one)]
+    notes = model.review(trip)
+    assert any("같은 영수증" in n and "홍길동_체류 증빙.pdf" in n for n in notes) and not any("같은 날" in n for n in notes)
+    assert all(e.ai for e in trip.public) and not model.unclear(trip, model.PUBLIC, trip.public[0])
+    # 다시 열어도 다시 읽지 않는다(캐시)
+    page._reload(str(folder))
+    qapp.processEvents()
+    assert len(calls) == 1 and public.item(0, 2).text() == "29,800"
