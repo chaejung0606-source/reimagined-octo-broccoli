@@ -296,3 +296,13 @@ def test_copy_to_desktop_keeps_old_copies(tmp_path):
     assert first.read_text(encoding="utf-8") == "모음" == again.read_text(encoding="utf-8")
     with pytest.raises(FileNotFoundError):
         diagnose.copy_to_desktop(tmp_path / "없음", book, single, when)
+
+
+def test_full_book_is_moved_aside_not_erased(tmp_path, monkeypatch):
+    """모음이 커져 새로 시작할 때 지우지 않고 '_이전' 으로 옮긴다 — 몇 분 전에 저장한 화면까지 사라졌다(2026-11-16 검수)."""
+    monkeypatch.setattr(diagnose, "BOOK_LIMIT", 100)
+    book = tmp_path / "_화면구조_모음.txt"
+    assert diagnose.append_to_book(book, "가" * 200 + "\n") == 1
+    assert diagnose.append_to_book(book, "둘째 화면\n") == 1
+    old = tmp_path / "_화면구조_모음_이전.txt"
+    assert old.exists() and "가가가" in old.read_text(encoding="utf-8") and "둘째 화면" in book.read_text(encoding="utf-8")

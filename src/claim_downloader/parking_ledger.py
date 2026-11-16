@@ -142,6 +142,20 @@ def update(entry_id: str, **changes) -> list[Entry]:
         return ordered(entries)
 
 
+SKIPPED = "지움(사이트 사용내역 — 다시 가져오지 않게 배부 0 으로 남김)"
+
+
+def remove_or_skip(entry_id: str) -> tuple[list[Entry], bool]:
+    """줄 지우기 — 사이트 할인 내역 · 할인 적용에서 온 차량 줄은 지우면 다음 가져오기에 다시 들어온다. 그 줄은 배부 0 · 비고 '지움' 으로 남긴다.
+    (줄들, 남겼는지)."""
+    with _LOCK:
+        target = next((e for e in load() if e.id == entry_id), None)
+    if target is not None and target.car and target.source in ("site", "apply"):
+        note = target.note if SKIPPED in (target.note or "") else ((target.note + " · ") if target.note else "") + SKIPPED
+        return update(entry_id, given=0, note=note), True
+    return remove(entry_id), False
+
+
 def remove(entry_id: str) -> list[Entry]:
     """지운 줄은 구글 시트에도 알린다(deleted) — 시트와 맞추는 중에 지운 줄이 되살아나지 않게 맞춘 적이 없는 줄도 적어 둔다.
     시트에 알리면 목록에서 뺀다(mark_synced). 연동하지 않는 PC 에서 끝없이 쌓이지 않게 최근 500개만."""
@@ -200,15 +214,26 @@ def to_sheet(entries: list[Entry]) -> list[list]:
              e.updated, e.created] for e, left in with_balance(entries)]
 
 
-def from_sheet(rows: list[list]) -> list[Entry]:
-    """시트의 줄(머리글 빼고, 글자로 읽은 값) → 대장 줄. 일자를 못 읽는 줄은 뺀다. id 가 없는 줄(시트에 손으로 더한 줄)은 새 id."""
+def from_sheet(rows: list[list], bad: list | None = None) -> list[Entry]:
+    """시트의 줄(머리글 빼고, 글자로 읽은 값) → 대장 줄. id 가 없는 줄(시트에 손으로 더한 줄)은 새 id. 빈 줄은 건너뛴다.
+    일자 · 수량을 못 읽은 줄은 bad 에 (시트 행 번호, 까닭)으로 — 전에는 조용히 버려, 맞춘 적 있는 줄이면 '시트에서 지운 줄' 로 보고 이 PC 와 시트
+    양쪽에서 지웠다(2026-11-16 검수: 일자를 '11월 16일' 로 고친 줄 · 구입 '100개'). 부르는 쪽(sync_ledger)은 bad 가 있으면 맞추지 않는다."""
     out = []
-    for row in rows:
+    for n, row in enumerate(rows, start=2):                   # 시트 1행은 머리글
         cell = lambda i: str(row[i]).strip() if i < len(row) and row[i] is not None else ""  # noqa: E731
-        date = day_of(cell(0))
-        if not date:
+        if not any(cell(i) for i in range(9)):
             continue
-        out.append(Entry(date=date, bought=_int(cell(1)), given=_int(cell(2)), content=cell(4), user=cell(5), car=cell(6),
+        date = day_of(cell(0)) or loose_day(cell(0))
+        if not date:
+            if bad is not None:
+                bad.append((n, f"일자 '{cell(0) or '빔'}'"))
+            continue
+        bought, given = _count(cell(1)), _count(cell(2))
+        if bought is None or given is None:
+            if bad is not None:
+                bad.append((n, f"수량 '{cell(1) if bought is None else cell(2)}'"))
+            continue
+        out.append(Entry(date=date, bought=bought, given=given, content=cell(4), user=cell(5), car=cell(6),
                          note=cell(7), source=_SOURCE_OF.get(cell(8), "manual"), id=cell(9) or uuid.uuid4().hex,
                          updated=cell(10) or now_stamp(), created=cell(11) or dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     return out
@@ -360,7 +385,9 @@ def match_site(entries: list[Entry], headers: list[str], rows: list[list[str]]) 
         return result
     pool: dict[tuple[str, str], list] = {}
     for e in entries:
-        if e.car and (e.given or is_free(e.note)):              # 적용금액 0 이라 배부 0 으로 둔 줄도 그 사이트 줄의 짝이다
+        # 차량번호가 있는 줄은 배부가 0 이어도 그 사이트 줄의 짝이다 — 적용금액 0 이라 배부 0 으로 둔 줄, 사람이 배부를 0 으로 고친 줄(취소 · 시험),
+        # 지운 사이트 줄(배부 0 으로 남김 — 아래 SKIPPED). 배부 1 이상만 짝으로 보면 그 줄이 다음 가져오기에 배부 1 로 다시 들어왔다(2026-11-16 검수)
+        if e.car:
             pool.setdefault((e.date, _squash(e.car)), []).extend([e] * max(e.given, 1))
     cell = lambda row, c: row[c] if 0 <= c < len(row) else ""  # noqa: E731
     for i, row in enumerate(rows):
@@ -705,6 +732,32 @@ def export_xlsx(entries: list[Entry], target: str | Path) -> Path:
 def _width(value) -> int:
     text = "" if value is None else str(value)
     return sum(2 if ord(ch) > 0x2E80 else 1 for ch in text)
+
+
+def loose_day(text: str, today: dt.date | None = None) -> str:
+    """해가 없는 일자('11/16' · '11월 16일' · '11.16') — 올해로, 그러면 60일 넘게 앞이면 지난해로. 못 읽으면 ''."""
+    m = re.fullmatch(r"\s*(\d{1,2})\s*[./월-]\s*(\d{1,2})\s*일?\.?\s*", str(text or ""))
+    if not m:
+        return ""
+    today = today or dt.date.today()
+    try:
+        day = dt.date(today.year, int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return ""
+    if (day - today).days > 60:
+        day = day.replace(year=today.year - 1)
+    return day.isoformat()
+
+
+def _count(value) -> int | None:
+    """시트의 수량 칸 — '100' · '1,000' · '100개' 는 숫자, 빈칸은 0, 숫자가 없는 글은 None(못 읽음)."""
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    m = re.search(r"\d[\d,]*", text)
+    if not m:
+        return None
+    return max(int(m.group(0).replace(",", "")), 0)
 
 
 def _int(value) -> int:

@@ -224,3 +224,50 @@ def test_history_since_and_stamps():
     assert ledger.history_since([], dt.date(2026, 10, 22)) == "2026-01-01"
     assert ledger.stamp_of("2026-10-20 17:37:04") == "2026-10-20 17:37:04" and ledger.stamp_of("2026.9.5 9:03") == "2026-09-05 09:03:00"
     assert (ledger.amount_of("6,700"), ledger.amount_of("0"), ledger.amount_of(""), ledger.amount_of("-")) == (6700, 0, None, None)
+
+
+def test_qa_20261116_sheet_rows_and_removed_site_rows(isolated_home):
+    """2026-11-16 검수 — 시트에서 일자를 '11월 16일' 로 고치거나 수량을 '100개' 로 적은 줄을 조용히 버리면 양쪽에서 지워졌다(읽지 못한 줄은 알림) ·
+    배부를 0 으로 고친 줄 · 지운 사이트 줄이 다음 가져오기에 다시 들어왔다."""
+    bad: list = []
+    rows = [["2026-11-12", "", "1", "", "", "", "12가3456", "", "직접", "a1"],
+            ["11월 16일", "", "1", "", "", "", "", "", "직접", "a2"],
+            ["2026-11-13", "100개", "", "", "", "", "", "", "직접", "a3"],
+            ["어제", "", "1", "", "", "", "", "", "직접", "a4"],
+            ["", "", "", "", "", "", "", "", "", ""]]
+    got = ledger.from_sheet(rows, bad)
+    assert [(e.id, e.bought, e.given) for e in got] == [("a1", 0, 1), ("a2", 0, 1), ("a3", 100, 0)]
+    assert got[1].date.endswith("-11-16") and bad == [(5, "일자 '어제'")]
+    assert ledger.loose_day("11/16", dt.date(2027, 1, 5)) == "2026-11-16"          # 1월에 적은 지난해 11월
+    # 배부 0 으로 고친 줄 · 지운 사이트 줄은 다음 가져오기에 다시 들어오지 않는다
+    headers = ["할인일시", "차량번호", "할인명"]
+    site_rows = [["2026-10-21 10:03", "12가3456", "공무확인증4시간"], ["2026-10-21 11:00", "34나5678", "공무확인증4시간"]]
+    zero = ledger.Entry(date="2026-10-21", given=0, car="12가3456", source="apply")
+    site = ledger.Entry(date="2026-10-21", given=1, car="34나5678", source="site")
+    ledger.add(zero)
+    ledger.add(site)
+    entries, kept = ledger.remove_or_skip(site.id)
+    assert kept and [e.given for e in entries if e.id == site.id] == [0]
+    match = ledger.match_site(entries, headers, site_rows)
+    assert match.missing == []
+    manual = ledger.Entry(date="2026-10-22", bought=10)
+    ledger.add(manual)
+    entries, kept = ledger.remove_or_skip(manual.id)
+    assert not kept and manual.id not in {e.id for e in entries}               # 손으로 적은 줄은 그대로 지운다
+
+
+def test_sheet_sync_refuses_when_rows_cannot_be_read(isolated_home, monkeypatch):
+    from claim_downloader import parking_sheet
+
+    ledger.add(ledger.Entry(date="2026-11-12", given=1, car="12가3456", id="a1"))
+    ledger.mark_synced({"a1"}, set())
+    calls = []
+
+    def fake_call(config, action, opener=None, **kw):
+        calls.append(action)
+        return {"ok": True, "rows": [["11 16", "", "1", "", "", "", "12가3456", "", "직접", "a1"]]}
+    monkeypatch.setattr(parking_sheet, "call", fake_call)
+    config = parking_sheet.Config(url="https://script.google.com/macros/s/x/exec", token="t")
+    result = parking_sheet.sync_ledger(config)
+    assert not result.ok and "읽지 못한 줄" in result.note and calls == ["ledger_get"]   # 시트에 다시 쓰지 않는다
+    assert [e.id for e in ledger.load()] == ["a1"]                                   # 이 PC 의 대장도 그대로

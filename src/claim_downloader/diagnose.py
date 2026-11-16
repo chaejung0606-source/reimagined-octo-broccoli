@@ -533,7 +533,13 @@ def append_to_book(path, report: str) -> int:
     """저장한 화면 구조를 모음 파일 끝에 붙인다. 몇 번째인지 돌려준다. 메뉴 이동처럼 화면을 차례로 실측할 때 담당자가 마지막에
     모음 하나만 보내면 된다(2026-10-19). 쓰지 못하면 0 — 모음은 덤이라 저장 자체를 실패로 두지 않는다."""
     try:
-        old = path.read_text(encoding="utf-8") if path.exists() and path.stat().st_size < BOOK_LIMIT else ""
+        old = ""
+        if path.exists():
+            if path.stat().st_size < BOOK_LIMIT:
+                old = path.read_text(encoding="utf-8")
+            else:
+                # 모음이 커지면 새로 시작하되 지우지 않고 '_이전' 으로 옮긴다 — 전에는 통째로 새로 써서 몇 분 전에 저장한 화면까지 사라졌다(2026-11-16 검수)
+                path.replace(path.with_name(path.stem + "_이전" + path.suffix))
         number = len(re.findall(r"^════ 화면 구조 \d+번째", old, re.M)) + 1
         head = f"════ 화면 구조 {number}번째 ════\n"
         path.write_text(old + ("\n" if old and not old.endswith("\n\n") else "") + head + report, encoding="utf-8")

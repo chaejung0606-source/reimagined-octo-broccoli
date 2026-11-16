@@ -18,7 +18,8 @@ ERP = (SRC / "erp.py").read_text(encoding="utf-8")
 
 # JS 안에서 글자로 찾아 누르거나 비교하는 대상
 ALLOWED_TEXT = {"청구서출력", "목록", "확인", "비목", "예금주", "입금처"}
-ALLOWED_IDS = {"#btnDetail"}
+# '#SEARCH_PURCH_REQ_NO' 는 있는지 읽기만 한다 — 구매진행관리 목록(#btnDetail 이 같음)을 결의서 목록으로 고르지 않게(2026-11-16 검수)
+ALLOWED_IDS = {"#btnDetail", "#SEARCH_PURCH_REQ_NO"}
 ALLOWED_PY_CLICKS = {'popup.click("input.btnSAVEAS")'}
 
 

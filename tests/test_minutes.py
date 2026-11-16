@@ -409,3 +409,29 @@ def test_npm_claude_cmd_runs_node_directly(tmp_path, monkeypatch):
     native.write_text("", encoding="utf-8")
     shim.write_text('@ECHO off\r\n"%~dp0\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe" %*\r\n', encoding="utf-8")
     assert claude_cli.claude_command(str(shim), ["-p", "x"]) == [str(native), "-p", "x"]
+
+
+def test_folders_with_minutes_already_are_skipped(tmp_path, monkeypatch):
+    """회의록이 이미 있는 회의 폴더는 '완료' 로 넣어 다시 AI 로 만들지 않는다 · 상위 폴더를 끌어다 놓으면 하위 폴더마다 · '업로드' · '기타' 는 회의가 아니다
+    (2026-11-16 검수)."""
+    pytest.importorskip("PySide6")
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from claim_downloader.ui.pages import minutes as page_mod
+
+    parent = tmp_path / "10월 회의"
+    for name in ("1015 운영회의", "1022 협의회", "업로드", "기타"):
+        (parent / name).mkdir(parents=True)
+    (parent / "1015 운영회의" / "2026-10-15 수 운영회의.hwpx").write_bytes(b"x")
+    (parent / "1022 협의회" / "회의자료.pdf").write_bytes(b"x")
+    assert [os.path.basename(p) for p in page_mod.meeting_subdirs(str(parent))] == ["1015 운영회의", "1022 협의회"]
+    assert page_mod.existing_minutes(str(parent / "1015 운영회의")).endswith("2026-10-15 수 운영회의.hwpx")
+    assert page_mod.existing_minutes(str(parent / "1022 협의회")) == ""
+    page = page_mod.MinutesPage()
+    for sub in page_mod.meeting_subdirs(str(parent)):
+        page.add_meeting_dir(sub)
+    assert page._status == ["done", "waiting"] and page._todo_rows() == [1]

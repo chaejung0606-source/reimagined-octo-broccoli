@@ -16,6 +16,7 @@ ui/ai_status.py 의 상태를 ② 에 보여 주기만 한다. Claude Code 가 �
 from __future__ import annotations
 
 import os
+import re
 
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
@@ -60,6 +61,38 @@ ROW_STATUS = {
     "skipped": ("건너뜀", "warning"),
     "stopped": ("안 함", "neutral"),
 }
+
+# 회의 폴더로 보지 않는 하위 폴더 — 앱이 만든 결과 · 담당자가 빼 둔 것(카드청구 · 출장증빙과 같은 규칙)
+SKIP_SUBDIRS = ("업로드", "기타", "제외", "사용안함", "미사용", "안씀", "이전", "백업", "old", "backup")
+# 앱이 만든 회의록 이름 — 'yyyy-mm-dd 요일 안건요약.hwpx'(13절, 같은 이름이 있으면 '-2')
+MADE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}\s+\S+.*\.(hwpx|docx)$", re.I)
+
+
+def meeting_subdirs(parent: str) -> list[str]:
+    try:
+        names = sorted(os.listdir(parent))
+    except OSError:
+        return []
+    return [os.path.join(parent, x) for x in names
+            if os.path.isdir(os.path.join(parent, x)) and not x.startswith(".")
+            and re.sub(r"\s+", "", x).lower() not in SKIP_SUBDIRS]
+
+
+def _has_files(folder: str) -> bool:
+    try:
+        return any(os.path.isfile(os.path.join(folder, x)) and not x.startswith((".", "~$")) for x in os.listdir(folder))
+    except OSError:
+        return False
+
+
+def existing_minutes(folder: str) -> str:
+    """회의 폴더 바로 아래에 앱이 만든 회의록이 있으면 그 경로(가장 최근 것), 없으면 ''."""
+    try:
+        made = [os.path.join(folder, x) for x in os.listdir(folder) if MADE_RE.match(x)]
+    except OSError:
+        return ""
+    return max(made, key=os.path.getmtime) if made else ""
+
 
 GUIDE_START = "표에서 회의를 확인하고 [작업 시작] 을 누르세요. 회의 1건에 수십 초에서 몇 분이 걸립니다."
 GUIDE_RUNNING = "회의 1건에 수십 초에서 몇 분이 걸립니다. 다른 탭으로 가도 작업은 이어집니다."
@@ -366,6 +399,20 @@ class MinutesPage(QWidget):
         name = QTableWidgetItem(f"{os.path.basename(path)}  ·  {os.path.dirname(path)}")
         name.setToolTip(path)
         self.table.setItem(row, COL_DIR, name)
+        made = existing_minutes(path)
+        if made:
+            # 이미 회의록이 있는 회의 — 다시 보내면 사용량을 다시 쓰고 '-2' 회의록이 생긴다(2026-11-16 검수: 상위 폴더를 달마다 넣으면 지난 회의가
+            # 모두 '대기' 로 들어왔다). '완료' 로 두어 [작업 시작] 이 건너뛴다. 다시 만들려면 그 회의록을 옮기고 폴더를 다시 넣는다
+            self._status[-1] = "done"
+            self._results[row] = made
+            self._set_status(row, "done")
+            self.table.setItem(row, COL_FILE, QTableWidgetItem(os.path.basename(made)))
+            note = QTableWidgetItem("회의록이 이미 있어 건너뜁니다 — 다시 만들려면 그 파일을 옮긴 뒤 폴더를 다시 넣으세요")
+            note.setToolTip(made)
+            self.table.setItem(row, COL_NOTE, note)
+            self._set_progress(0, len(self._dirs))
+            self._sync_buttons()
+            return True
         self._set_status(row, "waiting")
         self._set_progress(0, len(self._dirs))
         self._sync_buttons()
@@ -380,10 +427,9 @@ class MinutesPage(QWidget):
         parent = QFileDialog.getExistingDirectory(self, "여러 회의 폴더가 들어 있는 '상위' 폴더 선택")
         if not parent:
             return
-        subs = [os.path.join(parent, x) for x in sorted(os.listdir(parent))
-                if os.path.isdir(os.path.join(parent, x))]
+        subs = meeting_subdirs(parent)
         if not subs:
-            QMessageBox.information(self, "안내", "선택한 폴더 안에 하위 폴더가 없습니다.")
+            QMessageBox.information(self, "안내", "선택한 폴더 안에 회의 폴더(하위 폴더)가 없습니다.")
             return
         for sub in subs:
             self.add_meeting_dir(sub)
@@ -410,7 +456,16 @@ class MinutesPage(QWidget):
 
     def dropEvent(self, event) -> None:  # noqa: N802
         self._set_drop_active(False)
-        added = sum(1 for u in event.mimeData().urls() if self.add_meeting_dir(u.toLocalFile()))
+        added = 0
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            subs = meeting_subdirs(path) if os.path.isdir(path) and not _has_files(path) else []
+            # 상위 폴더(하위 폴더만 있고 바로 아래 파일이 없음)를 끌어다 놓으면 회의 1건으로 넣지 않고 하위 폴더마다 — 안내 글과 같게.
+            # 전에는 회의 1건으로 들어가 여러 회의를 섞은 회의록 하나가 만들어졌다(2026-11-16 검수)
+            if subs:
+                added += sum(1 for sub in subs if self.add_meeting_dir(sub))
+            elif self.add_meeting_dir(path):
+                added += 1
         if added:
             event.acceptProposedAction()
 
@@ -455,13 +510,16 @@ class MinutesPage(QWidget):
         # 생기고 AI 사용량을 다시 썼다(2026-10-14 점검). 다시 만들려면 목록을 비우고 다시 넣는다.
         todo = self._todo_rows()
         if not todo:
-            QMessageBox.information(self, "작업 시작", "목록의 회의록을 모두 만들었습니다.\n다시 만들려면 [목록 비우기] 뒤 폴더를 다시 넣으세요.")
+            QMessageBox.information(self, "작업 시작", "목록의 회의록을 모두 만들었습니다(또는 이미 있습니다).\n"
+                                    "다시 만들려면 그 회의 폴더의 회의록 파일을 다른 곳으로 옮기고 [목록 비우기] 뒤 폴더를 다시 넣으세요.")
             return
         label = ai.label_of(self._backend_key)
+        made = sum(1 for status in self._status if status == "done")
         answer = QMessageBox.question(
             self, "작업 시작",
             f"회의 {len(todo)}건의 자료가 '{label}' 로 전송되어 회의록이 만들어집니다.\n"
-            "회의록은 각 회의 폴더 안에 저장되며 기존 파일은 덮어쓰지 않습니다.\n\n시작할까요?",
+            + (f"회의록이 이미 있는 {made}건은 건너뜁니다.\n" if made else "")
+            + "회의록은 각 회의 폴더 안에 저장되며 기존 파일은 덮어쓰지 않습니다.\n\n시작할까요?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
         if answer != QMessageBox.Yes:
             return

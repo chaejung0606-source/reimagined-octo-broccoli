@@ -64,6 +64,7 @@ class SessionWorker(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._queue: queue.Queue = queue.Queue()
+        self.watching = False                  # 로그인 뒤 목록을 지켜보는 중(_watch_for_list) — 화면이 저절로 넣는 명령을 미룬다
         self._stop = threading.Event()
         self._resume = threading.Event()
         self._resume_ok = False
@@ -338,6 +339,13 @@ class SessionWorker(QObject):
         로그인은 사람이 한다(9절) — 앱은 로그인 화면에서 아무것도 누르지 않는다. 다른 명령이 오거나(사람이 단추를 누름 ·
         일반청구가 브라우저를 씀) 브라우저가 닫히거나 WATCH_SECONDS 가 지나면 그만 본다. 이 스레드가 지켜보는 동안 다른 명령은
         길어야 한 번 쉬는 만큼(1.5초) 기다린다. 앱이 못 가면(과제가 안 보임 등) 기록에 까닭을 남기고, 사람이 띄우는 목록을 계속 기다린다."""
+        self.watching = True           # 화면들이 저절로 넣는 명령(관리대장 자동 가져오기)은 이 동안 미룬다 — 명령이 오면 지켜보기가 끝난다
+        try:
+            self._watch_loop(session, ready, project_no)
+        finally:
+            self.watching = False
+
+    def _watch_loop(self, session: ErpSession, ready: bool, project_no: str) -> None:
         deadline = time.monotonic() + WATCH_SECONDS
         seen = 0
         tried = not project_no

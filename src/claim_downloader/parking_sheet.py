@@ -680,7 +680,14 @@ def sync_ledger(config: Config | None = None, opener=None) -> Result:
         return Result(note="연결 안 됨")
     try:
         data = call(config, "ledger_get", opener=opener)
-        remote = ledger.from_sheet(data.get("rows") or [])
+        bad: list = []
+        remote = ledger.from_sheet(data.get("rows") or [], bad)
+        if bad:
+            # 읽지 못한 줄이 있으면 맞추지 않는다 — 그 줄을 '시트에서 지운 줄' 로 보고 양쪽에서 지우게 된다(2026-11-16 검수)
+            where = " · ".join(f"{n}행 {why}" for n, why in bad[:5]) + (" …" if len(bad) > 5 else "")
+            note = f"구글 시트 관리대장에서 읽지 못한 줄이 있어 맞추지 않았습니다 — {where}. 일자는 2026-11-16, 수량은 숫자로 고쳐 주세요"
+            log(note)
+            return Result(note=note, sheet_url=config.sheet_url, sheet_name=config.sheet_name)
         with ledger._LOCK:
             local = ledger.load()
             synced, deleted = ledger.sync_state()

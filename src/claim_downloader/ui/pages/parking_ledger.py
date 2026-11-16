@@ -197,6 +197,7 @@ class LedgerPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
         self._entries: list[ledger.Entry] = []
+        self.waiting_login = lambda: False          # 주차등록 화면이 브라우저 스레드의 '로그인 기다리는 중' 을 넘겨준다
         self._filling = False
         self._busy = False
         self._read_at = 0.0                # 마지막으로 사이트에서 가져온 때(time.monotonic) — 열 때마다 가져오되 1분 안에는 다시 안 함
@@ -279,9 +280,18 @@ class LedgerPanel(QWidget):
         self._show(ledger.load())
 
     def _show(self, entries: list[ledger.Entry]) -> None:
+        table = self.table
+        if table.state() == QAbstractItemView.EditingState:
+            # 칸을 고치는 중에 시트 맞추기 · 사이트 가져오기가 끝나 표를 다시 그리면 친 글이 사라지고 표가 맨 위로 갔다(2026-11-16 검수) —
+            # 다 고친 뒤(편집기가 닫힌 뒤) 그때의 대장으로 그린다
+            if not getattr(self, "_redraw_pending", False):
+                self._redraw_pending = True
+                QTimer.singleShot(800, self._redraw_later)
+            return
+        keep_id = self._entries[table.currentRow()].id if 0 <= table.currentRow() < len(getattr(self, "_entries", [])) else ""
+        keep_scroll = table.verticalScrollBar().value()
         self._entries = ledger.ordered(entries)
         self._filling = True
-        table = self.table
         table.setRowCount(0)
         rows = ledger.with_balance(self._entries)
         table.setRowCount(len(rows))
@@ -297,9 +307,21 @@ class LedgerPanel(QWidget):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 table.setItem(r, c, item)
         table.resizeColumnsToContents()
+        if keep_id:
+            row = next((r for r, e in enumerate(self._entries) if e.id == keep_id), -1)
+            if row >= 0:
+                table.setCurrentCell(row, max(table.currentColumn(), 0))
+        table.verticalScrollBar().setValue(keep_scroll)          # 다시 그려도 보던 자리 그대로(표가 맨 위로 가지 않게)
         self._filling = False
         self.left_box.show_counts(self._entries, rows)
         self._sync()
+
+    def _redraw_later(self) -> None:
+        if self.table.state() == QAbstractItemView.EditingState:
+            QTimer.singleShot(800, self._redraw_later)
+            return
+        self._redraw_pending = False
+        self._show(ledger.load())
 
     def _edited(self, item: QTableWidgetItem) -> None:
         if self._filling or not (0 <= item.row() < len(self._entries)):
@@ -345,8 +367,11 @@ class LedgerPanel(QWidget):
         if QMessageBox.question(self, "줄 지우기", f"이 줄을 관리대장에서 지울까요?\n\n{what}",
                                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
-        self._show(ledger.remove(entry.id))
+        entries, kept = ledger.remove_or_skip(entry.id)
+        self._show(entries)
         self._local_change()
+        if kept:
+            QMessageBox.information(self, "줄 지우기", "사이트 사용내역에서 온 줄이라 지우면 다음 가져오기에 다시 들어옵니다 — 배부 0 · 비고 '지움' 으로 남겼습니다.")
 
     def _export(self) -> None:
         name = f"{ledger.TITLE}_{dt.date.today():%Y%m%d}.xlsx"
@@ -431,6 +456,10 @@ class LedgerPanel(QWidget):
             return
         if not parking.saved_user():
             self.site_line.setText("설정 → '주차등록 로그인 정보' 를 넣으면 관리대장을 열 때마다 사이트 사용내역 · 보유 잔량을 저절로 가져옵니다.")
+            return
+        if self.waiting_login():
+            # 증빙 다운로드가 ERP 로그인을 기다리는 중 — 저절로 넣는 이 명령이 그 기다리기를 끊어, 로그인해도 과제 · 목록으로 가지 않았다(2026-11-16 검수)
+            self.site_line.setText("ERP 로그인을 기다리는 중이라 사이트 사용내역은 다음에 가져옵니다([사이트에서 가져오기] 로 바로 가져올 수 있습니다).")
             return
         self.read_site.emit()
 

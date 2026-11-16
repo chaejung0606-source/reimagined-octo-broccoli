@@ -400,6 +400,7 @@ class ParkingPage(QWidget):
     def _build_history(self) -> QWidget:
         self.ledger = LedgerPanel()
         self.ledger.read_site.connect(self._read_history)
+        self.ledger.waiting_login = lambda: bool(getattr(self.worker, "watching", False))
         return self.ledger
 
     def _on_history(self, report) -> None:
