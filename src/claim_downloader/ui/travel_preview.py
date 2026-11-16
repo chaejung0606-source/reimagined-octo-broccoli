@@ -10,6 +10,7 @@ from __future__ import annotations
 from PySide6.QtCore import QEvent, QRectF, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QImage, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QDialog,
     QFormLayout,
@@ -139,17 +140,31 @@ class PreviewPanel(QWidget):
         self._trip: model.Trip | None = None
         self._zoom_mode = FIT_PAGE
         self._zoom = 1.0
+        self._person_i = 0                # 미리 보는 출장자(trips() 차례)
+        self._person_names: list[str] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
-        head = QHBoxLayout()
+        # 출장자별 단추 — 하나를 누르면 그 사람의 출장증빙을 미리 보고 고친다(담당자 2026-11-16 "미리보기 고치기는 출장자별로 확인할 수
+        # 있도록 · 출장자별 버튼이 생기고 한 출장자 버튼을 선택하면 해당 출장자의 증빙을 미리보고 고칠 수 있도록"). 전에는 고르기 칸 하나였다.
+        self.person_row = QWidget()
+        people = QHBoxLayout(self.person_row)
+        people.setContentsMargins(0, 0, 0, 0)
+        people.setSpacing(6)
         self.person_label = QLabel("출장자")
         self.person_label.setObjectName("muted")
-        head.addWidget(self.person_label)
-        self.person_box = QComboBox()
-        self.person_box.currentIndexChanged.connect(lambda _i: self.refresh(keep=False))
-        head.addWidget(self.person_box)
+        people.addWidget(self.person_label)
+        self.person_buttons_layout = QHBoxLayout()
+        self.person_buttons_layout.setSpacing(6)
+        people.addLayout(self.person_buttons_layout)
+        people.addStretch(1)
+        self.person_group = QButtonGroup(self)
+        self.person_group.setExclusive(True)
+        self.person_group.idClicked.connect(self._on_person)
+        self.person_buttons: list[QPushButton] = []
+        layout.addWidget(self.person_row)
+        head = QHBoxLayout()
         head.addStretch(1)
         self.zoom_out_button = self._tool("−", "축소 (Ctrl+-, Ctrl+휠 아래)", lambda: self.zoom_step(-1))
         self.zoom_label = QLabel("")
@@ -212,19 +227,54 @@ class PreviewPanel(QWidget):
         self.set_people(name)
 
     def set_people(self, name: str = "") -> None:
-        """출장자 고르기 칸을 지금 출장자들로 — 고른 사람은 그대로(없으면 name, 그것도 없으면 첫 사람)."""
+        """출장자별 단추를 지금 출장자들로 — 고른 사람은 그대로(없으면 name, 그것도 없으면 첫 사람). 단추에 그 사람의 확인할 것 수."""
         trips = self.source.trips()
-        names = [t.name or "출장자" for t in trips]
-        old = self.person_box.currentText()
-        if names != [self.person_box.itemText(i) for i in range(self.person_box.count())]:
-            self.person_box.blockSignals(True)
-            self.person_box.clear()
-            self.person_box.addItems(names)
-            want = name or old
-            self.person_box.setCurrentIndex(names.index(want) if want in names else 0)
-            self.person_box.blockSignals(False)
-        self.person_box.setVisible(len(trips) > 1)
-        self.person_label.setVisible(len(trips) > 1)
+        twice = {t.name for t in trips if sum(1 for o in trips if o.name == t.name) > 1}
+        names = [(t.name or "출장자") + (f" ({t.start:%m-%d})" if t.name in twice and t.start else "") for t in trips]
+        if names != self._person_names:
+            old = self._person_names[self._person_i] if 0 <= self._person_i < len(self._person_names) else ""
+            for button in self.person_buttons:
+                self.person_group.removeButton(button)
+                button.setParent(None)
+                button.deleteLater()
+            self.person_buttons = []
+            for i, label in enumerate(names):
+                button = QPushButton(label)
+                button.setCheckable(True)
+                button.setObjectName("person")
+                self.person_group.addButton(button, i)
+                self.person_buttons_layout.addWidget(button)
+                self.person_buttons.append(button)
+            self._person_names = names
+            want = next((i for i, t in enumerate(trips) if name and t.name == name), None)
+            if want is None:
+                want = names.index(old) if old in names else 0
+            self._person_i = want
+        self._person_i = max(0, min(self._person_i, len(trips) - 1)) if trips else 0
+        for i, (button, trip) in enumerate(zip(self.person_buttons, trips)):
+            count = len([c for c in model.checks(trip) if c[0]])
+            button.setText(self._person_names[i] + (f" · 확인 {count}" if count else " · 확인 끝"))
+            button.setToolTip(f"{self._person_names[i]} 의 출장증빙을 미리 보고 고칩니다" + (f" — 확인할 것 {count}건" if count else ""))
+            button.blockSignals(True)
+            button.setChecked(i == self._person_i)
+            button.blockSignals(False)
+        self.person_row.setVisible(len(trips) > 1)
+
+    def _on_person(self, index: int) -> None:
+        if index == self._person_i:
+            return
+        self._person_i = index
+        self._selected = ()
+        self.refresh(keep=False)
+
+    def show_trip(self, index: int, ref: tuple = ()) -> None:
+        """출장자 index 의 출장증빙을 보이고 ref(증빙 · 자차 이동경로)를 고른다 — ③ 의 표에서 줄을 두 번 누르면."""
+        self.set_people()                 # 단추를 지금 출장자들로 맞춘 뒤에 고른다(출장자가 바뀌면 단추를 새로 짜며 고른 것을 잊는다)
+        self._person_i = index
+        self._selected = ()
+        self.refresh(keep=False)
+        if ref:
+            self._select(ref, scroll=True)
 
     # ── 크기 ────────────────────────────────────────────────────────────
     def resizeEvent(self, event) -> None:  # noqa: N802
@@ -337,7 +387,7 @@ class PreviewPanel(QWidget):
         trips = self.source.trips()
         if not trips:
             return None
-        return trips[max(0, min(self.person_box.currentIndex(), len(trips) - 1))]
+        return trips[max(0, min(self._person_i, len(trips) - 1))]
 
     def refresh(self, keep: bool = True) -> None:
         """출장증빙 화면의 지금 값으로 쪽을 다시 짜 그린다 — keep 이면 보던 자리 · 고른 증빙을 그대로."""

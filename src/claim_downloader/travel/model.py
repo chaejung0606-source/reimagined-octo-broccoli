@@ -653,8 +653,8 @@ def unclear(trip: Trip, kind: str, e: Evidence) -> list[str]:
 
 
 def route_unclear(trip: Trip) -> list[str]:
-    """자차 이동경로에서 확인이 필요한 것 — km · 지도 · 연료."""
-    if not trip.tolls:
+    """자차 이동경로에서 확인이 필요한 것 — km · 지도 · 연료. 하이패스가 있거나 차량 연료를 고른 사람(자차)만."""
+    if trip.fuel == NO_CAR or not (trip.tolls or trip.fuel):
         return []
     out = []
     if any(v is None for _, v in trip.route_legs()) or not any(v for v in trip.legs):
@@ -663,6 +663,35 @@ def route_unclear(trip: Trip) -> list[str]:
         out.append("지도 그림")
     if not trip.fuel:
         out.append("연료")
+    return out
+
+
+UNCLEAR_HINTS = {
+    "일자": "일자를 적어 주세요", "일자(출장기간 밖)": "일자가 출장기간 밖입니다", "금액": "금액을 적어 주세요",
+    "이동편": "이동편(열차 · 고속버스 …)을 적어 주세요", "출발지": "출발지를 적어 주세요", "목적지": "목적지를 적어 주세요",
+    "출장지": "어느 출장지인지 고르세요", "가맹점 지역": "영수증 가맹점이 출장지 시 · 군 안인지 확인하세요(그림 영수증은 앱이 못 읽습니다)",
+    "가맹점 지역(다름)": "영수증 가맹점이 출장지와 다른 시 · 군입니다", "km": "이동 거리(km)가 없습니다",
+    "지도 그림": "네이버 지도 최단거리 그림이 없습니다", "연료": "차량 연료가 없습니다",
+}
+# 출장 전체에 대한 확인(review) 중 증빙마다 따로 적는 것 — checks() 가 증빙 줄로 나눠 적으므로 전체 줄에서는 뺀다
+_PER_EVIDENCE = re.compile(r"^(대중교통 증빙 \d+건|체류 증빙 \d+건 — 영수증 가맹점|하이패스가 있어 자차)|출장기간 밖의 날짜")
+
+
+def checks(trip: Trip) -> list[tuple[tuple, str, str]]:
+    """③ 의 출장자별 표 — 확인할 것을 증빙마다 한 줄로(담당자 2026-11-16 "세부내용을 확인할 것 칸을 확인할게 있는 증빙별로 행을 나눠서").
+    (미리 보기에서 갈 곳(증빙 ref · 자차 route_key · 없으면 ()), 어느 증빙, 확인할 것). 증빙 → 자차 이동경로 → 출장 전체 차례."""
+    out = []
+    for kind, e in evidence_of(trip):
+        fields = unclear(trip, kind, e)
+        if fields:
+            part = f" ({e.part + 1}번째 영수증)" if e.part is not None else ""
+            out.append((e.ref, f"{KIND_NAMES[kind]} · {e.path.name}{part}", " / ".join(UNCLEAR_HINTS.get(f, f) for f in fields)))
+    route = route_unclear(trip)
+    if route and trip.fuel != NO_CAR:
+        out.append((route_key(trip), "자차 이동경로", " / ".join(UNCLEAR_HINTS.get(f, f) for f in route)))
+    for note in review(trip):
+        if not _PER_EVIDENCE.search(note):
+            out.append(((), "출장 전체", note))
     return out
 
 
@@ -801,6 +830,8 @@ def person_of(path: Path, names: list[str], root: Path | None = None) -> str:
     맨 앞 이름 뒤에 다른 출장자 이름도 있으면(둘이 같이 쓴 영수증일 수 있다) 정하지 않는다. 못 정하면 ''."""
     if len(names) == 1:
         return names[0]
+    if re.match(r"[\s\d._()\-]*공통", path.stem):
+        return SHARED                       # '공통_숙박비 증빙' — 모두의 출장증빙에(전에는 표의 출장자 칸에 사람이 적었다)
     lead = lead_name(path.stem, names)
     if lead and (lead in names or not names):
         rest = _LEAD_JUNK.sub("", path.stem.strip())[len(lead):]

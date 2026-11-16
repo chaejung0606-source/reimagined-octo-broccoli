@@ -301,6 +301,8 @@ QPushButton#ghost {{ background: transparent; border: 1px solid transparent; col
 QPushButton#ghost:hover {{ background: {c['selection']}; }}
 QPushButton#ghost:focus {{ border: 2px solid {c['primary']}; padding: 6px 13px; }}
 QPushButton#ghost:disabled {{ color: {c['text_faint']}; background: transparent; }}
+/* 출장증빙 ④ 출장자 단추 — 고른 사람이 눈에 띄게(담당자 2026-11-16 "출장자별 버튼") */
+QPushButton#person:checked {{ background: {c['lavender_bg']}; border: 1px solid {c['primary']}; color: {c['primary_hover']}; font-weight: 600; }}
 
 QPushButton#danger {{ background: {c['surface']}; border: 1px solid #E8B4BD; color: {c['danger']}; }}
 QPushButton#danger:hover {{ background: {c['danger_bg']}; }}

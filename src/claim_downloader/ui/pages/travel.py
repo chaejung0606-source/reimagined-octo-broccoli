@@ -87,19 +87,12 @@ class _UnclearDelegate(QStyledItemDelegate):
                 painter.drawText(option.rect.adjusted(8, 0, -8, 0), Qt.AlignVCenter | Qt.AlignLeft, "확인 필요")
             painter.restore()
         super().paint(painter, option, index)
-HINTS = {
-    model.STAY: "일자별 체류 영수증 — 출장이 7일 이하면 한 쪽부터 칸으로 나눠 담되, 영수증 글자가 작아지면 다음 쪽으로 넘겨 크게 둡니다. 8일 이상이면 일자마다 한 쪽. "
-                "'가맹점 지역' 은 영수증 가맹점 주소의 시 · 군 — 출장지와 같은 시 · 군이어야 합니다(그림 영수증은 앱이 못 읽어 칠해 둡니다).",
-    model.PUBLIC: "승차권 · 영수증 하나가 증빙 하나 — 일자별로 묶어 증빙마다 이동편 · 출발지 → 목적지 · 금액, 일자 합계와 실비 합계를 적습니다. "
-                  "칠해진 칸은 앱이 못 읽은 것이니 확인해 적어 주세요.",
-    model.TOLL: "하이패스 이용내역 — 하이패스가 있으면 자차입니다. 이용일자별로 묶어 그날 금액을 적고, 아래(자리가 모자라면 다음 쪽)에 네이버 지도 최단거리가 붙습니다.",
-    model.LODGING: "숙박 영수증 — 숙박기간과 지원금액을 적습니다. 상한을 넘으면 지원금액은 상한금액입니다.",
-    model.OTHER: "출장비 증빙 넷이 아닌데 파일 이름 앞에 이름이 붙은 것(참가확인서 · 공문 등) — 출장증빙 끝에 '기타 증빙' 으로 붙습니다. 일자는 없어도 됩니다.",
-}
 # ② 출장 그룹 — 신청서의 출장마다(담당자 2026-11-16 "출장신청서를 근거로 출장 그룹을 나누어서 출장자, 기간, 목적지, 차량연료를 2단계에서 선택")
 GROUP_COLUMNS = ("만들기", "출장 그룹", "출장자", "출장기간", "출장지", "차량 연료")
 NO_CAR_TEXT = "해당없음 (동승 · 자차 아님)"
-PEOPLE_COLUMNS = ("출장자", "체류", "대중교통", "하이패스", "숙박", "기타", "자차 최단거리", "확인할 것")
+PEOPLE_COLUMNS = ("출장자", "체류", "대중교통", "하이패스", "숙박", "기타", "자차 최단거리", "확인할 증빙", "확인할 것")
+PEOPLE_SPAN = 7           # 앞 일곱 칸(출장자 · 개수 · 자차)은 그 사람의 확인할 것 줄들을 합쳐 한 칸
+REF_ROLE = Qt.UserRole + 8
 ROUTE_COLUMNS = ("출장자", "구간", "출발 → 목적지", "km", "지도 그림", "상태")
 NAMING = "'이름_체류증빙' · '이름_하이패스 증빙' · '이름_숙박비 증빙' · '이름_대중교통 증빙'"
 FUELS = model.FUELS
@@ -122,6 +115,53 @@ def _parse_km(text: str) -> float | None:
         return None
 
 
+class _Block(QWidget):
+    """줄바꿈 글이 든 묶음(자차 이동경로 · 숙박 상한) — 지금 폭에서 잰 높이를 그냥 최소 높이로 알린다. 폭에 따라 높이가 바뀌는
+    칸(heightForWidth)이 단계 안에 있으면 Qt 가 단계에 그보다 낮은 칸을 주고 위의 표(③ 출장자별 표)를 눌러 줄과 겹쳤다(2026-11-16)."""
+
+    _last = -1
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return False
+
+    def _height(self) -> int:
+        layout = self.layout()
+        if layout is None:
+            return 0
+        width = self.width() if self.width() > 100 else 900
+        return layout.totalHeightForWidth(width) if layout.hasHeightForWidth() else layout.totalMinimumSize().height()
+
+    def minimumSizeHint(self):  # noqa: N802
+        hint = super().minimumSizeHint()
+        hint.setHeight(self._height())
+        return hint
+
+    def sizeHint(self):  # noqa: N802
+        hint = super().sizeHint()
+        hint.setHeight(self._height())
+        return hint
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        height = self._height()
+        if height != self._last:
+            self._last = height
+            self.updateGeometry()
+
+
+class _FitTable(QTableWidget):
+    """줄이 다 보이는 높이를 바라는 표 — 자리가 모자라면 최소 높이까지 줄고 안에서 스크롤한다(최소 높이를 크게 잡으면 단계 칸이
+    그만큼 못 줄 때 아래 줄과 겹쳤다)."""
+
+    want = 0
+
+    def sizeHint(self):  # noqa: N802
+        hint = super().sizeHint()
+        if self.want:
+            hint.setHeight(self.want)
+        return hint
+
+
 class EvidenceTable(QTableWidget):
     """항목 하나의 증빙 표 — 파일을 끌어다 놓거나 [파일 넣기]. 일자 · 금액 · 출장자는 짐작해 채우고 사람이 고친다."""
 
@@ -135,14 +175,14 @@ class EvidenceTable(QTableWidget):
         self.parts: list[int | None] = []          # 줄마다 PDF 의 몇 번째 영수증인지(하이패스 '총 N 건' 인쇄를 영수증마다 한 줄로)
         self.year = lambda: date.today().year      # 화면이 출장 시작일의 해로 바꿔 끼운다 — '0528' 같은 이름의 해
         self.places = lambda: []                   # 화면이 출장지 목록으로 바꿔 끼운다 — 파일 경로로 출장지를 짐작
-        self.people = lambda: []                   # 화면이 출장자 목록으로 바꿔 끼운다 — 파일 이름 '이름_…' 으로 출장자를 짐작
+        self.people = lambda: []                   # 화면이 출장자 목록으로 바꿔 끼운다 — 파일 이름 맨 앞의 이름으로 출장자를 짐작
+        self.root = lambda: None                   # 출장 폴더 — 위 폴더 이름으로 짐작할 때 그 아래만(윈도우 사용자 폴더 이름이 출장자가 되지 않게)
         self.setHorizontalHeaderLabels(COLUMNS[kind])
         self.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         for col in range(1, self.columnCount()):
             self.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeToContents)
         self.verticalHeader().hide()
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.setAcceptDrops(True)
         self.setMinimumHeight(110)
         self.setColumnHidden(self.person_col, True)
         if kind in NEEDED:
@@ -236,7 +276,7 @@ class EvidenceTable(QTableWidget):
             self.setItem(row, 3, QTableWidgetItem("1"))
         elif self.kind == model.STAY:
             self.setItem(row, SHOP_COL, QTableWidgetItem(ev.shop_region))
-        self.setItem(row, self.person_col, QTableWidgetItem(model.person_of(path, self.people())))
+        self.setItem(row, self.person_col, QTableWidgetItem(model.person_of(path, self.people(), self.root())))
 
     def show_places(self, places: list[str]) -> None:
         """출장지가 여러 곳이면 출장지 칸을 보이고, 비어 있는 줄은 파일 경로로 다시 짐작한다."""
@@ -258,15 +298,8 @@ class EvidenceTable(QTableWidget):
         for row, path in enumerate(self.paths):
             item = self.item(row, self.person_col)
             if item is None or not item.text().strip() or (len(names) == 1 and item.text().strip() != names[0]):
-                self.setItem(row, self.person_col, QTableWidgetItem(model.person_of(path, names)))
+                self.setItem(row, self.person_col, QTableWidgetItem(model.person_of(path, names, self.root())))
         self.blockSignals(False)
-
-    def remove_selected(self) -> None:
-        for row in sorted({i.row() for i in self.selectedIndexes()}, reverse=True):
-            self.removeRow(row)
-            del self.paths[row]
-            del self.parts[row]
-        self.changed.emit()
 
     def clear_all(self) -> None:
         self.setRowCount(0)
@@ -295,26 +328,6 @@ class EvidenceTable(QTableWidget):
                 ev.shop_region = cell(SHOP_COL).strip()
             out.append(ev)
         return out
-
-    # 끌어다 놓기
-    def dragEnterEvent(self, event) -> None:  # noqa: N802
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dragMoveEvent(self, event) -> None:  # noqa: N802
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dropEvent(self, event) -> None:  # noqa: N802
-        paths = []
-        for url in event.mimeData().urls():
-            path = Path(url.toLocalFile())
-            if path.is_dir():
-                paths += sorted(p for p in path.rglob("*") if p.is_file())
-            elif path.is_file():
-                paths.append(path)
-        self.add_files(paths, self.year())
-        event.acceptProposedAction()
 
 
 class FolderList(QListWidget):
@@ -831,26 +844,24 @@ class TravelPage(QWidget):
 
     def _car_missing(self) -> list[str]:
         """자차 경로 확인에서 아직 빈 것 — 이것이 있으면 확인 칸을 켤 수 없다."""
-        drivers = self._drivers()
-        if not drivers:
-            return []
+        drivers, undecided = self._drivers(), self._undecided()
         out = []
-        if not self.origin_edit.text().strip():
-            out.append("출발지")
-        need = self._needs_goal()
-        if need:
-            out.append("출장목적지(" + ", ".join(need) + ")")
-        elif not all(self._goal(n) or len(self._places_of(n)) > 1 for n in drivers):
-            out.append("목적지")
-        missing_fuel = [n for n in drivers if not self._fuel(n)]
-        if missing_fuel:
-            out.append("연료" + (f"({', '.join(missing_fuel)})" if len(drivers) > 1 else ""))
+        if drivers:
+            if not self.origin_edit.text().strip():
+                out.append("출발지")
+            need = self._needs_goal()
+            if need:
+                out.append("출장목적지(" + ", ".join(need) + ")")
+            elif not all(self._goal(n) or len(self._places_of(n)) > 1 for n in drivers):
+                out.append("목적지")
+        if undecided:
+            out.append("연료" + (f"({', '.join(undecided)})" if len(self._names()) > 1 else ""))
         return out
 
     def _sync_car_box(self) -> None:
-        drivers = self._drivers()
-        self.car_box.setVisible(bool(drivers))
-        if not drivers:
+        drivers, undecided = self._drivers(), self._undecided()
+        self.car_box.setVisible(bool(drivers or undecided))
+        if not (drivers or undecided):
             return
         missing = self._car_missing()
         who = ", ".join(n for n in drivers if n != "출장자")
@@ -864,9 +875,11 @@ class TravelPage(QWidget):
             group += f" — 자차 출장자가 있는 그룹({', '.join(map(str, others))})은 위 표에서 고르면 경유지를 고칩니다." if others else ""
         else:
             group = ""
-        self.car_note.setText(f"자차 경로 확인 — 하이패스 증빙이 있어 자차입니다{f'({who})' if who else ''}. 출발지 · 경유지(있을 때만 [경유지 추가]) · "
-                              "목적지와 차량 연료를 확인해야 다음으로 넘어갑니다. 경유지가 없으면 지도 그림 하나(오는 길은 같은 거리)입니다. "
-                              "동승한 사람은 차량 연료를 '해당없음' 으로 두세요." + group)
+        ask = (f"하이패스 증빙이 있는데 차량 연료를 안 고른 사람({', '.join(n for n in undecided if n != '출장자') or '출장자'}) — "
+               "자차였으면 연료를, 동승했으면 '해당없음' 을 고르세요. " if undecided else "")
+        lead = (f"자차 경로 확인 — 차량 연료를 고른 사람{f'({who})' if who else ''}이 자차입니다. 출발지 · 경유지(있을 때만 [경유지 추가]) · "
+                "목적지를 확인해야 다음으로 넘어갑니다. 경유지가 없으면 지도 그림 하나(오는 길은 같은 거리)입니다. " if drivers else "")
+        self.car_note.setText(ask + lead + group)
         lines = []
         for name in drivers:
             legs = self._legs_for(name)
@@ -874,7 +887,7 @@ class TravelPage(QWidget):
             if len(legs) == 1:
                 path += f" → {legs[0][0] or '?'}"
             lines.append((f"{name}: " if len(drivers) > 1 or name != "출장자" else "") + path)
-        self.route_summary.setText("경로: " + " / ".join(lines) + (f"\n아직 빈 것: {', '.join(missing)}" if missing else ""))
+        self.route_summary.setText(("경로: " + " / ".join(lines) if lines else "") + (f"\n아직 빈 것: {', '.join(missing)}" if missing else ""))
         self.route_ok.setEnabled(not missing)
         self.route_ok.setToolTip(f"먼저 채우세요: {', '.join(missing)}" if missing else "")
         if missing:
@@ -892,58 +905,59 @@ class TravelPage(QWidget):
         return box
 
     def _build_files(self) -> FlowStep:
-        step = FlowStep("3", "출장자별 증빙 확인", f"폴더의 증빙을 출장자마다 나눴습니다(파일 이름 {NAMING}). 출장자마다 확인할 것을 보고, "
-                        "틀린 곳은 아래 표에서 고치세요 — 출장자 칸에 '공통' 이라 적으면 모두의 출장증빙에 들어갑니다.")
-        self.people_table = QTableWidget(0, len(PEOPLE_COLUMNS))
+        """③ 출장자별 증빙 확인 — 출장자마다 증빙 수와 확인할 것(증빙마다 한 줄) 표 하나(담당자 2026-11-16 "그 아래 체류, 대중교통, 자차,
+        기타 확인하는 표는 필요없음(쓸데없는 중복내용임)" · "확인해야 한다면 세부내용을 확인할 것 칸을 확인할게 있는 증빙별로 행을 나눠서" ·
+        "증빙별 파일넣기 기능 필요없음"). 항목별 증빙 표(EvidenceTable)는 값을 담아 두는 곳으로만 남기고 보이지 않는다 — 고치기는 ④ 미리 보기에서."""
+        step = FlowStep("3", "출장자별 증빙 확인", "폴더의 증빙을 파일 이름 맨 앞의 이름으로 출장자마다 나눴습니다. 확인할 것은 증빙마다 한 줄 — "
+                        "두 번 누르면 ④ 미리 보기에서 그 증빙을 고칩니다. 다른 사람 것으로 나뉜 파일은 이름 맨 앞의 출장자 이름을 고치고(모두의 것이면 "
+                        "'공통_…') [폴더에서 다시 읽기].")
+        self.people_table = _FitTable(0, len(PEOPLE_COLUMNS))
         self.people_table.setHorizontalHeaderLabels(PEOPLE_COLUMNS)
         self.people_table.verticalHeader().hide()
         self.people_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.people_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.people_table.setWordWrap(True)
         self.people_table.horizontalHeader().setSectionResizeMode(len(PEOPLE_COLUMNS) - 1, QHeaderView.Stretch)
         for col in range(len(PEOPLE_COLUMNS) - 1):
             self.people_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeToContents)
-        self.people_table.setMinimumHeight(90)
+        self.people_table.setMinimumHeight(140)
+        self.people_table.cellDoubleClicked.connect(self._on_people_row)
         step.add(self.people_table)
         top = QHBoxLayout()
         rescan = QPushButton("폴더에서 다시 읽기")
-        rescan.setToolTip("표를 비우고 폴더의 증빙 파일을 다시 나눠 넣습니다")
+        rescan.setToolTip("폴더의 증빙 파일을 다시 읽어 출장자 · 항목별로 나눕니다(파일 이름을 고친 뒤)")
         rescan.clicked.connect(self._rescan)
         top.addWidget(rescan)
         self.scan_note = muted_label("")
         top.addWidget(self.scan_note, 1)
         step.add_layout(top)
+        # 항목별 증빙 표 — 보이지 않는 값 그릇(일자 · 금액 · 출장자 …). 미리 보기에서 고친 값이 여기에 적힌다(apply_edit)
+        self._tables_holder = QWidget(self)
+        self._tables_holder.hide()
+        holder = QVBoxLayout(self._tables_holder)
         for kind in model.KINDS:
             table = EvidenceTable(kind)
             table.changed.connect(self._on_evidence)
             table.year = self._year
-            table.places = self._places
-            table.people = self._names
+            table.places = self._all_places
+            table.people = self._all_people
+            table.root = self._root
             self.tables[kind] = table
-            head = QHBoxLayout()
-            # 체류만 늘 있고 교통비 · 숙박은 출장마다 있을 수도 없을 수도 있다(담당자 2026-10-27 "숙박은 있을 수도 있고 없을 수도")
-            name = QLabel(model.KIND_NAMES[kind] + ("" if kind == model.STAY else " (있을 때만)"))
-            name.setObjectName("cardTitle")
-            head.addWidget(name, 0, Qt.AlignVCenter)
-            head.addWidget(muted_label(HINTS[kind]), 1, Qt.AlignVCenter)
-            add = QPushButton("파일 넣기")
-            add.clicked.connect(lambda _=False, k=kind: self._add_files(k))
-            remove = QPushButton("고른 줄 빼기")
-            remove.setObjectName("ghost")
-            remove.clicked.connect(table.remove_selected)
-            head.addWidget(add)
-            head.addWidget(remove)
-            step.add_layout(head)
-            step.add(table)
-            if kind == model.TOLL:
-                step.add(self._build_route())
-            if kind == model.LODGING:
-                step.add(self._build_lodging())
+            holder.addWidget(table)
+        step.add(self._build_route())
+        step.add(self._build_lodging())
         self._on_places()
         return step
 
+    def _root(self) -> Path | None:
+        folder = self.folder_edit.text().strip() if hasattr(self, "folder_edit") else ""
+        return Path(folder) if folder else None
+
     def _build_lodging(self) -> QWidget:
         """숙박 상한 칸 — 숙박 영수증을 넣었을 때만 보인다(담당자 2026-10-27)."""
-        self.lodging_box = QWidget()
+        self.lodging_box = _Block()
         rows = QVBoxLayout(self.lodging_box)
+        rows.setSizeConstraint(QVBoxLayout.SetNoConstraint)
         rows.setContentsMargins(0, 0, 0, 6)
         rows.setSpacing(4)
         rows.addWidget(self._pair("숙박 상한 지역", self.region_box, "1박 상한", self.cap_spin, "공동숙박", self.people_spin))
@@ -954,20 +968,23 @@ class TravelPage(QWidget):
 
     def _build_route(self) -> QWidget:
         """자차(하이패스가 있는 출장자) — 네이버 지도 최단거리(거리우선) 그림과 가는 길 · 오는 길 km. 앱이 앱 브라우저의 네이버 지도 탭에서 저절로 찾는다(네이버가 보안문자를 물으면 그 창에서 사람이 입력)."""
-        self.route_box = QWidget()
+        self.route_box = _Block()
         rows = QVBoxLayout(self.route_box)
+        rows.setSizeConstraint(QVBoxLayout.SetNoConstraint)
         rows.setContentsMargins(0, 0, 0, 6)
         rows.setSpacing(6)
         title = QLabel("자차 이동경로 — 네이버 지도 최단거리")
         title.setObjectName("cardTitle")
         rows.addWidget(title)
-        rows.addWidget(muted_label("하이패스가 있는 출장자는 자차입니다. 앱이 앱 브라우저의 네이버 지도 창에 출발지 → 출장목적지 길찾기를 띄웁니다. "
+        rows.addWidget(muted_label("② 에서 차량 연료를 고른 출장자만 자차로 찾습니다. 앱이 앱 브라우저의 네이버 지도 창에 출발지 → 출장목적지 길찾기를 띄웁니다. "
                                    "그 창에서 목적지가 맞는지 보고(틀리면 그 창에서 다시 고르고 길찾기) [이 경로로 찍기 · 거리 넣기] 를 누르면, 앱이 "
-                                   "'거리우선' 을 골라 화면을 찍고 km 를 넣습니다. 목적지가 하나면 그림 하나 — 오는 길은 같은 거리, 경유지가 있으면 구간마다."))
+                                   "'거리우선' 을 골라 화면을 찍고 km 를 넣습니다. 목적지가 하나면 그림 하나 — 오는 길은 같은 거리, 경유지가 있으면 구간마다. "
+                                   "출발지 → 목적지가 같은 사람은 한 번 찍은 것을 같이 씁니다 — 목적지 글이 달라 따로 잡히면 두 사람의 줄을 함께 고르고 [같은 경로 적용]."))
         self.route_table = QTableWidget(0, len(ROUTE_COLUMNS))
         self.route_table.setHorizontalHeaderLabels(ROUTE_COLUMNS)
         self.route_table.verticalHeader().hide()
         self.route_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.route_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.route_table.horizontalHeader().setSectionResizeMode(len(ROUTE_COLUMNS) - 1, QHeaderView.Stretch)
         for col in range(len(ROUTE_COLUMNS) - 1):
             self.route_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeToContents)
@@ -995,7 +1012,11 @@ class TravelPage(QWidget):
         pick = QPushButton("지도 그림 고르기 → 고른 줄")
         pick.setObjectName("ghost")
         pick.clicked.connect(self._pick_map)
-        for button in (self.route_find, manual, shoot, pick):
+        same = QPushButton("같은 경로 적용")
+        same.setToolTip("지도 · km 가 있는 출장자의 줄과 없는 출장자의 줄을 함께 고르고 누르면 같은 경로 · 지도 그림을 넣습니다 — 신청서가 달라도 같은 곳에 간 사람")
+        same.clicked.connect(self._apply_same_route)
+        self.route_same = same
+        for button in (self.route_find, manual, shoot, same, pick):
             buttons.addWidget(button)
         buttons.addStretch(1)
         rows.addLayout(buttons)
@@ -1006,7 +1027,9 @@ class TravelPage(QWidget):
         return self.route_box
 
     def _build_make(self) -> FlowStep:
-        step = FlowStep("5", "출장자마다 출장증빙 만들기", "출장자마다 '<이름> 출장증빙_yy.mm.dd.pdf' 를 폴더에 만듭니다. 같은 이름이 있으면 덮어쓰지 않고 _2.")
+        # 단계 이름 '출장증빙 내보내기'(담당자 2026-11-16) — 출장자가 여럿이면 사람마다 PDF 를 따로 만들어 폴더에 둔다
+        step = FlowStep("5", "출장증빙 내보내기", "출장자마다 PDF 를 따로 만들어 폴더에 저장합니다 — '<이름> 출장증빙_yy.mm.dd.pdf'. "
+                        "같은 이름이 있으면 덮어쓰지 않고 _2.")
         self.plan_label = WrapLabel("")
         self.plan_label.setObjectName("body")
         step.add(self.plan_label)
@@ -1014,7 +1037,7 @@ class TravelPage(QWidget):
         self.problem_label.setObjectName("muted")
         step.add(self.problem_label)
         row = QHBoxLayout()
-        self.make_button = QPushButton("출장증빙 PDF 만들기")
+        self.make_button = QPushButton("출장증빙 내보내기")
         self.make_button.setObjectName("primary")
         self.make_button.clicked.connect(lambda: self._make())
         self.open_button = QPushButton("파일 열기")
@@ -1060,7 +1083,7 @@ class TravelPage(QWidget):
 
     def _on_preview_edit(self) -> None:
         if self._made:
-            self.preview_note.setText("고친 내용은 ⑤ [출장증빙 PDF 만들기] 를 다시 눌러야 PDF 에 들어갑니다.")
+            self.preview_note.setText("고친 내용은 ⑤ [출장증빙 내보내기] 를 다시 눌러야 PDF 에 들어갑니다.")
             self.preview_note.show()
 
     # ── ① 폴더 → ② 출장신청서 검토 ─────────────────────────────────────────
@@ -1379,16 +1402,13 @@ class TravelPage(QWidget):
         self._sync()
 
     def _drivers(self) -> list[str]:
-        """하이패스가 있는 출장자 — 자차(담당자 2026-11-10 "하이패스가 있으면 자차를 이용한건데"). '공통' 하이패스면 모두.
-        차량 연료를 '해당없음'(동승)으로 고른 사람은 뺀다(담당자 2026-11-16)."""
-        tolls = self.tables[model.TOLL].evidence(self._year()) if model.TOLL in self.tables else []
-        if not tolls:
-            return []
-        names = self._names()
-        if len(self._all_people()) <= 1:
-            return [n for n in (names[:1] or ["출장자"]) if self._fuel(n) != model.NO_CAR]
-        whose = {e.person.strip() for e in tolls}
-        return [n for n in names if (n in whose or model.SHARED in whose) and self._fuel(n) != model.NO_CAR]
+        """자차 출장자 — 차량 연료를 고른 사람(담당자 2026-11-16 "자차 이동경로는 연료를 선택한 출장자만 검색하도록").
+        '해당없음'(동승 · 대중교통)이나 아직 안 고른 사람은 아니다. 길찾기 · 자차 확인은 이 사람들만."""
+        return [n for n in (self._names() or ["출장자"]) if self._fuel(n) not in ("", model.NO_CAR)]
+
+    def _undecided(self) -> list[str]:
+        """하이패스 증빙이 있는데 차량 연료를 아직 안 고른 사람 — 자차면 연료, 동승이면 '해당없음' 을 골라야 ③ 으로 간다."""
+        return [n for n in (self._names() or ["출장자"]) if self._fuel(n) == ""]
 
     def _goal(self, name: str) -> str:
         """그 출장자의 출장목적지 — 사람이 적은 것, 없으면 출장지 칸(하나일 때)."""
@@ -1485,12 +1505,6 @@ class TravelPage(QWidget):
     def _year(self) -> int:
         return self.start_edit.date().year()
 
-    def _add_files(self, kind: str) -> None:
-        start = self.folder_edit.text() or ""
-        files, _ = QFileDialog.getOpenFileNames(self, f"{model.KIND_NAMES[kind]} 증빙 파일", start, FILE_FILTER)
-        if files:
-            self.tables[kind].add_files([Path(f) for f in files], self._year())
-
     def _rescan(self) -> None:
         folder = self.folder_edit.text().strip()
         if folder and Path(folder).is_dir():
@@ -1553,7 +1567,7 @@ class TravelPage(QWidget):
                     item.setToolTip(route["image"])
                 table.setItem(row, col, item)
         table.blockSignals(False)
-        self.route_box.setVisible(bool(self._routes) or bool(self.tables[model.TOLL].paths))
+        self.route_box.setVisible(bool(self._routes))          # 차량 연료를 고른 출장자(자차)가 있을 때만
         totals = []
         for name in sorted({k[0] for k in self._routes}):
             kms = [self._routes[k]["km"] for k in self._route_keys if k[0] == name]
@@ -1586,9 +1600,12 @@ class TravelPage(QWidget):
             return
         chosen = self._selected_route() if force else None
         keys = []
+        pairs = set()
         for key, route in sorted(self._routes.items()):
             if key in self._searching or not route["origin"] or not route["goal"]:
                 continue
+            if chosen is None and self._share_route(key):
+                continue            # 같은 출발지 → 목적지를 이미 찍은 출장자가 있으면 그것을 쓴다
             if chosen is not None and key != chosen:
                 continue
             target = route["goal"] if route["goal"] != self.origin_edit.text().strip() else route["origin"]
@@ -1598,6 +1615,10 @@ class TravelPage(QWidget):
                 continue
             if not force and route["status"].startswith("못 찾음"):
                 continue
+            pair = (route["origin"], route["goal"])
+            if chosen is None and pair in pairs:
+                continue            # 같은 길은 한 번만 찾는다 — 찾으면 _on_routes 가 나눠 준다
+            pairs.add(pair)
             keys.append(key)
         if not keys:
             return
@@ -1628,6 +1649,8 @@ class TravelPage(QWidget):
                 if result.km is not None:
                     route["km"] = result.km
                 route["status"] = "찍음(거리우선)" if result.km is not None else (result.note or "그림만 찍음")
+                for other in [k for k in self._routes if k != key]:
+                    self._share_route(other)
                 if key == self._pending_route:
                     self._pending_route = None
                     # 다음 구간(경유지가 있을 때)을 이어 띄운다 — 창이 하나라 한 구간씩
@@ -1681,6 +1704,55 @@ class TravelPage(QWidget):
         self._fill_route_table()
         self._worker().capture_route(folder, f"{self._who(key[0])} {self._routes[key]['label']}", key,
                                      shot=f"{key[0]} {self._routes[key]['label']}")
+
+    def _share_route(self, key: tuple) -> bool:
+        """출발지 · 목적지가 같은 구간을 다른 출장자가 이미 찍었으면 그 지도 · km 를 이 구간에(신청서가 달라도 같은 곳에 간 사람들).
+        이 구간에 지도 · km 가 다 있으면 손대지 않는다. 나눠 받았으면 True."""
+        route = self._routes.get(key)
+        if route is None or (route["image"] and route["km"] is not None):
+            return False
+        for other, done in self._routes.items():
+            if other[0] != key[0] and done["image"] and done["km"] is not None and \
+                    (done["origin"], done["goal"]) == (route["origin"], route["goal"]):
+                route["image"], route["km"] = done["image"], done["km"]
+                route["status"] = "같은 경로 적용"
+                return True
+        return False
+
+    def _apply_same_route(self) -> None:
+        """자차 이동경로 표에서 지도 · km 가 있는 출장자의 줄과 없는 출장자의 줄을 함께 고르면 같은 경로를 넣는다(담당자 2026-11-16
+        "출장신청서가 달라도 목적지가 같은경우 … 경로 및 사진이 있는 출장자와 없는 출장자를 선택하면 경로 및 사진이 똑같이 적용되도록")."""
+        rows = sorted({i.row() for i in self.route_table.selectedIndexes()})
+        keys = [self._route_keys[r] for r in rows if r < len(self._route_keys)]
+        drivers = list(dict.fromkeys(k[0] for k in keys))
+        done = lambda n: all(self._routes[k]["image"] and self._routes[k]["km"] is not None  # noqa: E731
+                             for k in self._routes if k[0] == n)
+        sources = [n for n in drivers if done(n)]
+        targets = [n for n in drivers if n not in sources]
+        if not sources or not targets:
+            QMessageBox.information(self, "같은 경로 적용", "자차 이동경로 표에서 지도 · km 가 있는 출장자의 줄과 없는 출장자의 줄을 함께 고르세요"
+                                    "(Ctrl 을 누른 채 누르면 여러 줄).")
+            return
+        source = sources[0]
+        legs = sorted(k for k in self._routes if k[0] == source)
+        skipped = []
+        for name in targets:
+            if len(self._legs_for(name)) == 1 and len(legs) == 1:
+                self._goal_of[name] = self._routes[legs[0]]["goal"]      # 목적지 글이 달라도 같은 곳 — 그 사람의 목적지도 맞춘다
+                self._ask_reason.pop(name, None)
+        self._on_route_inputs()
+        for name in targets:
+            mine = sorted(k for k in self._routes if k[0] == name)
+            if len(mine) != len(legs):
+                skipped.append(name)
+                continue
+            for key, src in zip(mine, legs):
+                self._routes[key].update(image=self._routes[src]["image"], km=self._routes[src]["km"], status="같은 경로 적용")
+        self.log(f"같은 경로 적용: {self._who(source)} → {', '.join(self._who(n) for n in targets if n not in skipped)}")
+        self._fill_route_table()
+        self._sync()
+        if skipped:
+            QMessageBox.information(self, "같은 경로 적용", f"구간 수(경유지)가 달라 넣지 못했습니다: {', '.join(skipped)}")
 
     def _pick_map(self) -> None:
         key = self._selected_route()
@@ -1785,7 +1857,7 @@ class TravelPage(QWidget):
                     model.keep_period(trip, base.start, base.end, shared_only=seen.get(name, 0) <= 1)
                 driver = name or "출장자"
                 keys = sorted(k for k in self._routes if k[0] == driver)
-                if keys and trip.tolls and fuel != model.NO_CAR:
+                if keys and fuel not in ("", model.NO_CAR):
                     trip.legs = [self._routes[k]["km"] for k in keys]
                     trip.route_maps = [Path(self._routes[k]["image"]) if self._routes[k]["image"] else None for k in keys]
                     stops = self._stops(driver)
@@ -1828,7 +1900,7 @@ class TravelPage(QWidget):
         summary = (f"출장 그룹 {len(groups)}개 · {who}" if len(groups) > 1 else
                    f"{who} · {start:%m-%d}~{end:%m-%d} · {self.dest_edit.text().strip() or '출장지 없음'}")
         self.step_info.set_state(HIDDEN if stage == "folder" else CURRENT if stage == "review" else DONE, summary)
-        car_ready = not self._drivers() or (self._route_checked and not self._car_missing())
+        car_ready = not (self._drivers() or self._undecided()) or (self._route_checked and not self._car_missing())
         empty = [str(i + 1) for i, g in enumerate(self._groups) if g["on"] and not g["names"]]
         self.info_next.setEnabled(bool(names) and car_ready and not empty)
         self.info_next.setToolTip(f"출장자가 없는 출장 그룹({', '.join(empty)}) — 출장자를 적거나 '만들기' 를 끄세요" if empty else
@@ -1855,7 +1927,7 @@ class TravelPage(QWidget):
         self.plan_label.setText(f"만들 출장증빙 {len(ready)}개({', '.join(t.name for t in ready) or '없음'}) · 쪽 {pages}개"
                                 "(증빙 PDF 가 여러 쪽이면 더 늘 수 있음)")
         self.problem_label.setText("\n".join(f"· {p}" for p in problems[:14]) + (f"\n· … 외 {len(problems) - 14}개" if len(problems) > 14 else ""))
-        self.make_button.setText(f"출장증빙 PDF 만들기 ({len(ready)}명)" if len(ready) > 1 else "출장증빙 PDF 만들기")
+        self.make_button.setText(f"출장증빙 내보내기 ({len(ready)}명 · PDF {len(ready)}개)" if len(ready) > 1 else "출장증빙 내보내기")
         self.make_button.setEnabled(files and bool(ready))
         after = self._next_folder() if folder else ""
         self.next_button.setVisible(bool(after))
@@ -1869,28 +1941,65 @@ class TravelPage(QWidget):
             self.state_pill.set_status({"folder": "준비", "review": "신청서 검토"}.get(stage, "증빙 확인"), "neutral")
 
     def _fill_people(self, trips: list[model.Trip]) -> None:
-        """출장자별 증빙 확인 표 — 항목별 개수와 확인할 것(model.review)."""
+        """출장자별 증빙 확인 표 — 사람마다 항목별 개수 한 칸(합친 칸)과 확인할 것을 증빙마다 한 줄(model.checks).
+        누구 것인지 모르는 증빙은 맨 아래 '확인 필요' 줄로."""
         table = self.people_table
+        table.clearSpans()
         table.setRowCount(0)
         drivers = set(self._drivers())
         twice = {t.name for t in trips if sum(1 for o in trips if o.name == t.name) > 1}
-        for trip in trips:
-            row = table.rowCount()
-            table.insertRow(row)
+        for index, trip in enumerate(trips):
             nights = sum(e.nights for e in trip.lodging)
             route = "—"
             if trip.name in drivers or (len(trips) == 1 and drivers):
                 kms = [v for v in trip.legs if v]
-                route = (f"{len([m for m in trip.route_maps if m])}장 · {model.km(sum(kms))}" if kms else "아직") if trip.tolls else "—"
-            review = model.review(trip)
+                route = f"{len([m for m in trip.route_maps if m])}장 · {model.km(sum(kms))}" if kms else "아직"
             label = (trip.name or "(이름 없음)") + (f" ({trip.start:%m-%d})" if trip.name in twice and trip.start else "")
-            cells = [label, f"{len(trip.stay)}개", f"{len(trip.public)}개", f"{len(trip.tolls)}개",
-                     f"{nights}박" if trip.lodging else "—", f"{len(trip.other)}개" if trip.other else "—", route,
-                     " / ".join(review) or "확인할 것 없음"]
-            for col, text in enumerate(cells):
+            heads = [label, f"{len(trip.stay)}개", f"{len(trip.public)}개", f"{len(trip.tolls)}개",
+                     f"{nights}박" if trip.lodging else "—", f"{len(trip.other)}개" if trip.other else "—", route]
+            items = model.checks(trip) or [((), "", "확인할 것 없음")]
+            first = table.rowCount()
+            for ref, where, text in items:
+                row = table.rowCount()
+                table.insertRow(row)
+                for col, cell in ((len(heads), where), (len(heads) + 1, text)):
+                    item = QTableWidgetItem(cell)
+                    item.setToolTip(cell)
+                    item.setData(REF_ROLE, (index, ref))
+                    if ref or where:
+                        item.setForeground(QColor(COLORS["warning"]) if col == len(heads) + 1 else QColor(COLORS["text"]))
+                    table.setItem(row, col, item)
+            for col, text in enumerate(heads):
                 item = QTableWidgetItem(text)
                 item.setToolTip(text)
+                item.setData(REF_ROLE, (index, ()))
+                table.setItem(first, col, item)
+                if len(items) > 1:
+                    table.setSpan(first, col, len(items), 1)
+        loose = model.traveler_problems(self.base_trip(), self._all_people())
+        for text in loose:
+            row = table.rowCount()
+            table.insertRow(row)
+            for col, cell in ((0, "확인 필요"), (PEOPLE_SPAN, "누구 것인지"), (PEOPLE_SPAN + 1, text + " — 파일 이름 맨 앞에 출장자 이름을 붙이고 [폴더에서 다시 읽기]")):
+                item = QTableWidgetItem(cell)
+                item.setToolTip(cell)
+                item.setForeground(QColor(COLORS["warning"]))
                 table.setItem(row, col, item)
+            table.setSpan(row, 0, 1, PEOPLE_SPAN)
+        table.resizeRowsToContents()
+        rows = sum(table.rowHeight(r) for r in range(table.rowCount()))
+        table.want = min(max(140, table.horizontalHeader().height() + rows + 6), 520)
+        table.setFixedHeight(table.want)
+
+    def _on_people_row(self, row: int, col: int) -> None:
+        """표의 줄을 두 번 누르면 ④ 미리 보기에서 그 출장자 · 그 증빙을 연다."""
+        item = self.people_table.item(row, col) or self.people_table.item(row, PEOPLE_SPAN + 1)
+        data = item.data(REF_ROLE) if item is not None else None
+        if not data:
+            return
+        index, ref = data
+        self.preview_panel.show_trip(index, ref)
+        self.area.ensureWidgetVisible(self.step_preview, 0, 40)
 
     # ── 미리 보기에서 고치기(ui/travel_preview.py 가 부른다) ────────────────
     def open_preview(self, make: bool = False, name: str = "") -> int:

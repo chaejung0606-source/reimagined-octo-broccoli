@@ -707,12 +707,26 @@ def test_page_reviews_application_and_checks_per_traveler(qapp, tmp_path, isolat
     assert leg[2].startswith("출장자 1 가는 길") and "홍길동" not in leg[2] and leg[3].startswith("홍길동 가는 길")
     assert page._routes[("홍길동", 0)]["km"] == 76.0 and page.route_table.rowCount() == 1
     assert not page.tables["stay"].isColumnHidden(page.tables["stay"].person_col)
-    assert page.people_table.rowCount() == 2
+    people = page.people_table
+    whose = {people.item(r, travel_page.PEOPLE_SPAN + 1).data(travel_page.REF_ROLE)[0] for r in range(people.rowCount())}
+    assert whose == {0, 1} and people.item(0, 0).text() == "홍길동"
     hong, kim = page.trips()
     assert hong.name == "홍길동" and len(hong.stay) == 3 and hong.legs == [76.0] and hong.fuel == "휘발유" and len(hong.route_maps) == 1
     assert kim.name == "김철수" and len(kim.public) == 1 and kim.lodging and not kim.tolls and not kim.route_maps
-    review_kim = page.people_table.item(1, 7).text()
-    assert "체류 증빙이 없는 날" in review_kim
+    # ③ 의 확인할 것은 증빙마다 한 줄 — 김철수 줄들(담당자 2026-11-16 "확인할게 있는 증빙별로 행을 나눠서")
+    kim_rows = [r for r in range(people.rowCount()) if people.item(r, travel_page.PEOPLE_SPAN + 1).data(travel_page.REF_ROLE)[0] == 1]
+    review_kim = [people.item(r, travel_page.PEOPLE_SPAN + 1).text() for r in kim_rows]
+    assert any("체류 증빙이 없는 날" in t for t in review_kim)
+    where_kim = [people.item(r, travel_page.PEOPLE_SPAN).text() for r in kim_rows]
+    assert "출장 전체" in where_kim and any(w.startswith("대중교통 · 김철수_대중교통") for w in where_kim)
+    assert people.rowSpan(kim_rows[0], 0) == len(kim_rows) and people.item(kim_rows[0], 0).text() == "김철수"
+    # 두 번 누르면 ④ 미리 보기가 그 출장자 · 그 증빙으로
+    public_row = next(r for r in kim_rows if people.item(r, travel_page.PEOPLE_SPAN).text().startswith("대중교통"))
+    page._on_people_row(public_row, travel_page.PEOPLE_SPAN + 1)
+    assert page.preview_panel.trip().name == "김철수" and page.preview_panel._selected[0] == "public"
+    assert page.preview_panel.person_buttons[1].isChecked() and "확인" in page.preview_panel.person_buttons[1].text()
+    page.preview_panel.person_buttons[0].click()
+    assert page.preview_panel.trip().name == "홍길동"
     # ④ 출장자마다 만든다 — 확인할 것이 있으면 묻는 글 대신 미리 보기가 뜬다(여기서는 [이대로 만들기])
     # 체류 영수증은 출장지(원주)와 같은 시 · 군이어야 한다 — 그림 영수증은 앱이 못 읽어 확인할 것으로 남는다(담당자 2026-11-10)
     assert any("가맹점이 원주 안인지" in r for r in model.review(page.trips()[0]))
@@ -865,6 +879,49 @@ def test_one_folder_many_people_from_file_names(qapp, tmp_path, isolated_home, m
     assert made == ["김철수 출장증빙_26.10.20.pdf", "이영희 출장증빙_26.10.20.pdf", "홍길동 출장증빙_26.10.20.pdf"]
 
 
+def test_same_route_is_found_once_and_can_be_shared(qapp, tmp_path, isolated_home):
+    """담당자 2026-11-16 "자차 이동경로는 연료를 선택한 출장자만 검색" · "목적지가 같은경우 … 경로 및 사진이 있는 출장자와 없는 출장자를
+    선택하면 경로 및 사진이 똑같이 적용되도록"."""
+    from PySide6.QtWidgets import QTableWidgetSelectionRange
+
+    from claim_downloader.ui.pages import travel as travel_page
+    folder = tmp_path / "출장비 지급(26.11.10. 원주)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(LABELED.replace("출장지 원주", "출장지 연세대학교 원주캠퍼스")
+                                            .replace("연구원 김철수", "연구원 김철수, 연구원 이영희"), encoding="utf-8")
+    for name in ("홍길동_체류증빙 1110.png", "김철수_체류증빙 1110.png", "이영희_체류증빙 1110.png",
+                 "홍길동_하이패스 증빙 1110 3,100원.png", "김철수_하이패스 증빙 1110 3,100원.png"):
+        _image(folder / name)
+    worker = FakeWorker(tmp_path)
+    page = travel_page.TravelPage(worker=worker)
+    page.show()
+    page.load_folder(str(folder))
+    assert page._undecided() == ["홍길동", "김철수"] and page._fuel("이영희") == model.NO_CAR
+    for name in ("홍길동", "김철수"):
+        page._set_fuel(name, "휘발유")
+    assert page._drivers() == ["홍길동", "김철수"]
+    page.route_ok.setChecked(True)
+    page.info_next.click()
+    qapp.processEvents()
+    # 같은 출발지 → 목적지는 한 번만 찾고 나눠 쓴다 — 이영희(해당없음)는 찾지 않는다
+    assert len(worker.calls) == 1 and len(worker.calls[0]) == 1
+    hong, kim = page._routes[("홍길동", 0)], page._routes[("김철수", 0)]
+    assert hong["km"] == kim["km"] == 76.0 and kim["image"] == hong["image"]
+    assert sorted(r["status"] for r in (hong, kim)) == ["같은 경로 적용", "찍음(거리우선)"]
+    assert not any(k[0] == "이영희" for k in page._routes)
+    # 목적지 글이 달라 따로 잡히면 — 두 사람의 줄을 함께 고르고 [같은 경로 적용]
+    page._goal_of["홍길동"] = "연세대 원주"
+    page._on_route_inputs()
+    assert page._routes[("홍길동", 0)]["km"] is None and page._routes[("김철수", 0)]["km"] == 76.0
+    page.route_table.setRangeSelected(QTableWidgetSelectionRange(0, 0, page.route_table.rowCount() - 1, 0), True)
+    page.route_same.click()
+    hong = page._routes[("홍길동", 0)]
+    assert hong["km"] == 76.0 and hong["image"] == page._routes[("김철수", 0)]["image"] and page._goal("홍길동") == "연세대학교 원주캠퍼스"
+    trips = {t.name: t for t in page.trips()}
+    assert trips["홍길동"].legs == [76.0] and trips["홍길동"].fuel == "휘발유" and not trips["이영희"].has_route()
+    assert page.make_button.text().startswith("출장증빙 내보내기")
+
+
 def test_no_car_fuel_means_no_car_evidence(qapp, tmp_path, isolated_home):
     """담당자 2026-11-16 "동승하는 경우가 있어 해당없음 옵션을 추가해 해당없음을 선택하면 자차 증빙 없어도 됨"."""
     from claim_downloader.ui.pages import travel as travel_page
@@ -877,11 +934,12 @@ def test_no_car_fuel_means_no_car_evidence(qapp, tmp_path, isolated_home):
     page.show()
     page.load_folder(str(folder))
     tolls = page.tables["toll"]
-    tolls.item(0, tolls.person_col).setText(model.SHARED)
-    assert page._drivers() == ["홍길동", "김철수"]                     # '공통' 하이패스면 모두 자차로 본다
+    assert tolls.item(0, tolls.person_col).text() == model.SHARED      # '공통_…' 파일은 모두의 것
+    assert page._drivers() == [] and page._undecided() == ["홍길동", "김철수"]      # 둘 다 연료를 골라야(자차 · 동승)
+    page.fuel_boxes["홍길동"].setCurrentIndex(page.fuel_boxes["홍길동"].findData("휘발유"))
     box = page.fuel_boxes["김철수"]
     box.setCurrentIndex(box.findData(model.NO_CAR))                    # 동승
-    assert page._drivers() == ["홍길동"] and "김철수" not in str(page.route_summary.text())
+    assert page._drivers() == ["홍길동"] and not page._undecided() and "김철수" not in str(page.route_summary.text())
     kim = next(t for t in page.trips() if t.name == "김철수")
     assert not kim.tolls and kim.fuel == model.NO_CAR and not kim.has_route()
     assert not any("자차" in r or "하이패스" in r for r in model.review(kim))
@@ -921,6 +979,7 @@ def test_preview_marks_unclear_and_edits_in_place(qapp, tmp_path, isolated_home)
         _image(folder / name)
     page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
     page.load_folder(str(folder))
+    page._set_fuel("홍길동", "휘발유")                 # 연료를 고른 사람만 자차 — ② 에서 고른다(담당자 2026-11-16)
     page._go("files")
     dialog = TravelPreview(page, page, make_text="이대로 만들기")
     flagged = dialog._flagged
@@ -986,11 +1045,13 @@ def test_route_check_turns_on_after_fuel_is_picked(qapp, tmp_path, isolated_home
     page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
     page.show()
     page.load_folder(str(folder))
-    assert page._drivers() == ["홍길동"] and page.goal_box.isHidden()
+    # 하이패스는 있는데 연료를 안 골랐으면 자차인지 모른다 — 연료(또는 해당없음)를 골라야 넘어간다(담당자 2026-11-16 "연료를 선택한 출장자만")
+    assert page._drivers() == [] and page._undecided() == ["홍길동"] and page.goal_box.isHidden()
     assert page._car_missing() == ["연료"] and not page.route_ok.isEnabled() and "연료" in page.route_summary.text()
+    assert not page.car_box.isHidden() and "해당없음" in page.car_note.text()
     box = page.fuel_boxes["홍길동"]
     box.setCurrentIndex(box.findData("휘발유"))
-    assert page.route_ok.isEnabled() and "아직 빈 것" not in page.route_summary.text()
+    assert page._drivers() == ["홍길동"] and page.route_ok.isEnabled() and "아직 빈 것" not in page.route_summary.text()
     page.route_ok.click()
     assert page.route_ok.isChecked() and page.info_next.isEnabled()
     # 연료를 다시 비우면 확인도 풀린다
