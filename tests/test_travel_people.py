@@ -763,6 +763,9 @@ def test_session_find_routes_keeps_names_out_of_the_log(tmp_path, isolated_home,
 
 
 def test_page_picks_trip_by_folder_date_and_can_switch(qapp, tmp_path, isolated_home):
+    """신청서에 출장이 여럿이면 출장 그룹마다 한 줄 — 폴더 날짜의 출장만 '만들기', 줄을 고르면 그 그룹을 칸에서 고친다(담당자 2026-11-16)."""
+    from PySide6.QtCore import Qt
+
     from claim_downloader.ui.pages import travel as travel_page
     folder = tmp_path / "출장비 지급(26.11.10. 원주)"
     folder.mkdir()
@@ -771,17 +774,122 @@ def test_page_picks_trip_by_folder_date_and_can_switch(qapp, tmp_path, isolated_
     page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
     page.show()
     page.load_folder(str(folder))
-    assert not page.trip_row.isHidden() and page.trip_box.count() == 2 and page.trip_box.currentIndex() == 1
+    table = page.group_table
+    assert not table.isHidden() and table.rowCount() == 2 and page._group_i == 1
+    assert [g["on"] for g in page._groups] == [False, True]         # 11/03 출장의 사람(홍길동)은 11/10 그룹에도 있어 만들지 않는다
     assert page.start_edit.date().toPython() == date(2026, 11, 10) and page.name_edit.text() == "홍길동, 김철수"
-    assert "폴더 이름" in page.review_label.text()
-    page.trip_box.setCurrentIndex(0)                 # 사람이 다른 출장으로 바꾸면 그 출장으로 다시 채운다
+    assert "폴더 이름" in page.review_label.text() and "출장 그룹 2개" in page.review_label.text()
+    table.selectRow(0)                                # 사람이 다른 그룹을 고르면 그 그룹을 칸에
     assert page.start_edit.date().toPython() == date(2026, 11, 3) and page.dest_edit.text() == "삼척 쏠비치"
-    assert page.name_edit.text() == "홍길동"
+    assert page.name_edit.text() == "홍길동" and page._groups[1]["names"] == ["홍길동", "김철수"]
+    assert [t.start for t in page.trips()] == [date(2026, 11, 10)] * 2          # 만들기를 켠 그룹만
+    table.item(0, 0).setCheckState(Qt.Checked)
+    assert [(t.name, t.start) for t in page.trips()] == [("홍길동", date(2026, 11, 3)), ("홍길동", date(2026, 11, 10)),
+                                                         ("김철수", date(2026, 11, 10))]
+    # 한 사람이 두 그룹이면 증빙은 그 그룹의 기간 안 것만
+    hong_1103, hong_1110 = page.trips()[0], page.trips()[1]
+    assert not hong_1103.stay and len(hong_1110.stay) == 1
     one = tmp_path / "하나"
     one.mkdir()
     (one / "국내 출장신청서.txt").write_text(LABELED, encoding="utf-8")
     page.load_folder(str(one))
-    assert page.trip_row.isHidden()
+    assert page.group_table.isHidden() and len(page._groups) == 1
+
+
+ROW_GROUPS = """국내 출장신청서
+출장자: 연구원 홍길동, 연구원 김철수, 연구원 이영희
+목적: 업무협의
+연번 성명 출장기간 출장지
+1 홍길동 2026.11.10 ~ 2026.11.11 원주
+2 김철수 2026.11.10 ~ 2026.11.11 원주
+3 이영희 2026.11.10 ~ 2026.11.11 강릉
+"""
+
+
+def test_application_rows_with_names_make_trip_groups():
+    """담당자 2026-11-16 "출장신청서를 근거로 출장 그룹을 나누어서" — 표의 줄에 이름이 있으면 사람 · 곳이 다른 줄은 다른 그룹."""
+    app = application.parse_text(ROW_GROUPS)
+    assert [(t.places, t.travelers) for t in app.trips] == [(["원주"], ["홍길동", "김철수"]), (["강릉"], ["이영희"])]
+    assert all(t.purpose == "업무협의" for t in app.trips)
+    other_day = application.parse_text(ROW_GROUPS.replace("3 이영희 2026.11.10 ~ 2026.11.11 강릉", "3 이영희 2026.11.12 ~ 2026.11.12 서울"))
+    assert [(t.start, t.travelers) for t in other_day.trips] == [(date(2026, 11, 10), ["홍길동", "김철수"]), (date(2026, 11, 12), ["이영희"])]
+    assert len(application.parse_text(TWO_ROWS).trips) >= 1          # 줄에 이름이 없는 일정 표는 전과 같다
+
+
+def test_lead_name_is_the_traveler():
+    """담당자 2026-11-16 "파일제목 맨앞에 있는 이름으로 출장자 구분" — 밑줄 · 띄어쓰기 · 붙여 쓴 꼴 모두, 곳 이름 · 서류 낱말은 아님."""
+    assert model.lead_name("홍길동_체류증빙") == "홍길동"
+    assert model.lead_name("홍길동 체류증빙 1110") == "홍길동"
+    assert model.lead_name("홍길동체류증빙") == "홍길동"
+    assert model.lead_name("남궁민수 하이패스 증빙") == "남궁민수"
+    assert model.lead_name("01_김철수_숙박비 증빙") == "김철수"
+    assert model.lead_name("이영희-대중교통 KTX") == "이영희"
+    assert model.lead_name("김철수 교육 수료증", ["김철수"]) == "김철수" and model.lead_name("김철수수료증", ["김철수"]) == "김철수"
+    assert model.lead_name("이영희_체류", ["이영"]) == "이영희"           # 아는 이름 '이영' 뒤에 한글이 붙으면 다른 사람
+    for not_person in ("부산_체류증빙", "원주시 체류증빙", "서울역_대중교통", "행사 사진", "숙박 영수증", "체류증빙 1110", "공통_숙박비 증빙"):
+        assert model.lead_name(not_person) == "", not_person
+    assert model.person_of(Path("홍길동 체류증빙.png"), ["홍길동", "김철수"]) == "홍길동"
+    assert model.person_of(Path("김철수숙박비증빙.pdf"), ["홍길동", "김철수"]) == "김철수"
+    assert model.person_of(Path("홍길동_김철수_숙박비 증빙.pdf"), ["홍길동", "김철수"]) == ""     # 둘이 같이 쓴 영수증일 수 있다
+    # 윈도우 사용자 폴더 같은 출장 폴더 위의 이름은 출장자가 아니다
+    root = Path("/Users/박담당/Desktop/출장비 지급(26.11.10. 원주)")
+    assert model.person_hint(root / "체류" / "0528.png", root) == "" and model.person_hint(root / "홍길동" / "0528.png", root) == "홍길동"
+    assert model.names_in_files([root / "홍길동 체류증빙.png", root / "김철수체류증빙.png", root / "체류" / "1.png"], root=root) == ["홍길동", "김철수"]
+    assert model.other_label(Path("01_홍길동_참가확인서.pdf")) == "참가확인서"
+
+
+def test_one_folder_many_people_from_file_names(qapp, tmp_path, isolated_home, monkeypatch):
+    """담당자 2026-11-16 "한폴더에 여러명이 있을 경우 · 파일제목 맨앞에 있는 이름으로 출장자 구분 · 한번에 증빙자료 만들 수 있도록" —
+    신청서에 한 명만 읽혀도 파일 이름 맨 앞의 사람을 출장자에 더해 사람마다 출장증빙을 한 번에 만든다."""
+    from claim_downloader.ui.pages import travel as travel_page
+    folder = tmp_path / "출장비 지급(26.10.20. 협의)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(GONGMUN, encoding="utf-8")
+    names = ("홍길동 체류증빙 1020.png", "김철수체류증빙 1020.png", "이영희_체류증빙 1020.png", "이영희_대중교통 증빙 1020 8,400원.png")
+    for name in names:
+        _image(folder / name)
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.show()
+    page.load_folder(str(folder))
+    assert page.name_edit.text() == "홍길동, 김철수, 이영희" and page._extra == ["김철수", "이영희"]
+    assert "신청서에 없는 출장자 2명" in page.review_label.text()
+    stay = page.tables["stay"]
+    assert sorted(stay.item(r, stay.person_col).text() for r in range(stay.rowCount())) == ["김철수", "이영희", "홍길동"]
+    # 하이패스가 없는 사람은 차량 연료가 처음부터 '해당없음' — 자차 확인 없이 넘어간다
+    assert set(page.fuel_boxes) == {"홍길동", "김철수", "이영희"} and all(page._fuel(n) == model.NO_CAR for n in page.fuel_boxes)
+    assert page.car_box.isHidden() and page.info_next.isEnabled()
+    page.info_next.click()
+    monkeypatch.setattr(travel_page.TravelPreview, "exec", lambda self: travel_page.PREVIEW_MAKE)
+    page._make()
+    made = sorted(p.name for p in folder.glob("* 출장증빙_26.10.20.pdf"))
+    assert made == ["김철수 출장증빙_26.10.20.pdf", "이영희 출장증빙_26.10.20.pdf", "홍길동 출장증빙_26.10.20.pdf"]
+
+
+def test_no_car_fuel_means_no_car_evidence(qapp, tmp_path, isolated_home):
+    """담당자 2026-11-16 "동승하는 경우가 있어 해당없음 옵션을 추가해 해당없음을 선택하면 자차 증빙 없어도 됨"."""
+    from claim_downloader.ui.pages import travel as travel_page
+    folder = tmp_path / "출장비 지급(26.11.10. 원주)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(LABELED, encoding="utf-8")
+    for name in ("홍길동_체류증빙 1110.png", "김철수_체류증빙 1110.png", "공통_하이패스 증빙 1110 3,100원.png"):
+        _image(folder / name)
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.show()
+    page.load_folder(str(folder))
+    tolls = page.tables["toll"]
+    tolls.item(0, tolls.person_col).setText(model.SHARED)
+    assert page._drivers() == ["홍길동", "김철수"]                     # '공통' 하이패스면 모두 자차로 본다
+    box = page.fuel_boxes["김철수"]
+    box.setCurrentIndex(box.findData(model.NO_CAR))                    # 동승
+    assert page._drivers() == ["홍길동"] and "김철수" not in str(page.route_summary.text())
+    kim = next(t for t in page.trips() if t.name == "김철수")
+    assert not kim.tolls and kim.fuel == model.NO_CAR and not kim.has_route()
+    assert not any("자차" in r or "하이패스" in r for r in model.review(kim))
+    assert any("동승" in r for r in model.review(kim))                  # 교통비 없음은 '그대로 둡니다' 로
+    assert model.parse_fuels(__import__("claim_downloader.settings", fromlist=["load"]).load().travel_fuels).get("김철수") is None
+    # 연료를 골랐는데 하이패스가 없으면 알린다
+    trip = model.for_traveler(Trip(name="가", stay=[ev("a.png", date(2026, 11, 10))]), "가", ["가"], fuel="휘발유")
+    assert any("하이패스 증빙이 없습니다" in r for r in model.review(trip))
 
 
 def test_public_table_has_route_columns_and_marks_unclear(qapp, tmp_path):

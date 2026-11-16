@@ -616,16 +616,26 @@ def _row_trips(lines: list[str], names: list[str]) -> list[TripEntry]:
         rest = hit[1] if hit else line
         rest = rest.replace(m.group(0), " ")
         rest = re.sub(r"\d{1,2}:\d{2}|\([월화수목금토일]\)|(?<![가-힣])\d+(?![가-힣])", " ", rest)
+        # 그 줄에 적힌 출장자 — 표의 줄마다 사람이 다르면 출장 그룹을 사람마다 나눈다(담당자 2026-11-16 "출장신청서를 근거로 출장 그룹을 나누어서")
+        named = [name for name in names if name and name in line]
         for name in names:
             rest = rest.replace(name, " ")
         rest = re.sub(r"\s+", " ", rest).strip(" |:：-")
-        out.append(TripEntry(start, end, clean_place(rest) if 0 < len(rest) <= ROW_PLACE_MAX else []))
+        out.append(TripEntry(start, end, clean_place(rest) if 0 < len(rest) <= ROW_PLACE_MAX else [], travelers=named))
     return out
 
 
+def _separate(a: TripEntry, b: TripEntry) -> bool:
+    """기간이 겹쳐도 다른 출장 그룹 — 둘 다 출장자가 적혀 있고 겹치는 사람이 없으며 출장지가 다를 때(같은 날 다른 곳에 간 사람들)."""
+    return (bool(a.travelers) and bool(b.travelers) and not set(a.travelers) & set(b.travelers)
+            and bool(a.places) and bool(b.places) and a.places != b.places)
+
+
 def _add_trip(trips: list[TripEntry], trip: TripEntry) -> None:
-    """기간이 겹치는 출장(같은 출장의 일정 줄 · 다른 사람의 신청서)은 하나로 — 출장자를 모으고 빈 칸을 채운다."""
-    same = next((t for t in trips if t.overlaps(trip)), None) if trip.start else (trips[0] if trips else None)
+    """기간이 겹치는 출장(같은 출장의 일정 줄 · 다른 사람의 신청서)은 하나로 — 출장자를 모으고 빈 칸을 채운다.
+    출장자가 다르고 출장지도 다르면 따로 둔다(출장 그룹, _separate)."""
+    same = (next((t for t in trips if t.overlaps(trip) and not _separate(t, trip)), None) if trip.start
+            else (trips[0] if trips else None))
     if same is None:
         trips.append(trip)
         return
@@ -639,6 +649,24 @@ def _add_trip(trips: list[TripEntry], trip: TripEntry) -> None:
         same.start, same.end = trip.start, trip.end
 
 
+def _trips_by_row(head: TripEntry | None, rows: list[TripEntry], names: list[str]) -> list[TripEntry]:
+    """표의 줄에 사람 이름이 적혀 있으면 줄로 출장 그룹을 짠다 — 같은 기간 · 같은 곳은 한 그룹, 사람과 곳이 다르면 따로(_separate).
+    양식 머리의 목적 · 출발지는 그룹마다 빈 칸에, 줄에 없던 사람은 첫 그룹에(사람이 ② 에서 옮긴다)."""
+    trips: list[TripEntry] = []
+    for row in rows:
+        _add_trip(trips, row)
+    for trip in trips:
+        if head is not None:
+            trip.purpose = trip.purpose or head.purpose
+            trip.origin = trip.origin or head.origin
+            trip.places = trip.places or list(head.places)
+    claimed = {n for t in trips for n in t.travelers}
+    left = [n for n in names if n not in claimed]
+    if left and trips:
+        trips[0].travelers += left
+    return trips or ([head] if head else [])
+
+
 def parse_text(text: str, path: Path | None = None) -> Application:
     """출장신청서 글자 → Application. 출장이 여럿이면(양식이 되풀이되거나 표에 줄마다) trips 에 모두 — 고르기는 select."""
     lines = _lines(_normalize(text))
@@ -650,9 +678,13 @@ def parse_text(text: str, path: Path | None = None) -> Application:
             _add_trip(trips, _entry(part))
     if len(parts) == 1:
         rows = _row_trips(lines, app.travelers)
-        if len({r.start for r in rows}) > 1:
-            for row in rows:
-                _add_trip(trips, row)
+        named = any(r.travelers for r in rows)
+        if len({r.start for r in rows}) > 1 or (named and len({tuple(r.places) for r in rows if r.places}) > 1):
+            if named:
+                trips = _trips_by_row(trips[0] if trips else None, rows, app.travelers)
+            else:
+                for row in rows:
+                    _add_trip(trips, row)
     everyone = []
     for part in parts:
         everyone += [n for n in part.travelers if n not in everyone]
@@ -704,19 +736,19 @@ def choose(trips: list[TripEntry], folder: Path | str) -> tuple[int, str]:
             break
     count = len(trips)
     if day is None:
-        return 0, (f"출장신청서에 출장이 {count}건 있는데 폴더 이름에 날짜가 없어 첫 출장({trips[0].label()})으로 정했습니다 — "
-                   "다른 출장이면 위 '신청서의 출장' 칸에서 고르거나 폴더 이름에 출장 날짜(예: 26.11.10)를 넣어 주세요")
+        return 0, (f"출장신청서에 출장이 {count}건 있는데 폴더 이름에 날짜가 없어 첫 출장({trips[0].label()})을 이 폴더의 출장으로 정했습니다 — "
+                   "다른 출장이면 위 출장 그룹 표에서 '만들기' 를 고치거나 폴더 이름에 출장 날짜(예: 26.11.10)를 넣어 주세요")
     exact = [i for i, t in enumerate(trips) if t.start == day]
     inside = [i for i, t in enumerate(trips) if t.start and t.start <= day <= (t.end or t.start)]
     if exact or inside:
         i = (exact or inside)[0]
-        return i, f"출장신청서의 출장 {count}건 중 폴더 이름('{where}')의 날짜 {day:%Y-%m-%d} 출장({trips[i].label()})으로 만듭니다"
+        return i, f"출장신청서의 출장 {count}건 중 폴더 이름('{where}')의 날짜 {day:%Y-%m-%d} 출장({trips[i].label()})이 이 폴더의 출장입니다"
     dated = [i for i, t in enumerate(trips) if t.start]
     if not dated:
         return 0, f"출장신청서의 출장 {count}건에 기간이 없어 첫 출장으로 정했습니다 — 출장기간을 확인하세요"
     i = min(dated, key=lambda k: abs((trips[k].start - day).days))
     return i, (f"폴더 이름의 날짜 {day:%Y-%m-%d} 와 맞는 출장이 신청서에 없어 가장 가까운 출장({trips[i].label()})으로 정했습니다 — "
-               "'신청서의 출장' 칸에서 확인하세요")
+               "출장 그룹 표에서 확인하세요")
 
 
 def apply_trip(app: Application, index: int) -> Application:
@@ -800,7 +832,7 @@ def merge(apps: list[Application]) -> Application | None:
     for app in apps:
         trips = app.trips or ([_entry(app)] if (app.start or app.places or app.travelers) else [])
         for trip in trips:
-            same = next((t for t in out.trips if t.overlaps(trip)), None) if trip.start else None
+            same = next((t for t in out.trips if t.overlaps(trip) and not _separate(t, trip)), None) if trip.start else None
             if same and trip.places and same.places and trip.places != same.places:
                 out.notes.append(f"{app.path.name}: 출장지가 다릅니다({', '.join(trip.places)})")
             _add_trip(out.trips, TripEntry(trip.start, trip.end, list(trip.places), trip.purpose, trip.origin, list(trip.travelers)))

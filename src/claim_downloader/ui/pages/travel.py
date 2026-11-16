@@ -96,6 +96,9 @@ HINTS = {
     model.LODGING: "숙박 영수증 — 숙박기간과 지원금액을 적습니다. 상한을 넘으면 지원금액은 상한금액입니다.",
     model.OTHER: "출장비 증빙 넷이 아닌데 파일 이름 앞에 이름이 붙은 것(참가확인서 · 공문 등) — 출장증빙 끝에 '기타 증빙' 으로 붙습니다. 일자는 없어도 됩니다.",
 }
+# ② 출장 그룹 — 신청서의 출장마다(담당자 2026-11-16 "출장신청서를 근거로 출장 그룹을 나누어서 출장자, 기간, 목적지, 차량연료를 2단계에서 선택")
+GROUP_COLUMNS = ("만들기", "출장 그룹", "출장자", "출장기간", "출장지", "차량 연료")
+NO_CAR_TEXT = "해당없음 (동승 · 자차 아님)"
 PEOPLE_COLUMNS = ("출장자", "체류", "대중교통", "하이패스", "숙박", "기타", "자차 최단거리", "확인할 것")
 ROUTE_COLUMNS = ("출장자", "구간", "출발 → 목적지", "km", "지도 그림", "상태")
 NAMING = "'이름_체류증빙' · '이름_하이패스 증빙' · '이름_숙박비 증빙' · '이름_대중교통 증빙'"
@@ -354,7 +357,11 @@ class TravelPage(QWidget):
         self._review: application.Application | None = None
         self._goal_of: dict[str, str] = {}       # 출장자마다 출장목적지(신청서 목적지가 분명하지 않아 사람이 적은 것)
         self._ask_reason: dict[str, str] = {}    # 출장자마다 목적지를 묻는 까닭(네이버 지도에서 못 찾음 등)
-        self._fuel_of: dict[str, str] = {}       # 자차 출장자마다 연료 종류(담당자 2026-11-10 "자차의 경우 연료 종류도 증빙에 입력")
+        self._fuel_of: dict[str, str] = {}       # 출장자마다 차량 연료 — 사람이 고른 것(담당자 2026-11-10 · 11-16 '해당없음' = 동승)
+        self._groups: list[dict] = []            # 출장 그룹 — {names, start, end, dest, vias, on, origin}(담당자 2026-11-16)
+        self._group_i = 0                        # ② 의 칸(출장자 · 기간 · 출장지 · 경유지)이 보여 주는 그룹
+        self._loading_group = False
+        self._extra: list[str] = []              # 신청서에 없는데 증빙 파일 이름 맨 앞에서 읽어 더한 출장자
         self._route_checked = False              # 자차 경로(출발지 · 경유지 · 목적지 · 연료)를 사람이 확인했는지 — 바뀌면 다시 확인
         self._routes: dict[tuple, dict] = {}     # (출장자, 구간 번호) → {origin, goal, label, km, image, status}
         self._searching: set = set()
@@ -393,7 +400,7 @@ class TravelPage(QWidget):
         self._log(self._mask_names(str(message)))
 
     def _known_names(self) -> set[str]:
-        names = set(self._names())
+        names = set(self._all_people())
         app = self._review
         if app is not None:
             names.update(app.travelers)
@@ -562,16 +569,7 @@ class TravelPage(QWidget):
         self.review_label = WrapLabel("")
         self.review_label.setObjectName("body")
         step.add(self.review_label)
-        # 신청서에 출장이 여럿이면 — 저장 폴더 이름의 날짜로 고른 출장, 사람이 바꿀 수 있다(담당자 2026-11-10)
-        self.trip_row = QWidget()
-        trip_line = QHBoxLayout(self.trip_row)
-        trip_line.setContentsMargins(0, 0, 0, 0)
-        trip_line.addWidget(QLabel("신청서의 출장"))
-        self.trip_box = QComboBox()
-        self.trip_box.currentIndexChanged.connect(self._on_trip_choice)
-        trip_line.addWidget(self.trip_box, 1)
-        self.trip_row.hide()
-        step.add(self.trip_row)
+        step.add(self._build_groups())
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(8)
@@ -602,10 +600,22 @@ class TravelPage(QWidget):
         self.people_spin = QSpinBox()
         self.people_spin.setRange(1, 20)
         self.people_spin.setSuffix(" 명")
+        # 차량 연료 — 출장자마다, 동승 · 대중교통이면 '해당없음'(담당자 2026-11-16 "동승하는 경우가 있어 해당없음 옵션을 추가해
+        # 해당없음을 선택하면 자차 증빙 없어도 됨"). 하이패스가 없는 사람은 처음부터 해당없음, 있는 사람은 설정의 연료(없으면 고르기)
+        fuel_holder = QWidget()
+        fuel_col = QVBoxLayout(fuel_holder)
+        fuel_col.setContentsMargins(0, 0, 0, 0)
+        fuel_col.setSpacing(4)
+        self.fuel_rows = QGridLayout()
+        self.fuel_rows.setHorizontalSpacing(8)
+        self.fuel_rows.setVerticalSpacing(4)
+        fuel_col.addLayout(self.fuel_rows)
+        fuel_col.addWidget(muted_label("자차로 간 사람만 연료를 고르세요 — 동승했거나 대중교통이면 '해당없음'(자차 증빙이 없어도 됩니다)."))
+        self.fuel_boxes: dict[str, QComboBox] = {}
         rows = (("출장자", self.name_edit), ("출장기간", self._pair(self.start_edit, "~", self.end_edit)),
-                ("출발지", self.origin_edit), ("출장지(목적지)", self.dest_edit))
+                ("출발지", self.origin_edit), ("출장지(목적지)", self.dest_edit), ("차량 연료", fuel_holder))
         for i, (label, widget) in enumerate(rows):
-            grid.addWidget(QLabel(label), i, 0)
+            grid.addWidget(QLabel(label), i, 0, Qt.AlignTop if widget is fuel_holder else Qt.AlignVCenter)
             grid.addWidget(widget, i, 1)
         step.add_layout(grid)
         step.add(self._build_goal_box())
@@ -624,6 +634,43 @@ class TravelPage(QWidget):
         step.edit.connect(lambda: self._go("review"))
         self.name_edit.textChanged.connect(self._on_people)
         return step
+
+    def _build_groups(self) -> QWidget:
+        """출장 그룹 표 — 신청서의 출장(기간 · 출장지가 같은 사람들)마다 한 줄. 줄을 고르면 아래 칸이 그 그룹을 보이고 고친다.
+        '만들기' 를 끈 그룹은 출장증빙을 만들지 않는다. 그룹이 하나면 표는 숨기고 [출장 그룹 추가] 만."""
+        self.group_box = QWidget()
+        column = QVBoxLayout(self.group_box)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(6)
+        self.group_note = WrapLabel("")
+        self.group_note.setObjectName("muted")
+        column.addWidget(self.group_note)
+        table = QTableWidget(0, len(GROUP_COLUMNS))
+        table.setHorizontalHeaderLabels(GROUP_COLUMNS)
+        table.verticalHeader().hide()
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        header = table.horizontalHeader()
+        for col in range(len(GROUP_COLUMNS)):
+            header.setSectionResizeMode(col, QHeaderView.Stretch if col in (2, 4) else QHeaderView.ResizeToContents)
+        table.itemSelectionChanged.connect(self._on_group_pick)
+        table.itemChanged.connect(self._on_group_check)
+        self.group_table = table
+        column.addWidget(table)
+        line = QHBoxLayout()
+        add = QPushButton("출장 그룹 추가")
+        add.setObjectName("ghost")
+        add.setToolTip("기간이나 출장지가 다른 사람이 있으면 그룹을 더해 그 사람들을 옮기세요 — 고른 그룹의 기간 · 출장지로 시작합니다")
+        add.clicked.connect(self._add_group)
+        self.group_drop = QPushButton("고른 그룹 빼기")
+        self.group_drop.setObjectName("ghost")
+        self.group_drop.clicked.connect(self._drop_group)
+        line.addWidget(add)
+        line.addWidget(self.group_drop)
+        line.addStretch(1)
+        column.addLayout(line)
+        return self.group_box
 
     def _build_goal_box(self) -> QWidget:
         """출장목적지 입력 칸 — 신청서 목적지가 분명하지 않거나 네이버 지도에서 찾지 못하면 그 출장자의 목적지를 묻는다
@@ -656,17 +703,16 @@ class TravelPage(QWidget):
         self.car_note.setObjectName("noticeText")
         rows.addWidget(self.car_note)
         self.via_rows = QVBoxLayout()
+        self.via_rows.setContentsMargins(0, 0, 0, 0)
         self.via_rows.setSpacing(4)
-        rows.addLayout(self.via_rows)
         self.via_edits: list[QLineEdit] = []
-        add = QPushButton("경유지 추가")
-        add.setToolTip("들른 곳이 있으면 다닌 차례대로 더하세요 — 경유지가 있으면 구간마다 지도 그림과 거리를 넣습니다")
-        add.clicked.connect(lambda: self._add_via(""))
-        rows.addWidget(add, 0, Qt.AlignLeft)
-        self.fuel_rows = QGridLayout()
-        self.fuel_rows.setHorizontalSpacing(8)
-        rows.addLayout(self.fuel_rows)
-        self.fuel_boxes: dict[str, QComboBox] = {}
+        self.via_holder = QWidget()                 # 경유지 칸 묶음 — 고른 그룹에 자차 출장자가 없으면 숨긴다
+        self.via_holder.setLayout(self.via_rows)
+        rows.addWidget(self.via_holder)
+        self.via_add = QPushButton("경유지 추가")
+        self.via_add.setToolTip("들른 곳이 있으면 다닌 차례대로 더하세요 — 경유지가 있으면 구간마다 지도 그림과 거리를 넣습니다")
+        self.via_add.clicked.connect(lambda: self._add_via(""))
+        rows.addWidget(self.via_add, 0, Qt.AlignLeft)
         self.route_summary = WrapLabel("")
         self.route_summary.setObjectName("body")
         rows.addWidget(self.route_summary)
@@ -692,54 +738,84 @@ class TravelPage(QWidget):
         self.via_rows.addWidget(row)
         self.via_edits.append(edit)
         drop.clicked.connect(lambda: self._drop_via(row, edit))
-        self._on_route_inputs()
+        if not self._loading_group:
+            self._on_route_inputs()
 
     def _drop_via(self, row: QWidget, edit: QLineEdit) -> None:
         if edit in self.via_edits:
             self.via_edits.remove(edit)
+        row.setParent(None)
         row.deleteLater()
-        self._on_route_inputs()
+        if not self._loading_group:
+            self._on_route_inputs()
 
     def _vias(self) -> list[str]:
         return [e.text().strip() for e in self.via_edits if e.text().strip()]
 
-    def _sync_fuel_rows(self, drivers: list[str]) -> None:
-        for name in list(self.fuel_boxes):
-            if name not in drivers:
-                box = self.fuel_boxes.pop(name)
-                box.parentWidget().deleteLater() if box.parentWidget() is not self.car_box else box.deleteLater()
-        for name in drivers:
-            if name in self.fuel_boxes:
-                continue
-            # 설정의 '출장 차량 연료' 에 그 이름이 있으면 미리 고른다(이름으로 사람을 구별 — 담당자 2026-11-10)
-            saved = model.parse_fuels(settings.load().travel_fuels).get(name, "")
-            if saved and not self._fuel_of.get(name):
-                self._fuel_of[name] = saved
-            # 보기는 ERP 출장 교통비 창의 '연비/전비/수소' 보기(travel/fuels.py — 화면 구조 기록에서)
-            box = fuel_box(fuels.options()[0], self._fuel_of.get(name, ""))
-            box.currentIndexChanged.connect(lambda _i, n=name, b=box: self._set_fuel(n, b.currentData() or ""))
-            holder = QWidget()
-            line = QHBoxLayout(holder)
-            line.setContentsMargins(0, 0, 0, 0)
-            line.addWidget(QLabel(f"{name} 차량 연료" if name != "출장자" else "차량 연료"))
-            line.addWidget(box)
-            line.addStretch(1)
-            self.fuel_rows.addWidget(holder, self.fuel_rows.rowCount(), 0)
-            self.fuel_boxes[name] = box
+    def _sync_fuel_rows(self) -> None:
+        """② 의 '차량 연료' — 고른 그룹의 출장자마다 연료 고르기 칸(보기는 ERP 출장 교통비 창의 '연비/전비/수소' + 해당없음)."""
+        names = self._group_names(self._group()) or []
+        if list(self.fuel_boxes) != names:
+            for box in self.fuel_boxes.values():
+                holder = box.parentWidget()
+                holder.setParent(None)
+                holder.deleteLater()
+            self.fuel_boxes.clear()
+            for row, name in enumerate(names):
+                box = fuel_box(fuels.options()[0], "")
+                box.addItem(NO_CAR_TEXT, model.NO_CAR)
+                box.setToolTip("동승했거나 대중교통이면 해당없음 — 자차 증빙(하이패스 · 이동경로)이 없어도 됩니다")
+                box.currentIndexChanged.connect(lambda _i, n=name, b=box: self._set_fuel(n, b.currentData() or ""))
+                holder = QWidget()
+                line = QHBoxLayout(holder)
+                line.setContentsMargins(0, 0, 0, 0)
+                line.setSpacing(8)
+                line.addWidget(QLabel(name))
+                line.addWidget(box)
+                line.addStretch(1)
+                self.fuel_rows.addWidget(holder, row, 0)
+                self.fuel_boxes[name] = box
+        for name, box in self.fuel_boxes.items():
+            fuel = self._fuel(name)
+            if box.currentData() != fuel:
+                box.blockSignals(True)
+                if fuel and box.findData(fuel) < 0:
+                    box.addItem(fuel, fuel)
+                box.setCurrentIndex(max(box.findData(fuel), 0))
+                box.blockSignals(False)
+
+    def _has_tolls(self, name: str) -> bool:
+        """그 사람 앞으로 된 하이패스 증빙이 있는지(출장자가 한 명이면 하이패스가 있기만 하면, '공통' 하이패스도)."""
+        tolls = self.tables[model.TOLL].evidence(self._year()) if model.TOLL in self.tables else []
+        if not tolls:
+            return False
+        if len(self._all_people()) <= 1:
+            return True
+        return any(e.person.strip() in (name, model.SHARED) for e in tolls)
+
+    def _fuel(self, name: str) -> str:
+        """그 사람의 차량 연료 — 사람이 고른 것, 아니면 하이패스가 있으면 설정의 연료(없으면 '' = 고르기), 없으면 해당없음."""
+        if name in self._fuel_of:
+            return self._fuel_of[name]
+        if self._has_tolls(name):
+            saved = model.parse_fuels(settings.load().travel_fuels).get(name, "") if name != "출장자" else ""
+            if saved:
+                self._fuel_of[name] = saved                # 설정의 '출장 차량 연료' 에서 이름으로 미리 고름(담당자 2026-11-10)
+            return saved
+        return model.NO_CAR
 
     def _set_fuel(self, name: str, fuel: str, recheck: bool = True) -> None:
         self._fuel_of[name] = fuel
-        if fuel and name != "출장자":
-            # 고른 연료는 설정에도 남긴다 — 다음 출장에 그 사람이 자차면 미리 골라 둔다
+        if fuel and fuel != model.NO_CAR and name != "출장자":
+            # 고른 연료는 설정에도 남긴다 — 다음 출장에 그 사람이 자차면 미리 골라 둔다('해당없음' 은 그 출장만의 것이라 남기지 않는다)
             fuels = model.parse_fuels(settings.load().travel_fuels)
             if fuels.get(name) != fuel:
                 fuels[name] = fuel
                 settings.update(travel_fuels=model.format_fuels(fuels))
         if recheck:
             self._uncheck_route()
-        # 확인 칸 · '아직 빈 것' 줄도 다시 — 전에는 연료를 골라도 그대로라 확인 칸이 꺼진 채 눌리지 않았다(담당자 2026-11-10 "체크가 안됩니다")
-        self._sync_car_box()
-        self._sync()
+        # 해당없음이면 자차에서 빠진다 — 구간 · 확인 칸 · '아직 빈 것' 줄도 다시(담당자 2026-11-10 "체크가 안됩니다")
+        self._on_route_inputs()
 
     def _uncheck_route(self) -> None:
         """자차 경로가 바뀌면 다시 확인받는다."""
@@ -764,9 +840,9 @@ class TravelPage(QWidget):
         need = self._needs_goal()
         if need:
             out.append("출장목적지(" + ", ".join(need) + ")")
-        elif not all(self._goal(n) or len(self._places()) > 1 for n in drivers):
+        elif not all(self._goal(n) or len(self._places_of(n)) > 1 for n in drivers):
             out.append("목적지")
-        missing_fuel = [n for n in drivers if not self._fuel_of.get(n)]
+        missing_fuel = [n for n in drivers if not self._fuel(n)]
         if missing_fuel:
             out.append("연료" + (f"({', '.join(missing_fuel)})" if len(drivers) > 1 else ""))
         return out
@@ -776,11 +852,21 @@ class TravelPage(QWidget):
         self.car_box.setVisible(bool(drivers))
         if not drivers:
             return
-        self._sync_fuel_rows(drivers)
         missing = self._car_missing()
         who = ", ".join(n for n in drivers if n != "출장자")
+        mine = [n for n in drivers if n in self._group_names(self._group())] if len(self._groups) > 1 else drivers
+        self.via_holder.setVisible(bool(mine))
+        self.via_add.setVisible(bool(mine))
+        if len(self._groups) > 1:
+            others = sorted({i + 1 for i, g in enumerate(self._groups) for n in drivers if n in g["names"]} - {self._group_i + 1})
+            group = (f" 경유지는 고른 출장 그룹({self._group_i + 1})의 것입니다." if mine else
+                     f" 고른 출장 그룹({self._group_i + 1})에는 자차 출장자가 없습니다")
+            group += f" — 자차 출장자가 있는 그룹({', '.join(map(str, others))})은 위 표에서 고르면 경유지를 고칩니다." if others else ""
+        else:
+            group = ""
         self.car_note.setText(f"자차 경로 확인 — 하이패스 증빙이 있어 자차입니다{f'({who})' if who else ''}. 출발지 · 경유지(있을 때만 [경유지 추가]) · "
-                              "목적지와 차량 연료를 확인해야 다음으로 넘어갑니다. 경유지가 없으면 지도 그림 하나(오는 길은 같은 거리)입니다.")
+                              "목적지와 차량 연료를 확인해야 다음으로 넘어갑니다. 경유지가 없으면 지도 그림 하나(오는 길은 같은 거리)입니다. "
+                              "동승한 사람은 차량 연료를 '해당없음' 으로 두세요." + group)
         lines = []
         for name in drivers:
             legs = self._legs_for(name)
@@ -998,21 +1084,23 @@ class TravelPage(QWidget):
         # 신청서에 출장이 여럿이면 저장 폴더 이름의 날짜로 고른다(담당자 2026-11-10)
         merged = application.select(application.merge(apps), path)
         self._review = merged
-        scan = model.scan_folder(path, merged.travelers if merged else None)
+        listed = [n for t in (merged.trips if merged else []) for n in t.travelers] + (merged.travelers if merged else [])
+        scan = model.scan_folder(path, list(dict.fromkeys(listed)) or None)
+        # 파일 이름 맨 앞의 이름(신청서에 없는 사람)도 출장자 — 그 이름으로 한 번 더 훑어 '이름 참가확인서' 같은 기타 증빙도 그 사람 것으로
+        found = model.names_in_files((p for files in scan.files.values() for p in files), root=path)
+        if [n for n in found if n not in listed]:
+            scan = model.scan_folder(path, list(dict.fromkeys(listed + found)))
         self._scan = scan
         self._made = []
         self.result_label.setText("")
         self.origin_edit.setText(settings.load().travel_origin)
-        self.trip_box.blockSignals(True)
-        self.trip_box.clear()
-        for trip in (merged.trips if merged else []):
-            self.trip_box.addItem(trip.label())
-        self.trip_box.setCurrentIndex(merged.chosen if merged else 0)
-        self.trip_box.blockSignals(False)
-        self.trip_row.setVisible(bool(merged and len(merged.trips) > 1))
+        self._fuel_of.clear()
         names = self._fill_info(merged, scan)
         self._fill_from_scan(scan)
         self.review_label.setText(self._review_text(merged, names, scan))
+        on = [g for g in self._groups if g["on"]]
+        self.log(f"출장 그룹 {len(self._groups)}개 · 만들 그룹 {len(on)}개 · 출장자 {len(self._names())}명"
+                 + (f" · 파일 이름에서 더한 출장자 {len(self._extra)}명" if self._extra else ""))
         if merged:
             self.log(application.log_line(merged, self._apps))
             for app in apps:
@@ -1026,35 +1114,49 @@ class TravelPage(QWidget):
         self._go("review")
 
     def _fill_info(self, app: application.Application | None, scan: model.Scan) -> list[str]:
-        """신청서(고른 출장)의 출장자 · 기간 · 출발지 · 출장지를 칸에 — 신청서에 출장자가 없으면 증빙 파일 이름으로."""
+        """신청서의 출장마다 출장 그룹(출장자 · 기간 · 출장지)을 짜고 고른 출장의 그룹을 칸에 — 담당자 2026-11-16
+        "출장신청서를 근거로 출장 그룹을 나누어서" · "파일제목 맨앞에 있는 이름으로 출장자 구분" · "한폴더에 있는 여러명 한번에".
+        폴더 이름의 날짜로 고른 출장은 늘 만들고, 다른 출장은 그 출장의 사람이 이 폴더에 증빙(파일 이름 맨 앞 이름)이 있을 때만 만든다.
+        신청서에 없는데 파일 이름 맨 앞에 있는 사람은 고른 출장의 그룹에 더한다(사람이 표에서 옮긴다). 신청서가 없으면 파일 이름으로."""
         scanned = [p for files in scan.files.values() for p in files]
-        names = list(app.travelers) if app and app.travelers else model.names_in_files(scanned)
+        root = Path(self.folder_edit.text().strip()) if self.folder_edit.text().strip() else None
+        in_files = model.names_in_files(scanned, root=root)
         self._goal_of.clear()
         self._ask_reason.clear()
         self._routes.clear()
-        self.name_edit.setText(", ".join(names))
-        if app and app.start:
-            self.start_edit.setDate(QDate(app.start.year, app.start.month, app.start.day))
-            end = app.end or app.start
-            self.end_edit.setDate(QDate(end.year, end.month, end.day))
+        today = self.start_edit.date().toPython(), self.end_edit.date().toPython()
+        groups: list[dict] = []
+        chosen = 0
+        if app and app.trips:
+            chosen = max(0, min(app.chosen, len(app.trips) - 1))
+            for i, trip in enumerate(app.trips):
+                names = list(trip.travelers) if trip.travelers else (list(app.travelers) if i == chosen else [])
+                groups.append({"names": names, "start": trip.start, "end": trip.end or trip.start,
+                               "dest": ", ".join(trip.places), "vias": [], "on": i == chosen,
+                               "from": f"신청서 {i + 1}번째 출장" if len(app.trips) > 1 else "신청서"})
+            taken = set(groups[chosen]["names"])
+            for group in groups:
+                if not group["on"] and set(group["names"]) & (set(in_files) - taken):
+                    group["on"] = True
+                    taken |= set(group["names"])
+        elif app:
+            groups.append({"names": list(app.travelers), "start": app.start, "end": app.end or app.start,
+                           "dest": app.destination, "vias": [], "on": True, "from": "신청서"})
+        else:
+            groups.append({"names": [], "start": today[0], "end": today[1], "dest": "", "vias": [], "on": True, "from": ""})
+        for group in groups:
+            if group["start"] is None:
+                group["start"], group["end"] = today
+        everyone = {n for g in groups for n in g["names"]}
+        self._extra = [n for n in in_files if n not in everyone]
+        groups[chosen]["names"] += self._extra
+        self._groups = groups
+        self._group_i = chosen
         if app and app.origin:
             self.origin_edit.setText(app.origin)
-        self.dest_edit.setText(app.destination if app else "")
-        return names
-
-    def _on_trip_choice(self, index: int) -> None:
-        """'신청서의 출장' 을 바꾸면 그 출장의 기간 · 출장지 · 출장자로 다시 채운다(증빙 파일은 그대로 — 출장자 칸만 다시 짐작)."""
-        app = self._review
-        if app is None or not app.trips or index < 0:
-            return
-        application.apply_trip(app, index)
-        self.origin_edit.setText(settings.load().travel_origin)
-        names = self._fill_info(app, self._scan)
-        for table in self.tables.values():
-            table.show_people(self._names())
-        self.review_label.setText(self._review_text(app, names, self._scan))
-        self.log(application.log_line(app, self._apps))
-        self._sync()
+        self._load_group(chosen)
+        self._fill_group_table()
+        return self._names()
 
     def _fill_from_scan(self, scan: model.Scan) -> None:
         for table in self.tables.values():
@@ -1062,7 +1164,7 @@ class TravelPage(QWidget):
         for kind, paths in scan.files.items():
             self.tables[kind].add_files(paths, self._year())
         for kind, table in self.tables.items():
-            table.show_people(self._names())
+            table.show_people(self._all_people())
         # 폴더에 이미 둔 지도 그림('… 지도 가는 길' · '… 오는 길') — 자차 출장자가 한 명이면 그 사람 구간으로
         self._scan_maps = [p for p in scan.route_maps if p] or ([scan.route_map] if scan.route_map else [])
         added = sum(len(p) for p in scan.files.values())
@@ -1074,18 +1176,23 @@ class TravelPage(QWidget):
         self.scan_note.setText(note)
 
     def _review_text(self, app: application.Application | None, names: list[str], scan: model.Scan) -> str:
+        extra = (f"증빙 파일 이름 맨 앞에서 신청서에 없는 출장자 {len(self._extra)}명({', '.join(self._extra)})을 읽어 "
+                 f"{'출장 그룹 ' + str(self._group_i + 1) + '에' if len(self._groups) > 1 else '출장자에'} 더했습니다 — 아니면 출장자 칸에서 지우세요."
+                 if self._extra else "")
         if app is None:
-            from_files = f" 증빙 파일 이름에서 출장자 {len(names)}명({', '.join(names)})을 읽었습니다." if names else ""
+            from_files = f" 증빙 파일 이름 맨 앞에서 출장자 {len(names)}명({', '.join(names)})을 읽었습니다." if names else ""
             return ("출장신청서를 찾지 못했습니다 — 파일 이름에 '출장신청' 이 든 PDF(또는 .hwpx)를 이 폴더에 두면 읽습니다." + from_files
                     + " 출장 정보를 직접 적어 주세요.")
         lines = [f"출장신청서 {', '.join(p.name for p in self._apps)} 를 읽었습니다 — 찾은 칸: {', '.join(app.found) or '없음'}."]
-        if app.travelers:
-            lines.append(f"출장자 {len(app.travelers)}명: {', '.join(app.travelers)}")
+        if len(self._groups) > 1:
+            on = [i + 1 for i, g in enumerate(self._groups) if g["on"]]
+            lines.append(f"출장 그룹 {len(self._groups)}개 — 만들 그룹: {', '.join(map(str, on))}. 출장자 {len(names)}명: {', '.join(names)}")
+        elif names:
+            lines.append(f"출장자 {len(names)}명: {', '.join(names)}")
         if app.purpose:
             lines.append(f"출장목적: {app.purpose}")
-        in_files = [n for n in model.names_in_files(p for files in scan.files.values() for p in files) if n not in names]
-        if in_files:
-            lines.append(f"증빙 파일에는 신청서에 없는 이름이 있습니다: {', '.join(in_files)} — 출장자를 확인하세요")
+        if extra:
+            lines.append(extra)
         lines += [f"확인: {n}" for n in app.notes]
         return "\n".join(lines)
 
@@ -1096,13 +1203,168 @@ class TravelPage(QWidget):
     def _places(self) -> list[str]:
         return model.split_places(self.dest_edit.text())
 
-    def _on_people(self) -> None:
+    # ── 출장 그룹(담당자 2026-11-16) ─────────────────────────────────────
+    def _group(self) -> dict | None:
+        return self._groups[self._group_i] if 0 <= self._group_i < len(self._groups) else None
+
+    @staticmethod
+    def _group_names(group: dict | None) -> list[str]:
+        return list(group["names"]) if group else []
+
+    def _included(self) -> list[dict]:
+        """만들 그룹 — '만들기' 를 켠 그룹(하나도 없으면 고른 그룹)."""
+        on = [g for g in self._groups if g["on"]]
+        return on or ([self._group()] if self._group() else [])
+
+    def _all_people(self) -> list[str]:
+        """모든 그룹의 출장자 — 증빙 표의 출장자 칸 · 파일 이름으로 나누기에 쓴다('만들기' 를 끈 그룹의 사람 증빙도 그 사람 것으로)."""
+        if not self._groups:
+            return model.split_names(self.name_edit.text())
+        return list(dict.fromkeys(n for g in self._groups for n in g["names"]))
+
+    def _names(self) -> list[str]:
+        """만들 출장자 — '만들기' 를 켠 그룹의 사람들(차례대로)."""
+        if not self._groups:
+            return model.split_names(self.name_edit.text())
+        return list(dict.fromkeys(n for g in self._included() for n in g["names"]))
+
+    def _group_of(self, name: str) -> dict | None:
+        return next((g for g in self._included() if name in g["names"]), None) or self._group()
+
+    def _places(self) -> list[str]:
+        """고른 그룹의 출장지(② 의 칸)."""
+        return model.split_places(self.dest_edit.text())
+
+    def _places_of(self, name: str) -> list[str]:
+        group = self._group_of(name)
+        return model.split_places(group["dest"]) if group else self._places()
+
+    def _all_places(self) -> list[str]:
+        """만들 그룹의 출장지 모두 — 증빙 표의 출장지 칸(여러 곳이면 보인다) · 숙박 상한."""
+        if not self._groups:
+            return self._places()
+        return list(dict.fromkeys(p for g in self._included() for p in model.split_places(g["dest"])))
+
+    def _vias_of(self, name: str) -> list[str]:
+        group = self._group_of(name)
+        if group is None or group is self._group():
+            return self._vias()
+        return [v for v in group.get("vias", []) if v]
+
+    def _store_group(self) -> None:
+        """② 의 칸 → 고른 그룹."""
+        group = self._group()
+        if group is None or self._loading_group:
+            return
+        group["names"] = model.split_names(self.name_edit.text())
+        group["start"], group["end"] = self.start_edit.date().toPython(), self.end_edit.date().toPython()
+        group["dest"] = self.dest_edit.text().strip()
+        group["vias"] = self._vias()
+
+    def _load_group(self, index: int) -> None:
+        """고른 그룹 → ② 의 칸(출장자 · 기간 · 출장지 · 경유지 · 차량 연료)."""
+        if not self._groups:
+            return
+        self._group_i = max(0, min(index, len(self._groups) - 1))
+        group = self._groups[self._group_i]
+        self._loading_group = True
+        try:
+            self.name_edit.setText(", ".join(group["names"]))
+            if group.get("start"):
+                start, end = group["start"], group.get("end") or group["start"]
+                self.start_edit.setDate(QDate(start.year, start.month, start.day))
+                self.end_edit.setDate(QDate(end.year, end.month, end.day))
+            self.dest_edit.setText(group.get("dest", ""))
+            for edit in list(self.via_edits):
+                self._drop_via(edit.parentWidget(), edit)
+            for via in group.get("vias", []):
+                self._add_via(via)
+        finally:
+            self._loading_group = False
+        self._on_people()
+        self._on_places()
+
+    def _fill_group_table(self) -> None:
+        table = self.group_table
+        table.blockSignals(True)
+        table.setRowCount(0)
+        for i, group in enumerate(self._groups):
+            table.insertRow(i)
+            on = QTableWidgetItem("")
+            on.setFlags((on.flags() | Qt.ItemIsUserCheckable) & ~Qt.ItemIsEditable)
+            on.setCheckState(Qt.Checked if group["on"] else Qt.Unchecked)
+            on.setToolTip("끄면 이 그룹은 출장증빙을 만들지 않습니다")
+            start, end = group.get("start"), group.get("end")
+            period = (f"{start:%Y-%m-%d}" + (f" ~ {end:%m-%d}" if end and end != start else "")) if start else "기간 모름"
+            fuel = " · ".join(f"{n} {self._fuel(n) or '고르기'}" for n in group["names"])
+            cells = [on, QTableWidgetItem(f"{i + 1}" + (f" · {group['from']}" if group.get("from") else "")),
+                     QTableWidgetItem(", ".join(group["names"]) or "(출장자 없음)"), QTableWidgetItem(period),
+                     QTableWidgetItem(group.get("dest") or "(출장지 없음)"), QTableWidgetItem(fuel)]
+            for col, item in enumerate(cells):
+                if col:
+                    item.setToolTip(item.text())
+                table.setItem(i, col, item)
+        table.selectRow(self._group_i)
+        table.blockSignals(False)
+        many = len(self._groups) > 1
+        table.setVisible(many)
+        if many:
+            height = table.horizontalHeader().height() + sum(table.rowHeight(r) for r in range(table.rowCount())) + 4
+            table.setFixedHeight(min(height, 220))
+        self.group_drop.setEnabled(many)
+        on = sum(1 for g in self._groups if g["on"])
+        self.group_note.setText(
+            f"출장 그룹 {len(self._groups)}개(만들 그룹 {on}개) — 신청서의 출장(기간 · 출장지)마다 나눴습니다. 줄을 고르면 아래 칸에서 출장자 · 기간 · "
+            "출장지 · 차량 연료를 고칩니다. 증빙은 파일 이름 맨 앞의 이름으로 그 사람 것이 됩니다." if many else
+            "출장자마다 기간이나 출장지가 다르면 [출장 그룹 추가] 로 나누세요. 증빙은 파일 이름 맨 앞의 이름으로 그 사람 것이 됩니다.")
+
+    def _on_group_pick(self) -> None:
+        rows = sorted({i.row() for i in self.group_table.selectedIndexes()})
+        if not rows or rows[0] == self._group_i or rows[0] >= len(self._groups):
+            return
+        self._store_group()
+        self._load_group(rows[0])
+        self._after_groups()
+
+    def _on_group_check(self, item: QTableWidgetItem) -> None:
+        if item.column() != 0 or item.row() >= len(self._groups):
+            return
+        self._groups[item.row()]["on"] = item.checkState() == Qt.Checked
+        self._after_groups()
+
+    def _add_group(self) -> None:
+        """고른 그룹의 기간 · 출장지로 새 그룹 — 출장자는 비워 두고 사람이 옮긴다."""
+        self._store_group()
+        base = self._group() or {}
+        self._groups.append({"names": [], "start": base.get("start"), "end": base.get("end"), "dest": base.get("dest", ""),
+                             "vias": [], "on": True, "from": "추가"})
+        self._load_group(len(self._groups) - 1)
+        self._after_groups()
+        self.name_edit.setFocus()
+
+    def _drop_group(self) -> None:
+        if len(self._groups) <= 1:
+            return
+        del self._groups[self._group_i]
+        self._load_group(min(self._group_i, len(self._groups) - 1))
+        self._after_groups()
+
+    def _after_groups(self) -> None:
+        """그룹이 바뀌면 — 증빙 표의 출장자 · 출장지 칸, 자차 구간, 표를 다시."""
         for table in self.tables.values():
-            table.show_people(self._names())
+            table.show_people(self._all_people())
+            table.show_places(self._all_places())
+        self._on_route_inputs()
+
+    def _on_people(self) -> None:
+        self._store_group()
+        for table in self.tables.values():
+            table.show_people(self._all_people())
         self._on_route_inputs()
 
     def _on_places(self) -> None:
-        places = self._places()
+        self._store_group()
+        places = self._all_places()
         for table in self.tables.values():
             table.show_places(places)
         self._on_region()
@@ -1111,32 +1373,36 @@ class TravelPage(QWidget):
     def _on_dates(self) -> None:
         if self.end_edit.date() < self.start_edit.date():
             self.end_edit.setDate(self.start_edit.date())
+        self._store_group()
+        if hasattr(self, "group_table") and self._groups:
+            self._fill_group_table()
         self._sync()
 
     def _drivers(self) -> list[str]:
-        """하이패스가 있는 출장자 — 자차(담당자 2026-11-10 "하이패스가 있으면 자차를 이용한건데"). '공통' 하이패스면 모두."""
+        """하이패스가 있는 출장자 — 자차(담당자 2026-11-10 "하이패스가 있으면 자차를 이용한건데"). '공통' 하이패스면 모두.
+        차량 연료를 '해당없음'(동승)으로 고른 사람은 뺀다(담당자 2026-11-16)."""
         tolls = self.tables[model.TOLL].evidence(self._year()) if model.TOLL in self.tables else []
         if not tolls:
             return []
         names = self._names()
-        if len(names) <= 1:
-            return names[:1] or ["출장자"]
+        if len(self._all_people()) <= 1:
+            return [n for n in (names[:1] or ["출장자"]) if self._fuel(n) != model.NO_CAR]
         whose = {e.person.strip() for e in tolls}
-        return [n for n in names if n in whose or model.SHARED in whose]
+        return [n for n in names if (n in whose or model.SHARED in whose) and self._fuel(n) != model.NO_CAR]
 
     def _goal(self, name: str) -> str:
         """그 출장자의 출장목적지 — 사람이 적은 것, 없으면 출장지 칸(하나일 때)."""
         own = self._goal_of.get(name, "").strip()
         if own:
             return own
-        places = self._places()
+        places = self._places_of(name)
         return places[0] if len(places) == 1 else ""
 
     def _stops(self, name: str) -> list[str]:
         """자차의 들른 곳 차례 — 경유지([경유지 추가]) 다음 목적지(그 출장자의 목적지, 없으면 출장지 칸의 곳들)."""
-        places = self._places()
+        places = self._places_of(name)
         goals = [self._goal_of[name]] if self._goal_of.get(name, "").strip() else (places if len(places) > 1 else [self._goal(name)])
-        return self._vias() + goals
+        return self._vias_of(name) + goals
 
     def _legs_for(self, name: str) -> list[tuple[str, str, str]]:
         """찾을 구간 — 목적지가 하나면 가는 길 하나(오는 길은 같은 거리로 본다 — 담당자 2026-11-10 "출발지와 목적지가 동일한 경우는 1개만"),
@@ -1151,8 +1417,8 @@ class TravelPage(QWidget):
     def _needs_goal(self) -> dict[str, str]:
         """목적지를 물어야 할 출장자 → 까닭. 자차 출장자만(길찾기에 목적지가 있어야 한다)."""
         out = {}
-        places = self._places()
         for name in self._drivers():
+            places = self._places_of(name)
             if self._goal_of.get(name, "").strip():
                 if name in self._ask_reason:
                     out[name] = self._ask_reason[name]
@@ -1228,7 +1494,7 @@ class TravelPage(QWidget):
     def _rescan(self) -> None:
         folder = self.folder_edit.text().strip()
         if folder and Path(folder).is_dir():
-            self._fill_from_scan(model.scan_folder(Path(folder), self._names()))
+            self._fill_from_scan(model.scan_folder(Path(folder), self._all_people()))
             self._on_route_inputs()
 
     def _on_evidence(self) -> None:
@@ -1236,8 +1502,9 @@ class TravelPage(QWidget):
 
     def _on_route_inputs(self) -> None:
         """출장자 · 출발지 · 목적지 · 하이패스가 바뀌면 자차 구간 표를 다시 짠다 — 찾아 둔 구간은(출발 · 목적지가 같으면) 남긴다."""
-        if not hasattr(self, "route_table"):
+        if not hasattr(self, "route_table") or self._loading_group:
             return
+        self._store_group()
         keep = {}
         for name in self._drivers():
             for i, (origin, goal, label) in enumerate(self._legs_for(name)):
@@ -1261,6 +1528,9 @@ class TravelPage(QWidget):
         self._fill_route_table()
         self._sync_goal_box()
         self._sync_car_box()
+        self._sync_fuel_rows()
+        if self._groups:
+            self._fill_group_table()
         self._sync()
 
     def _fill_route_table(self) -> None:
@@ -1424,7 +1694,7 @@ class TravelPage(QWidget):
             self._sync()
 
     def _on_region(self) -> None:
-        places = self._places()
+        places = self._all_places()
         auto = self.region_box.currentIndex() == 0
         # 출장지가 여러 곳이고 지역을 고르지 않았으면 숙박 영수증마다 그 출장지로 상한을 정한다 — 1박 상한 칸 하나로는 못 적는다
         per_place = auto and len(places) > 1
@@ -1450,19 +1720,27 @@ class TravelPage(QWidget):
             QTimer.singleShot(0, self._find_routes)
 
     def base_trip(self) -> model.Trip:
-        """출장자 모두의 증빙이 든 출장 하나 — 출장자마다 나누는 것은 trips()."""
+        """출장자 모두의 증빙이 든 출장 하나(고른 그룹의 기간 · 출장지) — 출장자마다 나누는 것은 trips()."""
+        return self._group_trip(self._group())
+
+    def _group_trip(self, group: dict | None) -> model.Trip:
+        """그룹 하나의 출장 — 그 그룹의 기간 · 출장지와 표의 증빙 모두(사람마다 나누기는 model.for_traveler)."""
         year = self._year()
         region = "" if self.region_box.currentIndex() == 0 else self.region_box.currentText()
+        if group is None or group is self._group():
+            start, end, dest = self.start_edit.date().toPython(), self.end_edit.date().toPython(), self.dest_edit.text().strip()
+        else:
+            start, end, dest = group.get("start"), group.get("end"), group.get("dest", "")
         return model.Trip(
             name=", ".join(self._names()),
-            start=self.start_edit.date().toPython(), end=self.end_edit.date().toPython(),
-            origin=self.origin_edit.text().strip(), destination=self.dest_edit.text().strip(),
+            start=start, end=end,
+            origin=self.origin_edit.text().strip(), destination=dest,
             region=region, lodging_cap=(self.cap_spin.value() or None) if self.cap_spin.isEnabled() else None,
             people=self.people_spin.value(),
             stay=self.tables[model.STAY].evidence(year), public=self.tables[model.PUBLIC].evidence(year),
             tolls=self.tables[model.TOLL].evidence(year), lodging=self.tables[model.LODGING].evidence(year),
             other=self.tables[model.OTHER].evidence(year),
-            place_regions=self._place_regions(model.split_places(self.dest_edit.text())),
+            place_regions=self._place_regions(model.split_places(dest)),
         )
 
     @staticmethod
@@ -1488,21 +1766,31 @@ class TravelPage(QWidget):
         return out
 
     def trips(self) -> list[model.Trip]:
-        """출장자마다 출장 — 그 사람 증빙 · '공통' 증빙과, 자차면 그 사람 구간의 지도 · km."""
-        names = self._names()
-        base = self.base_trip()
+        """출장자마다 출장 — 만들 그룹마다 그 그룹의 기간 · 출장지로, 그 사람 증빙 · '공통' 증빙과, 자차면 그 사람 구간의 지도 · km.
+        한 사람이 두 그룹에 있거나 그룹이 여럿일 때의 '공통' 증빙은 그 그룹의 기간 안 것만(model.keep_period)."""
+        people = self._all_people()
+        groups = self._included() if self._groups else [None]
+        seen: dict[str, int] = {}
+        for group in groups:
+            for name in self._group_names(group):
+                seen[name] = seen.get(name, 0) + 1
         out = []
-        for name in names or [""]:
-            trip = model.for_traveler(base, name, names)
-            driver = name or "출장자"
-            keys = sorted(k for k in self._routes if k[0] == driver)
-            if keys and trip.tolls:
-                trip.legs = [self._routes[k]["km"] for k in keys]
-                trip.route_maps = [Path(self._routes[k]["image"]) if self._routes[k]["image"] else None for k in keys]
-                stops = self._stops(driver)
-                trip.route_stops = stops if len(stops) > 1 else []
-                trip.fuel = self._fuel_of.get(driver, "")
-            out.append(trip)
+        for group in groups:
+            base = self._group_trip(group)
+            names = self._group_names(group) if group is not None else self._names()
+            for name in names or [""]:
+                fuel = self._fuel(name or "출장자")
+                trip = model.for_traveler(base, name, people, fuel=fuel)
+                if len(groups) > 1:
+                    model.keep_period(trip, base.start, base.end, shared_only=seen.get(name, 0) <= 1)
+                driver = name or "출장자"
+                keys = sorted(k for k in self._routes if k[0] == driver)
+                if keys and trip.tolls and fuel != model.NO_CAR:
+                    trip.legs = [self._routes[k]["km"] for k in keys]
+                    trip.route_maps = [Path(self._routes[k]["image"]) if self._routes[k]["image"] else None for k in keys]
+                    stops = self._stops(driver)
+                    trip.route_stops = stops if len(stops) > 1 else []
+                out.append(trip)
         return out
 
     def trip(self) -> model.Trip:
@@ -1536,11 +1824,15 @@ class TravelPage(QWidget):
         self.folder_list.setToolTip("체크한 폴더를 차례로 합니다 — 두 번 누르면 그 폴더로 바로 갑니다" if many else "")
         start, end = self.start_edit.date().toPython(), self.end_edit.date().toPython()
         who = names[0] + (f" 외 {len(names) - 1}명" if len(names) > 1 else "") if names else "출장자 없음"
-        self.step_info.set_state(HIDDEN if stage == "folder" else CURRENT if stage == "review" else DONE,
-                                 f"{who} · {start:%m-%d}~{end:%m-%d} · {self.dest_edit.text().strip() or '출장지 없음'}")
+        groups = self._included() if self._groups else []
+        summary = (f"출장 그룹 {len(groups)}개 · {who}" if len(groups) > 1 else
+                   f"{who} · {start:%m-%d}~{end:%m-%d} · {self.dest_edit.text().strip() or '출장지 없음'}")
+        self.step_info.set_state(HIDDEN if stage == "folder" else CURRENT if stage == "review" else DONE, summary)
         car_ready = not self._drivers() or (self._route_checked and not self._car_missing())
-        self.info_next.setEnabled(bool(names) and car_ready)
-        self.info_next.setToolTip("" if car_ready else "자차 경로 확인 — 출발지 · 경유지 · 목적지와 연료를 확인하고 확인 칸을 켜세요")
+        empty = [str(i + 1) for i, g in enumerate(self._groups) if g["on"] and not g["names"]]
+        self.info_next.setEnabled(bool(names) and car_ready and not empty)
+        self.info_next.setToolTip(f"출장자가 없는 출장 그룹({', '.join(empty)}) — 출장자를 적거나 '만들기' 를 끄세요" if empty else
+                                  "" if car_ready else "자차 경로 확인 — 출발지 · 경유지 · 목적지와 연료를 확인하고 확인 칸을 켜세요")
         self.app_button.setVisible(bool(self._apps))
         files = stage == "files"
         self.step_files.set_state(OPEN if files else HIDDEN)
@@ -1553,7 +1845,7 @@ class TravelPage(QWidget):
         trips = self.trips()
         base = self.base_trip()
         self._fill_people(trips)
-        problems = model.traveler_problems(base, names)
+        problems = model.traveler_problems(base, self._all_people())
         for trip in trips:
             problems += [(f"{trip.name}: " if len(trips) > 1 else "") + p for p in model.problems(trip)
                          if not (len(trips) > 1 and p.startswith("증빙 파일이 하나도"))]
@@ -1581,6 +1873,7 @@ class TravelPage(QWidget):
         table = self.people_table
         table.setRowCount(0)
         drivers = set(self._drivers())
+        twice = {t.name for t in trips if sum(1 for o in trips if o.name == t.name) > 1}
         for trip in trips:
             row = table.rowCount()
             table.insertRow(row)
@@ -1590,7 +1883,8 @@ class TravelPage(QWidget):
                 kms = [v for v in trip.legs if v]
                 route = (f"{len([m for m in trip.route_maps if m])}장 · {model.km(sum(kms))}" if kms else "아직") if trip.tolls else "—"
             review = model.review(trip)
-            cells = [trip.name or "(이름 없음)", f"{len(trip.stay)}개", f"{len(trip.public)}개", f"{len(trip.tolls)}개",
+            label = (trip.name or "(이름 없음)") + (f" ({trip.start:%m-%d})" if trip.name in twice and trip.start else "")
+            cells = [label, f"{len(trip.stay)}개", f"{len(trip.public)}개", f"{len(trip.tolls)}개",
                      f"{nights}박" if trip.lodging else "—", f"{len(trip.other)}개" if trip.other else "—", route,
                      " / ".join(review) or "확인할 것 없음"]
             for col, text in enumerate(cells):
@@ -1683,9 +1977,8 @@ class TravelPage(QWidget):
         if not folder.is_dir():
             QMessageBox.warning(self, "출장증빙 만들기", f"저장할 폴더가 없습니다:\n{folder}")
             return
-        names = self._names()
         trips = [t for t in self.trips() if not model.blocking(t)]
-        problems = model.traveler_problems(self.base_trip(), names)
+        problems = model.traveler_problems(self.base_trip(), self._all_people())
         for trip in trips:
             problems += [(f"{trip.name}: " if len(trips) > 1 else "") + p for p in model.problems(trip) + model.review(trip)]
         if problems and not confirmed:

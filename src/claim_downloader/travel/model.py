@@ -696,15 +696,30 @@ def problems(trip: Trip) -> list[str]:
                 out.append(f"대중교통 · {e.path.name}: 출발지 · 목적지를 확인해 주세요.")
             if kind in (STAY, LODGING) and len(trip.places) > 1 and not trip.place_of(e):
                 out.append(f"{KIND_NAMES[kind]} · {e.path.name}: 어느 출장지인지 고르세요({' · '.join(trip.places)}).")
-    if trip.tolls and not trip.has_route():
+    if trip.tolls and trip.fuel == NO_CAR:
+        out.append(NO_CAR_WITH_TOLLS)
+    elif trip.tolls and not trip.has_route():
         out.append("자차 하이패스가 있는데 이동경로(지도 · km)가 없습니다.")
     return out
 
 
+NO_CAR_WITH_TOLLS = ("차량 연료가 '해당없음'(동승)인데 하이패스 증빙이 있습니다 — 운전한 사람의 증빙이면 증빙 표의 출장자 칸을 고치고, "
+                     "자차였으면 ② 에서 연료를 고르세요.")
+
+
 # ── 출장자 ──────────────────────────────────────────────────────────────
 SHARED = "공통"      # 증빙 표의 출장자 칸에 이렇게 적으면 모든 출장자의 출장증빙에 들어간다
+# 차량 연료의 '해당없음' — 자차로 가지 않은 사람(동승 · 대중교통). 자차 증빙(하이패스 · 이동경로)이 없어도 된다(담당자 2026-11-16)
+NO_CAR = "해당없음"
 _NAME = re.compile(r"[가-힣]{2,4}")
-_NOT_PERSON = ("체류", "증빙", "숙박", "교통", "하이패스", "자차", "영수증", "지도", "경로", "출장", "공통", "기타", "호텔", "열차", "버스", "택시")
+_NOT_PERSON = ("체류", "증빙", "숙박", "교통", "하이패스", "자차", "영수증", "지도", "경로", "출장", "공통", "기타", "호텔", "열차", "버스", "택시",
+               "사진", "공문", "자료", "서류", "신청", "명단", "회의", "행사", "참가", "확인", "수료", "결재", "계획", "결과", "보고", "카드", "결제")
+# 이름처럼 두세 글자지만 곳 이름인 것 — '부산_체류증빙' 의 부산을 출장자로 보지 않게(시 · 군은 카드 회의비의 지역 이름표와 같은 것)
+_PROVINCES = ("강원", "경기", "충북", "충남", "전북", "전남", "경북", "경남", "제주", "충청", "전라", "경상")
+# 파일 이름에서 이름 바로 뒤에 오는 증빙 낱말 — '홍길동 체류증빙' · '홍길동체류증빙' 처럼 밑줄이 없을 때 이름 끝을 가린다
+_EVIDENCE_WORDS = (   # + 항목 낱말(KIND_WORDS — 아래에 있어 _starts_with_evidence 가 합친다)
+    "증빙", "영수증", "숙박비", "교통비", "참가", "확인서", "수료", "이수", "출장", "기타", "카드", "결제", "승차권", "탑승권", "통행")
+_LEAD_JUNK = re.compile(r"^[\s\d.()\[\]_\-]+")         # 이름 앞의 차례 번호('01_' · '(1) ')
 
 
 def split_names(text: str) -> list[str]:
@@ -717,35 +732,95 @@ def split_names(text: str) -> list[str]:
     return out
 
 
-def person_hint(path: Path) -> str:
-    """파일 이름 '<이름>_체류증빙' 의 앞 이름(담당자 2026-11-10 — 파일명은 이름_체류증빙 · 이름_하이패스 증빙 · 이름_숙박비 증빙 · 이름_대중교통 증빙),
-    없으면 위 폴더 이름이 이름 꼴인 것. 이름 꼴(한글 2~4자)이 아니거나 항목 낱말이면 ''."""
-    head = path.stem.split("_", 1)[0].strip() if "_" in path.stem else ""
-    for candidate in [head, *reversed([p for p in path.parts[:-1]])]:
+def _place_word(word: str) -> bool:
+    """두세 글자 곳 이름 — 시 · 군('원주' · '원주시'), 도('강원'), 역('서울역')."""
+    from ..claims.card import REGION_NAMES
+    bare = re.sub(r"(특별자치시|특별자치도|특별시|광역시|시|군|도)$", "", word)
+    return word in REGION_NAMES or bare in REGION_NAMES or word in _PROVINCES or bare in _PROVINCES or word.endswith("역")
+
+
+def _person_ok(word: str) -> bool:
+    return bool(_NAME.fullmatch(word)) and not any(w in word for w in _NOT_PERSON) and not kind_of(word) and not _place_word(word)
+
+
+def _starts_with_evidence(text: str) -> bool:
+    low = text.lower().lstrip(" _-(\u3000")
+    return any(low.startswith(w) for w in _EVIDENCE_WORDS + tuple(w for _, words in KIND_WORDS for w in words))
+
+
+def lead_name(stem: str, names: list[str] | None = None) -> str:
+    """파일 이름 맨 앞의 사람 이름(담당자 2026-11-16 "파일제목 맨앞에 있는 이름으로 출장자 구분").
+    알려진 출장자(신청서)면 뒤에 무엇이 붙든('홍길동_' · '홍길동 ' · '홍길동체류'), 모르는 이름은 —
+    ① '이름_…'(담당자 규칙 2026-11-10) ② '이름 체류증빙' · '이름-숙박' 처럼 띄운 뒤 증빙 낱말 ③ '이름체류증빙' 처럼 붙여 쓴 증빙 낱말 앞.
+    앞의 차례 번호('01_')는 건너뛴다. 곳 이름('부산_체류') · 증빙 낱말 · '행사 사진' 처럼 뒤가 증빙이 아닌 낱말은 이름으로 보지 않는다."""
+    text = _LEAD_JUNK.sub("", (stem or "").strip())
+    for name in sorted((n for n in names or [] if n), key=len, reverse=True):
+        if text.startswith(name):
+            rest = text[len(name):]
+            if not rest or not re.match(r"[가-힣]", rest) or _starts_with_evidence(rest):
+                return name
+    head = re.match(r"([가-힣]+)(.*)$", text, re.S)
+    if not head:
+        return ""
+    run, rest = head.group(1), head.group(2)
+    if 2 <= len(run) <= 4 and rest.startswith("_"):
+        return run if _person_ok(run) else ""
+    if 2 <= len(run) <= 4 and rest[:1] in (" ", "-", "(", "\u3000") and (kind_of(rest) or _starts_with_evidence(rest)):
+        return run if _person_ok(run) else ""
+    for size in (2, 3, 4):
+        if len(run) > size and _starts_with_evidence(run[size:]) and _person_ok(run[:size]):
+            return run[:size]
+    return ""
+
+
+def _below(path: Path, root: Path | None) -> Path:
+    """출장 폴더 아래의 경로 — 윈도우 사용자 폴더(C:\\Users\\<이름>) 같은 위 폴더 이름을 출장자로 보지 않게."""
+    if root is not None:
+        try:
+            return path.relative_to(root)
+        except ValueError:
+            pass
+    return path
+
+
+def person_hint(path: Path, root: Path | None = None) -> str:
+    """파일 이름 맨 앞의 이름(lead_name — '<이름>_체류증빙' · '<이름> 체류증빙' · '<이름>체류증빙'),
+    없으면 위 폴더 이름이 이름 꼴인 것(출장 폴더 root 아래만). 이름 꼴(한글 2~4자)이 아니거나 항목 낱말 · 곳 이름이면 ''."""
+    lead = lead_name(path.stem)
+    if lead:
+        return lead
+    for candidate in reversed(_below(path, root).parts[:-1]):
         candidate = candidate.strip()
-        if _NAME.fullmatch(candidate) and not any(w in candidate for w in _NOT_PERSON) and not kind_of(candidate):
+        if _person_ok(candidate):
             return candidate
     return ""
 
 
-def person_of(path: Path, names: list[str]) -> str:
-    """그 파일이 누구 증빙인지 — 출장자가 한 명이면 그 사람, 여럿이면 파일 이름 앞 이름 → 경로에 이름이 하나만 든 것. 못 정하면 ''."""
+def person_of(path: Path, names: list[str], root: Path | None = None) -> str:
+    """그 파일이 누구 증빙인지 — 출장자가 한 명이면 그 사람, 여럿이면 파일 이름 맨 앞 이름 → 위 폴더 이름 → 경로에 이름이 하나만 든 것.
+    맨 앞 이름 뒤에 다른 출장자 이름도 있으면(둘이 같이 쓴 영수증일 수 있다) 정하지 않는다. 못 정하면 ''."""
     if len(names) == 1:
         return names[0]
-    hint = person_hint(path)
+    lead = lead_name(path.stem, names)
+    if lead and (lead in names or not names):
+        rest = _LEAD_JUNK.sub("", path.stem.strip())[len(lead):]
+        if any(n and n != lead and n in rest for n in names):
+            return ""
+        return lead
+    hint = person_hint(path, root)
     if hint and (hint in names or not names):
         return hint
-    hits = [n for n in names if n and n in str(path)]
+    hits = [n for n in names if n and n in str(_below(path, root))]
     if len(hits) == 1:
         return hits[0]
     return hint if hint and not names else ""
 
 
-def names_in_files(paths) -> list[str]:
-    """증빙 파일 이름에서 읽은 출장자 — 신청서가 없을 때 출장자 칸을 채운다."""
+def names_in_files(paths, root: Path | None = None) -> list[str]:
+    """증빙 파일 이름 맨 앞에서 읽은 출장자(파일 차례) — 신청서에 없는 사람도 출장자에 더한다(담당자 2026-11-16 "한폴더에 여러명")."""
     out = []
     for path in paths:
-        hint = person_hint(Path(path))
+        hint = person_hint(Path(path), root)
         if hint and hint not in out:
             out.append(hint)
     return out
@@ -770,20 +845,42 @@ def traveler_problems(trip: Trip, names: list[str]) -> list[str]:
     return out
 
 
-def for_traveler(trip: Trip, name: str, names: list[str]) -> Trip:
-    """출장자 한 명의 출장증빙 — 그 사람 증빙과 '공통' 증빙만. 이동경로(자차)는 하이패스가 있는 사람 것에만 붙는다(하이패스가 있으면 자차)."""
+def for_traveler(trip: Trip, name: str, names: list[str], fuel: str | None = None) -> Trip:
+    """출장자 한 명의 출장증빙 — 그 사람 증빙과 '공통' 증빙만. 이동경로(자차)는 하이패스가 있는 사람 것에만 붙는다(하이패스가 있으면 자차).
+    fuel 을 주면 그 사람의 차량 연료 — NO_CAR('해당없음', 동승)이면 '공통' 하이패스를 넣지 않고 이동경로도 붙이지 않는다(담당자 2026-11-16)."""
     single = len(names) <= 1
+    no_car = fuel == NO_CAR
 
-    def mine(items: list[Evidence]) -> list[Evidence]:
-        return [e for e in items if single or e.person.strip() in (name, SHARED)]
+    def mine(items: list[Evidence], shared: bool = True) -> list[Evidence]:
+        return [e for e in items if single or e.person.strip() == name or (shared and e.person.strip() == SHARED)]
 
     out = Trip(**{**trip.__dict__})
     out.name = name
-    out.stay, out.public, out.tolls, out.lodging = mine(trip.stay), mine(trip.public), mine(trip.tolls), mine(trip.lodging)
+    out.stay, out.public, out.lodging = mine(trip.stay), mine(trip.public), mine(trip.lodging)
+    out.tolls = mine(trip.tolls, shared=not no_car)
     out.other = mine(trip.other)
-    if not single and not out.tolls:
-        out.route_map, out.route_maps, out.legs, out.route_stops, out.fuel = None, [], [], [], ""
+    if no_car or (not single and not out.tolls):
+        out.route_map, out.route_maps, out.legs, out.route_stops = None, [], [], []
+        out.fuel = ""
+    if fuel is not None:
+        out.fuel = fuel
     return out
+
+
+def keep_period(trip: Trip, start: date | None, end: date | None, shared_only: bool = False) -> Trip:
+    """한 폴더에 출장 그룹이 여럿일 때 그 그룹의 기간 안 증빙만 — 같은 사람이 두 그룹에 있거나(shared_only=False) '공통' 증빙일 때.
+    일자를 모르는 증빙은 그대로 둔다."""
+    if not (start and end):
+        return trip
+
+    def ok(e: Evidence) -> bool:
+        if shared_only and e.person.strip() != SHARED:
+            return True
+        return e.day is None or start <= e.day <= end
+
+    trip.stay, trip.public, trip.tolls = [e for e in trip.stay if ok(e)], [e for e in trip.public if ok(e)], [e for e in trip.tolls if ok(e)]
+    trip.lodging, trip.other = [e for e in trip.lodging if ok(e)], [e for e in trip.other if ok(e)]
+    return trip
 
 
 FUELS = ("휘발유", "경유", "LPG", "전기", "하이브리드", "수소")
@@ -827,7 +924,10 @@ def review(trip: Trip) -> list[str]:
         if trip.lodging and nights > max(0, trip.days - 1):
             out.append(f"숙박 {nights}박 — 출장 {trip.days}일(최대 {max(0, trip.days - 1)}박)보다 많습니다")
     if not trip.public and not trip.tolls:
-        out.append("교통비 증빙(대중교통 · 하이패스)이 없습니다")
+        out.append("교통비 증빙(대중교통)이 없습니다 — 차량 연료 '해당없음'(동승)이면 그대로 둡니다" if trip.fuel == NO_CAR
+                   else "교통비 증빙(대중교통 · 하이패스)이 없습니다")
+    if trip.fuel and trip.fuel != NO_CAR and not trip.tolls:
+        out.append(f"차량 연료({trip.fuel})를 골랐는데 하이패스 증빙이 없습니다 — 자차는 하이패스 이용내역이 있어야 합니다(동승이면 '해당없음')")
     if trip.stay:
         wants = {r for e in trip.stay for r in stay_regions(trip, e)}
         other = [e for e in trip.stay if e.shop_region.strip() and stay_regions(trip, e)
@@ -842,7 +942,9 @@ def review(trip: Trip) -> list[str]:
     unclear = [e for e in trip.public if not (e.origin.strip() and e.goal.strip()) or e.amount is None]
     if unclear:
         out.append(f"대중교통 증빙 {len(unclear)}건 — 출발지 · 목적지 · 금액을 확인해 주세요")
-    if trip.tolls:
+    if trip.tolls and trip.fuel == NO_CAR:
+        out.append(NO_CAR_WITH_TOLLS.rstrip("."))
+    elif trip.tolls:
         if not trip.maps():
             out.append("하이패스가 있어 자차입니다 — 네이버 지도 최단거리 그림이 없습니다")
         if not any(v for v in trip.legs):
@@ -946,23 +1048,16 @@ APPLICATION_WORDS = ("출장신청", "출장명령", "출장계획", "출장품�
 
 
 def name_prefix(path: Path, names: list[str] | None = None) -> str:
-    """파일 이름 앞에 붙은 사람 이름 — '홍길동_참가확인서' · (출장자를 알면) '홍길동 참가확인서'. 없으면 ''."""
-    stem = path.stem.strip()
-    for name in names or []:
-        if name and re.match(rf"{re.escape(name)}(?:[\s_\-]|$)", stem):
-            return name
-    head = stem.split("_", 1)[0].strip() if "_" in stem else ""
-    if _NAME.fullmatch(head) and not any(w in head for w in _NOT_PERSON) and not kind_of(head):
-        return head
-    return ""
+    """파일 이름 앞에 붙은 사람 이름 — '홍길동_참가확인서' · '홍길동 참가확인서' · (출장자를 알면) '홍길동참가확인서'. 없으면 ''(lead_name)."""
+    return lead_name(path.stem, names)
 
 
 def other_label(path: Path, names: list[str] | None = None) -> str:
-    """기타 증빙의 내용 — 파일 이름에서 앞 이름을 떼고 밑줄은 띄어쓰기로('홍길동_참가확인서' → '참가확인서')."""
+    """기타 증빙의 내용 — 파일 이름에서 앞 이름(과 그 앞 차례 번호)을 떼고 밑줄은 띄어쓰기로('홍길동_참가확인서' → '참가확인서')."""
     stem = path.stem.strip()
     name = name_prefix(path, names)
     if name:
-        stem = stem[len(name):]
+        stem = _LEAD_JUNK.sub("", stem)[len(name):]
     return re.sub(r"[\s_]+", " ", stem).strip(" -") or path.stem
 
 
