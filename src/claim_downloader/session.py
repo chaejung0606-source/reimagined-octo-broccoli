@@ -1504,9 +1504,10 @@ class ErpSession:
                  + " — 받을 때 건마다 상세를 열어 첨부를 받고, 이미 있는 파일은 건너뜁니다")
         if complete:
             try:
+                blocked = dict(sel.blocked)
                 for n in wanted:
                     if dated(n):
-                        progress.record_purchases(n, listed[n], done_before)       # 다운로드 현황(구글 시트 탭)
+                        progress.record_purchases(n, listed[n], done_before, blocked.get(n, ""))   # 다운로드 현황(구글 시트 탭)
             except OSError as error:
                 self.log(f"다운로드 현황을 남기지 못했습니다: {error}")
         return sel
@@ -1716,9 +1717,8 @@ class ErpSession:
             summary.failed += [t for t in picked if str(t.get("req_no") or "") in failed_req]
             summary.stopped = summary.stopped or psum.stopped
         elif purchase_idx:
-            for i in purchase_idx:
-                summary.failed.append(targets[i])
-                notify(i, "failed", "멈춤 요청으로 받지 않음")
+            # 멈춤 — 손대지 않은 구매 건은 '실패' 가 아니라 남은 대상으로 둔다(전에는 모두 실패로 세어 '일부 실패' 가 떴다, 2026-11-16 검수)
+            self.log("── 멈춤 요청으로 구매요청(계약) 서류 %d건은 받지 않았습니다 — 다시 [받기] 를 누르면 받습니다" % len(purchase_idx))
         self.log("── 끝: 성공 %d건 / 실패 %d건" % (summary.ok, len(summary.failed))
                  + (" / 받지 않음 %d건(청구서출력이 없는 결의서 — 받지 않는 결의서 목록)" % len(summary.unwanted) if summary.unwanted else ""))
         for r in summary.failed:

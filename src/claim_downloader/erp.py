@@ -17,7 +17,10 @@ from pathlib import Path
 
 from . import naming
 
-_GRID_PROBE = "()=>!!document.querySelector('.k_REQ_DOC_NO')||!!document.querySelector('#btnDetail')"
+# 결의서 목록 — 구매·자산의 구매진행관리 목록(rexpe_0155_01)에도 #btnDetail 이 있어 그 프레임을 결의서 목록으로 고르면 받기가 '행을 찾지 못함' 으로
+# 멈춘다(2026-11-16 검수, 청구서 + 구매요청(계약) 서류를 함께 받을 때) — 구매요구번호 검색 칸이 있는 프레임은 뺀다.
+_GRID_PROBE = ("()=>(!!document.querySelector('.k_REQ_DOC_NO')||!!document.querySelector('#btnDetail'))"
+               "&&!document.querySelector('#SEARCH_PURCH_REQ_NO')")
 _DETAIL_PROBE = ("()=>{const E=document.querySelectorAll('a,span,button,input');"
                  "for(const e of E){const s=(e.textContent||e.value||'').trim();"
                  "if(s==='청구서출력')return true;}return false;}")

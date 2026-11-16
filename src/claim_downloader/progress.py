@@ -237,8 +237,9 @@ def _purchase_entry(project: str, row: dict) -> Entry:
                  re.sub(r"[^0-9\-]", "", str(row.get("amount") or "")), gubun, request=MARK_WAIT, inspect=MARK_WAIT)
 
 
-def record_purchases(project: str, rows: list[dict], done_before: dict | None = None) -> None:
-    """구매진행관리를 읽은 뒤 — 그 과제의 구매요구 줄을 읽은 목록으로 바꾼다. 지난 받기에서 끝까지 받은 건(done_before)은 O, 지난번 결과(O · X)가 있으면 그대로."""
+def record_purchases(project: str, rows: list[dict], done_before: dict | None = None, blocked: str = "") -> None:
+    """구매진행관리를 읽은 뒤 — 그 과제의 구매요구 줄을 읽은 목록으로 바꾼다. 지난 받기에서 끝까지 받은 건(done_before)은 O, 지난번 결과(O · X)가 있으면 그대로.
+    blocked 면(과제 폴더 없음 — 받지 않는 과제) 그 까닭으로 회색(대상 아님) — 청구서 줄과 같은 규칙(25절, 2026-11-16 검수: 전에는 △ 로 남았다)."""
     done_before = done_before or {}
     now = _now()
 
@@ -259,6 +260,8 @@ def record_purchases(project: str, rows: list[dict], done_before: dict | None = 
                     entry.inspect = MARK_OK
                 entry.files = entry.files or f"지난 받기({record.get('at', '')})에서 파일 {record.get('files', '?')}개"
                 entry.detail = ""
+            if blocked and entry.request != MARK_OK:
+                entry.request, entry.inspect, entry.detail = MARK_NONE, MARK_NONE, blocked
             new[entry.key] = entry
         return new
 

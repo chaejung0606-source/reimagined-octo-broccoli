@@ -214,3 +214,32 @@ def test_download_page_reads_checked_projects(tmp_path, monkeypatch):
     page._refresh_projects()
     assert page._projects()[-1] == "202603130001" and len(page._projects()) == 5
     _close(page)
+
+
+def test_download_page_reopens_browser_after_it_was_closed(tmp_path, monkeypatch):
+    """받은 뒤 ERP 창을 닫으면 ③ 은 접혀 [브라우저 열기] 가 안 보였다 — ④ 의 단추가 '브라우저 다시 열기' 가 되어 연다(2026-11-16 검수)."""
+    _qt_app()
+    from claim_downloader import erp, settings
+    from claim_downloader.ui.pages.download import DownloadPage
+
+    root = make(tmp_path)
+    settings.update(out_root=str(root))
+    page = DownloadPage()
+    opened = []
+    monkeypatch.setattr(page.worker, "open_browser", lambda **kw: opened.append(kw))
+    page._docs_picked = page._picked = page._listed = True
+    page._browser_open = True
+    page._sync_buttons()
+    assert page.list_button.text() == "목록 다시 읽기"
+    page._on_browser_state(False)
+    assert page.list_button.text() == "브라우저 다시 열기" and page.list_button.isEnabled()
+    assert "브라우저 다시 열기" in page._guide
+    page.list_button.click()
+    assert opened and page._auto_run
+    # 목록을 읽는 동안에도 [멈추기] 가 보인다
+    page._busy, page._reading, page._running_rows = True, True, []
+    page._sync_buttons()
+    assert not page.stop_button.isHidden() and page.stop_button.isEnabled()
+    # 구매진행관리 목록(#btnDetail + 구매요구번호 검색 칸)은 결의서 목록이 아니다
+    assert "SEARCH_PURCH_REQ_NO" in erp._GRID_PROBE
+    _close(page)

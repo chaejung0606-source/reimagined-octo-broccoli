@@ -375,14 +375,19 @@ def test_widen_grows_a_one_day_range_but_not_past_today_or_the_limit():
 
 def test_done_record_skips_finished_cases_only(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAIM_DOWNLOADER_HOME", str(tmp_path))
-    ok = purchase.CaseResult("202502030002", "끝난 건", "202408470001")
+    ok = purchase.CaseResult("202502030002", "끝난 건", "202408470001", inspected=True)
     ok.saved = ["a.pdf"]
-    bad = purchase.CaseResult("202502030003", "실패 남은 건", "202408470001")
+    bad = purchase.CaseResult("202502030003", "실패 남은 건", "202408470001", inspected=True)
     bad.failed.append("b.pdf: HTML")
     bad.ok = False
-    purchase.remember_done([ok, bad])
+    early = purchase.CaseResult("202502030004", "검사처리 전인 건", "202408470001")      # 보완(접수) · 계약진행 — 검사처리 목록에 아직 없음
+    early.saved = ["c.pdf"]
+    cancelled = purchase.CaseResult("202502030005", "계약 취소된 건", "202408470001")
+    purchase.remember_done([ok, bad, early, cancelled], closed={"202502030005"})
     done = purchase.load_done()
     assert "202502030002" in done and "202502030003" not in done
+    assert "202502030004" not in done            # 뒤에 올라오는 검사처리 첨부 · 물품 사진을 받으러 다음에 다시 연다(2026-11-16 검수)
+    assert "202502030005" in done                # 검사처리가 오지 않는 건은 다시 열지 않는다
     purchase.forget_done()
     assert purchase.load_done() == {}
 
@@ -408,7 +413,7 @@ def test_old_done_records_are_ignored(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAIM_DOWNLOADER_HOME", str(tmp_path))
     purchase.done_path().write_text(json.dumps({"202501050001": {"at": "2026-10-22 19:19", "files": 0, "title": "옛 기록"}}), encoding="utf-8")
     assert purchase.load_done() == {}
-    ok = purchase.CaseResult("202501050002", "새 기록")
+    ok = purchase.CaseResult("202501050002", "새 기록", inspected=True)
     purchase.remember_done([ok])
     assert list(purchase.load_done()) == ["202501050002"]
 
@@ -522,7 +527,7 @@ def test_system_drive_keeps_more_room():
 def test_done_records_belong_to_the_place_they_were_saved(tmp_path, monkeypatch):
     """구글 드라이브에 받은 건을 '다 받음' 으로 두면 MYBOX 로 옮긴 뒤 다시 받지 않는다 — 받은 곳이 같은 기록만 센다."""
     monkeypatch.setenv("CLAIM_DOWNLOADER_HOME", str(tmp_path))
-    ok = purchase.CaseResult("202502030002", "끝난 건", "202408470001")
+    ok = purchase.CaseResult("202502030002", "끝난 건", "202408470001", inspected=True)
     purchase.remember_done([ok], "G:\\내 드라이브\\구매요청(계약) 서류")
     assert list(purchase.load_done()) == ["202502030002"]
     assert purchase.load_done("N:\\구매요청(계약) 서류") == {}

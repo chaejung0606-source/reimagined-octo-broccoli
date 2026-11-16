@@ -317,11 +317,13 @@ def load_done(home: str | Path | None = None) -> dict:
     return done
 
 
-def remember_done(results: list["CaseResult"], home: str | Path = "") -> None:
-    """못 받은 파일이 하나도 없는 건만 적는다 — 실패가 남은 건은 다음에 다시 연다."""
+def remember_done(results: list["CaseResult"], home: str | Path = "", closed: set | frozenset = frozenset()) -> None:
+    """못 받은 파일이 하나도 없고 **검사처리까지 본** 건만 적는다(23절 '검사처리까지 끝난 건') — 실패가 남은 건 · 아직 검사처리 목록에 없는 건
+    (보완(접수) · 계약진행 …)은 다음에 다시 연다. 전에는 검사처리 전인 건도 적어, 뒤에 올라오는 검사처리 첨부 · 물품 사진을 영영 받지 않았다
+    (2026-11-16 검수). 계약이 취소된 건(closed)은 검사처리가 오지 않으므로 그대로 적는다."""
     done = load_done()
     for r in results:
-        if r.ok and r.req_no:
+        if r.ok and r.req_no and (r.inspected or r.req_no in closed):
             done[r.req_no] = {"at": time.strftime("%Y-%m-%d %H:%M"), "files": len(r.saved) + r.existed, "title": r.title, "v": DONE_VERSION,
                           "home": str(home)}
     tmp = done_path().with_suffix(".tmp")
@@ -1356,7 +1358,8 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
         cases[result.req_no] = result
         if result.folder:
             folders[result.req_no] = Path(result.folder)
-        notify(i, "running" if result.ok else "failed", result.summary() + ("" if not result.ok else " · 검사처리 확인 중"))
+        # 실패는 끝에서 한 번만 알린다 — 여기서도 'failed' 를 보내면 화면이 같은 건의 실패를 두 번 셌다(2026-11-16 검수)
+        notify(i, "running", result.summary() + (" · 검사처리 확인 중" if result.ok else ""))
     if folders and not summary.stopped and start:
         try:
             inspect_cases(context, page, cases, folders, start, end, log, wait, should_stop, summary)
@@ -1371,7 +1374,9 @@ def run(context, page, targets: list[dict], out_root: str, log: Callable[[str], 
             notify(i, "done" if result.ok else "failed", result.summary())
     if not summary.stopped:
         try:
-            remember_done(summary.cases, home)
+            closed = {str(t.get("req_no") or "") for t in targets
+                      if "취소" in str(t.get("state") or "") + str(t.get("cont_state") or "")}
+            remember_done(summary.cases, home, closed)
         except Exception as error:  # noqa: BLE001
             log(f"⚠ 받은 기록을 남기지 못함: {error}")
     for result in summary.failed:

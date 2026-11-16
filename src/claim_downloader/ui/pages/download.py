@@ -60,7 +60,7 @@ COL_STATUS, COL_PROJECT, COL_CONT, COL_AMT, COL_FILE = 0, 1, 4, 5, 7
 ROW_STATUS = {
     "waiting": ("대기", "neutral"),
     "running": ("받는 중", "info"),
-    "retry": ("다시 로그인 대기", "warning"),
+    "retry": ("ERP 다시 여는 중", "warning"),       # 로그인이 그대로면 묻지 않고 이어 받는다 — 그때도 '다시 로그인 대기' 로 보였다(2026-11-16 검수)
     "done": ("완료", "success"),
     "failed": ("실패", "danger"),
     "unwanted": ("받지 않음", "neutral"),      # 청구서출력이 없는 결의서 — 받지 않는 결의서 목록에 넣었다(skiplist)
@@ -322,7 +322,7 @@ class DownloadPage(QWidget):
         step = FlowStep("4", "받을 서류를 확인하고 받으세요", editable=False)
         self.list_button = QPushButton("목록 다시 읽기")
         self.list_button.setObjectName("ghost")
-        self.list_button.clicked.connect(self._read_list)
+        self.list_button.clicked.connect(self._reread)
         step.add_side(self.list_button)
         self.counts = muted_label("")
         step.add(self.counts)
@@ -539,10 +539,14 @@ class DownloadPage(QWidget):
         else:
             self.login_state.set_status("로그인 기다리는 중", "warning")
         # ④
-        self.list_button.setEnabled(not busy and self._browser_open)
+        # 받은 뒤 브라우저 창을 닫으면 ③ 은 접혀 [브라우저 열기] 가 안 보인다 — ④ 의 이 단추가 다시 연다(2026-11-16 검수)
+        self.list_button.setEnabled(not busy)
+        self.list_button.setText("목록 다시 읽기" if self._browser_open else "브라우저 다시 열기")
         remaining = len(self._remaining())
         can_run = not busy and self._browser_open and remaining > 0 and self._listed
-        running = busy and bool(self._running_rows)
+        # 목록을 읽는 동안에도 멈출 수 있게 — 과제 13개 · 전체과제 쪽 넘기기 · 구매 2년 창은 몇 분씩 걸린다(2026-11-16 검수).
+        # 읽기는 과제 · 창 하나를 마치고 멈춘다(session.read_lists · read_purchases)
+        running = busy and (bool(self._running_rows) or self._reading)
         self.all_button.setVisible(remaining > 0 and not running)
         self.test_button.setVisible(remaining > 0 and not running)
         self.all_button.setEnabled(can_run)
@@ -614,6 +618,13 @@ class DownloadPage(QWidget):
         return False, ""
 
     # ── 동작 ────────────────────────────────────────────────────────────
+    def _reread(self) -> None:
+        """④ [목록 다시 읽기] — 브라우저 창을 닫았으면 다시 열고, 로그인 뒤 목록이 보이면 읽는다(_open 과 같은 길)."""
+        if self._browser_open:
+            self._read_list()
+        else:
+            self._open()
+
     def _open(self) -> None:
         if not settings.load().out_root:
             QMessageBox.information(
@@ -799,7 +810,8 @@ class DownloadPage(QWidget):
     def _stop(self) -> None:
         self.worker.request_stop()
         self.stop_button.setEnabled(False)
-        self._set_state("멈추는 중", "warning", "지금 받는 건을 마치면 멈춥니다…")
+        self._set_state("멈추는 중", "warning", "지금 읽는 과제를 마치면 멈춥니다…" if self._reading and not self._running_rows
+                        else "지금 받는 건을 마치면 멈춥니다…")
 
     def _answer_relogin(self, ok: bool) -> None:
         self.banner.hide()
@@ -858,7 +870,8 @@ class DownloadPage(QWidget):
             self._browser_open = False
             self._auto_run = False
             self._reading = False
-            self._set_state("브라우저 닫힘", "neutral", "브라우저 창이 닫혔습니다. [브라우저 열기] 로 다시 여세요.")
+            self._set_state("브라우저 닫힘", "neutral", "브라우저 창이 닫혔습니다. "
+                            + ("④ 의 [브라우저 다시 열기] 로 다시 여세요." if self._listed else "[브라우저 열기] 로 다시 여세요."))
         self._sync_buttons()
         self.counts_changed.emit()
 
