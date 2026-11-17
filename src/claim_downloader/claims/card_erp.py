@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 
 from . import attach, attendees, card, participants as part_mod
 from .form import FRAME_VISIBLE_JS, SET_SELECT_JS, SET_TEXT_JS, read_state, save_draft
-from .payee import CLICK_ID_JS, ROWS_JS, open_popup, wait_closed, wait_until
+from .payee import CLICK_ID_JS, ROWS_JS, close_stale, find_popup, open_popup, wait_closed, wait_until
 from .schema import CATEGORY_CODES, parse_amount
 
 Ask = Callable[[str], bool]
@@ -972,18 +972,68 @@ def _goods_by_person(frame, item: card.CardItem, ask: Ask, wait) -> tuple[bool, 
                                             "물품검수 정보(검수일자 · 검수자 · 인수자)를 넣은 뒤 [계속]."), wait)
 
 
+POPUP_IDS = ("CFRC_DT", "WEEKEND", "CARD_ADDR", "CARD_USE_SITE", "MEAL_COST", "SNACK_COST", "CFRC_LIMITED_AMT")
+SHEET_PICK_IDS = ("EXP_DT", "REQ_AMT", "BUY_WHERE", "USED_TIME")
+
+
+def popup_mismatch(popup: dict, sheet: dict) -> str:
+    """열려 있던 회의록등록 창이 지금 카드청구 화면에서 고른 결제 건의 것인지 — 다르면 무엇이 다른지(같으면 '').
+    ERP 는 창을 열 때 고른 결제 건의 사용일(#CFRC_DT) · 금액(#MEAL_COST) · '가맹점(사용일:… 시각)(주소)'(#CARD_USE_SITE)를 넣어 둔다(실측 ②) —
+    앞 결제 건에서 연 창이 남아 있으면 그 결제 건의 값이라, 그대로 쓰면 이 결제 건의 회의록이 앞 결제 건으로 저장된다(2026-11-16 검수).
+    값을 모르는 칸은 견주지 않는다. 다과로 옮겨 식비가 0 인 창도 식비 + 다과로 본다."""
+    bad = []
+    p_day, s_day = _day(popup.get("CFRC_DT", "")), _day(sheet.get("EXP_DT", ""))
+    if p_day and s_day and p_day != s_day:
+        bad.append(f"회의일자 {p_day:%m-%d} · 사용일 {s_day:%m-%d}")
+    cost = (parse_amount(popup.get("MEAL_COST")) or 0) + (parse_amount(popup.get("SNACK_COST")) or 0)
+    amount = parse_amount(sheet.get("REQ_AMT"))
+    if cost and amount and cost != amount:
+        bad.append(f"회의비 {cost:,}원 · 청구액 {amount:,}원")
+    site, shop = _squash(popup.get("CARD_USE_SITE")), _squash(sheet.get("BUY_WHERE"))
+    if site and shop and shop not in site:
+        bad.append("가맹점이 다름")
+    when = re.search(r"사용일\s*:\s*\d{4}-\d{1,2}-\d{1,2}\s+(\d{1,2}):(\d{2})", str(popup.get("CARD_USE_SITE") or ""))
+    digits = re.sub(r"\D", "", str(sheet.get("USED_TIME") or ""))
+    digits = digits.zfill(6) if len(digits) == 5 else digits
+    if when and len(digits) >= 4 and (int(when.group(1)), int(when.group(2))) != (int(digits[:2]), int(digits[2:4])):
+        bad.append("사용 시각이 다름")
+    return " · ".join(bad)
+
+
+def _open_minutes(page, frame, log, wait):
+    """(17) 회의록등록 창을 연다 — (창 · 창의 값 · 못 연 까닭). 앞 결제 건에서 연 창이 남아 있으면(이 화면에서 연 것이어도) 지금 고른 결제 건의
+    값(popup_mismatch)이 아니면 닫고 새로 연다 — open_popup 은 '이 화면에서 연 창' 이면 다시 쓰는데, 카드청구 화면은 결제 건마다 같은 화면이다."""
+    existing = find_popup(page.context, MINUTES_PROBE_JS)
+    for attempt in range(2):
+        popup, why = open_popup(page, frame, MINUTES_BUTTON_ID, MINUTES_PROBE_JS, log)
+        if popup is None:
+            return None, {}, why
+        if not wait_until(lambda: popup.evaluate(MINUTES_PROBE_JS) is True, wait, tries=40):
+            return None, {}, "회의록등록 창이 아닙니다"
+        s = _state(popup, POPUP_IDS)
+        if attempt or existing is None or popup is not existing:
+            return popup, s, ""
+        stale = popup_mismatch(s, _state(frame, SHEET_PICK_IDS))
+        if not stale:
+            return popup, s, ""
+        log(f"열려 있던 회의록등록 창은 다른 결제 건의 것입니다({stale}) — 닫고 이 결제 건으로 새로 엽니다")
+        close_stale(popup, lambda _m: None)
+        existing = None
+        wait(0.3)
+    return None, {}, "회의록등록 창을 새로 열지 못했습니다"
+
+
 def _minutes(page, frame, item: card.CardItem, log, ask: Ask, wait, messages: list[str], result: ItemResult,
              members) -> tuple[bool, str]:
     """(17) 회의비 — 증빙 [신규등록] → 회의록등록 창(실측 ②)에 회의록 값 · 외부참석자를 넣고 그 창의 [저장]."""
     values, people, missing = meeting_plan(item, members)
-    popup, why = open_popup(page, frame, MINUTES_BUTTON_ID, MINUTES_PROBE_JS, log)
+    popup, s, why = _open_minutes(page, frame, log, wait)
+    if popup is None and why == "회의록등록 창이 아닙니다":
+        return False, why
     if popup is None:
         ok, why2 = _ask_until(lambda: (bool(_link(frame, "REQ_DIV_LNK")), "증빙이 없음"), ask,
                               lambda w: f"{item.name}: 회의록등록 창을 열지 못했습니다({why}). 증빙 [신규등록] 으로 직접 등록한 뒤 [계속].", wait)
         return ok, why2
-    if not wait_until(lambda: popup.evaluate(MINUTES_PROBE_JS) is True, wait, tries=40):
-        return False, "회의록등록 창이 아닙니다"
-    s = _state(popup, ["CFRC_DT", "WEEKEND", "CARD_ADDR", "MEAL_COST", "CFRC_LIMITED_AMT"])
     log("회의록등록 창: 회의일자 %s %s · 회의비 %s원" % (s["CFRC_DT"], s["WEEKEND"], s["MEAL_COST"]))
 
     # 회의 장소와 가맹점 주소의 시 · 군이 같아야 한다(담당자 2026-10-20 — 영수증이 없으면 카드매출전표로 갈음하는 규칙)

@@ -271,3 +271,31 @@ def test_sheet_sync_refuses_when_rows_cannot_be_read(isolated_home, monkeypatch)
     result = parking_sheet.sync_ledger(config)
     assert not result.ok and "읽지 못한 줄" in result.note and calls == ["ledger_get"]   # 시트에 다시 쓰지 않는다
     assert [e.id for e in ledger.load()] == ["a1"]                                   # 이 PC 의 대장도 그대로
+
+
+def test_last_four_digits_from_apply_pair_with_the_full_site_number():
+    """2026-11-16 검수 — 할인 적용에 차량번호 뒤 4자리만 넣으면 대장 줄은 '3456', 사이트 할인 내역은 '12가3456' 이라 짝이 없어
+    사이트 줄이 새 배부 1 로 또 들어갔다(한 번 쓴 것이 두 번). 같은 날 · 그 4자리로 끝나는 줄과 짝짓고 대장 줄에 전체 번호를 적는다."""
+    applied = ledger.Entry(date="2026-10-21", given=1, car="3456", source="apply", created="2026-10-21 10:04:12")
+    rows = [_site("2026-10-21 10:03:40", "12가3456", "1,000"),
+            _site("2026-10-21 11:00:00", "34나5678", "0", "QR"),
+            _site("2026-10-22 09:00:00", "12가3456", "2,000")]          # 다음 날 같은 차 — 다른 사용
+    match = ledger.match_site([applied], SITE_HEAD, rows)
+    assert match.pairs == [(0, applied)] and match.matched == [0] and match.missing == [1, 2]
+    assert ledger.complete_cars(rows, match) == 1 and applied.car == "12가3456"
+    assert ledger.complete_cars(rows, match) == 0                                  # 두 번 고치지 않는다
+    again = ledger.match_site([applied], SITE_HEAD, rows)                          # 다음 가져오기에서는 전체 번호로 짝
+    assert again.pairs == [(0, applied)] and again.missing == [1, 2]
+
+
+def test_same_last_four_digits_on_the_same_day_pairs_the_closest_time():
+    """같은 날 끝 4자리가 같은 차가 둘이면 대장 줄을 적은 때(할인 적용 때)에 가장 가까운 할인 시각의 줄과 — 하나만 짝짓는다(수는 맞게)."""
+    applied = ledger.Entry(date="2026-10-21", given=1, car="3456", source="apply", created="2026-10-21 15:01:00")
+    rows = [_site("2026-10-21 09:00:00", "12가3456", "1,000", "QR"), _site("2026-10-21 15:00:30", "56다3456", "1,000")]
+    match = ledger.match_site([applied], SITE_HEAD, rows)
+    assert match.pairs == [(1, applied)] and match.missing == [0]
+    assert ledger.complete_cars(rows, match) == 1 and applied.car == "56다3456"
+    # 4자리가 아닌 글자(전체 번호 · 다른 차)는 끝자리로 짝짓지 않는다
+    other = ledger.Entry(date="2026-10-21", given=1, car="99하3456", source="apply")
+    assert ledger.match_site([other], SITE_HEAD, rows).pairs == []
+    assert ledger.tail_of(" 3456 ") == "3456" and ledger.tail_of("12가3456") == "" and ledger.tail_of("456") == ""

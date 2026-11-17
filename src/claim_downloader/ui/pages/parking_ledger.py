@@ -490,7 +490,7 @@ class LedgerPanel(QWidget):
         with ledger._LOCK:
             entries = ledger.load()
             match = ledger.match_site(entries, headers, report.rows)
-            changed = ledger.note_applied(report.rows, match) if match.ok else 0
+            changed = (ledger.note_applied(report.rows, match) + ledger.complete_cars(report.rows, match)) if match.ok else 0
             rule = cfg.parking_free_rule
             if match.ok and not report.pager:          # 모든 쪽을 읽었을 때만 — 빠진 사용이 있으면 구간이 틀린다
                 rule = self._study(ledger.drain_study(ledger.load_readings(), report.rows, match, report.since), rule, parts)

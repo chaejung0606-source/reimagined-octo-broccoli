@@ -400,7 +400,61 @@ def match_site(entries: list[Entry], headers: list[str], rows: list[list[str]]) 
             result.matched.append(i)
         else:
             result.missing.append(i)
+    _pair_tails(result, pool, rows, cell)
     return result
+
+
+def tail_of(car: str) -> str:
+    """뒤 4자리만 적은 차량번호(띄어쓰기를 떼면 숫자 넷뿐)면 그 숫자, 아니면 ''."""
+    car = _squash(car)
+    return car if re.fullmatch(r"\d{4}", car) else ""
+
+
+def _pair_tails(result: SiteMatch, pool: dict, rows: list[list[str]], cell) -> None:
+    """할인 적용에 차량번호 뒤 4자리만 넣은 대장 줄('3456')을 같은 날 · 번호가 그 4자리로 끝나는 사이트 줄('12가3456')과 짝짓는다
+    (2026-11-16 검수 — 전에는 글자가 달라 짝이 없어 사이트 줄이 새 배부 1 로 또 들어가 한 번 쓴 것이 두 번 셈해졌다). 같은 날 같은 4자리 차가
+    여럿이면 할인 시각이 대장 줄을 적은 때(created)에 가장 가까운 줄과 — 수는 틀리지 않게 하나씩."""
+    tails: dict[tuple[str, str], list] = {}
+    for (date, car), left in pool.items():
+        if left and tail_of(car):
+            tails.setdefault((date, car), []).extend(left)
+    if not tails:
+        return
+    for (date, tail), entries in tails.items():
+        rows_here = [i for i in result.missing
+                     if day_of(cell(rows[i], result.date_col)) == date and re.sub(r"\D", "", cell(rows[i], result.car_col)).endswith(tail)
+                     and _squash(cell(rows[i], result.car_col)) != tail]
+        unique = list({id(x): x for x in entries}.values())         # 같은 줄이 배부 수만큼 들어 있다(Entry 는 해시가 없다)
+        for e in sorted(unique, key=lambda x: x.created):
+            for _ in range(sum(1 for x in entries if x is e)):
+                if not rows_here:
+                    break
+                made = _time_of(e.created)
+                best = min(rows_here, key=lambda i: _minutes_apart(_time_of(cell(rows[i], result.date_col)), made))
+                rows_here.remove(best)
+                result.missing.remove(best)
+                result.matched.append(best)
+                result.pairs.append((best, e))
+    result.matched.sort()
+
+
+def _minutes_apart(a: str, b: str) -> int:
+    """'HH:MM' 둘의 분 차이 — 모르면 아주 큰 수(차례대로 고르게)."""
+    if not a or not b:
+        return 10 ** 6
+    return abs((int(a[:2]) * 60 + int(a[3:])) - (int(b[:2]) * 60 + int(b[3:])))
+
+
+def complete_cars(rows: list[list[str]], match: SiteMatch) -> int:
+    """뒤 4자리만 적은 대장 줄에 사이트의 전체 차량번호를 적는다(짝지은 줄만). 고친 줄 수."""
+    changed = 0
+    for i, e in match.pairs:
+        full = (rows[i][match.car_col] if 0 <= match.car_col < len(rows[i]) else "").strip()
+        if tail_of(e.car) and full and _squash(full) != _squash(e.car) and re.sub(r"\D", "", full).endswith(_squash(e.car)):
+            e.car = full
+            e.updated = now_stamp()
+            changed += 1
+    return changed
 
 
 def amount_of(text: str) -> int | None:

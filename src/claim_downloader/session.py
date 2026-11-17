@@ -1494,6 +1494,7 @@ class ErpSession:
                 if no in done_before:
                     # 지난 받기에서 끝까지 받은 건 — 다시 열지 않는다(담당자 2026-10-22). 다시 받으려면 [도구] 의 받은 기록 비우기
                     already += 1
+                    sel.purchase_done += 1
                     continue
                 mine += 1
                 folder, _why = purchase.case_dir(cfg.out_root, prj, no, row.get("title", ""), row.get("req_dt", ""))
@@ -1541,6 +1542,7 @@ class ErpSession:
             else:
                 total.targets += psel.targets
                 total.blocked += psel.blocked
+                total.purchase_done += psel.purchase_done
                 for no in psel.projects:
                     if no not in total.projects:
                         total.projects.append(no)

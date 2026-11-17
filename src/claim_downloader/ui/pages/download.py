@@ -80,7 +80,9 @@ GUIDE_DETAIL = (
     "• ④ 받기 — 건마다 상세조회 → 청구서출력 → PDF 저장. 비목을 판정해 '0N_(지출예정일) 적요_이체자_(금액).pdf' "
     "이름으로 비목 폴더 바로 아래에 둡니다. 플랫폼에 올린 파일은 직접 '업로드' 폴더로 옮기세요.\n"
     "• 상세화면이 멈추면 ERP 를 새로 열고(로그인이 그대로면 묻지 않고) 같은 건부터 이어받습니다(건당 최대 2번). "
-    "청구서출력이 없는 결의서는 건너뛰고 '받지 않는 결의서' 목록에 넣습니다."
+    "청구서출력이 없는 결의서는 건너뛰고 '받지 않는 결의서' 목록에 넣습니다.\n"
+    "• 구매요청(계약) 서류 — 위 메뉴 구매·자산 → 구매진행관리에서 고른 과제의 건마다 상세를 열어 구매요청 때 올린 첨부 · 검사처리 첨부 · "
+    "물품 사진을 '구매요청(계약) 서류' 폴더에 과제별로 받습니다. 이미 있는 파일은 건너뛰고, 끝까지 받은 건은 다음 목록 읽기에서 뺍니다."
 )
 # 받을 서류(담당자 요청 2026-10-21 — 과제처럼 여럿 고를 수 있게). 구매요청(계약) 서류는 그 화면을 실측한 뒤에 만든다
 DOC_CLAIM, DOC_CONTRACT = "claim", "contract"
@@ -196,7 +198,7 @@ class DownloadPage(QWidget):
         title = QLabel("증빙 다운로드")
         title.setObjectName("pageTitle")
         texts.addWidget(title)
-        self.page_desc = muted_label("승인된 청구서를 ERP 에서 받아 과제 폴더 · 비목 폴더에 둡니다. ERP 에 입력 · 제출하지 않습니다.")
+        self.page_desc = muted_label("승인된 청구서 · 구매요청(계약) 서류를 ERP 에서 받아 과제 폴더에 둡니다. ERP 에 입력 · 제출하지 않습니다.")
         texts.addWidget(self.page_desc)
         head.addLayout(texts, 1)
         self.state_pill = Pill("준비", "neutral")
@@ -444,23 +446,35 @@ class DownloadPage(QWidget):
         skipped = self._selection.skipped if self._selection else 0
         excluded = self._selection.excluded if self._selection else 0
         remaining = len(self._remaining())
+        bought = self._selection.purchase_done if self._selection else 0
         if self._reading and not self._listed:
-            self.counts.setText("결의서내역 목록을 읽는 중입니다…")
+            self.counts.setText(f"{self._lists_text()} 목록을 읽는 중입니다…")
         elif self._listed:
-            self.counts.setText(f"받을 청구서 {len(self._targets)}건 · 이미 받아 둔 것 {skipped}건 제외"
-                                + (f" · 받지 않는 결의서 {excluded}건 제외" if excluded else "")
+            claims, purchases = self._docs()
+            left = [f"이미 받아 둔 {'청구서 ' if purchases else ''}{skipped}건"] if claims else []
+            left += [f"받지 않는 결의서 {excluded}건"] if excluded else []
+            left += [f"끝까지 받은 구매 건 {bought}건"] if purchases and bought else []
+            self.counts.setText(f"받을 {self._target_text()}" + (f" · {' · '.join(left)} 제외" if left else "")
                                 + (f" · 남은 {remaining}건" if self._attempted else ""))
         else:
             self.counts.setText("")
         self.progress.setText(f"이번에 받음 {self._run_ok}건" + (f" · 실패 {self._run_failed}건" if self._run_failed else "")
                               if self._attempted else "")
 
+    def _target_text(self) -> str:
+        """받을 것 — '청구서 3건' · '구매요청(계약) 서류 2건' · '서류 5건(청구서 3 · 구매요청(계약) 2)'."""
+        buys = sum(1 for t in self._targets if t.get("kind") == purchase.KIND)
+        claims = len(self._targets) - buys
+        if buys and claims:
+            return f"서류 {len(self._targets)}건(청구서 {claims} · 구매요청(계약) {buys})"
+        return f"{self._noun()} {len(self._targets)}건"
+
     def _sync_empty(self) -> None:
         """받을 목록 자리에 무엇을 보일지 — 처음 안내 · 받을 것 없음 · 표."""
         if not settings.load().out_root:
             self.empty.set_content(
                 "archive", "저장 폴더를 먼저 지정하세요",
-                "받은 청구서를 넣을 폴더입니다. 과제 폴더('(과제번호)_…')나 비목 폴더(01. 인건비 …)가 바로 아래 있는 폴더를 고르면 됩니다.")
+                "받은 서류를 넣을 폴더입니다. 과제 폴더('(과제번호)_…')나 비목 폴더(01. 인건비 …)가 바로 아래 있는 폴더를 고르면 됩니다.")
             self.empty_settings_button.show()
             self.list_stack.setCurrentIndex(0)
             return
@@ -470,14 +484,20 @@ class DownloadPage(QWidget):
         elif self._listed:
             skipped = self._selection.skipped if self._selection else 0
             excluded = self._selection.excluded if self._selection else 0
-            self.empty.set_content(
-                "approved", "새로 받을 청구서가 없습니다",
-                f"승인된 건은 모두 보관되어 있습니다(보관으로 제외 {skipped}건"
-                + (f" · 청구서출력이 없어 받지 않는 결의서 {excluded}건" if excluded else "")
-                + "). 목록이 바뀌면 [목록 다시 읽기] 를 누르세요.")
+            bought = self._selection.purchase_done if self._selection else 0
+            claims, purchases = self._docs()
+            said = []
+            if claims:
+                said.append(f"승인된 청구서는 모두 보관되어 있습니다(보관으로 제외 {skipped}건"
+                            + (f" · 청구서출력이 없어 받지 않는 결의서 {excluded}건" if excluded else "") + ").")
+            if purchases:
+                said.append(f"고른 과제의 구매진행관리 건은 모두 받아 두었습니다(끝까지 받은 건 {bought}건). ERP 에 서류가 더 올라왔으면 "
+                            "[도구] → [구매요청(계약) 받은 기록 비우기] 뒤 다시 읽으세요.")
+            self.empty.set_content("approved", f"새로 받을 {self._noun()}가 없습니다",
+                                   " ".join(said) + " 목록이 바뀌면 [목록 다시 읽기] 를 누르세요.")
             self.list_stack.setCurrentIndex(0)
         else:
-            self.empty.set_content("receive", "결의서내역 목록을 읽는 중입니다", "다 읽으면 받을 청구서가 여기에 나옵니다.")
+            self.empty.set_content("receive", f"{self._lists_text()} 목록을 읽는 중입니다", f"다 읽으면 받을 {self._noun()}가 여기에 나옵니다.")
             self.list_stack.setCurrentIndex(0)
 
     def _set_state(self, text: str, status: str, guide: str | None = None) -> None:
@@ -494,7 +514,7 @@ class DownloadPage(QWidget):
         """지금 단계의 기본 안내 — 도구(대응자금 파일 정리 등)를 쓴 뒤 단계 안내로 돌아갈 때."""
         stage = download_stage(self._docs_picked, self._picked, self._reading, self._listed)
         if stage == "login":
-            return GUIDE_BROWSER if self._browser_open else GUIDE_LOGIN
+            return self._guide_browser() if self._browser_open else self._guide_login()
         if stage == "list" and self._listed and self._remaining():
             return GUIDE_LISTED
         return ""
@@ -502,6 +522,30 @@ class DownloadPage(QWidget):
     def _docs(self) -> tuple[bool, bool]:
         """(청구서, 구매요청(계약) 서류) 가 체크됐는지."""
         return self.doc_claim.isChecked(), self.doc_contract.isChecked()
+
+    def _noun(self) -> str:
+        """받을 것의 이름 — 청구서만 · 구매요청(계약) 서류만 · 둘 다(서류). 구매요청(계약) 서류만 고르면 화면 글이 청구서 · 결의서내역을
+        말하지 않게(2026-11-16 검수 — 그때는 '새로 받을 청구서가 없습니다' · '결의서내역 목록을 읽는 중' 이 떴다)."""
+        claims, purchases = self._docs()
+        if purchases and not claims:
+            return "구매요청(계약) 서류"
+        return "서류" if purchases else "청구서"
+
+    def _guide_login(self) -> str:
+        claims, purchases = self._docs()
+        if not purchases:
+            return GUIDE_LOGIN
+        where = ("구매·자산 → 구매진행관리로 가서 고른 과제의 기간에 맞춰" if not claims
+                 else "고른 과제의 결의서내역과 구매·자산 → 구매진행관리를 차례로 읽어")
+        return (f"[브라우저 열기] 로 열린 창에서 ERP 에 로그인하세요 — 아이디 · 비밀번호는 저장하지 않습니다. 로그인하면 앱이 {where} "
+                f"안 받은 {self._noun()}를 찾습니다.")
+
+    def _guide_browser(self) -> str:
+        claims, purchases = self._docs()
+        if not purchases:
+            return GUIDE_BROWSER
+        where = "위 메뉴 '구매·자산' → 구매진행관리" if not claims else "고른 과제의 '결의서내역' 과 '구매·자산' → 구매진행관리"
+        return f"열린 브라우저에서 로그인하세요. 그 뒤 {where}까지 앱이 가서 안 받은 {self._noun()}를 찾습니다(못 가면 직접 띄우세요)."
 
     def _docs_text(self) -> str:
         docs = [name for box, name in ((self.doc_claim, "청구서"), (self.doc_contract, "구매요청(계약) 서류")) if box.isChecked()]
@@ -581,7 +625,7 @@ class DownloadPage(QWidget):
         if not settings.load().out_root:
             QMessageBox.information(
                 self, "저장 폴더",
-                "받은 청구서를 넣을 폴더를 먼저 지정해 주세요.\n과제 폴더('(과제번호)_…')나 비목 폴더(01. 인건비 …)가 바로 아래 있는 폴더입니다.")
+                "받은 서류를 넣을 폴더를 먼저 지정해 주세요.\n과제 폴더('(과제번호)_…')나 비목 폴더(01. 인건비 …)가 바로 아래 있는 폴더입니다.")
             self.need_settings.emit()
             return
         if not self._projects():
@@ -593,7 +637,7 @@ class DownloadPage(QWidget):
             self._auto_run = True
             self._read_list()
             return
-        self._set_state("로그인 차례", "info", GUIDE_LOGIN if not self._browser_open else GUIDE_BROWSER)
+        self._set_state("로그인 차례", "info", self._guide_login() if not self._browser_open else self._guide_browser())
         self._sync_buttons()
 
     def _edit_what(self) -> None:
@@ -660,7 +704,7 @@ class DownloadPage(QWidget):
         if not settings.load().out_root:
             QMessageBox.information(
                 self, "저장 폴더",
-                "받은 청구서를 넣을 폴더를 먼저 지정해 주세요.\n과제 폴더('(과제번호)_…')나 비목 폴더(01. 인건비 …)가 바로 아래 있는 폴더입니다.")
+                "받은 서류를 넣을 폴더를 먼저 지정해 주세요.\n과제 폴더('(과제번호)_…')나 비목 폴더(01. 인건비 …)가 바로 아래 있는 폴더입니다.")
             self.need_settings.emit()
             return
         self._docs_picked = self._picked = True
@@ -756,7 +800,7 @@ class DownloadPage(QWidget):
             self._listed = False
             self._targets, self._status = [], []
             self.table.setRowCount(0)
-            self._set_state("과제 바뀜", "info", f"과제가 바뀌었습니다. [다음] 을 누르면 {self._project_text()}의 결의서내역을 읽고 안 받은 청구서를 찾습니다.")
+            self._set_state("과제 바뀜", "info", f"과제가 바뀌었습니다. [다음] 을 누르면 {self._project_text()}의 {self._lists_text()}을 읽고 안 받은 {self._noun()}를 찾습니다.")
             self._sync_empty()
         self._sync_buttons()
 
@@ -799,7 +843,8 @@ class DownloadPage(QWidget):
             rows = rows[:limit]
         if not rows:
             return
-        if not self._archive_ok:
+        self._run_claims = any(self._targets[i].get("kind") != purchase.KIND for i in rows)
+        if not self._archive_ok and self._run_claims:
             answer = QMessageBox.warning(
                 self, "보관 폴더를 읽지 못했습니다",
                 "보관 폴더를 읽지 못해 이미 받은 건을 가려내지 못했습니다.\n"
@@ -869,7 +914,7 @@ class DownloadPage(QWidget):
             self.worker.forget_archive()
             if self._listed:
                 self._listed = False
-                self._set_state("저장 폴더 바뀜", "warning", "저장 폴더가 바뀌었습니다. [안 받은 청구서 찾기] 를 다시 누르면 새 폴더를 훑고 받을 건을 다시 고릅니다.")
+                self._set_state("저장 폴더 바뀜", "warning", f"저장 폴더가 바뀌었습니다. [{self.open_button.text()}] 를 다시 누르면 새 폴더를 훑고 받을 건을 다시 고릅니다.")
             if not self._busy:
                 self._refresh_projects()           # 과제 폴더가 다른 저장 폴더
         self.refresh_counts()
@@ -883,7 +928,7 @@ class DownloadPage(QWidget):
 
     def _on_browser_opened(self) -> None:
         self._browser_open = True
-        self._set_state("로그인 대기", "warning", GUIDE_BROWSER)
+        self._set_state("로그인 대기", "warning", self._guide_browser())
         self._sync_buttons()
 
     def _on_list_ready(self) -> None:
@@ -892,7 +937,8 @@ class DownloadPage(QWidget):
             return
         if not self._auto_run and (self._listed or not settings.load().auto_read_list):
             return
-        self._set_state("목록 발견", "info", "결의서내역 목록이 보여 저절로 읽습니다…")
+        self._set_state("목록 발견", "info", "결의서내역 목록이 보여 저절로 읽습니다…" if self._docs()[0]
+                        else f"ERP 로그인을 확인해 {self._lists_text()}을 읽습니다…")
         self._read_list()
 
     def _on_browser_state(self, alive: bool) -> None:
@@ -915,6 +961,7 @@ class DownloadPage(QWidget):
         self._run_ok = self._run_failed = 0
         self._targets = list(selection.targets)
         self._status = ["waiting"] * len(self._targets)
+        self._set_headers()
         self.table.setRowCount(len(self._targets))
         amount_font = _tabular(QFont(self.table.font()))
         for row, t in enumerate(self._targets):
@@ -948,20 +995,42 @@ class DownloadPage(QWidget):
             QMessageBox.information(
                 self, "받지 않은 과제",
                 "아래 과제는 받지 않았습니다.\n\n" + "\n".join(f"· {no or '(모름)'}: {why}" for no, why in selection.blocked)
-                + "\n\n목록을 못 띄운 과제는 브라우저에서 그 과제의 과제정보 → 청구서를 띄운 뒤, ② 에서 그 과제만 체크해 다시 하세요.")
+                + "\n\n" + "\n".join(self._blocked_hints()))
         self._sync_empty()
         self._sync_buttons()
         self.counts_changed.emit()
         sheet_sync().push_status(settings.load().out_root)      # 다운로드 현황(구글 시트) — 연결돼 있을 때만, 조용히
 
+    def _blocked_hints(self) -> list[str]:
+        """받지 않은 과제 창의 다음 할 일 — 고른 서류마다."""
+        claims, purchases = self._docs()
+        hints = ["목록을 못 띄운 과제는 브라우저에서 그 과제의 과제정보 → 청구서를 띄운 뒤, ② 에서 그 과제만 체크해 다시 하세요."] if claims else []
+        if purchases:
+            hints.append("구매요청(계약) 서류 — 과제 폴더가 없는 과제는 저장 폴더에 '(과제번호)_…' 폴더를 만든 뒤, 과제기간을 모른 과제는 "
+                         "메인화면 과제현황이 보이는 채로 다시 하세요.")
+        return hints
+
+    def _set_headers(self) -> None:
+        """표 머리글 — 청구서만이면 지출예정일 · 결의서구분, 구매요청(계약) 서류만이면 요청일자 · 구분, 섞이면 일자 · 구분."""
+        buys = sum(1 for t in self._targets if t.get("kind") == purchase.KIND)
+        claims = len(self._targets) - buys
+        mixed = bool(buys and claims) or (not self._targets and all(self._docs()))
+        only_buys = bool(buys and not claims) or (not self._targets and self._docs() == (False, True))
+        date, kind = ("일자", "구분") if mixed else ("요청일자", "구분") if only_buys else ("지출예정일", "결의서구분")
+        self.table.setHorizontalHeaderItem(3, QTableWidgetItem(date))
+        self.table.setHorizontalHeaderItem(6, QTableWidgetItem(kind))
+
     def _on_list_failed(self, message: str) -> None:
         self._auto_run = False
         self._reading = False
-        self._set_state("목록 못 찾음", "danger", GUIDE_BROWSER)
+        self._set_state("목록 못 찾음", "danger", self._guide_browser())
+        claims, purchases = self._docs()
+        where = " · ".join(x for on, x in ((claims, "[과제관리 → 과제정보 → 청구서] 의 '결의서내역' 목록"),
+                                          (purchases, "위 메뉴 [구매·자산] → 구매진행관리 목록")) if on)
         QMessageBox.warning(
             self, "목록을 찾지 못했습니다",
-            f"{message}\n\n앱이 연 브라우저 창에서 로그인하고 [과제관리 → 과제정보 → 청구서] 의 "
-            "'결의서내역' 목록을 띄웠는지 확인한 뒤 [안 받은 청구서 찾기] 를 다시 누르세요.\n열린 창 구조는 [진행 기록] 에 남겼습니다.")
+            f"{message}\n\n앱이 연 브라우저 창에서 로그인하고 {where}이 뜨는지 확인한 뒤 [{self.open_button.text()}] 를 다시 누르세요.\n"
+            "열린 창 구조는 [진행 기록] 에 남겼습니다.")
         self._sync_buttons()
 
     def _set_status(self, row: int, status: str, detail: str = "") -> None:
@@ -1002,7 +1071,10 @@ class DownloadPage(QWidget):
             text += " — 중간에 멈췄습니다"
         if summary.missing:
             text += f" · 엑셀 대조 누락 {len(summary.missing)}건 ([진행 기록] 참고)"
-        text += ". 받은 파일은 " + ("과제 폴더 안 " if project_box.folder_projects() else "") + "비목 폴더 바로 아래에 있습니다."
+        if getattr(self, "_run_claims", True):
+            text += ". 받은 청구서는 " + ("과제 폴더 안 " if project_box.folder_projects() else "") + "비목 폴더 바로 아래에 있습니다."
+        else:
+            text += "."
         psum = getattr(summary, "purchase", None)
         if psum is not None:
             text += (f" 구매요청(계약) 서류 {len(psum.cases)}건 · 새 파일 {psum.files}개({purchase.size_text(psum.size)})는 "

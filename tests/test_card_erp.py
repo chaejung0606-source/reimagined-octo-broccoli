@@ -12,7 +12,7 @@ import os
 import openpyxl
 import pytest
 
-from claim_downloader.claims import attendees, card, card_erp, idnums, participants
+from claim_downloader.claims import attendees, card, card_erp, idnums, participants, payee
 from claim_downloader.claims.form import STATE_JS
 from claim_downloader.minutes.docx import build_docx
 from claim_downloader.minutes.hwpx import build_hwpx
@@ -972,3 +972,79 @@ def test_erp_participant_list_is_remembered_per_project_and_used_by_the_preview(
     inside = next(e for e in bare.entries if e.label == "내부참석자")
     assert inside.value.startswith("3명") and "미리 보기에서는 참여인력을 가리지 못함" in inside.check
     assert "참여인력 명단이 아직 없음" in inside.source
+
+
+def test_popup_mismatch_compares_the_window_with_the_picked_payment():
+    popup = {"CFRC_DT": "2026-10-12", "MEAL_COST": "160,000", "SNACK_COST": "",
+             "CARD_USE_SITE": "가나다 식당(사용일:2026-10-12 14:30:05)(강원 춘천시 가나다로 1)"}
+    same = {"EXP_DT": "20261012", "REQ_AMT": "160000", "BUY_WHERE": "가나다 식당", "USED_TIME": "143005"}
+    assert card_erp.popup_mismatch(popup, same) == ""
+    assert card_erp.popup_mismatch(dict(popup, MEAL_COST="0", SNACK_COST="160,000"), same) == ""      # 다과로 옮긴 창도 같은 결제 건
+    assert card_erp.popup_mismatch(popup, dict(same, EXP_DT="2026-10-15")) == "회의일자 10-12 · 사용일 10-15"
+    assert "회의비 160,000원 · 청구액 50,000원" in card_erp.popup_mismatch(popup, dict(same, REQ_AMT="50,000"))
+    # 같은 날 · 같은 금액의 다른 결제 건 — 가맹점 · 시각으로 가린다
+    assert card_erp.popup_mismatch(popup, dict(same, BUY_WHERE="라마바 카페")) == "가맹점이 다름"
+    assert card_erp.popup_mismatch(popup, dict(same, USED_TIME="91005")) == "사용 시각이 다름"
+    assert card_erp.popup_mismatch({"CFRC_DT": "", "MEAL_COST": ""}, same) == ""                       # 모르는 칸은 견주지 않는다
+
+
+def test_a_minutes_window_left_open_for_another_payment_is_closed_and_opened_again():
+    """2026-11-16 검수 — 앞 결제 건에서 연 회의록등록 창이 남은 채(멈춤 · 사람이 연 창) 다음 결제 건을 넣으면, open_popup 은 '이 화면에서 연 창' 이라
+    그대로 썼다(카드청구 화면은 결제 건마다 같은 화면). 그러면 이 결제 건의 회의록이 앞 결제 건의 회의일자 · 금액으로 저장된다.
+    지금 고른 결제 건과 창의 회의일자 · 금액이 다르면 닫고 새로 연다."""
+    sync_api = pytest.importorskip("playwright.sync_api")
+    executable = os.environ.get("CHROMIUM_PATH", "/opt/pw-browsers/chromium")
+    form = CARD_FORM.replace('<input id="REQ_PTCL" value="">',
+                             '<input id="REQ_PTCL" value=""><input id="EXP_DT" value="2026-10-12"><input id="REQ_AMT" value="160,000">'
+                             '<input id="BUY_WHERE" value="가나다 식당">')
+    fresh = MEETING_WINDOW.replace('value="2026-10-12"', 'value="2026-10-15"').replace('value="160,000"', 'value="50,000"')
+    served: list[str] = []
+    which = {"stale": True}
+
+    def serve(route):
+        url = route.request.url
+        if url == "http://erp.test/minutes":
+            served.append(url)
+            body = MEETING_WINDOW if which["stale"] else fresh      # 처음 연 창은 앞 결제 건(10-12 · 160,000원)
+        else:
+            body = {"http://erp.test/card": form, "http://erp.test/part": PART_WINDOW, "http://erp.test/multi": MULTI_WINDOW}[url]
+        route.fulfill(status=200, content_type="text/html; charset=utf-8", body=body)
+
+    item = card.CardItem(folder="x", name="261015_(17)_가나다", code="07", used=D(2026, 10, 15), amount=50000, req_div="17",
+                         meeting_region="춘천",
+                         meeting=card.Minutes(start="17:00", end="18:00", place="공학관 413호", agenda="실습 준비",
+                                              content=["멘토링에서 안내받은 내용으로 실습 준비 사항을 논의하였음."],
+                                              attendees=[("마바사학과", "라")], numbers={"라": "202400001"}))
+    try:
+        with sync_api.sync_playwright() as p:
+            browser = p.chromium.launch(executable_path=executable if os.path.exists(executable) else None)
+            context = browser.new_context()
+            context.route("http://erp.test/**", serve)
+            page = context.new_page()
+            page.goto("http://erp.test/card")
+            wait = lambda s: page.wait_for_timeout(int(s * 1000))  # noqa: E731
+            logs: list[str] = []
+            # 앞 결제 건(10-12 · 160,000원)에서 연 창이 남아 있다
+            stale, _why = payee.open_popup(page, page.main_frame, "btn_addEvid2", card_erp.MINUTES_PROBE_JS, logs.append)
+            stale.wait_for_load_state()
+            which["stale"] = False
+            page.evaluate("() => { EXP_DT.value = '2026-10-15'; REQ_AMT.value = '50,000'; BUY_WHERE.value = '라마바 식당'; }")
+            asked: list[str] = []
+            result = card_erp.ItemResult(index=0, name=item.name)
+            ok, why = card_erp._minutes(page, page.main_frame, item, logs.append, lambda m: asked.append(m) or False, wait, [], result, [])
+            assert (ok, asked) == (True, []), (why, asked, logs)
+            assert any("다른 결제 건의 것입니다(회의일자 10-12 · 사용일 10-15 · 회의비 160,000원 · 청구액 50,000원)" in line for line in logs), logs
+            assert any("회의록등록 창: 회의일자 2026-10-15" in line for line in logs), logs
+            assert stale.is_closed() and len(served) == 2
+            assert page.evaluate("window.saved")["meal"] == 50000                      # 새로 연 창(이 결제 건)으로 저장
+            # 같은 결제 건의 창이면 그대로 쓴다(다시 열지 않음)
+            served.clear()
+            again, _why = payee.open_popup(page, page.main_frame, "btn_addEvid2", card_erp.MINUTES_PROBE_JS, logs.append)
+            again.wait_for_load_state()
+            popup, state, why = card_erp._open_minutes(page, page.main_frame, logs.append, wait)
+            assert popup is again and state["CFRC_DT"] == "2026-10-15" and len(served) == 1
+            browser.close()
+    except Exception as error:  # noqa: BLE001 — 브라우저가 없는 곳(CI)
+        if "Executable doesn't exist" in str(error) or "BrowserType.launch" in str(error):
+            pytest.skip(f"브라우저 없음: {str(error).splitlines()[0][:80]}")
+        raise
