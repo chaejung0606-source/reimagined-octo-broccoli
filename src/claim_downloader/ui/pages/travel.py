@@ -1,4 +1,4 @@
-"""출장증빙자료 만들기 — 폴더 하나를 고르면 출장신청서를 검토해 출장자를 정리하고, 출장자별로 증빙을 확인해 '<이름> 출장증빙_yy.mm.dd.pdf' 를 만든다.
+"""출장증빙자료 만들기 — 폴더 하나를 고르면 출장신청서를 검토해 출장자를 정리하고, 출장자별로 증빙을 확인해 '<이름> 출장증빙_yy.mm.dd(-dd).pdf' 를 만든다.
 
 담당자 2026-10-27(첫 판) · 2026-11-10(지금 짜임, CLAUDE.md 28절):
     "1단계에는 출장증빙을 만들 폴더만 선택하고" · "어플에서 출장신청서를 검토 후 출장자를 정리, 그 다음 출장자별 증빙을 확인하고 정리" ·
@@ -638,7 +638,7 @@ class TravelPage(QWidget):
         title = QLabel("출장증빙자료 만들기")
         title.setObjectName("pageTitle")
         texts.addWidget(title)
-        texts.addWidget(muted_label("폴더를 고르면 출장신청서로 출장자를 정리하고, 출장자별로 증빙을 확인해 '<이름> 출장증빙_yy.mm.dd.pdf' 를 만듭니다."))
+        texts.addWidget(muted_label("폴더를 고르면 출장신청서로 출장자를 정리하고, 출장자별로 증빙을 확인해 '<이름> 출장증빙_yy.mm.dd.pdf'(여러 날이면 _yy.mm.dd-dd) 를 만듭니다."))
         head.addLayout(texts, 1)
         self.state_pill = Pill("준비", "neutral")
         head.addWidget(self.state_pill, 0, Qt.AlignVCenter)
@@ -1319,8 +1319,8 @@ class TravelPage(QWidget):
 
     def _build_make(self) -> FlowStep:
         # 단계 이름 '출장증빙 내보내기'(담당자 2026-11-16) — 출장자가 여럿이면 사람마다 PDF 를 따로 만들어 폴더에 둔다
-        step = FlowStep("5", "출장증빙 내보내기", "출장자마다 PDF 를 따로 만들어 폴더에 저장합니다 — '<이름> 출장증빙_yy.mm.dd.pdf'. "
-                        "같은 이름이 있으면 덮어쓰지 않고 _2.")
+        step = FlowStep("5", "출장증빙 내보내기", "출장자마다 PDF 를 따로 만들어 폴더에 저장합니다 — '<이름> 출장증빙_26.11.12.pdf', "
+                        "여러 날이면 '<이름> 출장증빙_26.11.12-13.pdf'. 같은 이름이 있으면 덮어쓰지 않고 _2.")
         self.restart_button = RestartButton(self.start_over, self._restart_question)
         step.add_side(self.restart_button)
         self.plan_label = WrapLabel("")
@@ -2571,7 +2571,7 @@ class TravelPage(QWidget):
         from ...travel import render
         made, lines = [], []
         for trip in trips:
-            out = model.output_path(folder, trip.name, trip.start)
+            out = model.output_path(folder, trip.name, trip.start, trip.end)
             try:
                 count = render.render(model.pages(trip), out)
             except Exception as exc:  # 그림 파일 · 폴더 권한 등
@@ -2581,7 +2581,7 @@ class TravelPage(QWidget):
             support = sum(model.lodging_support(e, trip.cap(e), trip.people)[0] for e in trip.lodging)
             lines.append(f"✓ {out.name} — {count}쪽" + (f" · 숙박 지원금액 {model.won(support)}" if trip.lodging else ""))
             # 파일 이름(<이름> 출장증빙_…)은 화면에만 — 기록에는 출장자 차례 · 출장 시작일 · 쪽 수(28절 '기록에는 이름을 남기지 않는다')
-            day = f"{trip.start:%y.%m.%d}" if trip.start else "날짜 없음"
+            day = model.date_stamp(trip.start, trip.end) or "날짜 없음"
             self.log(f"출장증빙 만듦: {self._who(trip.name)} · {day} — {count}쪽")
         self._made = made
         if made:

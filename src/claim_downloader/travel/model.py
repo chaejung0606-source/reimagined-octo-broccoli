@@ -1146,10 +1146,27 @@ def blocking(trip: Trip) -> list[str]:
     return [p for p in problems(trip) if p.startswith(("출장자 이름", "증빙 파일이 하나도"))]
 
 
-def output_path(folder: Path, name: str, day: date | None = None) -> Path:
-    """'<이름> 출장증빙_yy.mm.dd.pdf'(출장 시작일, 담당자 2026-10-27) — 같은 이름이 있으면 덮어쓰지 않고 _2, _3."""
+def date_stamp(start: date | None, end: date | None = None) -> str:
+    """파일 이름의 출장일자 — 하루면 '26.11.12', 하루를 넘으면 '26.11.12-13'(담당자 2026-11-17 "출장일자가 1일 이상일 경우
+    26.11.12-13. 이렇게"), 달이 바뀌면 '26.10.31-11.01', 해가 바뀌면 '26.12.31-27.01.02'. 시작일을 모르면 ''."""
+    if not start:
+        return ""
+    head = f"{start:%y.%m.%d}"
+    if not end or end <= start:
+        return head
+    if end.year != start.year:
+        return f"{head}-{end:%y.%m.%d}"
+    if end.month != start.month:
+        return f"{head}-{end:%m.%d}"
+    return f"{head}-{end:%d}"
+
+
+def output_path(folder: Path, name: str, day: date | None = None, end: date | None = None) -> Path:
+    """'<이름> 출장증빙_yy.mm.dd.pdf'(출장 시작일, 담당자 2026-10-27) · 여러 날이면 '_yy.mm.dd-dd'(date_stamp) —
+    같은 이름이 있으면 덮어쓰지 않고 _2, _3."""
     safe = re.sub(r'[\\/:*?"<>|]', " ", name.strip()) or "출장자"
-    stem = f"{safe} 출장증빙" + (f"_{day:%y.%m.%d}" if day else "")
+    stamp = date_stamp(day, end)
+    stem = f"{safe} 출장증빙" + (f"_{stamp}" if stamp else "")
     path = folder / f"{stem}.pdf"
     n = 2
     while path.exists():

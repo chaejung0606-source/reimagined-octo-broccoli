@@ -204,6 +204,22 @@ def test_output_path_has_trip_date_and_never_overwrites(tmp_path):
     assert model.output_path(tmp_path, "홍길동", date(2026, 5, 28)).name == "홍길동 출장증빙_26.05.28_2.pdf"
 
 
+def test_output_path_shows_the_whole_trip_when_it_is_longer_than_a_day(tmp_path):
+    """담당자 2026-11-17 — 출장일자가 1일 이상이면 '26.11.12-13' 처럼 기간으로."""
+    assert model.date_stamp(date(2026, 11, 12), date(2026, 11, 13)) == "26.11.12-13"
+    assert model.date_stamp(date(2026, 11, 12), date(2026, 11, 12)) == "26.11.12"     # 하루 출장은 전처럼
+    assert model.date_stamp(date(2026, 11, 12)) == "26.11.12"
+    assert model.date_stamp(date(2026, 10, 31), date(2026, 11, 1)) == "26.10.31-11.01"   # 달이 바뀜
+    assert model.date_stamp(date(2026, 12, 31), date(2027, 1, 2)) == "26.12.31-27.01.02"   # 해가 바뀜
+    assert model.date_stamp(date(2026, 11, 13), date(2026, 11, 12)) == "26.11.13"     # 끝이 앞이면 시작일만
+    assert model.date_stamp(None, date(2026, 11, 13)) == ""
+    first = model.output_path(tmp_path, "홍길동", date(2026, 11, 12), date(2026, 11, 13))
+    assert first.name == "홍길동 출장증빙_26.11.12-13.pdf"
+    first.write_bytes(b"x")
+    assert model.output_path(tmp_path, "홍길동", date(2026, 11, 12), date(2026, 11, 13)).name == "홍길동 출장증빙_26.11.12-13_2.pdf"
+    assert model.output_path(tmp_path, "홍길동").name == "홍길동 출장증빙.pdf"
+
+
 @pytest.fixture
 def qapp():
     pytest.importorskip("PySide6")

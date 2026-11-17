@@ -738,13 +738,13 @@ def test_page_reviews_application_and_checks_per_traveler(qapp, tmp_path, isolat
     monkeypatch.setattr(travel_page.TravelPreview, "exec", lambda self: opened.append(self.trip().name) or travel_page.PREVIEW_MAKE)
     page._make()
     assert opened == ["김철수"]                       # 확인할 것이 있는 사람부터
-    made = sorted(p.name for p in folder.glob("* 출장증빙_26.11.10.pdf"))
-    assert made == ["김철수 출장증빙_26.11.10.pdf", "홍길동 출장증빙_26.11.10.pdf"]
+    made = sorted(p.name for p in folder.glob("* 출장증빙_*.pdf"))
+    assert made == ["김철수 출장증빙_26.11.10-12.pdf", "홍길동 출장증빙_26.11.10-12.pdf"]   # 여러 날이면 기간(2026-11-17)
     # 기록(_실행로그.txt)에는 출장자 이름을 남기지 않는다 — 파일 이름은 화면에만(28절)
-    assert "홍길동 출장증빙_26.11.10.pdf" in page.result_label.text()
+    assert "홍길동 출장증빙_26.11.10-12.pdf" in page.result_label.text()
     page.log("출장신청서 없음: 김철수 원주 출장")          # 그래도 섞인 이름은 가린다(신청서 · 폴더 이름)
     written = settings.log_path().read_text(encoding="utf-8")
-    assert "출장증빙 만듦: 출장자 1 · 26.11.10 —" in written and "출장증빙 만듦: 출장자 2 · 26.11.10 —" in written
+    assert "출장증빙 만듦: 출장자 1 · 26.11.10-12 —" in written and "출장증빙 만듦: 출장자 2 · 26.11.10-12 —" in written
     assert "출장신청서 없음: 김○○ 원주 출장" in written
     for secret in ("홍길동", "김철수"):
         assert secret not in written, secret
@@ -1183,13 +1183,13 @@ def test_several_folders_one_after_another(qapp, tmp_path, isolated_home, monkey
     page._go("files")
     monkeypatch.setattr(travel_page.TravelPreview, "exec", lambda self: travel_page.PREVIEW_MAKE)
     page._make()
-    assert list(Path(first).glob("홍길동 출장증빙_26.11.03.pdf")) and page.folder_list.item(0).text().startswith("✓")
+    assert list(Path(first).glob("홍길동 출장증빙_26.11.03-04.pdf")) and page.folder_list.item(0).text().startswith("✓")
     assert "다음 폴더" in page.result_label.text()
     page.next_button.click()
     assert page.folder_edit.text() == second and page._stage == "review" and page.start_edit.date().toPython() == date(2026, 11, 10)
     page._go("files")
     page._make()
-    assert list(Path(second).glob("홍길동 출장증빙_26.11.10.pdf")) and page.next_button.isHidden()
+    assert list(Path(second).glob("홍길동 출장증빙_26.11.10-12.pdf")) and page.next_button.isHidden()
     page._go("folder")
     assert page.start_button.text() == "모두 만들었습니다" and not page.start_button.isEnabled()
 

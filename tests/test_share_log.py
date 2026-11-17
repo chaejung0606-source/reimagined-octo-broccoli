@@ -102,6 +102,7 @@ TRAVEL_LOG = """\
 17:40:06 출장증빙 만듦: 도해솔 출장증빙_26.11.10_2.pdf — 2쪽
 17:40:07 출장증빙 만듦: C:\\Users\\someone\\Desktop\\출장비\\나래솔 출장증빙_26.11.10.pdf — 1쪽
 17:40:08 출장증빙 만듦: SUNATULLAEV GOLIB 출장증빙_26.11.10.pdf — 1쪽
+17:40:08 ✓ 바다솔 출장증빙_26.11.12-13.pdf — 2쪽
 17:40:09 출장증빙 만듦: 출장자 1 · 26.11.10 — 3쪽
 17:40:10 네이버 지도 최단거리 출장자 1 가는 길(오는 길도 같은 거리): 76km — 지도 그림 저장
 17:40:11 업무 출장증빙자료 만들기 · 기존 출장증빙 · 체류 출장증빙_26.pdf
@@ -110,10 +111,11 @@ TRAVEL_LOG = """\
 
 def test_mask_hides_names_in_travel_lines():
     out = share_log.mask_text(TRAVEL_LOG)
-    for secret in ("진가람", "도해솔", "나래솔", "SUNATULLAEV", "someone"):
+    for secret in ("진가람", "도해솔", "나래솔", "바다솔", "SUNATULLAEV", "someone"):
         assert secret not in out, secret
     assert "출장증빙 만듦: 진○○ 출장증빙_26.11.10.pdf — 3쪽" in out and "도○○ 출장증빙_26.11.10_2.pdf" in out
     assert "\\나○○ 출장증빙_26.11.10.pdf" in out and "S*** 출장증빙_26.11.10.pdf" in out
+    assert "바○○ 출장증빙_26.11.12-13.pdf" in out           # 여러 날 출장의 파일 이름(2026-11-17)
     assert "최단거리 진○○ 가는 길" in out and "최단거리_진○○ 가는 길" in out and "최단거리 도○○ 구간 2" in out
     # 지금 판의 줄 · 업무 이름 · 서류 낱말은 그대로 — '출장자' · '기존' · '체류' 를 이름으로 보지 않는다
     for kept in ("출장증빙 만듦: 출장자 1 · 26.11.10 — 3쪽", "최단거리 출장자 1 가는 길", "업무 출장증빙자료 만들기",
