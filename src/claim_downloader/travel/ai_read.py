@@ -206,12 +206,12 @@ def summary(kind: str, data: dict) -> dict:
            "count": len(receipts)}
     if kind == model.LODGING and len(days) > 1:
         out["date"] = min(days)                           # 숙박이 둘이면 첫 입실일
-    if kind == model.TOLL and len(receipts) > 1:
-        # 하이패스 영수증 여러 장(담당자 2026-11-16 — 10월 29일 · 30일 영수증이 한 그림에 있어 일자가 비었다): 화면이 영수증 상자 수와 같으면
-        # 영수증마다 줄로 나누고(receipts), 못 나누면 첫 이용일 · 합계로 한 줄(days 는 말풍선에)
-        out["receipts"] = [{"date": r.get("date", ""), "amount": r.get("amount")} for r in receipts]
+    if kind in (model.TOLL, model.PUBLIC, model.STAY) and len(receipts) > 1:
+        # 한 파일의 영수증 여러 장 — 화면이 영수증마다 줄로 나눈다(receipts, 담당자 2026-11-16 하이패스 · 2026-11-23 KTX 영수증 둘 "일자별로 구분해주세요").
+        # 못 나누면(사람이 일자를 적었음 · 같은 날인데 그림을 못 오림) 한 줄 — 하이패스는 첫 이용일 · 합계(days 는 말풍선에)
+        out["receipts"] = [{key: r.get(key) for key in ("date", "amount", "mode", "origin", "goal", "address", "approvalNo")} for r in receipts]
         out["days"] = sorted(days)
-        if len(days) > 1:
+        if kind == model.TOLL and len(days) > 1:
             out["date"] = min(days)
     return out
 

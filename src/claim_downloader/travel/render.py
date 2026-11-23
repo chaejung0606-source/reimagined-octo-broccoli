@@ -7,6 +7,7 @@ QGuiApplication 이 떠 있어야 한다(앱 안에서 부른다).
 """
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -183,6 +184,171 @@ def receipt_images(path: Path) -> list[QImage]:
     return out
 
 
+# ── 한 파일의 영수증 여러 장을 한 장씩 ─────────────────────────────────────────
+# 담당자 2026-11-23: KTX 영수증 둘(10월 28일 · 29일)이 나란히 든 파일 하나 — "교통비나 체류 증빙 영수증을 일자별로 구분해주세요. 제가 일자별로
+# 영수증을 구분해서 알려주지 않아도". 테두리 상자(하이패스 인쇄 — frames)가 없는 영수증은 영수증 사이의 빈 띠로 나눈다.
+SPLIT_SCAN = 600      # 나눌 곳을 찾을 때 줄여 볼 긴 변
+SPLIT_DIFF = 24       # 바탕과 이만큼 다르면 내용(옅은 회색 카드 테두리도 내용 — 영수증 한 장의 둘레가 된다)
+SPLIT_GAP = 0.02      # 영수증 사이 빈 띠의 최소 폭(그 방향 길이 비율)
+SPLIT_MIN = 0.15      # 영수증 한 장의 최소 크기(그 방향 길이 비율) — 위아래의 제목 · 안내 글 한 줄은 영수증이 아니다
+SPLIT_BALANCE = 0.35  # 조각 크기가 이만큼은 고르게 — 영수증 여러 장은 대개 비슷한 크기다(한 영수증의 줄 사이로 자르지 않게)
+SPLIT_TRY = 12        # 자를 틈 후보(넓은 것부터) — 조합을 다 보므로 많으면 느리다
+SPLIT_PAD = 0.01      # 오린 둘레에 남길 여백(긴 변 비율)
+SPLIT_LINES = 0.15    # 나란히 놓인 영수증 — 글이 있는 줄의 몫이 이보다 적은 칸은 빈 칸(영수증 사이)
+SPLIT_EDGE_LINE = 0.06   # 조각 위아래 끝의 이보다 낮은 줄 하나가
+SPLIT_EDGE_GAP = 0.05    # 이보다(그리고 보통 줄 사이의 세 배보다) 멀리 떨어져 있으면 영수증 밖의 글(두 장에 걸친 안내 글)
+
+
+def _spans(marks: list[bool]) -> list[tuple[int, int]]:
+    runs, start = [], None
+    for i, mark in enumerate(marks):
+        if mark and start is None:
+            start = i
+        elif not mark and start is not None:
+            runs.append((start, i - 1))
+            start = None
+    if start is not None:
+        runs.append((start, len(marks) - 1))
+    return runs
+
+
+def _cut(marks: list[bool], n: int) -> tuple[float, list[tuple[int, int]]] | None:
+    """한 방향으로 n 조각 — 내용 사이 빈 띠(SPLIT_GAP 이상) 가운데 n-1 개를 골라 자른다. 조각이 고르고(SPLIT_BALANCE) 틈이 넓을수록 좋다.
+    (점수, 조각들) — 못 자르면 None. 카드 테두리 옆의 여백처럼 좁은 틈이 하나 더 있어도 조각이 고른 쪽(영수증 사이)을 고른다."""
+    length = len(marks)
+    runs = _spans(marks)
+    if n < 2 or len(runs) < n:
+        return None
+    gaps = sorted(((runs[i + 1][0] - runs[i][1] - 1, i) for i in range(len(runs) - 1)), reverse=True)
+    width = {i: g for g, i in gaps[:SPLIT_TRY] if g >= SPLIT_GAP * length}
+    best = None
+    for combo in itertools.combinations(sorted(width), n - 1):
+        pieces, first = [], 0
+        for i in combo:
+            pieces.append((runs[first][0], runs[i][1]))
+            first = i + 1
+        pieces.append((runs[first][0], runs[-1][1]))
+        sizes = [b - a + 1 for a, b in pieces]
+        if min(sizes) < SPLIT_MIN * length or min(sizes) < SPLIT_BALANCE * max(sizes):
+            continue
+        score = min(width[i] for i in combo) / length * min(sizes) / max(sizes)
+        if best is None or score > best[0]:
+            best = (score, pieces)
+    return best
+
+
+def split_receipts(image: QImage, n: int) -> list[QImage]:
+    """그림 한 장에 든 영수증 n장을 한 장씩 — 위아래로 놓였으면 위에서부터, 나란히 놓였으면 왼쪽부터(AI 가 읽는 차례와 같다).
+    나란히 놓인 것은 위아래의 제목 · 안내 글('본 영수증은 세금계산서로 …' 처럼 두 장에 걸친 줄)을 빼고 가장 큰 덩어리 안에서 나눈다.
+    못 나누면 [] — 칸에는 그림 전체가 들어간다."""
+    if n < 2 or image.isNull() or image.width() < 16 or image.height() < 16:
+        return []
+    small = image.scaled(SPLIT_SCAN, SPLIT_SCAN, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    flat = QImage(small.size(), QImage.Format_RGB32)
+    flat.fill(QColor("white"))
+    painter = QPainter(flat)
+    painter.drawImage(0, 0, small)
+    painter.end()
+    rows = _rows(flat)
+    cols = _rows(flat.transformed(QTransform().rotate(90)))     # 돌린 그림의 줄 x = 원래 칸 x, 줄 안의 자리 h-1-y = 원래 줄 y
+    w, h = flat.width(), flat.height()
+    edge = rows[0] + rows[-1] + cols[0] + cols[-1]
+    counts = [0] * 256
+    for b in edge:
+        counts[b] += 1
+    background = max(range(256), key=counts.__getitem__)
+    table = bytes(1 if abs(b - background) > SPLIT_DIFF else 0 for b in range(256))
+    row_mask = [r.translate(table) for r in rows]
+    col_mask = [c.translate(table) for c in cols]
+
+    def col_marks(y0: int, y1: int) -> list[bool]:
+        return [c[h - 1 - y1: h - y0].count(1) >= 2 for c in col_mask]
+
+    def row_marks(x0: int, x1: int) -> list[bool]:
+        return [r[x0: x1 + 1].count(1) >= 2 for r in row_mask]
+
+    def extent(marks: list[bool]) -> tuple[int, int] | None:
+        runs = _spans(marks)
+        return (runs[0][0], runs[-1][1]) if runs else None
+
+    runs_y = _spans(row_marks(0, w - 1))
+
+    def body(runs: list[tuple[int, int]]) -> tuple[int, int] | None:
+        """조각 안 줄 덩어리의 위아래 — 멀리 떨어진 짧은 줄 하나(두 장에 걸친 아래 안내 글 · 위 제목)는 뺀다. '멀리' 는 그 틈 말고 다른 줄 사이
+        틈의 보통 값보다 세 배(카드 테두리가 진하면 카드 전체가 한 덩어리라 다른 틈이 없다 — 그때는 SPLIT_EDGE_GAP 만)."""
+        runs = list(runs)
+
+        def far(gap: int, others: list[int]) -> bool:
+            others = sorted(others)
+            usual = others[len(others) // 2] if others else 0
+            return gap >= max(SPLIT_EDGE_GAP * h, 3 * usual)
+
+        def gaps(rs) -> list[int]:
+            return [b[0] - a[1] - 1 for a, b in zip(rs, rs[1:])]
+
+        while len(runs) > 1 and runs[-1][1] - runs[-1][0] + 1 <= SPLIT_EDGE_LINE * h and far(gaps(runs)[-1], gaps(runs)[:-1]):
+            runs.pop()
+        while len(runs) > 1 and runs[0][1] - runs[0][0] + 1 <= SPLIT_EDGE_LINE * h and far(gaps(runs)[0], gaps(runs)[1:]):
+            runs.pop(0)
+        return (runs[0][0], runs[-1][1]) if runs else None
+
+    tries = []                                         # (점수, 상자들) — 위아래 · 나란히 둘 다 보고 나은 쪽
+    stacked = _cut(row_marks(0, w - 1), n)
+    if stacked:
+        boxes = []
+        for y0, y1 in stacked[1]:
+            xs = extent(col_marks(y0, y1))
+            if xs:
+                boxes.append((xs[0], y0, xs[1], y1))
+        tries.append((stacked[0], boxes))
+    if runs_y:
+        # 나란히 — 칸마다 글이 있는 줄의 몫(줄 높이로 셈)으로 본다. 영수증 사이 빈 띠는 거의 모든 줄에서 비어 있다 — 두 장에 걸친
+        # 안내 글 한 줄('본 영수증은 세금계산서로 …')이 지나가도(카드 테두리가 옅어 줄마다 따로 덩어리여도)
+        total = sum(b - a + 1 for a, b in runs_y)
+        share = [0] * w
+        for a, b in runs_y:
+            for x, c in enumerate(col_mask):
+                if c[h - 1 - b: h - a].count(1):
+                    share[x] += b - a + 1
+        side = _cut([v > SPLIT_LINES * total for v in share], n)
+        if side:
+            boxes = []
+            for x0, x1 in side[1]:
+                ys = body(_spans(row_marks(x0, x1)))
+                if ys:
+                    boxes.append((x0, ys[0], x1, ys[1]))
+            tries.append((side[0], boxes))
+    tries = [t for t in tries if len(t[1]) == n]
+    if not tries:
+        return []
+    boxes = max(tries, key=lambda t: t[0])[1]
+    sx, sy = image.width() / w, image.height() / h
+    pad = SPLIT_PAD * max(image.width(), image.height())
+    out = []
+    for x0, y0, x1, y1 in boxes:
+        left, top = max(0, int(x0 * sx - pad)), max(0, int(y0 * sy - pad))
+        right, bottom = min(image.width(), int((x1 + 1) * sx + pad)), min(image.height(), int((y1 + 1) * sy + pad))
+        out.append(trim(image.copy(left, top, right - left, bottom - top)))
+    return out
+
+
+def receipt_pieces(path: Path, n: int) -> list[QImage]:
+    """파일 하나에 든 영수증 n장을 한 장씩 오린 그림(AI 가 읽은 차례 — 쪽 차례, 쪽 안에서는 위에서 아래 · 왼쪽에서 오른쪽).
+    ① 테두리 상자(하이패스 인쇄)가 n개면 그것 ② 쪽이 n쪽이면 쪽마다 ③ 한 쪽(그림)이면 영수증 사이의 빈 띠로. 못 나누면 [] — 칸에는 파일 전체."""
+    pages = _load(path)
+    boxed = []
+    for image in pages:
+        found = frames(image)
+        boxed += [_boxed(image.copy(*box)) for box in found] if found else [trim(image)]
+    if len(boxed) == n:
+        return boxed
+    if len(pages) == n:
+        return [trim(image) for image in pages]
+    if len(pages) == 1:
+        return split_receipts(pages[0], n)
+    return []
+
+
 def _load(path: Path) -> list[QImage]:
     if path.suffix.lower() == ".pdf":
         from PySide6.QtPdf import QPdfDocument
@@ -291,18 +457,28 @@ def _cells(block: Block, cache: dict, needs: dict) -> list[_Cell]:
         ref = block.refs[i] if i < len(block.refs) else ()
         if not path.exists():
             # 폴더에서 지운 파일 — 기억해 둔 그림을 쓰지 않는다(2026-11-16 담당자: 고친 폴더의 옛 영수증이 미리 보기에 남았다)
-            cache.pop(path, None)
-            cache.pop((path, "boxes"), None)
+            for key in [k for k in cache if k == path or (isinstance(k, tuple) and k[0] == path)]:
+                cache.pop(key, None)
             out.append(_Cell(None, f"{path.name} — 폴더에 없는 파일입니다", 1.0, 600, 260, ref))
             continue
         part = block.parts[i] if i < len(block.parts) else None
-        # 그림 파일의 영수증 한 장 줄(하이패스 여러 장이 든 캡처)이면 상자마다 오린 그림에서 고른다 — PDF 는 load_images 가 이미 오린다
-        key = (path, "boxes") if part is not None and path.suffix.lower() != ".pdf" else path
-        if key not in cache:
-            cache[key] = receipt_images(path) if key != path else load_images(path)    # setdefault 는 있을 때도 그림을 다시 읽었다
-        images = cache[key]
-        if part is not None and part < len(images):
-            images = [images[part]]
+        pieces = block.pieces[i] if i < len(block.pieces) else 0
+        images = None
+        if part is not None and pieces:
+            # 한 파일의 영수증 하나(일자별로 나눈 줄) — 영수증마다 오린 그림에서 고른다. 못 오리면 아래에서 파일 전체
+            key = (path, "pieces", pieces)
+            if key not in cache:
+                cache[key] = receipt_pieces(path, pieces)
+            if part < len(cache[key]):
+                images = [cache[key][part]]
+        if images is None:
+            # 그림 파일의 영수증 한 장 줄(하이패스 여러 장이 든 캡처, 옛 줄)이면 상자마다 오린 그림에서 고른다 — PDF 는 load_images 가 이미 오린다
+            key = (path, "boxes") if part is not None and not pieces and path.suffix.lower() != ".pdf" else path
+            if key not in cache:
+                cache[key] = receipt_images(path) if key != path else load_images(path)    # setdefault 는 있을 때도 그림을 다시 읽었다
+            images = cache[key]
+            if part is not None and not pieces and part < len(images):
+                images = [images[part]]
         if not images:
             out.append(_Cell(None, caption or path.name, 1.0, 600, 260, ref))
         for j, image in enumerate(images):

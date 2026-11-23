@@ -1883,15 +1883,29 @@ def test_hipass_picture_with_two_days_is_split_per_receipt(qapp, tmp_path, isola
     cells = render._cells(pages[0].blocks[0], {}, {})
     assert len(cells) == 1 and cells[0].w < 400                   # 그림 전체(550 넓이)가 아니라 오른쪽 상자
 
-    # 상자 수가 다르면 나누지 않고 첫 날 · 합계로 한 줄(말풍선에 날짜들)
+    # 그림을 영수증마다 못 오려도 날이 다르면 일자별로 나눈다(담당자 2026-11-23 "일자별로 구분해주세요") — 그 줄들에는 파일 전체가 들어간다
     page._ai_tried.clear()
-    monkeypatch.setattr(render, "receipt_images", lambda path: [])
+    monkeypatch.setattr(render, "receipt_pieces", lambda path, n: [])
     tolls.clear_all()
     tolls.add_files([two], 2026)
     filled = tolls.apply_ai(two, summary)
+    assert filled == 4 and len(tolls.paths) == 2 and tolls.parts == [0, 1]
+    assert "파일 전체" in tolls.item(0, 0).toolTip()
+    whole = render._cells(model.car_pages(page.trips()[0])[0].blocks[0], {}, {})
+    assert len(whole) == 1 and whole[0].w > 500                     # 못 오렸으면 그림 전체
+    # 같은 날 영수증끼리인데 그림도 못 오리면 나누지 않는다(같은 그림을 두 번 넣지 않게) — 첫 날 · 합계로 한 줄(말풍선에 날짜들)
+    same_day = ai_read.summary(model.TOLL, {"receipts": [dict(r, date="2026-10-29") for r in read["receipts"]]})
+    tolls.clear_all()
+    tolls.add_files([two], 2026)
+    filled = tolls.apply_ai(two, same_day)
     assert filled == 2 and len(tolls.paths) == 1 and tolls.parts[0] is None
     assert tolls.item(0, 1).text() == "2026-10-29" and tolls.item(0, 2).text() == "26,100"
-    assert "2026-10-29 · 2026-10-30" in tolls.item(0, 1).toolTip()
+    # 사람이 일자를 적은 줄은 나누지 않는다
+    tolls.clear_all()
+    tolls.add_files([two], 2026)
+    tolls.item(0, 1).setText("2026-10-30")
+    monkeypatch.undo()
+    assert tolls._split_receipts(two, summary) == 0 and len(tolls.paths) == 1
 
 
 def test_each_traveler_keeps_own_period():

@@ -50,7 +50,9 @@ class Evidence:
     mode: str = ""          # 대중교통 이동편(열차 · 고속버스 …)
     nights: int = 1         # 숙박 영수증 하나가 덮는 박 수
     place: str = ""         # 출장지가 여러 곳일 때 어느 곳의 체류 · 숙박인지
-    part: int | None = None # 영수증 여러 장이 든 PDF(하이패스 '총 N 건') 중 몇 번째 상자인지 — 없으면 파일 전체
+    part: int | None = None # 영수증 여러 장이 든 파일(하이패스 '총 N 건' · 승차권 둘) 중 몇 번째 영수증인지 — 없으면 파일 전체
+    pieces: int = 0         # 그 파일에 든 영수증 수(part 가 있을 때) — 그림을 영수증마다 오릴 때(render.receipt_pieces). 0 이면 옛 줄(상자 수 그대로)
+    several: bool = False   # 글자로 보아 영수증이 여럿(이용일이 둘 이상)인데 아직 나누지 못한 파일 — AI 로 읽어 영수증마다 줄로 나눈다
     person: str = ""        # 출장자가 여럿일 때 누구 증빙인지 — SHARED('공통')면 모두의 출장증빙에 넣는다
     origin: str = ""        # 대중교통 증빙(승차권 하나)의 출발지 — 담당자 2026-11-10 "증빙별로 출발지와 목적지 및 금액 작성"
     goal: str = ""          # 대중교통 증빙의 목적지
@@ -321,6 +323,40 @@ def amount_of(text: str) -> int | None:
     return int(digits) if digits else None
 
 
+# 영수증의 이용일 — 담당자 2026-11-23 KTX 영수증 둘(10월 28일 · 29일)이 든 파일이 '2026년 11월 2일'(맨 아래 발행일시)로 묶여 '출장기간 밖' 이었다.
+# 발행 · 인쇄 · 조회 날짜는 이용일이 아니고, 승차권은 승인(결제) · 예매 날짜도 아니다(승인일시 10월 21일 · 승차일 10월 28일).
+_ISSUE_WORDS = ("발행", "인쇄", "출력", "조회일", "조회일시", "발급", "작성일")
+_BOOKING_WORDS = ("승인", "결제일", "결제일시", "예매", "구매일", "구입일")
+
+
+def _date_lines(text: str, route: bool) -> tuple[list[str], list[str]]:
+    """(이용일이 있을 줄, 승인 · 예매 날짜 줄) — 발행 · 인쇄 줄은 빼고. 승차권(route)이 아니면 승인 줄도 이용일 줄이다(카드 영수증의 승인일 = 쓴 날)."""
+    use, booking = [], []
+    for line in (text or "").splitlines():
+        squashed = line.replace(" ", "")
+        if any(w in squashed for w in _ISSUE_WORDS):
+            continue
+        (booking if route and any(w in squashed for w in _BOOKING_WORDS) else use).append(line)
+    return use, booking
+
+
+def receipt_days(text: str, route: bool = False) -> list[date]:
+    """영수증 글자에서 이용일 후보(나온 차례, 겹치지 않게) — 해까지 적힌 날짜만('2026년 10월 28일' · '20261028').
+    승차권은 승인 · 예매 줄의 날짜를 이용일 줄에 날짜가 없을 때만 쓴다."""
+    use, booking = _date_lines(text, route)
+    for lines in (use, booking):
+        out: list[date] = []
+        for line in lines:
+            for pattern in (_FULL_DATE, _COMPACT_DATE):
+                for match in pattern.finditer(line):
+                    found = _make(*(int(g) for g in match.groups()))
+                    if found and found not in out:
+                        out.append(found)
+        if out:
+            return out
+    return []
+
+
 def guess_amount(text: str) -> int | None:
     values = [int(v.replace(",", "")) for v in _AMOUNT.findall(text)]
     return max(values) if values else None
@@ -344,16 +380,50 @@ def guess(path: Path, year: int, route: bool = False, stay: bool = False) -> Evi
     origin, goal = guess_route(stem) if route else ("", "")
     shop = region_of(stem) if stay else ""
     key = ""
+    several = False
     if path.suffix.lower() == ".pdf":
         text = pdf_text(path)
-        day = day or guess_day(text, year)
-        amount = amount or guess_amount(text)
-        if route and not (origin and goal):
-            origin, goal = guess_route(text)
-        if stay and not shop:
+        days = receipt_days(text, route)
+        # 체류 · 대중교통은 이용일이 둘 이상이면 영수증이 여럿 — 일자 · 금액 · 경로를 하나로 고르지 않는다(맨 위 날짜 · 가장 큰 금액이 한 영수증 것뿐이었다).
+        # 빈 칸이라 AI 가 읽고 영수증마다 줄로 나눈다(ui/pages/travel.py — EvidenceTable._split_receipts). 숙박 · 하이패스는 첫 날(입실일)
+        several = (route or stay) and len(days) > 1
+        if not day:
+            day = None if several else (days[0] if days else guess_day("\n".join(_date_lines(text, route)[0]), year))
+        if not several:
+            amount = amount or guess_amount(text)
+            if route and not (origin and goal):
+                origin, goal = guess_route(text)
+            key = approval_of(text)
+        if stay and not shop and not several:
             shop = shop_region_of(text)
-        key = approval_of(text)
-    return Evidence(path=path, day=day, amount=amount, origin=origin, goal=goal, shop_region=shop, receipt_key=key)
+    return Evidence(path=path, day=day, amount=amount, origin=origin, goal=goal, shop_region=shop, receipt_key=key, several=several)
+
+
+def page_receipts(path: Path, route: bool = False, stay: bool = False, limit: int = 20) -> list[Evidence]:
+    """여러 쪽 PDF 의 쪽마다 영수증이 하나면(쪽마다 이용일이 하나, 쪽끼리 일자나 승인번호가 다를 때) 영수증마다 증빙 — 아니면 [].
+    AI 없이 글자로 나눌 수 있는 꼴(승차권 · 카드 영수증을 쪽마다 하나씩 모은 PDF). 일자가 없는 쪽(약관 · 뒷면)이 있으면 나누지 않는다."""
+    if path.suffix.lower() != ".pdf":
+        return []
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(str(path))
+        if not 2 <= len(reader.pages) <= limit:
+            return []
+        texts = [(page.extract_text() or "") for page in reader.pages]
+    except Exception:
+        return []
+    out = []
+    for i, text in enumerate(texts):
+        days = receipt_days(text, route)
+        if len(days) != 1:
+            return []
+        origin, goal = guess_route(text) if route else ("", "")
+        out.append(Evidence(path=path, day=days[0], amount=guess_amount(text), origin=origin, goal=goal,
+                            shop_region=shop_region_of(text) if stay else "", receipt_key=approval_of(text), part=i, pieces=len(texts)))
+    keys = [e.receipt_key for e in out]
+    if len({e.day for e in out}) < len(out) and not (all(keys) and len(set(keys)) == len(keys)):
+        return []                                     # 같은 날 · 같은(모르는) 승인번호 — 한 영수증을 여러 쪽에 찍은 것일 수 있다
+    return out
 
 
 def approval_of(text: str) -> str:
@@ -441,7 +511,8 @@ class Block:
     title: list[str] = field(default_factory=list)      # 그림 묶음 위의 줄(자차의 일자 · 금액, 이동경로)
     cols: int = 3
     fill: bool = False      # 남은 높이를 다 쓴다(체류 한 쪽 · 지도)
-    parts: list = field(default_factory=list)            # 그림마다 PDF 의 몇 번째 영수증 상자인지(Evidence.part) — 없으면 파일 전체
+    parts: list = field(default_factory=list)            # 그림마다 파일의 몇 번째 영수증인지(Evidence.part) — 없으면 파일 전체
+    pieces: list = field(default_factory=list)           # 그림마다 그 파일에 든 영수증 수(Evidence.pieces) — 영수증마다 오린다
     refs: list = field(default_factory=list)             # 그림마다 어느 증빙인지(Evidence.ref) — 앱 미리 보기에서 눌러 고친다
     title_ref: tuple = ()                                # 묶음 줄을 누르면 고칠 것(이동경로 km · 연료)
 
@@ -493,7 +564,8 @@ def stay_pages(trip: Trip) -> list[Page]:
             title = [*_place_title(place), when] if place and when else _place_title(place)
             captions = [korean_date(e.day) if e.day else e.path.stem for e in group]
         return Block([e.path for e in group], captions, title=title, cols=grid_cols(len(group)), fill=True,
-                     refs=[e.ref for e in group], title_ref=group[0].ref if one_day else ())
+                     refs=[e.ref for e in group], title_ref=group[0].ref if one_day else (),
+                     parts=[e.part for e in group], pieces=[e.pieces for e in group])
 
     if trip.days <= ONE_PAGE_STAY_DAYS:
         groups: dict[str, list[Evidence]] = {}
@@ -544,7 +616,8 @@ def public_pages(trip: Trip) -> list[Page]:
     for day, group in _group(items, lambda e: e.day):
         blocks.append(Block([e.path for e in group], [public_caption(e) for e in group],
                             title=[korean_date(day) if day else "일자 없음", f"증빙 {len(group)}건", f"일자 합계 {_sum_text(group)}"],
-                            cols=grid_cols(len(group)), fill=True, refs=[e.ref for e in group]))
+                            cols=grid_cols(len(group)), fill=True, refs=[e.ref for e in group],
+                            parts=[e.part for e in group], pieces=[e.pieces for e in group]))
     if len(blocks) > 1:
         blocks.append(Block([], title=["* 실비 합계", f"{len(blocks)}일 · 증빙 {len(items)}건", total]))
     return [Page(["* 교통비 증빙 (대중교통)", f"실비 합계 {total}"], blocks)]
@@ -568,7 +641,8 @@ def car_pages(trip: Trip) -> list[Page]:
         blocks = []
         for day, group in _group(tolls, lambda e: e.day):
             subtotal = sum(e.amount or 0 for e in group)
-            blocks.append(Block([e.path for e in group], parts=[e.part for e in group], refs=[e.ref for e in group],
+            blocks.append(Block([e.path for e in group], parts=[e.part for e in group], pieces=[e.pieces for e in group],
+                                refs=[e.ref for e in group],
                                 title=[korean_date(day) if day else "일자 없음", f"하이패스 {won(subtotal)}"],
                                 cols=grid_cols(len(group))))
         # 이동경로가 아직 없으면(지도 · km 전) 이 머리 줄을 눌러 km · 연료를 고친다 — 미리 보기에서 갈 곳이 있게
@@ -704,8 +778,7 @@ def checks(trip: Trip, root: Path | None = None) -> list[tuple[tuple, str, str]]
     for kind, e in evidence_of(trip):
         fields = unclear(trip, kind, e)
         if fields:
-            part = f" ({e.part + 1}번째 영수증)" if e.part is not None else ""
-            out.append((e.ref, f"{KIND_NAMES[kind]} · {shown_name(e.path, root)}{part}",
+            out.append((e.ref, f"{KIND_NAMES[kind]} · {receipt_name(e, root)}",
                         " / ".join(out_of_period(trip, e) if f == "일자(출장기간 밖)" else UNCLEAR_HINTS.get(f, f) for f in fields)))
     route = route_unclear(trip)
     if route and trip.fuel != NO_CAR:
@@ -732,20 +805,20 @@ def problems(trip: Trip) -> list[str]:
     for kind, items in ((STAY, trip.stay), (PUBLIC, trip.public), (TOLL, trip.tolls), (LODGING, trip.lodging)):
         for e in items:
             if not e.day:
-                out.append(f"{KIND_NAMES[kind]} · {e.path.name}: 일자가 없습니다.")
+                out.append(f"{KIND_NAMES[kind]} · {receipt_name(e)}: 일자가 없습니다.")
             if kind != STAY and e.amount is None:
-                out.append(f"{KIND_NAMES[kind]} · {e.path.name}: 금액이 없습니다.")
+                out.append(f"{KIND_NAMES[kind]} · {receipt_name(e)}: 금액이 없습니다.")
             if kind == STAY and e.shop_region.strip():
                 want = stay_regions(trip, e)
                 if want and region_of(e.shop_region) not in want:
-                    out.append(f"체류 · {e.path.name}: 영수증 가맹점({e.shop_region.strip()})이 출장지({', '.join(want)})와 다른 시 · 군입니다 — "
+                    out.append(f"체류 · {receipt_name(e)}: 영수증 가맹점({e.shop_region.strip()})이 출장지({', '.join(want)})와 다른 시 · 군입니다 — "
                                "출장지 시 · 군 안의 영수증이어야 합니다.")
             if kind == PUBLIC and not e.mode.strip():
-                out.append(f"대중교통 · {e.path.name}: 이동편(열차 · 고속버스 …)이 없습니다.")
+                out.append(f"대중교통 · {receipt_name(e)}: 이동편(열차 · 고속버스 …)이 없습니다.")
             if kind == PUBLIC and not (e.origin.strip() and e.goal.strip()):
-                out.append(f"대중교통 · {e.path.name}: 출발지 · 목적지를 확인해 주세요.")
+                out.append(f"대중교통 · {receipt_name(e)}: 출발지 · 목적지를 확인해 주세요.")
             if kind in (STAY, LODGING) and len(trip.places) > 1 and not trip.place_of(e):
-                out.append(f"{KIND_NAMES[kind]} · {e.path.name}: 어느 출장지인지 고르세요({' · '.join(trip.places)}).")
+                out.append(f"{KIND_NAMES[kind]} · {receipt_name(e)}: 어느 출장지인지 고르세요({' · '.join(trip.places)}).")
     if trip.tolls and trip.fuel == NO_CAR:
         out.append(NO_CAR_WITH_TOLLS)
     elif trip.tolls and not trip.has_route():
@@ -963,12 +1036,13 @@ def dedupe(trip: Trip) -> Trip:
     for kind in (STAY, PUBLIC, LODGING):
         items = getattr(trip, ITEM_ATTR[kind])
         keep: dict[str, Evidence] = {}
-        for e in sorted(items, key=lambda e: (stay_order(e.path.stem) is None, e.path.name)):
-            if e.receipt_key and e.part is None:
+        # 한 파일의 여러 영수증 중 하나(part)도 본다 — 같은 영수증이 따로 든 파일이 있으면 그 파일을 남긴다(그 영수증만 보인다)
+        for e in sorted(items, key=lambda e: (e.part is not None, stay_order(e.path.stem) is None, e.path.name, e.part or 0)):
+            if e.receipt_key:
                 keep.setdefault(e.receipt_key, e)
         out = []
         for e in items:
-            kept = keep.get(e.receipt_key) if e.receipt_key and e.part is None else None
+            kept = keep.get(e.receipt_key) if e.receipt_key else None
             if kept is not None and kept is not e:
                 trip.dropped.append((kind, e, kept))
                 continue
@@ -1032,7 +1106,7 @@ def review(trip: Trip) -> list[str]:
         for kind, e in _all_evidence(trip):
             last = trip.end - timedelta(days=1) if kind == LODGING and trip.end > trip.start else trip.end
             if e.day and not (trip.start <= e.day <= last):
-                out.append(f"{KIND_NAMES[kind]} · {e.path.name}: 출장기간 밖의 날짜({short_date(e.day)})")
+                out.append(f"{KIND_NAMES[kind]} · {receipt_name(e)}: 출장기간 밖의 날짜({short_date(e.day)})")
         nights = sum(e.nights for e in trip.lodging)
         if trip.lodging and nights > max(0, trip.days - 1):
             out.append(f"숙박 {nights}박 — 출장 {trip.days}일(최대 {max(0, trip.days - 1)}박)보다 많습니다")
@@ -1042,8 +1116,8 @@ def review(trip: Trip) -> list[str]:
     if trip.fuel and trip.fuel != NO_CAR and not trip.tolls:
         out.append(f"차량 연료({trip.fuel})를 골랐는데 하이패스 증빙이 없습니다 — 자차는 하이패스 이용내역이 있어야 합니다(동승이면 '해당없음')")
     for kind, gone, kept in trip.dropped:
-        out.append(f"같은 영수증(승인번호 같음)이 두 파일에 있어 한 번만 넣었습니다 — {KIND_NAMES[kind]} · {kept.path.name} "
-                   f"(넣지 않은 것: {gone.path.name})")
+        out.append(f"같은 영수증(승인번호 같음)이 두 파일에 있어 한 번만 넣었습니다 — {KIND_NAMES[kind]} · {receipt_name(kept)} "
+                   f"(넣지 않은 것: {receipt_name(gone)})")
     for day, files in _same_day_stays(trip):
         out.append(f"체류 증빙 {len(files)}건이 같은 날({short_date(day)})입니다 — 같은 영수증을 두 번 넣지 않았는지 보세요"
                    f"(PDF 와 그림으로 하나씩 둔 것 등): {' · '.join(files)}")
@@ -1079,8 +1153,9 @@ def _same_day_stays(trip: Trip) -> list[tuple[date, list[str]]]:
     days: dict = {}
     for e in trip.stay:
         if e.day:
-            days.setdefault(e.day, []).append(e.path.name)
-    return [(day, names) for day, names in sorted(days.items()) if len(names) > 1]
+            days.setdefault(e.day, []).append(e)
+    # 한 파일의 여러 영수증(나눈 줄)끼리는 다른 영수증이다 — 파일이 둘 이상일 때만 알린다
+    return [(day, [receipt_name(e) for e in items]) for day, items in sorted(days.items()) if len({e.path for e in items}) > 1]
 
 
 # 체류 증빙 파일 이름 끝의 차례 번호 — '홍길동_체류 증빙1' · '체류증빙_2' · '체류 증빙(3)'. 담당자 2026-11-16 "체류일자가 여러일자의 경우
@@ -1103,6 +1178,11 @@ def order_day(order: int | None, start: date | None, end: date | None) -> date |
         return None
     day = start + timedelta(days=order - 1)
     return day if end is None or day <= end else None
+
+
+def receipt_name(e: Evidence, root: Path | None = None) -> str:
+    """증빙 하나의 이름 — 한 파일의 여러 영수증 중 하나면 '(2번째 영수증)' 을 붙인다."""
+    return shown_name(e.path, root) + (f" ({e.part + 1}번째 영수증)" if e.part is not None else "")
 
 
 def shown_name(path: Path, root: Path | None = None) -> str:
