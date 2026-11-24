@@ -98,6 +98,7 @@ FRAME_SCAN = 500     # 영수증 테두리를 찾을 때 줄여 볼 폭
 FRAME_INK = 235      # 테두리 선으로 볼 어두움 — 줄이면 1점 선이 옅은 회색이 되므로 넉넉히
 FRAME_MIN_W = 0.12   # 테두리 상자로 볼 최소 크기(쪽 폭 · 높이 비율)
 FRAME_MIN_H = 0.08
+FRAME_TEXT = 0.3     # 상자들 안에 쪽 글(어두운 점)의 이만큼은 있어야 영수증 상자 — 카드 매출전표 표의 칸(테두리 친 흰 칸)은 영수증이 아니다
 
 
 def frames(image: QImage) -> list[tuple[int, int, int, int]]:
@@ -149,6 +150,31 @@ def frames(image: QImage) -> list[tuple[int, int, int, int]]:
     return [(int(x * sx), int(y * sy), int(bw * sx), int(bh * sy)) for x, y, bw, bh in found]
 
 
+def receipt_frames(image: QImage) -> list[tuple[int, int, int, int]]:
+    """영수증 테두리 상자(frames) — 상자들 안에 쪽 글의 FRAME_TEXT 이상이 있을 때만. 하이패스 인쇄는 상자 밖이 인쇄 날짜 · '총 N 건' · 주소
+    몇 줄뿐이지만, 표로 된 영수증(카드 매출전표 — 칸마다 테두리)은 값 칸 몇 개가 상자로 잡히고 이름 칸 · 제목 · 로고는 밖에 남는다
+    (담당자 2026-11-24 우리카드 매출전표 둘이 든 그림 — 승인번호 ~ 가맹점번호 칸만 오려 냈다)."""
+    found = frames(image)
+    if not found:
+        return []
+    small = image.scaledToWidth(min(FRAME_SCAN, image.width()), Qt.SmoothTransformation)
+    flat = QImage(small.size(), QImage.Format_RGB32)
+    flat.fill(QColor("white"))
+    painter = QPainter(flat)
+    painter.drawImage(0, 0, small)
+    painter.end()
+    sx, sy = image.width() / flat.width(), image.height() / flat.height()
+    table = bytes(1 if b < FRAME_INK else 0 for b in range(256))
+    marks = [line.translate(table) for line in _rows(flat)]
+    total = sum(line.count(1) for line in marks)
+    inside = 0
+    for x, y, w, h in found:
+        x0, x1 = int(x / sx), int((x + w) / sx)
+        for line in marks[int(y / sy): int((y + h) / sy)]:
+            inside += line[x0:x1].count(1)
+    return found if total and inside >= FRAME_TEXT * total else []
+
+
 def _boxed(image: QImage) -> QImage:
     """오려 낸 영수증 둘레에 견본처럼 얇은 테두리."""
     out = QImage(image.size(), QImage.Format_RGB32)
@@ -166,7 +192,7 @@ def load_images(path: Path) -> list[QImage]:
     상자 찾기는 PDF 만 — 휴대폰 캡처의 카드 모양 칸을 영수증으로 잘못 오리지 않게."""
     out = []
     for image in _load(path):
-        boxes = frames(image) if path.suffix.lower() == ".pdf" else []
+        boxes = receipt_frames(image) if path.suffix.lower() == ".pdf" else []
         out += [_boxed(image.copy(*box)) for box in boxes] if boxes else [trim(image)]
     return out
 
@@ -179,7 +205,7 @@ def receipt_images(path: Path) -> list[QImage]:
         return load_images(path)
     out = []
     for image in _load(path):
-        boxes = frames(image)
+        boxes = receipt_frames(image)
         out += [_boxed(image.copy(*box)) for box in boxes] if boxes else [trim(image)]
     return out
 
@@ -338,7 +364,7 @@ def receipt_pieces(path: Path, n: int) -> list[QImage]:
     pages = _load(path)
     boxed = []
     for image in pages:
-        found = frames(image)
+        found = receipt_frames(image)
         boxed += [_boxed(image.copy(*box)) for box in found] if found else [trim(image)]
     if len(boxed) == n:
         return boxed

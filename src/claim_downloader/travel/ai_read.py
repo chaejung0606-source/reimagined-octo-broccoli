@@ -36,7 +36,8 @@ from . import model
 TIMEOUT_SEC = 900
 CACHE_NAME = "_출장AI읽기.json"
 CACHE_LIMIT = 600
-READ_V = 2                   # 2: 여러 장이면 보이는 차례로(하이패스 영수증 상자와 짝지으려고, 2026-11-16) — 그 전에 읽은 여러 장 파일은 다시 읽는다
+READ_V = 3                   # 3: 한 그림에 나란히 든 매출전표도 한 장씩(2026-11-24) — 그 전에 한 장으로 읽은 그림이 둘로 오려지면 다시 읽는다(older)
+ORDER_V = 2                  # 2: 여러 장이면 보이는 차례로(하이패스 영수증 상자와 짝지으려고, 2026-11-16) — 그 전에 읽은 여러 장 파일은 다시 읽는다
 BATCH = 6                    # 한 번에 읽힐 파일 수 — 많으면 한 번 실패에 다 잃고, 적으면 CLI 를 띄우는 데 시간이 든다
 MODES = ("열차", "고속버스", "시외버스", "시내버스", "택시", "지하철", "항공")
 KIND_TEXT = {model.STAY: "체류 영수증(출장지에 머문 증빙 — 카드 승인전표 · 결제 화면 · 영수증)",
@@ -92,9 +93,15 @@ def lookup(path) -> dict | None:
     data = entry.get("data")
     if not isinstance(data, dict):
         return None
-    if entry.get("v", 1) < READ_V and len(data.get("receipts") or []) > 1:
+    if entry.get("v", 1) < ORDER_V and len(data.get("receipts") or []) > 1:
         return None                                   # 영수증 차례를 정하지 않고 읽은 것 — 상자와 짝지을 수 없다
     return data
+
+
+def older(path, version: int = READ_V) -> bool:
+    """그 파일을 version 전의 판으로 읽었는가(파일이 그대로일 때만) — 화면이 다시 읽힐지 정한다."""
+    entry = _load().get(file_key(path))
+    return isinstance(entry, dict) and entry.get("sig") == signature(path) and entry.get("v", 1) < version
 
 
 def remember(results: dict) -> None:
@@ -123,6 +130,7 @@ def build_prompt(files: list[tuple[str, str]], json_path: str) -> str:
         "}\n"
         "[규칙]\n"
         "- 파일마다 그 안에 보이는 영수증 · 승차권 · 이용 내역을 receipts 에 하나씩 담으세요. 같은 결제를 두 번 담지 마세요. 영수증이 없으면 [] 입니다.\n"
+        "- 한 그림 · 한 쪽에 영수증 · 매출전표 · 승차권이 나란히(또는 위아래로) 여러 장 있으면 한 장씩 따로 담으세요 — 일자가 다르면 꼭 따로입니다.\n"
         "- 한 파일에 영수증이 여럿이면 보이는 차례로 담으세요 — 위에서 아래로, 같은 줄은 왼쪽에서 오른쪽으로(PDF 는 쪽 차례). 날짜 · 금액 차례로 바꾸지 마세요.\n"
         "- date 는 실제로 이용한 날입니다 — 승차권은 승차(출발)일, 체류 · 하이패스는 거래 · 이용일, 숙박은 입실일. 예매 · 승인 · 발행 · 인쇄일이 아닙니다.\n"
         "- amount 는 실제로 결제한 금액(원, 숫자만)입니다. 할인 전 운임 · 부가세 · 공급가가 아닙니다.\n"

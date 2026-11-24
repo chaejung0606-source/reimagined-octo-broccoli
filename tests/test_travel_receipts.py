@@ -263,3 +263,186 @@ def test_stay_file_with_two_receipts_is_split_with_their_shop_regions(qapp, tmp_
     block = model.stay_pages(trip)[0].blocks[0]
     assert block.parts == [0, 1] and block.pieces == [2, 2]
     assert block.captions == ["2026년 10월 28일 수요일", "2026년 10월 29일 목요일"]
+
+
+def _slips(path: Path, slips: list[list[tuple[str, str]]], marks: tuple = ()) -> Path:
+    """카드 매출전표를 본뜬 그림(담당자 2026-11-24 우리카드 매출전표 둘) — 위에 두 장에 걸친 로고 · 출력 시각 줄과 밑줄, 장마다 제목 ·
+    칸마다 테두리 친 표(이름 칸은 옅은 파랑) · 양옆에 동그라미(연속 용지 구멍). 값은 지어낸 것."""
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+    cw, gap, top, row = 330, 70, 90, 30
+    w = 40 + cw * len(slips) + gap * (len(slips) - 1)
+    h = top + 60 + row * max(len(s) for s in slips) + 30
+    image = QImage(w, h, QImage.Format_RGB32)
+    image.fill(QColor("white"))
+    p = QPainter(image)
+    p.setFont(QFont("Sans", 13, QFont.Bold))
+    p.setPen(QColor("#1d4f9a"))
+    p.drawText(30, 40, "가나카드")
+    p.setFont(QFont("Sans", 10))
+    p.setPen(QColor("#333333"))
+    p.drawText(w - 200, 40, "2026.11.11 20:00:43")
+    p.setPen(QPen(QColor("#999999"), 1))
+    p.drawLine(20, 55, w - 20, 55)
+    for i, lines in enumerate(slips):
+        x = 20 + i * (cw + gap)
+        p.setPen(QPen(QColor("#dddddd"), 1))
+        for y in range(top - 20, h - 20, 18):                 # 양옆 구멍
+            p.drawEllipse(x - 12, y, 9, 9)
+            p.drawEllipse(x + cw + 3, y, 9, 9)
+        p.setPen(QColor("#1d4f9a"))
+        p.setFont(QFont("Sans", 11, QFont.Bold))
+        p.drawText(x + 90, top, "가나카드 매출전표")
+        p.setFont(QFont("Sans", 9))
+        for j, (label, value) in enumerate(lines):
+            y = top + 20 + j * row
+            p.fillRect(QRect(x + 20, y, 80, row), QColor("#eef2fa"))
+            p.setPen(QPen(QColor("#b8c4dd"), 1))
+            p.drawRect(x + 20, y, 80, row)
+            p.drawRect(x + 100, y, cw - 120, row)
+            p.setPen(QColor("#222222"))
+            p.drawText(x + 26, y + 20, label)
+            p.drawText(x + 106, y + 20, value)
+        if i in marks:
+            p.fillRect(QRect(x + cw - 70, top + 20 + 4 * row + 5, 20, 20), QColor("red"))
+    p.end()
+    image.save(str(path))
+    return path
+
+
+SLIP_A = [("카드종류", ""), ("카드번호", "1234-****-****-5678"), ("거래일시", "2026/11/04 12:32:52"), ("결제방법", "체크계좌"),
+          ("거래금액", "19,000 원"), ("부 가 세", "1,727 원"), ("봉 사 료", "0 원"), ("승인번호", "11112222"), ("가맹점명", "가나식당"),
+          ("가맹점주소", "서울 가나구 가나로 1"), ("가맹점번호", "123456789"), ("사업자번호", "123-45-67890"), ("연 락 처", "02 000 0000")]
+SLIP_B = [(a, b.replace("2026/11/04 12:32:52", "2026/11/03 12:37:14").replace("19,000", "24,000").replace("11112222", "33334444")
+           .replace("가나식당", "다라식당")) for a, b in SLIP_A]
+
+
+def test_card_slips_in_tables_are_cut_per_slip_not_per_table_cell(qapp, tmp_path):
+    """담당자 2026-11-24: 매출전표 둘(11월 4일 · 3일)이 나란히 든 그림 — 표의 칸마다 테두리가 있어 하이패스 영수증 상자(frames)로 값 칸 몇 개만
+    오려 냈다(승인번호 ~ 가맹점번호). 상자 안에 글이 적으면 영수증 상자가 아니다 — 영수증 사이의 빈 띠로 장마다 오린다."""
+    from claim_downloader.travel import render
+    path = _slips(tmp_path / "매출전표 둘.png", [SLIP_A, SLIP_B], marks=(1,))
+    image = render._load(path)[0]
+    assert render.frames(image) and render.receipt_frames(image) == []
+    pieces = render.receipt_pieces(path, 2)
+    assert len(pieces) == 2 and _reds(pieces[0]) == 0 and _reds(pieces[1]) > 0
+    assert all(0.35 * image.width() < piece.width() < 0.6 * image.width() and piece.height() > 0.75 * image.height() for piece in pieces)
+
+
+def test_hipass_print_boxes_are_still_receipt_frames(qapp, tmp_path):
+    """하이패스 인쇄(상자 밖은 인쇄 시각 · '총 N 건' · 주소 몇 줄)는 그대로 상자마다 — 한 장 · 두 장."""
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+
+    from claim_downloader.travel import render
+    for n in (1, 2):
+        image = QImage(1240, 1754, QImage.Format_RGB32)
+        image.fill(QColor("white"))
+        p = QPainter(image)
+        p.setFont(QFont("Sans", 12))
+        p.drawText(60, 60, "2026. 10. 30. 오후 3:12   하이패스 영수증 출력")
+        p.setPen(QPen(QColor("black"), 2))
+        for i in range(n):
+            x = 60 + i * 270
+            p.drawRect(x, 200, 270, 360)
+            for j, line in enumerate(["하이패스는", "영수증", "가나도로공사 가나영업소", "2026년10월30일 14시57분", "입구영업소 : 다라", "1 종  12,800원(카드)"]):
+                p.drawText(x + 20, 240 + j * 40, line)
+        p.drawText(60, 640, f"총 {n} 건 / 12,800 원")
+        p.drawText(60, 690, "가나도 가나시 가나로 123 가나도로공사")
+        p.end()
+        assert len(render.receipt_frames(image)) == n
+
+
+def test_picture_with_filled_cells_is_still_read_and_split(qapp, tmp_path, isolated_home, monkeypatch):
+    """파일 이름의 차례 번호(일자) · 지역(가맹점 지역)으로 칸이 다 찬 그림도 AI 가 한 번 본다 — 한 장에 두 날의 매출전표가 있으면 날마다 줄.
+    전에는 빈 칸이 없어 AI 에 맡기지 않아 두 장이 첫날 한 칸으로 들어갔다(담당자 2026-11-24 '체류 증빙이 없는 날: 11월 4일')."""
+    import time
+
+    from claim_downloader.travel import ai_read
+    from claim_downloader.ui.pages import travel as travel_page
+    from test_travel_people import FakeWorker
+    folder = tmp_path / "출장비 지급(26.11.03-04. 서울)"
+    folder.mkdir()
+    (folder / "국내 출장신청서.txt").write_text(
+        "출장자 연구원 홍길동\n출장기간 2026. 11. 3.(화) ~ 2026. 11. 4.(수)\n출장지 서울 가나협회\n", encoding="utf-8")
+    path = _slips(folder / "홍길동_서울 체류 증빙1.png", [SLIP_A, SLIP_B], marks=(1,))
+    assert model.guess(path, 2026, stay=True).scanned and not model.guess(path, 2026).several
+    read = _read(("2026-11-04", 19000, "", "", "", "서울 가나구 가나로 1", "11112222"),
+                 ("2026-11-03", 24000, "", "", "", "서울 가나구 가나로 1", "33334444"))
+    calls = []
+    qapp.processEvents()
+
+    def fake_read(files):
+        files = [(p, k) for p, k in files if Path(p).is_relative_to(folder)]
+        calls.extend(Path(p).name for p, _ in files)
+        return {p: read for p, _ in files}
+    monkeypatch.setattr(ai_read, "find_claude", lambda: "claude")
+    monkeypatch.setattr(ai_read, "read", fake_read)
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.show()
+    page.load_folder(str(folder))
+    page._go("files")
+    stay = page.tables[model.STAY]
+    for _ in range(200):
+        qapp.processEvents()
+        if calls and not page._ai_running:
+            break
+        time.sleep(0.02)
+    qapp.processEvents()
+    assert calls == ["홍길동_서울 체류 증빙1.png"]
+    assert [(stay.item(r, 1).text(), stay.parts[r]) for r in range(stay.rowCount())] == [("2026-11-04", 0), ("2026-11-03", 1)]
+    trip = page.trips()[0]
+    assert not any("체류 증빙이 없는 날" in n for n in model.review(trip))
+    block = model.stay_pages(trip)[0].blocks[0]
+    assert block.captions == ["2026년 11월 3일 화요일", "2026년 11월 4일 수요일"]
+    from claim_downloader.travel import render
+    cells = render._cells(block, {}, {})
+    assert len(cells) == 2 and _reds(cells[0].image) > 0 and _reds(cells[1].image) == 0     # 11월 3일 칸에는 오른쪽(둘째) 전표만
+    # 다시 열면 캐시로 — 다시 읽지 않는다
+    page._reload(str(folder))
+    for _ in range(5):
+        qapp.processEvents()
+    assert calls == ["홍길동_서울 체류 증빙1.png"] and stay.rowCount() == 2
+
+
+def test_single_read_of_a_two_slip_picture_by_an_older_version_is_read_again_once(qapp, tmp_path, isolated_home, monkeypatch):
+    """전 판의 AI 가 한 장으로 읽어 둔(캐시) 그림이 영수증 둘로 오려지면 한 번 다시 읽는다 — 새 판으로 읽은 것은 다시 읽지 않는다."""
+    import json
+
+    from claim_downloader.travel import ai_read
+    from claim_downloader.ui.pages import travel as travel_page
+    two = _slips(tmp_path / "홍길동_체류 증빙.png", [SLIP_A, SLIP_B])
+    one = _slips(tmp_path / "홍길동_체류 증빙2.png", [SLIP_A])
+    single = _read(("2026-11-03", 24000, "", "", "", "서울 가나구 가나로 1", "33334444"))
+    ai_read.remember({str(two): single, str(one): single})
+    data = json.loads(ai_read.cache_path().read_text(encoding="utf-8"))
+    for entry in data["items"].values():
+        entry["v"] = 2
+    ai_read.cache_path().write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    table = travel_page.EvidenceTable(model.STAY)
+    table.add_files([two, one], 2026)
+    assert table.one_of_two(two, single) and not table.one_of_two(one, single)
+    ai_read.remember({str(two): single})                        # 새 판으로 다시 읽었는데도 한 장이면 그대로
+    assert not table.one_of_two(two, single)
+    assert "나란히(또는 위아래로) 여러 장" in ai_read.build_prompt([(str(two), model.STAY)], "x.json")
+
+
+def test_a_slip_whose_date_the_ai_could_not_read_gets_its_own_row(qapp, tmp_path):
+    """AI 가 두 장 중 하나의 일자를 못 읽어도 줄은 나눈다 — 그 줄은 일자 칸이 비어 '확인 필요'(파일 이름의 차례 번호로 첫날을 적지 않는다).
+    전에는 한 줄로 두고 읽은 날 하나만 적어 다른 날의 영수증이 숨었다."""
+    from claim_downloader.travel import ai_read
+    from claim_downloader.ui.pages import travel as travel_page
+    path = _slips(tmp_path / "홍길동_체류 증빙1.png", [SLIP_A, SLIP_B])
+    table = travel_page.EvidenceTable(model.STAY)
+    table.period_of = lambda person: (date(2026, 11, 3), date(2026, 11, 4))
+    table.add_files([path], 2026)
+    assert table.apply_orders() == 1 and table.item(0, 1).text() == "2026-11-03"     # 차례 번호 1 → 첫날(앱이 적은 일자)
+    notes = []
+    table.note = notes.append
+    found = ai_read.summary(model.STAY, _read(("", 19000, "", "", "", "서울 가나구 가나로 1", "11112222"),
+                                              ("2026-11-03", 24000, "", "", "", "서울 가나구 가나로 1", "33334444")))
+    table.apply_ai(path, found)
+    table.apply_orders()
+    assert [(table.item(r, 1).text(), table.parts[r]) for r in range(2)] == [("", 0), ("2026-11-03", 1)]
+    assert notes and "2줄로 나눴습니다" in notes[0] and "일자를 못 읽은 영수증 1장" in notes[0] and "11112222" not in notes[0]
+    trip = model.Trip(name="홍길동", start=date(2026, 11, 3), end=date(2026, 11, 4), destination="서울 가나협회", stay=table.evidence(2026))
+    assert model.unclear(trip, model.STAY, trip.stay[0])

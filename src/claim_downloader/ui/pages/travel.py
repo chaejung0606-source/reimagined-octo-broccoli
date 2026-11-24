@@ -177,6 +177,7 @@ class EvidenceTable(QTableWidget):
         self.parts: list[int | None] = []          # 줄마다 파일의 몇 번째 영수증인지(하이패스 '총 N 건' 인쇄 · 승차권 둘이 든 파일을 영수증마다 한 줄로)
         self.pieces: list[int] = []                # 줄마다 그 파일에 든 영수증 수 — 그림을 영수증마다 오린다(render.receipt_pieces)
         self.several: list[bool] = []              # 글자로 보아 영수증이 여럿인데 아직 못 나눈 줄 — AI 로 읽어 나눈다
+        self.scanned: list[bool] = []              # 글자 없는 그림 · 스캔 영수증 줄 — 칸이 파일 이름으로 다 찼어도 AI 가 한 번 본다(영수증이 여럿이면 나눈다)
         self.orders: list[int | None] = []         # 체류 증빙 파일 이름 끝의 차례 번호('체류 증빙2' → 2) — 일자를 못 읽었을 때 출장 N일째로
         self.keys: list[str] = []                  # 줄마다 영수증 승인번호(같은 영수증이 두 파일에 있으면 한 번만 — model.dedupe)
         self.ai_rows: list[bool] = []              # 줄마다 AI(Claude Code)가 그림 · 스캔 영수증에서 읽은 값이 들었는지
@@ -185,6 +186,7 @@ class EvidenceTable(QTableWidget):
         self.people = lambda: []                   # 화면이 출장자 목록으로 바꿔 끼운다 — 파일 이름 맨 앞의 이름으로 출장자를 짐작
         self.root = lambda: None                   # 출장 폴더 — 위 폴더 이름으로 짐작할 때 그 아래만(윈도우 사용자 폴더 이름이 출장자가 되지 않게)
         self.period_of = lambda person: (None, None)   # 화면이 그 출장자 그룹의 (시작일, 끝날)로 바꿔 끼운다 — 차례 번호를 일자로
+        self.note = lambda text: None              # 화면이 기록(이름을 가리는 log)으로 바꿔 끼운다 — 영수증을 나눴는지 · 왜 안 나눴는지
         self.setHorizontalHeaderLabels(COLUMNS[kind])
         self.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         for col in range(1, self.columnCount()):
@@ -277,7 +279,9 @@ class EvidenceTable(QTableWidget):
         self.parts.append(ev.part)
         self.pieces.append(ev.pieces if ev.part is not None else 0)
         self.several.append(ev.several and ev.part is None)
-        self.orders.append(model.stay_order(path.stem) if self.kind == model.STAY and ev.day is None else None)
+        self.scanned.append(ev.scanned and ev.part is None and self.kind in self.SPLIT_KINDS)
+        # 파일 이름의 차례 번호는 그 파일(한 날)의 것 — 영수증마다 나눈 줄(part)에는 쓰지 않는다(일자를 못 읽은 영수증이 첫날로 숨지 않게)
+        self.orders.append(model.stay_order(path.stem) if self.kind == model.STAY and ev.day is None and ev.part is None else None)
         self.keys.append(ev.receipt_key)
         self.ai_rows.append(False)
         row = self.rowCount()
@@ -334,6 +338,7 @@ class EvidenceTable(QTableWidget):
         self.parts.clear()
         self.pieces.clear()
         self.several.clear()
+        self.scanned.clear()
         self.orders.clear()
         self.keys.clear()
         self.ai_rows.clear()
@@ -358,7 +363,7 @@ class EvidenceTable(QTableWidget):
 
     def _drop(self, row: int) -> None:
         self.removeRow(row)
-        for column in (self.paths, self.parts, self.pieces, self.several, self.orders, self.keys, self.ai_rows):
+        for column in (self.paths, self.parts, self.pieces, self.several, self.scanned, self.orders, self.keys, self.ai_rows):
             del column[row]
 
     # 항목마다 AI 로 채울 칸(칸 번호 → 읽은 값의 이름) — 비어 있는 칸만 채운다
@@ -370,7 +375,9 @@ class EvidenceTable(QTableWidget):
     }
 
     def ai_wanted(self) -> list[Path]:
-        """AI 로 읽을 파일 — 꼭 있어야 할 칸이 빈 줄 · 글자로 보아 영수증이 여럿인 줄(영수증마다 나누게). 영수증 한 장 줄(나눈 줄)은 이미 읽음."""
+        """AI 로 읽을 파일 — 꼭 있어야 할 칸이 빈 줄 · 글자로 보아 영수증이 여럿인 줄 · 글자 없는 그림 · 스캔 영수증 줄(영수증이 몇 장인지
+        앱이 모른다 — 파일 이름의 차례 번호 · 지역으로 칸이 다 차도 한 장에 두 날의 영수증이 들어 있을 수 있다, 담당자 2026-11-24).
+        영수증 한 장 줄(나눈 줄)은 이미 읽음."""
         cells = self.AI_CELLS.get(self.kind)
         if not cells:
             return []
@@ -379,14 +386,30 @@ class EvidenceTable(QTableWidget):
             if self.parts[row] is not None or path in out:
                 continue
             cols = [c for c in cells if c != 3 or self.kind != model.LODGING]     # 박 수는 기본 1 이 들어 있다
-            if self.several[row] or any(not (self.item(row, c).text().strip() if self.item(row, c) else "") for c in cols):
+            if self.several[row] or self.scanned[row] or any(not (self.item(row, c).text().strip() if self.item(row, c) else "") for c in cols):
                 out.append(path)
         return out
+
+    def one_of_two(self, path: Path, cached: dict) -> bool:
+        """전 판(ai_read.READ_V 전)의 AI 가 영수증 한 장으로 읽은 그림 · 스캔 영수증인데 그림은 영수증 둘로 오려지는가 — 다시 읽을지
+        (담당자 2026-11-24 우리카드 매출전표 둘(11월 3일 · 4일)이 나란히 든 그림이 한 날로만 들어갔다). 체류 · 대중교통만."""
+        if self.kind not in (model.STAY, model.PUBLIC) or len(cached.get("receipts") or []) != 1:
+            return False
+        if not any(own == path and self.scanned[row] for row, own in enumerate(self.paths)) or not ai_read.older(path):
+            return False
+        try:
+            from ...travel import render
+            return len(render.receipt_pieces(path, 2)) == 2
+        except Exception:  # noqa: BLE001
+            return False
 
     def apply_ai(self, path: Path, found: dict) -> int:
         """AI 가 읽은 값(ai_read.summary)으로 그 파일 줄의 빈 칸만 채운다 — 파일 이름 · PDF 글자 · 차례 번호 · 사람이 적은 값이 먼저.
         채운 칸 수."""
         cells = self.AI_CELLS.get(self.kind, {})
+        for row, own in enumerate(self.paths):
+            if own == path:
+                self.scanned[row] = False              # AI 가 봤다 — 한 장이었으면 그대로 두고 다시 맡기지 않는다
         if not found or not cells:
             return 0
         split = self._split_receipts(path, found)
@@ -420,6 +443,8 @@ class EvidenceTable(QTableWidget):
                 if not text or item.text().strip() == text:
                     continue
                 item.setText(text)
+                if key == "date":
+                    item.setData(AUTO_ROLE, text)       # 앱(AI)이 적은 일자 — 나중에 영수증마다 나눌 때 사람이 적은 것으로 보지 않게
                 days = found.get("days") or []
                 if key == "date" and len(days) > 1:
                     item.setToolTip(f"영수증에서 AI(Claude Code)가 읽은 값 — 한 파일에 이용일자가 여럿({' · '.join(days)})이라 첫 날로 적었습니다. "
@@ -440,26 +465,34 @@ class EvidenceTable(QTableWidget):
     def _split_receipts(self, path: Path, found: dict) -> int:
         """영수증 여러 장이 든 파일을 AI 가 읽었으면 영수증마다 한 줄로 나눈다 — 일자 · 금액 · 이동편 · 출발지 · 목적지 · 가맹점 지역도 영수증마다.
         담당자 2026-11-16(하이패스 10월 29일 · 30일 영수증이 한 그림에) · 2026-11-23(KTX 영수증 10월 28일 · 29일이 한 파일에 — "교통비나 체류 증빙
-        영수증을 일자별로 구분해주세요. 제가 일자별로 영수증을 구분해서 알려주지 않아도"). 영수증마다 일자가 있고, 그 파일 줄의 일자를 사람이
+        영수증을 일자별로 구분해주세요. 제가 일자별로 영수증을 구분해서 알려주지 않아도"). 그 파일 줄의 일자를 사람이
         적지 않았을 때만(앱이 짐작한 일자는 바꾼다). 줄 i 는 AI 가 보이는 차례로 읽은 i 번째 영수증 — 그림도 그 차례로 오린다(render.receipt_pieces).
-        그림을 못 오리면 그 줄들에는 파일 전체가 들어간다 — 그래서 같은 날 영수증끼리인데 못 오리면 나누지 않는다(같은 그림을 두 번 넣지 않게).
-        채운 칸 수(못 나누면 0)."""
+        그림을 못 오리면 그 줄들에는 파일 전체가 들어간다 — 그래서 같은 날(일자 모름) 영수증끼리인데 못 오리면 나누지 않는다(같은 그림을 두 번 넣지 않게).
+        AI 가 일자를 못 읽은 영수증도 줄은 나눈다 — 그 줄의 일자 칸이 '확인 필요' 로 칠해진다(전에는 하나라도 일자가 없으면 한 줄로 두고
+        읽은 날 하나만 적어 다른 날의 영수증이 숨었다). 나눴는지 · 왜 안 나눴는지는 기록에(값 없이). 채운 칸 수(못 나누면 0)."""
         receipts = found.get("receipts") or []
-        if self.kind not in self.SPLIT_KINDS or len(receipts) < 2 or not all(r.get("date") for r in receipts):
+        if self.kind not in self.SPLIT_KINDS or len(receipts) < 2:
             return 0
         rows = [row for row, own in enumerate(self.paths) if own == path]
         if len(rows) != 1 or self.parts[rows[0]] is not None:
             return 0
         row = rows[0]
+        label = model.shown_name(path, self.root())
+
+        def say(text: str) -> None:
+            self.note(f"출장 AI 읽기 — {model.KIND_NAMES.get(self.kind, self.kind)} '{label}' 영수증 {len(receipts)}장: {text}")
         day = self.item(row, 1)
         if day is not None and day.text().strip() and day.text().strip() != (day.data(AUTO_ROLE) or ""):
-            return 0                                   # 사람이 적은 일자
+            say("일자를 직접 적은 줄이라 나누지 않았습니다")
+            return 0
         try:
             from ...travel import render
             cut = len(render.receipt_pieces(path, len(receipts))) == len(receipts)
         except Exception:  # noqa: BLE001 — 그림을 못 읽으면 오리지 않는다(줄은 나눌 수 있다)
             cut = False
-        if not cut and len({r["date"] for r in receipts}) < 2:
+        dates = {r["date"] for r in receipts if r.get("date")}
+        if not cut and len(dates) < 2:
+            say("같은 날(또는 일자를 모르는) 영수증인데 그림을 영수증마다 오리지 못해 한 줄로 두었습니다")
             return 0
         cell = lambda col: (self.item(row, col).text() if self.item(row, col) is not None else "")  # noqa: E731
         person, place = cell(self.person_col), cell(PLACE_COL[self.kind]) if self.kind in PLACE_COL else ""
@@ -471,7 +504,7 @@ class EvidenceTable(QTableWidget):
         whole = "" if cut else " — 그림을 영수증마다 오리지 못해 이 줄에는 파일 전체가 들어갑니다(영수증마다 파일을 나누면 그 영수증만)"
         for i, receipt in enumerate(receipts):
             self._add_row(model.Evidence(
-                path=path, day=model.guess_day(receipt["date"], date.today().year),
+                path=path, day=model.guess_day(receipt["date"], date.today().year) if receipt.get("date") else None,
                 amount=receipt.get("amount") if self.kind != model.STAY else None, part=i, pieces=len(receipts),
                 origin=receipt.get("origin", "") if self.kind == model.PUBLIC else "", goal=receipt.get("goal", "") if self.kind == model.PUBLIC else "",
                 shop_region=model.region_of(receipt.get("address", "")) if self.kind == model.STAY else "",
@@ -496,6 +529,9 @@ class EvidenceTable(QTableWidget):
                     item.setToolTip(tip)
                     count += 1
         self.blockSignals(False)
+        undated = sum(1 for r in receipts if not r.get("date"))
+        say(f"{len(receipts)}줄로 나눴습니다 — 일자 {len(dates)}개" + (f" · 일자를 못 읽은 영수증 {undated}장" if undated else "")
+            + (" · 그림은 영수증마다 오림" if cut else " · 그림을 못 오려 줄마다 파일 전체"))
         self.mark_unclear()
         self.changed.emit()
         return count
@@ -1267,6 +1303,7 @@ class TravelPage(QWidget):
             table.people = self._all_people
             table.root = self._root
             table.period_of = self._period_of
+            table.note = self.log
             self.tables[kind] = table
             holder.addWidget(table)
         step.add(self._build_route())
@@ -1941,10 +1978,12 @@ class TravelPage(QWidget):
         for kind, table in self.tables.items():
             for path in table.ai_wanted():
                 cached = ai_read.lookup(path)
+                mark = (ai_read.file_key(path), ai_read.signature(path))
+                if cached is not None and mark not in self._ai_tried and ai_read.available() and table.one_of_two(path, cached):
+                    cached = None                       # 전 판이 한 장으로 읽은 그림인데 영수증 둘로 오려진다 — 다시 읽는다(한 번)
                 if cached is not None:
                     filled += table.apply_ai(path, ai_read.summary(kind, cached))
                     continue
-                mark = (ai_read.file_key(path), ai_read.signature(path))
                 if mark not in self._ai_tried:
                     wanted.append((str(path), kind))
         if filled:

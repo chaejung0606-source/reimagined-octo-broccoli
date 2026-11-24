@@ -53,6 +53,7 @@ class Evidence:
     part: int | None = None # 영수증 여러 장이 든 파일(하이패스 '총 N 건' · 승차권 둘) 중 몇 번째 영수증인지 — 없으면 파일 전체
     pieces: int = 0         # 그 파일에 든 영수증 수(part 가 있을 때) — 그림을 영수증마다 오릴 때(render.receipt_pieces). 0 이면 옛 줄(상자 수 그대로)
     several: bool = False   # 글자로 보아 영수증이 여럿(이용일이 둘 이상)인데 아직 나누지 못한 파일 — AI 로 읽어 영수증마다 줄로 나눈다
+    scanned: bool = False   # 글자가 없는 그림 · 스캔 영수증 — 앱은 영수증이 몇 장인지 모른다. 칸이 파일 이름으로 다 찼어도 AI 가 한 번 본다(여럿이면 나눈다)
     person: str = ""        # 출장자가 여럿일 때 누구 증빙인지 — SHARED('공통')면 모두의 출장증빙에 넣는다
     origin: str = ""        # 대중교통 증빙(승차권 하나)의 출발지 — 담당자 2026-11-10 "증빙별로 출발지와 목적지 및 금액 작성"
     goal: str = ""          # 대중교통 증빙의 목적지
@@ -371,6 +372,9 @@ def pdf_text(path: Path, pages: int = 2) -> str:
         return ""
 
 
+SCANNED_CHARS = 40    # PDF 글자(띄어쓰기 빼고)가 이보다 적으면 영수증이 그림으로 든 PDF — 제목 한 줄뿐인 KTX 영수증 PDF(2026-11-16)
+
+
 def guess(path: Path, year: int, route: bool = False, stay: bool = False) -> Evidence:
     """파일 이름 → (PDF 면) 글자 차례로 일자 · 금액을 짐작한다. 그림 영수증은 이름에 적힌 것만 — 화면에서 고친다.
     route 면(대중교통) 출발지 · 목적지도 — 파일 이름 '…_춘천-서울_…' · '춘천→서울', 승차권 글자의 '출발 … 도착 …'.
@@ -381,8 +385,10 @@ def guess(path: Path, year: int, route: bool = False, stay: bool = False) -> Evi
     shop = region_of(stem) if stay else ""
     key = ""
     several = False
+    scanned = path.suffix.lower() != ".pdf"
     if path.suffix.lower() == ".pdf":
         text = pdf_text(path)
+        scanned = len(re.sub(r"\s", "", text)) < SCANNED_CHARS
         days = receipt_days(text, route)
         # 체류 · 대중교통은 이용일이 둘 이상이면 영수증이 여럿 — 일자 · 금액 · 경로를 하나로 고르지 않는다(맨 위 날짜 · 가장 큰 금액이 한 영수증 것뿐이었다).
         # 빈 칸이라 AI 가 읽고 영수증마다 줄로 나눈다(ui/pages/travel.py — EvidenceTable._split_receipts). 숙박 · 하이패스는 첫 날(입실일)
@@ -396,7 +402,8 @@ def guess(path: Path, year: int, route: bool = False, stay: bool = False) -> Evi
             key = approval_of(text)
         if stay and not shop and not several:
             shop = shop_region_of(text)
-    return Evidence(path=path, day=day, amount=amount, origin=origin, goal=goal, shop_region=shop, receipt_key=key, several=several)
+    return Evidence(path=path, day=day, amount=amount, origin=origin, goal=goal, shop_region=shop, receipt_key=key, several=several,
+                    scanned=scanned)
 
 
 def page_receipts(path: Path, route: bool = False, stay: bool = False, limit: int = 20) -> list[Evidence]:
