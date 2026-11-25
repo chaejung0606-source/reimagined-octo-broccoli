@@ -11,6 +11,7 @@ from claim_downloader.travel.model import Evidence, Trip
 import pytest
 
 from test_travel_people import GONGMUN, FakeWorker, _image
+from test_travel_receipts import _read
 
 
 @pytest.fixture(scope="module")
@@ -148,3 +149,33 @@ def test_making_with_a_route_still_on_the_naver_window_asks_first(qapp, tmp_path
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a[2]) or QMessageBox.No)
     page._make()
     assert asked and "아직 찍지 않은 구간" in asked[0] and not list(folder.glob("*출장증빙*.pdf"))
+
+
+def test_a_one_day_trip_fills_undated_receipts_with_the_trip_day(qapp, tmp_path):
+    """하루 출장이면 날짜를 못 읽은 체류 · 대중교통 · 하이패스 증빙의 일자는 출장일 — 그림 영수증마다 같은 날을 적게 하지 않는다.
+    AI 가 영수증에서 날짜를 읽으면 그 값이 먼저이고(출장기간 밖이면 칠해지게), 기간이 늘면 앱이 적은 일자를 지운다. 사람이 적은 일자는 그대로."""
+    from claim_downloader.travel import ai_read
+    from claim_downloader.ui.pages import travel as travel_page
+    period = {"v": (date(2026, 10, 20), date(2026, 10, 20))}
+    table = travel_page.EvidenceTable(model.TOLL)
+    table.period_of = lambda person: period["v"]
+    files = [_image(tmp_path / "홍길동_하이패스 증빙 4,100원.png"), _image(tmp_path / "홍길동_하이패스 증빙2.png")]
+    table.add_files(files, 2026)
+    assert table.ai_wanted() == files                       # 일자가 비었다 — AI 로 읽는다
+    assert table.apply_orders() == 2 and [table.item(r, 1).text() for r in range(2)] == ["2026-10-20"] * 2
+    assert table.ai_wanted() == files                       # 출장일로 적은 일자는 AI 가 읽은 일자로 바꿀 자리
+    table.apply_ai(files[1], ai_read.summary(model.TOLL, _read(("2026-10-19", 3000, "", "", "", "", ""))))
+    assert table.item(1, 1).text() == "2026-10-19"         # 영수증의 날짜가 먼저(출장기간 밖으로 칠해진다)
+    table.item(0, 1).setText("2026-10-21")                   # 사람이 고친 일자
+    period["v"] = (date(2026, 10, 20), date(2026, 10, 21))
+    table.apply_orders()
+    assert [table.item(r, 1).text() for r in range(2)] == ["2026-10-21", "2026-10-19"]
+    other = travel_page.EvidenceTable(model.PUBLIC)
+    other.period_of = lambda person: period["v"]
+    other.add_files([_image(tmp_path / "홍길동_대중교통 증빙.png")], 2026)
+    assert other.apply_orders() == 0 and other.item(0, 1).text() == ""     # 이틀 출장이면 적지 않는다
+    period["v"] = (date(2026, 10, 20), date(2026, 10, 20))
+    assert other.apply_orders() == 1 and other.item(0, 1).text() == "2026-10-20"
+    period["v"] = (date(2026, 10, 20), date(2026, 10, 22))
+    other.apply_orders()
+    assert other.item(0, 1).text() == ""                    # 기간이 늘면 앱이 적은 일자는 지운다

@@ -95,6 +95,8 @@ PEOPLE_COLUMNS = ("출장자", "체류", "대중교통", "하이패스", "숙박
 PEOPLE_SPAN = 7           # 앞 일곱 칸(출장자 · 개수 · 자차)은 그 사람의 확인할 것 줄들을 합쳐 한 칸
 REF_ROLE = Qt.UserRole + 8
 AUTO_ROLE = Qt.UserRole + 9      # 체류 일자 칸에 앱이 파일 이름의 차례 번호로 적은 값 — 사람이 고치면(값이 다르면) 다시 덮어쓰지 않는다
+ONE_DAY_ROLE = Qt.UserRole + 10  # 하루 출장이라 앱이 출장일로 적은 일자 — AI 가 영수증에서 일자를 읽으면 그 값으로 바꾸고, 기간이 늘면 지운다
+ONE_DAY_KINDS = (model.STAY, model.PUBLIC, model.TOLL)
 ROUTE_COLUMNS = ("출장자", "구간", "출발 → 목적지", "km", "지도 그림", "상태")
 NAMING = "'이름_체류증빙' · '이름_하이패스 증빙' · '이름_숙박비 증빙' · '이름_대중교통 증빙'"
 FUELS = model.FUELS
@@ -386,7 +388,8 @@ class EvidenceTable(QTableWidget):
             if self.parts[row] is not None or path in out:
                 continue
             cols = [c for c in cells if c != 3 or self.kind != model.LODGING]     # 박 수는 기본 1 이 들어 있다
-            if self.several[row] or self.scanned[row] or any(not (self.item(row, c).text().strip() if self.item(row, c) else "") for c in cols):
+            if self.several[row] or self.scanned[row] or any((self._empty_date(row) if c == 1 else
+                                                              not (self.item(row, c).text().strip() if self.item(row, c) else "")) for c in cols):
                 out.append(path)
         return out
 
@@ -432,7 +435,7 @@ class EvidenceTable(QTableWidget):
                 if key == "nights" and self.kind == model.LODGING:
                     if not value or item.text().strip() not in ("", "1"):
                         continue
-                elif item.text().strip() or not value:
+                elif not value or (item.text().strip() and not (col == 1 and self._empty_date(row))):
                     continue
                 if key == "amount":
                     text = f"{value:,}"
@@ -445,6 +448,7 @@ class EvidenceTable(QTableWidget):
                 item.setText(text)
                 if key == "date":
                     item.setData(AUTO_ROLE, text)       # 앱(AI)이 적은 일자 — 나중에 영수증마다 나눌 때 사람이 적은 것으로 보지 않게
+                    item.setData(ONE_DAY_ROLE, None)
                 days = found.get("days") or []
                 if key == "date" and len(days) > 1:
                     item.setToolTip(f"영수증에서 AI(Claude Code)가 읽은 값 — 한 파일에 이용일자가 여럿({' · '.join(days)})이라 첫 날로 적었습니다. "
@@ -551,10 +555,14 @@ class EvidenceTable(QTableWidget):
     def apply_orders(self) -> int:
         """일자를 못 읽은 체류 증빙(그림 영수증)에 파일 이름의 차례 번호로 일자를 적는다 — '체류 증빙1' 은 출장 첫날, '체류 증빙2' 는 둘째 날
         (담당자 2026-11-16 "체류일자가 여러일자의 경우 1,2,3,4로 순서를 나누겠음"). 그 출장자 그룹의 기간으로 셈하고, 기간을 넘는 번호는 적지 않는다.
-        사람이 일자를 고쳤으면(앱이 적은 값과 다르면) 덮어쓰지 않는다. 적은 줄 수."""
-        if self.kind != model.STAY:
+        사람이 일자를 고쳤으면(앱이 적은 값과 다르면) 덮어쓰지 않는다. 적은 줄 수.
+        **하루 출장이면** 차례 번호가 없는 체류 · 대중교통 · 하이패스 증빙의 빈 일자도 출장일로(_one_day) — 그 날 말고는 있을 수 없는 일자를
+        그림 영수증마다 적게 했다(2026-11-25 검토)."""
+        if self.kind not in ONE_DAY_KINDS:
             return 0
-        count = 0
+        count = self._one_day()
+        if self.kind != model.STAY:
+            return count
         self.blockSignals(True)
         for row, order in enumerate(self.orders):
             if not order:
@@ -577,6 +585,40 @@ class EvidenceTable(QTableWidget):
             count += bool(day)
         self.blockSignals(False)
         return count
+
+    def _one_day(self) -> int:
+        """하루 출장의 빈 일자 칸에 출장일 — 앱이 적은 것(ONE_DAY_ROLE)만 다시 고치고, 기간이 하루가 아니게 되면 지운다. 적은 줄 수."""
+        count = 0
+        self.blockSignals(True)
+        for row in range(len(self.paths)):
+            if self.kind == model.STAY and self.orders[row]:
+                continue                               # 차례 번호가 있는 체류 증빙은 아래 차례 번호로
+            item = self.item(row, 1)
+            if item is None:
+                item = QTableWidgetItem("")
+                self.setItem(row, 1, item)
+            text, mine = item.text().strip(), item.data(ONE_DAY_ROLE) or ""
+            if text and text != mine:
+                continue                               # 파일 이름 · 글자 · AI · 사람이 적은 일자
+            person = self.item(row, self.person_col)
+            start, end = self.period_of(person.text().strip() if person else "")
+            shown = start.isoformat() if start and (end or start) == start else ""
+            if text == shown:
+                count += bool(shown)
+                continue
+            item.setText(shown)
+            item.setData(ONE_DAY_ROLE, shown)
+            item.setData(AUTO_ROLE, shown)
+            item.setToolTip("하루 출장이라 출장일로 적었습니다 — 영수증의 날짜가 다르면 고치세요" if shown else "")
+            count += bool(shown)
+        self.blockSignals(False)
+        return count
+
+    def _empty_date(self, row: int) -> bool:
+        """일자 칸이 비었거나 하루 출장이라 앱이 출장일로 적어 둔 것 — AI 가 읽은 일자가 들어갈 자리."""
+        item = self.item(row, 1)
+        text = item.text().strip() if item else ""
+        return not text or text == (item.data(ONE_DAY_ROLE) or "")
 
     def evidence(self, year: int) -> list[model.Evidence]:
         out = []
@@ -1626,7 +1668,7 @@ class TravelPage(QWidget):
         self._sig = sig
         for kind, table in self.tables.items():
             table.show_people(self._all_people())
-        self.tables[model.STAY].apply_orders()
+        self._apply_dates()
         # 폴더에 이미 둔 지도 그림('… 지도 가는 길' · '… 오는 길') — 자차 출장자가 한 명이면 그 사람 구간으로
         self._scan_maps = [p for p in scan.route_maps if p] or ([scan.route_map] if scan.route_map else [])
         added = sum(len(p) for p in scan.files.values())
@@ -1841,7 +1883,7 @@ class TravelPage(QWidget):
             self.end_edit.setDate(self.start_edit.date())
         self._store_group()
         if model.STAY in getattr(self, "tables", {}):
-            self.tables[model.STAY].apply_orders()       # 체류 증빙의 차례 번호 일자는 출장 시작일로 셈한다
+            self._apply_dates()                          # 체류 증빙의 차례 번호 일자는 출장 시작일로 셈한다(하루 출장이면 빈 일자도 그 날로)
         if hasattr(self, "group_table") and self._groups:
             self._fill_group_table()
         self._sync()
@@ -2040,8 +2082,9 @@ class TravelPage(QWidget):
         reason = {"login": "Claude 로그인이 풀려", "limit": "Claude 사용 한도에 걸려", "balance": "Claude 잔액이 모자라",
                   "none": "이 PC 에 Claude Code 가 없어"}.get(self._ai_stop)
         if reason:
-            after = (" 위쪽 AI 단추에서 로그인하면 저절로 다시 읽습니다." if self._ai_stop == "login"
-                     else " ③ [폴더에서 다시 읽기] 로 다시 읽거나, 아래에서 빈 칸을 직접 적어 주세요.")
+            after = {"login": " 위쪽 AI 단추에서 로그인하면 저절로 다시 읽습니다.",
+                     "none": " 아래 칠한 곳을 눌러 빈 칸을 직접 적어 주세요."}.get(
+                self._ai_stop, " ③ [폴더에서 다시 읽기] 로 다시 읽거나, 아래에서 빈 칸을 직접 적어 주세요.")
             return (f"{reason} 그림 · 스캔 영수증 {self._ai_left}개를 읽지 못했습니다 — 빈 칸이 채워지지 않고, 영수증이 여러 장 든 파일도 "
                     "일자별로 나뉘지 않습니다." + after)
         return ""
@@ -2070,6 +2113,13 @@ class TravelPage(QWidget):
             for kind, table in self.tables.items():
                 if Path(path) in table.paths:
                     self._ai_filled += table.apply_ai(Path(path), ai_read.summary(kind, data))
+        self._apply_dates()                     # 나눈 줄 가운데 일자를 못 읽은 것 — 하루 출장이면 그 날로
+
+    def _apply_dates(self) -> None:
+        """체류 증빙의 차례 번호 일자 · 하루 출장의 빈 일자(체류 · 대중교통 · 하이패스) — EvidenceTable.apply_orders."""
+        for kind in ONE_DAY_KINDS:
+            if kind in getattr(self, "tables", {}):
+                self.tables[kind].apply_orders()
 
     def _on_ai_finished(self, stopped: str) -> None:
         self._ai_running = max(0, self._ai_running - 1)
@@ -2088,8 +2138,9 @@ class TravelPage(QWidget):
             ai_status.instance().mark(ai.chosen("minutes"), ai.NO_LOGIN, "출장증빙 영수증 읽기에서 로그인이 풀림")
         if stopped in ("login", "limit", "balance"):
             reason = {"login": "Claude 로그인이 풀려", "limit": "Claude 사용 한도에 걸려", "balance": "Claude 잔액이 모자라"}[stopped]
-            self.ai_note.setText(f"{reason} 그림 · 스캔 영수증을 다 읽지 못했습니다 — 위쪽 AI 단추에서 확인한 뒤 ③ [폴더에서 다시 읽기] 를 누르세요. "
-                                 "못 읽은 칸은 ④ 미리 보기에서 적어도 됩니다.")
+            after = ("위쪽 AI 단추에서 로그인하면 저절로 다시 읽습니다" if stopped == "login"
+                     else "위쪽 AI 단추에서 확인한 뒤 ③ [폴더에서 다시 읽기] 를 누르세요")
+            self.ai_note.setText(f"{reason} 그림 · 스캔 영수증을 다 읽지 못했습니다 — {after}. 못 읽은 칸은 ④ 미리 보기에서 적어도 됩니다.")
         elif stopped:
             self.ai_note.setText(f"그림 · 스캔 영수증 일부를 AI 로 읽지 못했습니다({stopped}) — ④ 미리 보기에서 빈 칸을 적거나 ③ [폴더에서 다시 읽기].")
         else:
@@ -2118,7 +2169,7 @@ class TravelPage(QWidget):
         if not hasattr(self, "route_table") or self._loading_group:
             return
         self._store_group()
-        self.tables[model.STAY].apply_orders()          # 그룹 기간이 바뀌었으면 차례 번호 일자도(아래 _sync 가 미리 보기를 다시 그린다)
+        self._apply_dates()                             # 그룹 기간이 바뀌었으면 차례 번호 일자도(아래 _sync 가 미리 보기를 다시 그린다)
         keep = {}
         for name in self._drivers():
             for i, (origin, goal, label) in enumerate(self._legs_for(name)):
@@ -2542,9 +2593,8 @@ class TravelPage(QWidget):
                          if not (len(trips) > 1 and p.startswith("증빙 파일이 하나도"))]
         problems = list(dict.fromkeys(problems))
         ready = [t for t in trips if not model.blocking(t)]
-        pages = sum(len(model.pages(t)) for t in ready)
-        self.plan_label.setText(f"만들 출장증빙 {len(ready)}개({', '.join(t.name for t in ready) or '없음'}) · 쪽 {pages}개"
-                                "(증빙 PDF 가 여러 쪽이면 더 늘 수 있음)")
+        # 쪽 수는 적지 않는다 — 증빙이 잘 보이게 쪽을 나누는 것은 그릴 때 정해져 여기서 센 수와 ④ 미리 보기의 쪽 수가 달랐다(5 · 6)
+        self.plan_label.setText(f"만들 출장증빙 {len(ready)}개({', '.join(t.name for t in ready) or '없음'}) — 쪽 모양은 ④ 미리 보기와 같습니다")
         self.problem_label.setText("\n".join(f"· {p}" for p in problems[:14]) + (f"\n· … 외 {len(problems) - 14}개" if len(problems) > 14 else ""))
         self.make_button.setText(f"출장증빙 내보내기 ({len(ready)}명 · PDF {len(ready)}개)" if len(ready) > 1 else "출장증빙 내보내기")
         self.make_button.setEnabled(files and bool(ready))
