@@ -34,8 +34,4 @@ def log(msg: str) -> None:
             echo(text)
         except Exception:  # noqa: BLE001 — 기록 때문에 작업이 멈추면 안 된다
             pass
-    try:
-        with open(settings.log_path(), "a", encoding="utf-8") as f:
-            f.write(text + "\n")
-    except OSError:
-        pass
+    settings.append_log(text + "\n")

@@ -176,6 +176,12 @@ class PreviewPanel(QWidget):
         self.person_group.idClicked.connect(self._on_person)
         self.person_buttons: list[QPushButton] = []
         layout.addWidget(self.person_row)
+        # AI 가 그림 영수증을 읽는 중이거나 못 읽었을 때 — 빈 칸이 '확인 필요' 로 칠해져 사람이 먼저 고치면, 다 읽은 뒤
+        # 영수증을 일자별로 나누지 못한다(2026-11-25 담당자 기록 — 하이패스 일자 · 금액을 고친 11초 뒤 AI 가 두 장을 읽음)
+        self.ai_banner = WrapLabel("")
+        self.ai_banner.setObjectName("previewBanner")
+        self.ai_banner.hide()
+        layout.addWidget(self.ai_banner)
         head = QHBoxLayout()
         head.addStretch(1)
         self.zoom_out_button = self._tool("−", "축소 (Ctrl+-, Ctrl+휠 아래)", lambda: self.zoom_step(-1))
@@ -420,6 +426,9 @@ class PreviewPanel(QWidget):
         self._flagged = {e.ref: model.unclear(trip, kind, e) for kind, e in model.evidence_of(trip) if e.ref}
         self._flagged[model.route_key(trip)] = model.route_unclear(trip)
         self._flagged = {ref: fields for ref, fields in self._flagged.items() if fields}
+        busy = getattr(self.source, "ai_busy_text", lambda: "")()
+        self.ai_banner.setText(busy)
+        self.ai_banner.setVisible(bool(busy))
         pages = model.pages(trip)
         images, hits = render.preview(pages, cache=self._cache, needs=self._needs) if pages else ([], [])
         self._hits = hits

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
@@ -131,6 +132,20 @@ def archive_cache_path() -> Path:
 
 def log_path() -> Path:
     return data_dir() / "_실행로그.txt"
+
+
+# 기록 쓰기는 한 번에 하나씩 — 화면 스레드와 작업 스레드가 같은 때 덧붙이면 윈도우에서 같은 자리에 겹쳐 써 줄이 깨졌다
+# ('16:34:48 출장 AI 읽기 …' 뒤에 '�음 1)' 처럼 앞 줄의 꼬리만 남음, 2026-11-25 담당자 기록)
+_LOG_LOCK = threading.Lock()
+
+
+def append_log(text: str, path: Path | None = None) -> None:
+    """_실행로그.txt 에 덧붙인다(줄바꿈은 부르는 쪽이). 못 쓰면 조용히 넘긴다 — 기록 때문에 일이 멈추면 안 된다."""
+    try:
+        with _LOG_LOCK, open(path or log_path(), "a", encoding="utf-8") as f:
+            f.write(text)
+    except OSError:
+        pass
 
 
 def parking_ledger_path() -> Path:

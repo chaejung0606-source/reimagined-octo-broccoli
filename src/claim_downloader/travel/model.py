@@ -87,6 +87,8 @@ class Trip:
     place_regions: dict = field(default_factory=dict)   # 출장지 글 → 시 · 군(출장지 글에 시 · 군이 없을 때 네이버에서 찾은 그곳 주소로 — 화면이 채움)
     dropped: list = field(default_factory=list)         # 같은 영수증이라 한 번만 넣고 뺀 증빙 — [(항목, 뺀 증빙, 남긴 증빙)](dedupe)
     notes: list = field(default_factory=list)           # 이 출장에 따로 알릴 것(신청서에 없는 출장자의 기간을 증빙 일자로 넓힘 등 — fit_period)
+    vias: list = field(default_factory=list)            # ② 의 경유지(자차 · 대중교통 모두) — 경유지에서 쓴 체류 영수증도 맞는 지역으로 본다(stay_regions)
+    place_days: dict = field(default_factory=dict)      # 출장지 → (첫날, 끝날) — 신청서의 날짜별 출장을 한 출장으로 합쳤을 때(place_of 가 일자로 고름)
 
     @property
     def days(self) -> int:
@@ -104,7 +106,13 @@ class Trip:
         places = self.places
         if len(places) == 1:
             return places[0]
-        return match_place(ev.place, places)
+        own = match_place(ev.place, places)
+        if own or not ev.day or not self.place_days:
+            return own
+        # 적은 곳이 없으면 그 날의 출장지 — 날짜별 출장을 합친 출장에서 영수증마다 출장지를 고르지 않게(2026-11-25)
+        hits = {match_place(key, places) for key, (first, last) in self.place_days.items() if first <= ev.day <= last}
+        hits.discard("")
+        return hits.pop() if len(hits) == 1 else ""
 
     def cap_region(self, ev: Evidence | None = None) -> str:
         if self.region:
@@ -462,11 +470,12 @@ def shop_region_of(text: str) -> str:
 
 
 def stay_regions(trip: Trip, ev: Evidence) -> list[str]:
-    """그 체류 영수증이 있어야 할 시 · 군들 — 증빙에 출장지를 적었으면(출장지가 여럿일 때) 그곳, 아니면 출장지 모두.
-    출장지 글에 시 · 군이 없으면 네이버에서 찾은 그곳 주소의 시 · 군(trip.place_regions)."""
+    """그 체류 영수증이 있어야 할 시 · 군들 — 증빙에 출장지를 적었으면(출장지가 여럿일 때) 그곳, 아니면 출장지 모두와 ② 의 경유지.
+    출장지 글에 시 · 군이 없으면 네이버에서 찾은 그곳 주소의 시 · 군(trip.place_regions).
+    경유지도 넣는다(2026-11-25 담당자 기록 — 원주를 거쳐 서울로 간 출장에서 원주의 체류 영수증이 '지역 다름' 이라 같은 줄을 다섯 번 고쳤다)."""
     own = trip.place_of(ev) if len(trip.places) > 1 else ""
     out: list[str] = []
-    for place in [own] if own else trip.places:
+    for place in [own] if own else [*trip.places, *trip.vias]:
         region = region_of(place) or trip.place_regions.get(place, "")
         if region and region not in out:
             out.append(region)

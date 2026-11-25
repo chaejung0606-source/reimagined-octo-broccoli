@@ -8,6 +8,7 @@ from __future__ import annotations
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QWheelEvent
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
     QComboBox,
     QFrame,
@@ -380,13 +381,18 @@ class WheelGuard(QObject):
     있었으면 원래 이벤트를 받은 것으로 표시해 Qt 가 한 번 더 올리지 않게 한다. 펼친 목록 안의 휠 · 키보드 화살표 · 클릭은 그대로다.
     콤보는 기본 초점 규칙이 WheelFocus 라 휠이 지나가기만 해도 초점(테두리)을 가져가므로, 만들어질 때(Polish) StrongFocus 로 둔다 —
     클릭 · Tab 으로 받는 초점은 같다. `app.main()` 이 한 번 깐다 — 새 콤보를 만들 때 따로 할 일은 없다.
+
+    **날짜 · 숫자 칸(QAbstractSpinBox — QDateEdit · QSpinBox)도 같다**(2026-11-25): 출장증빙 ② 를 내리다 출장기간 칸 위를 지나며 시작일이
+    2026-10-15 에서 2027-10-21 로 바뀌어 출장증빙 파일 이름이 '27.10.21' 로 나왔다(담당자 기록). 값은 글자를 넣거나 달력 · 화살표로만 바꾼다.
     """
+
+    GUARDED = (QComboBox, QAbstractSpinBox)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         kind = event.type()
-        if kind == QEvent.Polish and isinstance(obj, QComboBox) and obj.focusPolicy() == Qt.WheelFocus:
+        if kind == QEvent.Polish and isinstance(obj, self.GUARDED) and obj.focusPolicy() == Qt.WheelFocus:
             obj.setFocusPolicy(Qt.StrongFocus)
-        elif kind == QEvent.Wheel and isinstance(obj, QComboBox):
+        elif kind == QEvent.Wheel and isinstance(obj, self.GUARDED):
             event.setAccepted(self._pass_up(obj, event))
             return True
         return False

@@ -59,6 +59,7 @@ class TripEntry:
     purpose: str = ""
     origin: str = ""
     travelers: list[str] = field(default_factory=list)
+    days: dict = field(default_factory=dict)      # 출장지 → (첫날, 끝날) — 날짜별 출장을 하나로 합쳤을 때(_join_in_range)
 
     def label(self) -> str:
         if self.start:
@@ -411,8 +412,11 @@ def _period_block(lines: list[str]) -> tuple[date, date, int, int] | None:
 
 
 # 기간 칸 글 — 출장지 조각을 고를 때 뺀다
+# 요일 한 글자는 괄호가 반쪽이어도 뗀다('(목' / '목)') — 단 곳 이름에 붙은 괄호는 아니다: '라마다호텔(수' / '원)' 의 '수' 를 요일로 떼어
+# 출장지가 '라마다호텔( 원)' 이 됐다(2026-11-23 담당자 기록). 괄호 앞이 한글이면(곳 이름에 붙음) 떼지 않는다
 _PERIOD_BITS = re.compile(r"20\d{2}\s*[.\-/년]\s*\d{1,2}\s*[.\-/월]\s*\d{1,2}\s*[.일]?|\d{1,2}:\d{2}|\([월화수목금토일]\)|"
-                          r"(?<![가-힣])\(?\s*[월화수목금토일]\s*\)?(?![가-힣])|[~∼〜]|부터|까지|"
+                          r"(?<![가-힣])\(\s*[월화수목금토일]\s*\)?(?![가-힣])|(?<![가-힣(])[월화수목금토일]\s*\)(?![가-힣])|"
+                          r"(?<!\S)[월화수목금토일](?!\S)|[~∼〜]|부터|까지|"
                           r"\(?\s*(?:당일|\d+\s*일간?|\d+\s*박\s*\d+\s*일)\s*\)?")
 
 
@@ -445,8 +449,22 @@ def _place_between(lines: list[str], first: int, last: int) -> list[str]:
         if place and not (re.search(r"[가-힣A-Za-z0-9]$", place) and re.match(r"[가-힣A-Za-z0-9]", piece)):
             place += " "
         place += piece
-    place = re.sub(r"\s*\(\s*\)\s*", " ", place).strip()
+    place = re.sub(r"\s*\(\s*\)\s*", " ", _unmatched_close(place)).strip()
     return clean_place(place) if place else []
+
+
+def _unmatched_close(text: str) -> str:
+    """짝 없는 닫는 괄호를 뗀다 — 요일 '(목' / ')' 처럼 줄에 나뉜 괄호의 남은 쪽."""
+    out, depth = [], 0
+    for ch in text:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            if not depth:
+                continue
+            depth -= 1
+        out.append(ch)
+    return "".join(out)
 
 
 def _find_period(lines: list[str], year: int | None) -> tuple[date | None, date | None]:
@@ -592,18 +610,36 @@ def _entry(app: Application) -> TripEntry:
     return TripEntry(app.start, app.end, list(app.places), app.purpose, app.origin, list(app.travelers))
 
 
+FORM_START = "다음과같이출장"
+
+
+def _form_mark(line: str) -> str:
+    """양식이 시작하는 줄 — '다음과 같이 출장을 명함'(P) · 표의 머리 줄 '소속 직급 성명 출장내용 출장기간 출장지'(H)."""
+    if FORM_START in _squash(line):
+        return "P"
+    keys = _label_keys(line)
+    return "H" if len(keys) >= 2 and "period" in keys else ""
+
+
 def _sections(lines: list[str]) -> list[list[str]]:
-    """같은 칸(기간 · 출장지 · 출장자)이 다시 나오거나 기간 뒤에 출장자 칸이 나오면 다음 출장의 양식으로 본다."""
+    """같은 칸(기간 · 출장지 · 출장자)이 다시 나오거나 기간 뒤에 출장자 칸이 나오면 다음 출장의 양식으로 본다.
+    한 공문에 양식이 되풀이되면('국내 출장신청서 (3건)' — '다음과 같이 출장을 명함' 과 표의 머리 줄이 출장마다 다시 나온다) 거기서도 나눈다
+    (2026-11-25 담당자 기록: (2건) · (3건) 신청서에서 첫 출장만 읽었다)."""
     out: list[list[str]] = [[]]
     seen: set[str] = set()
+    marks: set[str] = set()
     for line in lines:
         hit = _match_label(line)
         key = hit[0] if hit else ""
-        if key and out[-1] and ((key in seen and key in ("period", "place", "travelers")) or (key == "travelers" and "period" in seen)):
+        mark = _form_mark(line)
+        again = (mark == "P" and marks) or (mark == "H" and "H" in marks)
+        if out[-1] and (again or (key and ((key in seen and key in ("period", "place", "travelers")) or (key == "travelers" and "period" in seen)))):
             out.append([])
-            seen = set()
+            seen, marks = set(), set()
         if key:
             seen.add(key)
+        if mark:
+            marks.add(mark)
         out[-1].append(line)
     return out
 
@@ -763,6 +799,76 @@ def folder_date(name: str, year: int) -> date | None:
     return None
 
 
+_RANGE_TAIL = re.compile(r"\s*[.일]?\s*[-~∼〜]\s*(?:(\d{1,2})\s*[.\-/_월]\s*(\d{1,2})|(\d{2})(\d{2})|(\d{1,2}))(?!\d)")
+
+
+def folder_range(name: str, year: int) -> tuple[date, date] | None:
+    """폴더 이름의 기간 — '출장비 지급(26.11.12-13. 원주 · 서울)' · '26.08.26-30.' · '2026-10-31~11-02' · '1112-1113'. 하루면 None."""
+    for pattern, parts in _FOLDER_DATES:
+        for m in pattern.finditer(name or ""):
+            start = _make(*parts(m.groups(), year))
+            if not start:
+                continue
+            tail = _RANGE_TAIL.match(name, m.end())
+            if not tail:
+                return None
+            month, day = (tail.group(1), tail.group(2)) if tail.group(2) else (tail.group(3), tail.group(4)) if tail.group(4) else (None, tail.group(5))
+            month = int(month) if month else start.month
+            end = _make(start.year, month, int(day)) or None
+            if end and end < start:
+                end = _make(start.year + 1, month, int(day))
+            return (start, end) if end and 0 < (end - start).days <= 31 else None
+    return None
+
+
+def _join_in_range(trips: list[TripEntry], index: int, span: tuple[date, date]) -> tuple[list[TripEntry], int, int]:
+    """폴더 이름의 기간에 든 출장 가운데 고른 출장과 사람이 겹치는(또는 사람이 안 적힌) 것을 하나로 — 같은 사람이 날마다 따로 낸 신청서
+    ('국내 출장신청서 (2건)' 10.28 · 10.29)를 폴더 '26.10.28-29' 의 출장증빙 하나로(2026-11-25 담당자 기록 — 첫 출장 하루만 읽어 기간을 손으로 고쳤다).
+    (출장들, 고른 차례, 합친 수)."""
+    chosen = trips[index]
+    first, last = span
+
+    def inside(t: TripEntry) -> bool:
+        return bool(t.start) and first <= t.start <= last and (t.end or t.start) <= last
+
+    if not inside(chosen):
+        return trips, index, 0
+    people = set(chosen.travelers)
+    joined = [t for i, t in enumerate(trips) if i != index and inside(t)
+              and (not people or not t.travelers or people & set(t.travelers))]
+    if not joined:
+        return trips, index, 0
+    merged = TripEntry(chosen.start, chosen.end, list(chosen.places), chosen.purpose, chosen.origin, list(chosen.travelers))
+    for t in [chosen, *joined]:
+        for place in t.places:
+            first, last = merged.days.get(place, (t.start, t.end or t.start))
+            merged.days[place] = (min(first, t.start), max(last, t.end or t.start))
+    for t in sorted(joined, key=lambda t: t.start):
+        merged.start = min(merged.start, t.start)
+        merged.end = max(merged.end or merged.start, t.end or t.start)
+        merged.places += [p for p in t.places if p not in merged.places]
+        merged.travelers += [n for n in t.travelers if n not in merged.travelers]
+        merged.purpose = merged.purpose or t.purpose
+        merged.origin = merged.origin or t.origin
+    merged.travelers = list(chosen.travelers) or merged.travelers
+    # 출장지는 날짜 차례로(자차 경유 차례가 된다)
+    order = {p: (t.start or date.max) for t in [chosen, *joined] for p in t.places}
+    merged.places.sort(key=lambda p: order.get(p, date.max))
+    # 합친 출장에 함께 적혀 있던 다른 사람(고른 출장에 없는 사람)은 제 날짜의 출장으로 남긴다 — 그 사람의 기간이 늘어나지 않게
+    taken = {id(t) for t in joined}
+    out = []
+    for i, t in enumerate(trips):
+        if i == index:
+            out.append(merged)
+        elif id(t) in taken:
+            others = [n for n in t.travelers if n not in people]
+            if people and others:
+                out.append(TripEntry(t.start, t.end, list(t.places), t.purpose, t.origin, others))
+        else:
+            out.append(t)
+    return out, out.index(merged), len(joined)
+
+
 def choose(trips: list[TripEntry], folder: Path | str) -> tuple[int, str]:
     """출장 여럿 중 하나 — 폴더 이름(없으면 위 폴더 이름)의 날짜가 시작일인 출장, 없으면 그 날짜가 기간에 든 출장, 없으면 가장 가까운 출장.
     (고른 차례, 화면 · 기록에 남길 알림)."""
@@ -813,6 +919,14 @@ def select(app: Application | None, folder: Path | str) -> Application | None:
     if app is None or len(app.trips) < 2:
         return app
     index, note = choose(app.trips, folder)
+    folder = Path(folder)
+    year = next((t.start.year for t in app.trips if t.start), date.today().year)
+    span = folder_range(folder.name, year) or folder_range(folder.parent.name, year)
+    if span:
+        app.trips, index, joined = _join_in_range(app.trips, index, span)
+        if joined:
+            note = (f"출장신청서의 출장 {joined + 1}건이 폴더 이름의 기간({span[0]:%Y-%m-%d} ~ {span[1]:%m-%d})에 들어 한 출장"
+                    f"({app.trips[index].label()})으로 합쳤습니다 — 따로 만들 출장이면 ② 출장 그룹 표에서 기간 · 출장지를 고치세요")
     apply_trip(app, index)
     if note:
         app.notes.insert(0, note)
@@ -828,7 +942,7 @@ _KEEP = ({w for words in LABELS.values() for w in words} | set(POSITIONS) | NOT_
 _LABEL_CHARS = set("".join(w for words in LABELS.values() for w in words))
 
 
-def shape(text: str, limit: int = 45) -> list[str]:
+def shape(text: str, limit: int = 160) -> list[str]:
     """신청서의 글 모양 — 못 읽은 칸이 있을 때 기록에 남겨 어떤 꼴인지 본다(담당자 2026-11-10 "출장기간과 목적지를 못 읽네요").
     칸 이름 · 직급 · 양식 글자 · 숫자 · 기호만 남기고 다른 한글(이름 · 곳 · 목적)은 □, 7자리 넘는 숫자는 #."""
     def mask(m: re.Match) -> str:

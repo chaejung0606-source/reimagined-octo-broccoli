@@ -482,7 +482,7 @@ class EvidenceTable(QTableWidget):
         def say(text: str) -> None:
             self.note(f"출장 AI 읽기 — {model.KIND_NAMES.get(self.kind, self.kind)} '{label}' 영수증 {len(receipts)}장: {text}")
         day = self.item(row, 1)
-        if day is not None and day.text().strip() and day.text().strip() != (day.data(AUTO_ROLE) or ""):
+        if day is not None and day.text().strip() and day.text().strip() != (day.data(AUTO_ROLE) or "") and not self._same_as_typed(row, receipts):
             say("일자를 직접 적은 줄이라 나누지 않았습니다")
             return 0
         try:
@@ -535,6 +535,18 @@ class EvidenceTable(QTableWidget):
         self.mark_unclear()
         self.changed.emit()
         return count
+
+    def _same_as_typed(self, row: int, receipts: list[dict]) -> bool:
+        """사람이 적은 일자 · 금액이 AI 가 읽은 영수증들과 같은가 — 그러면 나눠도 사람이 적은 값이 바뀌지 않는다. AI 가 다 읽기 전에
+        사람이 같은 값을 먼저 적은 하이패스 두 장(같은 날)이 나뉘지 않고 남았다(2026-11-25 담당자 기록)."""
+        typed = _parse_day(self.item(row, 1).text(), self.year())
+        if typed is None or any(model.guess_day(r.get("date") or "", typed.year) != typed for r in receipts):
+            return False
+        if self.kind == model.STAY:
+            return True
+        amount = _parse_int(self.item(row, 2).text() if self.item(row, 2) else "")
+        amounts = [r.get("amount") for r in receipts]
+        return amount is None or (all(amounts) and sum(amounts) == amount)
 
     def apply_orders(self) -> int:
         """일자를 못 읽은 체류 증빙(그림 영수증)에 파일 이름의 차례 번호로 일자를 적는다 — '체류 증빙1' 은 출장 첫날, '체류 증빙2' 는 둘째 날
@@ -631,6 +643,8 @@ class TravelPage(QWidget):
         self._ai_tried: set = set()              # 이번에 AI 로 읽으라고 맡긴 (파일, 서명) — 실패해도 [폴더에서 다시 읽기] 전에는 다시 맡기지 않는다
         self._ai_running = 0                     # 맡긴 묶음 수(끝나면 줄어듦)
         self._ai_filled = 0
+        self._ai_stop = ""                       # AI 로 다 못 읽은 까닭('login' · 'limit' · 'balance' · 'none'(Claude Code 없음)) — ④ 위 띠에
+        self._ai_left = 0                        # 그때 못 읽은 파일 수
         self._done_folders: set[str] = set()     # 출장증빙을 만든 폴더(여러 폴더를 차례로 할 때)
         self._review: application.Application | None = None
         self._goal_of: dict[str, str] = {}       # 출장자마다 출장목적지(신청서 목적지가 분명하지 않아 사람이 적은 것)
@@ -667,6 +681,8 @@ class TravelPage(QWidget):
         layout.addWidget(self.area, 1)
         if self.browser is not None:
             self.browser.routes_found.connect(self._on_routes)
+        from .. import ai_status
+        ai_status.instance().changed.connect(self._on_ai_status)
         self._sync()
 
     # ── 기록 · 브라우저 ────────────────────────────────────────────────────
@@ -1529,7 +1545,7 @@ class TravelPage(QWidget):
             for i, trip in enumerate(app.trips):
                 names = list(trip.travelers) if trip.travelers else (list(app.travelers) if i == chosen else [])
                 groups.append({"names": names, "start": trip.start, "end": trip.end or trip.start,
-                               "dest": ", ".join(trip.places), "vias": [], "on": i == chosen,
+                               "dest": ", ".join(trip.places), "vias": [], "on": i == chosen, "days": dict(trip.days),
                                "from": f"신청서 {i + 1}번째 출장" if len(app.trips) > 1 else "신청서"})
             taken = set(groups[chosen]["names"])
             for group in groups:
@@ -1994,22 +2010,56 @@ class TravelPage(QWidget):
             self.ai_note.setText(f"그림 · 스캔 영수증이나 영수증이 여럿 든 파일 {len(wanted)}개는 앱이 글자로 다 못 읽습니다 — 이 PC 에 Claude Code 가 없어 "
                                  "AI 로도 못 읽었습니다. ④ 미리 보기에서 빈 칸을 적거나, 영수증마다 파일을 나눠 주세요.")
             self.ai_note.show()
+            self._ai_stop, self._ai_left = "none", len(wanted)
+            self._ai_state_changed()
             return
         for path, _kind in wanted:
             self._ai_tried.add((ai_read.file_key(path), ai_read.signature(path)))
         if self._ai_worker is None:
             from ..travel_ai_worker import TravelAiWorker
             self._ai_worker = TravelAiWorker()
-            self._ai_worker.log.connect(self.log)
+            # 작업 스레드의 기록은 logbook 이 이미 파일에 쓴다 — 화면 쪽 log 로 한 번 더 쓰면 같은 줄이 두 번 · 시각이 두 번 붙었다
             self._ai_worker.started.connect(self._on_ai_started)
             self._ai_worker.done.connect(self._on_ai_done)
             self._ai_worker.finished.connect(self._on_ai_finished)
         if not self._ai_running:
             self._ai_filled = 0
         self._ai_running += 1
+        self._ai_stop, self._ai_left = "", len(wanted)
         self.ai_note.setText(f"그림 · 스캔 영수증 {len(wanted)}개를 AI(Claude Code)로 읽는 중입니다 — 몇십 초씩 걸립니다. 읽는 대로 빈 칸을 채웁니다.")
         self.ai_note.show()
         self._ai_worker.run(wanted)
+        self._ai_state_changed()
+
+    def ai_busy_text(self) -> str:
+        """④ 미리 보기 위 띠 — AI 가 읽는 중이거나 못 읽었을 때. 읽는 중에 칠한 칸을 먼저 고치면 다 읽은 뒤 영수증을 일자별로
+        나누지 못하고(사람이 적은 일자가 먼저), 로그인이 풀려 못 읽으면 여러 장 든 영수증이 첫날 한 칸에 남는다(2026-11-24 · 25 담당자 기록)."""
+        if self._ai_running:
+            return (f"그림 · 스캔 영수증 {self._ai_left}개를 AI(Claude Code)로 읽는 중입니다 — 몇십 초 걸립니다. 다 읽으면 빈 칸이 저절로 채워지고 "
+                    "영수증이 여러 장 든 파일은 일자별로 나뉩니다. 그 전에는 칠한 칸을 고치지 말고 기다려 주세요.")
+        reason = {"login": "Claude 로그인이 풀려", "limit": "Claude 사용 한도에 걸려", "balance": "Claude 잔액이 모자라",
+                  "none": "이 PC 에 Claude Code 가 없어"}.get(self._ai_stop)
+        if reason:
+            after = (" 위쪽 AI 단추에서 로그인하면 저절로 다시 읽습니다." if self._ai_stop == "login"
+                     else " ③ [폴더에서 다시 읽기] 로 다시 읽거나, 아래에서 빈 칸을 직접 적어 주세요.")
+            return (f"{reason} 그림 · 스캔 영수증 {self._ai_left}개를 읽지 못했습니다 — 빈 칸이 채워지지 않고, 영수증이 여러 장 든 파일도 "
+                    "일자별로 나뉘지 않습니다." + after)
+        return ""
+
+    def _ai_state_changed(self) -> None:
+        if hasattr(self, "_preview_timer") and self._stage == "files":
+            self._preview_timer.start()
+
+    def _on_ai_status(self) -> None:
+        """로그인이 풀려 못 읽은 그림 영수증 — 위쪽 AI 단추가 '로그인됨' 이 되는 대로 다시 맡긴다(카드청구와 같게)."""
+        from .. import ai_status
+        from ... import ai
+        if self._ai_stop != "login" or self._ai_running or ai_status.instance().for_use("minutes").state != ai.OK:
+            return
+        self.log("출장 AI 읽기: Claude 로그인이 확인돼 못 읽은 그림 영수증을 다시 읽습니다")
+        self._ai_stop = ""
+        self._ai_tried.clear()
+        self._ai_start()
 
     def _on_ai_started(self, number: int, total: int) -> None:
         self.ai_note.setText(f"그림 · 스캔 영수증을 AI(Claude Code)로 읽는 중 — {number}/{total}번째부터(몇십 초씩 걸립니다). 읽는 대로 빈 칸을 채웁니다.")
@@ -2025,9 +2075,17 @@ class TravelPage(QWidget):
         self._ai_running = max(0, self._ai_running - 1)
         if self._ai_running:
             return
+        self._ai_stop = stopped if stopped in ("login", "limit", "balance") else ""
+        if not self._ai_stop:
+            self._ai_left = 0
+        self._ai_state_changed()
         if not self.folder_edit.text().strip():
             self.ai_note.hide()                 # [새로 시작] · 폴더를 뺀 뒤 끝난 읽기 — 비운 화면에 앞 폴더의 소식을 띄우지 않는다
             return
+        if stopped == "login":
+            from .. import ai_status
+            from ... import ai
+            ai_status.instance().mark(ai.chosen("minutes"), ai.NO_LOGIN, "출장증빙 영수증 읽기에서 로그인이 풀림")
         if stopped in ("login", "limit", "balance"):
             reason = {"login": "Claude 로그인이 풀려", "limit": "Claude 사용 한도에 걸려", "balance": "Claude 잔액이 모자라"}[stopped]
             self.ai_note.setText(f"{reason} 그림 · 스캔 영수증을 다 읽지 못했습니다 — 위쪽 AI 단추에서 확인한 뒤 ③ [폴더에서 다시 읽기] 를 누르세요. "
@@ -2223,6 +2281,18 @@ class TravelPage(QWidget):
                                     "그 길찾기의 출발지 · 목적지는 앱이 기억해 다음부터는 저절로 찾습니다.")
         self._sync()
 
+    def _waiting_routes(self) -> list[str]:
+        """네이버 지도 창에 띄워 두고 사람이 확인해 찍기를 기다리는 구간 · 그 뒤 차례를 기다리는 구간 — 지도 그림이 아직 없는 것만."""
+        out = []
+        for key, route in self._routes.items():
+            if route.get("image") or not str(route.get("status", "")).startswith(("확인 기다림", "차례 기다림")):
+                continue
+            if key[0] not in self._drivers():
+                continue
+            who = f"{key[0]} · " if key[0] != "출장자" else ""
+            out.append(f"· {who}{route['label']}: {route['origin'] or '?'} → {route['goal'] or '?'}")
+        return out
+
     def _show_route_notice(self, found) -> None:
         """확인 기다리는 구간이 있으면 무엇을 하라는지 한 줄 — 네이버 지도 창을 보고 [이 경로로 찍기 · 거리 넣기]."""
         key = self._pending_route if self._pending_route in self._routes else None
@@ -2355,6 +2425,7 @@ class TravelPage(QWidget):
             tolls=self.tables[model.TOLL].evidence(year), lodging=self.tables[model.LODGING].evidence(year),
             other=self.tables[model.OTHER].evidence(year),
             place_regions=self._place_regions(model.split_places(dest)),
+            place_days=dict((group or self._group() or {}).get("days") or {}),
         )
 
     @staticmethod
@@ -2395,6 +2466,8 @@ class TravelPage(QWidget):
             for name in names or [""]:
                 fuel = self._fuel(name or "출장자")
                 trip = model.for_traveler(base, name, people, fuel=fuel)
+                trip.vias = self._vias_of(name or "출장자")
+                trip.place_regions = {**trip.place_regions, **self._place_regions(trip.vias)}
                 if len(groups) > 1:
                     model.keep_period(trip, base.start, base.end, shared_only=seen.get(name, 0) <= 1)
                 if group is not None and name and name in group.get("extra", ()):
@@ -2638,6 +2711,15 @@ class TravelPage(QWidget):
             return
         if self._rescan(quiet=True) and confirmed:
             confirmed = False                     # 확인한 뒤 폴더의 파일이 바뀌었다 — 바뀐 것으로 다시 보게
+        waiting = self._waiting_routes()
+        if waiting and not confirmed:
+            # 네이버 지도 창에 띄워 둔 구간을 찍지 않은 채 내보내면 그 구간의 지도 · km 가 빠진다(2026-11-25 담당자 기록 — 띄워 둔 채 내보냄)
+            answer = QMessageBox.question(
+                self, "출장증빙 내보내기", "네이버 지도 창에 띄워 두고 아직 찍지 않은 구간이 있습니다:\n" + "\n".join(waiting[:6]) +
+                "\n\n③ 자차 이동경로 표의 [이 경로로 찍기 · 거리 넣기] 로 찍은 뒤 내보내면 지도 그림 · km 가 들어갑니다.\n그래도 지금 내보낼까요?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
         trips = [t for t in self.trips() if not model.blocking(t)]
         problems = model.traveler_problems(self.base_trip(), self._all_people())
         for trip in trips:

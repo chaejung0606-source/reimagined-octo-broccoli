@@ -42,6 +42,32 @@ class BrowserClosed(RuntimeError):
     pass
 
 
+def _closed(page) -> bool:
+    try:
+        return page.is_closed()
+    except Exception:  # noqa: BLE001 — 브라우저가 끝났으면 닫힌 것
+        return True
+
+
+def _goto(page, url: str) -> None:
+    """page.goto — 'net::ERR_ABORTED; maybe frame was detached?' 은 불러오는 사이 그 화면이 스스로 다른 주소로 옮겨 간 것이라(ERP 첫 화면이
+    로그인 화면으로 넘김) 그 사이트에 와 있으면 연 것으로 본다. 아니면 한 번 더(2026-11-16 담당자 기록 — [ERP 열기] 가 오류 창으로 끝났다)."""
+    try:
+        page.goto(url, wait_until="domcontentloaded")
+        return
+    except Exception as error:  # noqa: BLE001
+        text = str(error)
+        if "ERR_ABORTED" not in text and "detached" not in text:
+            raise
+    try:
+        page.wait_for_timeout(1000)
+    except Exception:  # noqa: BLE001 — 창이 닫혔으면 아래 goto 가 알린다
+        pass
+    if not _closed(page) and _host(page.url) == _host(url):
+        return
+    page.goto(url, wait_until="domcontentloaded")
+
+
 def _host(url: str) -> str:
     return str(url or "").split("://", 1)[-1].split("/", 1)[0].lower()
 
@@ -229,7 +255,7 @@ class ErpSession:
         self.page = self._context.new_page()
         # 새 창(회의록등록 · 입금처 같은 팝업)도 같은 묶음(context)이라 여기 하나로 모든 창의 확인 창을 받는다
         self.page.context.on("dialog", self._on_dialog)
-        self.page.goto(start_url or settings_mod.ERP_URL, wait_until="domcontentloaded")
+        _goto(self.page, start_url or settings_mod.ERP_URL)
         if start_url:
             return
         cfg = self._load_settings()
@@ -491,7 +517,7 @@ class ErpSession:
             return "이미 열린 ERP 창을 앞으로 가져왔습니다 — 다시 로그인하지 않아도 됩니다"
         if self.browser_open:
             page = self._live_page().context.new_page()
-            page.goto(settings_mod.ERP_URL, wait_until="domcontentloaded")
+            _goto(page, settings_mod.ERP_URL)
             self.page = page
         else:
             self.open_browser(start_url=settings_mod.ERP_URL)
@@ -507,7 +533,7 @@ class ErpSession:
             return "이미 열린 네이버 지도 창을 앞으로 가져왔습니다"
         if self.browser_open:
             page = self._live_page().context.new_page()
-            page.goto(NAVER_MAP_URL, wait_until="domcontentloaded")
+            _goto(page, NAVER_MAP_URL)
             page.bring_to_front()
         else:
             self.open_browser(start_url=NAVER_MAP_URL)
@@ -756,7 +782,7 @@ class ErpSession:
         if page is None:
             if self.browser_open:
                 page = self._live_page().context.new_page()
-                page.goto(navermap.DIRECTIONS_URL, wait_until="domcontentloaded")
+                _goto(page, navermap.DIRECTIONS_URL)
             else:
                 self.open_browser(start_url=NAVER_MAP_URL)
                 page = next((p for p in self._pages() if _host(p.url) in NAVER_MAP_HOSTS), None) or self._live_page()
@@ -825,8 +851,17 @@ class ErpSession:
         page = next((p for p in self._pages() if _host(p.url) in NAVER_MAP_HOSTS), None) if self.browser_open else None
         if page is None:
             return navermap.RouteResult(label=label, note="네이버 지도 창이 없습니다 — [브라우저에서 직접] 으로 열고 거리우선 경로를 띄우세요")
-        result = navermap.capture(page, navermap.shot_path(Path(folder), shot or label), label,
-                                  wait=lambda s: page.wait_for_timeout(int(s * 1000)))
+        try:
+            result = navermap.capture(page, navermap.shot_path(Path(folder), shot or label), label,
+                                      wait=lambda s: page.wait_for_timeout(int(s * 1000)))
+        except Exception as error:  # noqa: BLE001 — 찍는 사이 사람이 지도 창을 닫으면(TargetClosedError, 2026-11-25 담당자 기록) 오류 창 대신 까닭 한 줄
+            first = str(error).splitlines()[0][:120] if str(error) else type(error).__name__
+            closed = "closed" in first.lower() or _closed(page)
+            self.log("네이버 지도 화면을 찍지 못했습니다: " + first)
+            return navermap.RouteResult(label=label, note=("네이버 지도 창이 닫혀 찍지 못했습니다 — [네이버 지도 창 열기] 로 다시 띄운 뒤 찍으세요" if closed
+                                                           else "네이버 지도 화면을 찍지 못했습니다 — " + first))
+        if 0 < len(result.places) < 2:
+            self.log("네이버 지도 길찾기 주소에서 곳을 하나만 읽음: " + page.url.split("?")[0][:300])
         if result.places:
             # 사람이 띄운 길찾기의 출발지 · 목적지를 기억한다 — 다음에는 앱이 검색 없이 그 곳으로 길을 찾는다
             known = self._known_places()
@@ -1748,10 +1783,6 @@ def file_logger(echo: Callable[[str], None] = print) -> Callable[[str], None]:
         stamp = time.strftime("%H:%M:%S ")
         text = "\n".join(stamp + line for line in lines)
         echo(text)
-        try:
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(text + "\n")
-        except OSError:
-            pass
+        settings_mod.append_log(text + "\n", path)
 
     return log

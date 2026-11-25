@@ -401,10 +401,15 @@ def rank(query: str, places: list[Place], prefer_id: str = "", allow_first: bool
     for place in places:
         if norm(place.name) in (whole, bare):
             return place, "이름이 같은 곳"
-    for place in places:
-        name = norm(place.name)
-        if len(name) >= 2 and bare and (bare in name or name in bare):
-            return place, "이름이 비슷한 곳"
+    # 비슷한 곳이 여럿이면 이름이 검색어로 시작하는 곳 · 가게 지점('… 영남이공대점')이 아닌 곳이 먼저 — '영남이공대(대구)' 에서
+    # '지지고 영남이공대점' 을 골랐다(2026-11-16 담당자 기록). 목록 차례는 그다음.
+    branch_query = norm(query).endswith("점")
+    alike = [(i, place) for i, place in enumerate(places)
+             if len(norm(place.name)) >= 2 and bare and (bare in norm(place.name) or norm(place.name) in bare)]
+    if alike:
+        _, place = min(alike, key=lambda ip: (not branch_query and norm(ip[1].name).endswith("점"),
+                                               not norm(ip[1].name).startswith(bare), ip[0]))
+        return place, "이름이 비슷한 곳"
     if not allow_first:
         return None, ""
     best = max(places, key=lambda p: similarity(bare or whole, norm(p.name)))
@@ -779,7 +784,9 @@ def capture(page, out: Path, label: str = "", wait: Callable[[float], None] | No
             result.steps.append(f"'{SHORTEST}' 골라 찍음")
     result.km = route_km(page_text(page))
     result.places = places_from_url(page.url)
-    if result.places:
+    if len(result.places) >= 2:
+        # 곳을 하나만 읽었으면 출발지 · 목적지 이름을 바꾸지 않는다 — 목적지가 출발지 이름으로 적혔다
+        # ('강원대학교 춘천캠퍼스 → 강원대학교 춘천캠퍼스 292km', 2026-11-16 담당자 기록)
         result.origin, result.goal = result.places[0].name, result.places[-1].name
     if screenshot_clear(page, out, wait):
         result.steps.append("지도를 가리는 세부 경로 창을 숨기고 찍음")

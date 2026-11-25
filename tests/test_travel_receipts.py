@@ -446,3 +446,25 @@ def test_a_slip_whose_date_the_ai_could_not_read_gets_its_own_row(qapp, tmp_path
     assert notes and "2줄로 나눴습니다" in notes[0] and "일자를 못 읽은 영수증 1장" in notes[0] and "11112222" not in notes[0]
     trip = model.Trip(name="홍길동", start=date(2026, 11, 3), end=date(2026, 11, 4), destination="서울 가나협회", stay=table.evidence(2026))
     assert model.unclear(trip, model.STAY, trip.stay[0])
+
+
+def test_a_typed_date_equal_to_the_ai_dates_still_splits(qapp, tmp_path):
+    """사람이 AI 보다 먼저 같은 일자 · 합계를 적어 둔 하이패스 두 장도 나눈다 — 나눠도 사람이 적은 값이 바뀌지 않는다(2026-11-25 담당자 기록:
+    '일자를 직접 적은 줄이라 나누지 않았습니다'). 다른 일자 · 다른 합계를 적었으면 전처럼 두고."""
+    from claim_downloader.travel import ai_read
+    from claim_downloader.ui.pages import travel as travel_page
+    path = _cards(tmp_path / "홍길동_하이패스 증빙.png", [CARD_A, CARD_A])
+    found = ai_read.summary(model.TOLL, _read(("2026-10-29", 4100, "", "", "", "", ""), ("2026-10-29", 4100, "", "", "", "", "")))
+    for typed, amount, rows in (("2026-10-29", "8,200", 2), ("20261029", "", 2), ("2026-10-29", "9,000", 1), ("2026-10-30", "8,200", 1)):
+        table = travel_page.EvidenceTable(model.TOLL)
+        table.add_files([path], 2026)
+        table.item(0, 1).setText(typed)
+        table.item(0, 2).setText(amount)
+        notes = []
+        table.note = notes.append
+        table.apply_ai(path, found)
+        assert table.rowCount() == rows, (typed, amount, notes)
+        if rows == 2:
+            assert [table.item(r, 2).text() for r in range(2)] == ["4,100", "4,100"]
+        else:
+            assert "직접 적은" in notes[0]

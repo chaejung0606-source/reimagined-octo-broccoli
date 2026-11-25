@@ -206,6 +206,10 @@ QFrame#banner {{
     border-radius: {r_ctl + 4}px;
 }}
 QLabel#bannerText {{ font-weight: 500; color: {c['text']}; }}
+QLabel#previewBanner {{
+    background: {c['warning_bg']}; border: 1px solid #F0D3A8; border-radius: {r_ctl + 4}px;
+    padding: 8px 12px; font-weight: 500; color: {c['text']};
+}}
 
 /* 회의 폴더 끌어다 놓기 — 점선 테두리, 끌고 들어오면 라벤더 */
 QFrame#dropZone {{
