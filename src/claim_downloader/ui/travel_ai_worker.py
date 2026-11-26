@@ -83,7 +83,7 @@ class TravelAiWorker(QObject):
             except OSError as error:
                 logbook.log(f"출장 AI 읽은 것을 남기지 못함(다음에 다시 읽음): {error}")
             done += len(batch)
-            logbook.log(f"출장 AI 읽기 {done}/{total}: {ai_read.found_text(results)}")
+            logbook.log(f"출장 AI 읽기 {done}/{total}: {ai_read.found_text(results, batch)}")
             self.done.emit(results)
         if stopped in FATAL_TEXT:
             logbook.log(f"출장 AI 읽기 멈춤 — {FATAL_TEXT[stopped]}")

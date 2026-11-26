@@ -229,12 +229,21 @@ def summary(kind: str, data: dict) -> dict:
     return out
 
 
-def found_text(results: dict) -> str:
-    """기록에 남길 한 줄 — 값은 적지 않는다."""
+def found_text(results: dict, files: list[tuple[str, str]] = ()) -> str:
+    """기록에 남길 한 줄 — 값은 적지 않는다. files((경로, 항목))를 주면 영수증을 하나도 못 읽은 파일이 어느 항목인지도
+    (담당자 2026-11-26 기록 '파일 1개 · 영수증 0장' — 어느 증빙인지 몰랐다. 파일 이름에는 출장자 이름이 있어 항목만)."""
     receipts = sum(len(d.get("receipts") or []) for d in results.values())
     dated = sum(1 for d in results.values() for r in d.get("receipts") or [] if r.get("date"))
     paid = sum(1 for d in results.values() for r in d.get("receipts") or [] if r.get("amount"))
-    return f"파일 {len(results)}개 · 영수증 {receipts}장(일자 있음 {dated} · 금액 있음 {paid})"
+    text = f"파일 {len(results)}개 · 영수증 {receipts}장(일자 있음 {dated} · 금액 있음 {paid})"
+    empty: dict[str, int] = {}
+    for path, kind in files:
+        if not (results.get(path) or {}).get("receipts"):
+            name = model.KIND_NAMES.get(kind, kind)
+            empty[name] = empty.get(name, 0) + 1
+    if empty:
+        text += " · 영수증을 못 읽은 파일: " + ", ".join(f"{name} {count}개" for name, count in empty.items())
+    return text
 
 
 def read(files: list[tuple[str, str]], model_name: str | None = None) -> dict:

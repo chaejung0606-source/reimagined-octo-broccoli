@@ -251,12 +251,15 @@ SPLIT_SCAN = 600      # 나눌 곳을 찾을 때 줄여 볼 긴 변
 SPLIT_DIFF = 24       # 바탕과 이만큼 다르면 내용(옅은 회색 카드 테두리도 내용 — 영수증 한 장의 둘레가 된다)
 SPLIT_GAP = 0.02      # 영수증 사이 빈 띠의 최소 폭(그 방향 길이 비율)
 SPLIT_MIN = 0.15      # 영수증 한 장의 최소 크기(그 방향 길이 비율) — 위아래의 제목 · 안내 글 한 줄은 영수증이 아니다
+SPLIT_MIN_SIDE = 0.08 # 나란히 놓인 영수증의 최소 폭 — 글이 많은 칸만 세어 실제 폭보다 좁게 잡힌다(짧은 줄만 닿는 오른쪽이 빠짐). 한 줄짜리 글은
+                      # 글이 있는 줄의 몫(SPLIT_LINES)에서 이미 빠지므로 위아래보다 작게 둔다
 SPLIT_BALANCE = 0.35  # 조각 크기가 이만큼은 고르게 — 영수증 여러 장은 대개 비슷한 크기다(한 영수증의 줄 사이로 자르지 않게)
 SPLIT_TRY = 12        # 자를 틈 후보(넓은 것부터) — 조합을 다 보므로 많으면 느리다
 SPLIT_PAD = 0.01      # 오린 둘레에 남길 여백(긴 변 비율)
 SPLIT_LINES = 0.15    # 나란히 놓인 영수증 — 글이 있는 줄의 몫이 이보다 적은 칸은 빈 칸(영수증 사이)
 SPLIT_EDGE_LINE = 0.06   # 조각 위아래 끝의 이보다 낮은 줄 하나가
 SPLIT_EDGE_GAP = 0.05    # 이보다(그리고 보통 줄 사이의 세 배보다) 멀리 떨어져 있으면 영수증 밖의 글(두 장에 걸친 안내 글)
+SPLIT_EDGE_OUT = 0.03    # 조각 끝의 짧은 줄이 나머지 줄들보다 양옆으로 이만큼(폭 비율) 넘게 삐져나가면 영수증 밖의 글(쪽 전체에 걸친 안내 글)
 SPLIT_EDGE_BLOCK = 0.1   # 두세 줄 묶음(손으로 쓴 제목 '11/17-20 체류증빙 (이름)' 이 두 줄로)도 이보다 낮고 멀리 떨어져 있으면 영수증 밖
 # 스캔한 종이 영수증은 나란히 붙여 놓아 사이 틈이 좁다(담당자 2026-11-26 스캔본 — 폭의 1~2%). 위 값으로 못 나누면 더 크게 보고 좁은 틈으로 한 번 더
 SPLIT_FINE_SCAN = 1000
@@ -276,7 +279,7 @@ def _spans(marks: list[bool]) -> list[tuple[int, int]]:
     return runs
 
 
-def _cut(marks: list[bool], n: int, gap: float | None = None) -> tuple[float, list[tuple[int, int]]] | None:
+def _cut(marks: list[bool], n: int, gap: float | None = None, least: float = SPLIT_MIN) -> tuple[float, list[tuple[int, int]]] | None:
     """한 방향으로 n 조각 — 내용 사이 빈 띠(SPLIT_GAP 이상) 가운데 n-1 개를 골라 자른다. 조각이 고르고(SPLIT_BALANCE) 틈이 넓을수록 좋다.
     (점수, 조각들) — 못 자르면 None. 카드 테두리 옆의 여백처럼 좁은 틈이 하나 더 있어도 조각이 고른 쪽(영수증 사이)을 고른다."""
     length = len(marks)
@@ -293,7 +296,7 @@ def _cut(marks: list[bool], n: int, gap: float | None = None) -> tuple[float, li
             first = i + 1
         pieces.append((runs[first][0], runs[-1][1]))
         sizes = [b - a + 1 for a, b in pieces]
-        if min(sizes) < SPLIT_MIN * length or min(sizes) < SPLIT_BALANCE * max(sizes):
+        if min(sizes) < least * length or min(sizes) < SPLIT_BALANCE * max(sizes):
             continue
         score = min(width[i] for i in combo) / length * min(sizes) / max(sizes)
         if best is None or score > best[0]:
@@ -333,18 +336,25 @@ def _split(image: QImage, n: int, scan: int, min_gap: float, stack: bool = True)
     def col_marks(y0: int, y1: int) -> list[bool]:
         return [c[h - 1 - y1: h - y0].count(1) >= 2 for c in col_mask]
 
+    seen_rows: dict = {}
+
     def row_marks(x0: int, x1: int) -> list[bool]:
-        return [r[x0: x1 + 1].count(1) >= 2 for r in row_mask]
+        if (x0, x1) not in seen_rows:          # 격자를 볼 때 같은 칸을 여러 번 묻는다
+            seen_rows[(x0, x1)] = [r[x0: x1 + 1].count(1) >= 2 for r in row_mask]
+        return seen_rows[(x0, x1)]
 
     def extent(marks: list[bool]) -> tuple[int, int] | None:
         runs = _spans(marks)
         return (runs[0][0], runs[-1][1]) if runs else None
 
-    runs_y = _spans(row_marks(0, w - 1))
-
-    def body(runs: list[tuple[int, int]]) -> tuple[int, int] | None:
+    def body(runs: list[tuple[int, int]], between: list[tuple[int, int]] = (), lo: int = 0, hi: int | None = None) -> tuple[int, int] | None:
         """조각 안 줄 덩어리의 위아래 — 멀리 떨어진 짧은 줄 하나(두 장에 걸친 아래 안내 글 · 위 제목)는 뺀다. '멀리' 는 그 틈 말고 다른 줄 사이
-        틈의 보통 값보다 세 배(카드 테두리가 진하면 카드 전체가 한 덩어리라 다른 틈이 없다 — 그때는 SPLIT_EDGE_GAP 만)."""
+        틈의 보통 값보다 세 배(카드 테두리가 진하면 카드 전체가 한 덩어리라 다른 틈이 없다 — 그때는 SPLIT_EDGE_GAP 만).
+        between(나란히 놓인 영수증 사이 빈 띠의 x 범위들)이 있으면, 위아래 끝의 짧은 줄이 그 띠를 건너 이어질 때도 뺀다 — 가까워도 두 장에 걸친 글이다
+        (담당자 2026-11-26 KORAIL 영수증 2 × 2 — 바로 아래의 '* 본 영수증은 세금계산서로 …' 한 줄이 왼쪽 아래 영수증에 붙어 나왔다).
+        같은 까닭으로 lo..hi(그 영수증이 쓸 수 있는 x 범위) 안에서 끝의 짧은 줄이 나머지 줄들보다 양옆으로 SPLIT_EDGE_OUT 넘게 삐져나가면 뺀다 —
+        한 줄에 영수증이 하나뿐인 띠(위 둘 · 아래 하나)에서는 칸 사이 빈 띠가 없다."""
+        hi = w - 1 if hi is None else hi
         runs = list(runs)
 
         def far(gap: int, others: list[int]) -> bool:
@@ -355,10 +365,20 @@ def _split(image: QImage, n: int, scan: int, min_gap: float, stack: bool = True)
         def gaps(rs) -> list[int]:
             return [b[0] - a[1] - 1 for a, b in zip(rs, rs[1:])]
 
-        while len(runs) > 1 and runs[-1][1] - runs[-1][0] + 1 <= SPLIT_EDGE_LINE * h and far(gaps(runs)[-1], gaps(runs)[:-1]):
-            runs.pop()
-        while len(runs) > 1 and runs[0][1] - runs[0][0] + 1 <= SPLIT_EDGE_LINE * h and far(gaps(runs)[0], gaps(runs)[1:]):
-            runs.pop(0)
+        def sticks_out(end: int) -> bool:
+            line = widest(runs[end], lo, hi)
+            others = widest((runs[1][0], runs[-1][1]) if end == 0 else (runs[0][0], runs[-2][1]), lo, hi)
+            # 양옆 둘 다 — 한쪽으로만 삐져나간 것(영수증 귀퉁이의 도장 · 로고)은 영수증의 것이다
+            return bool(line and others) and line[0] < others[0] - SPLIT_EDGE_OUT * w and line[1] > others[1] + SPLIT_EDGE_OUT * w
+
+        def stray(end: int) -> bool:
+            run, rest = runs[end], gaps(runs)
+            if run[1] - run[0] + 1 > SPLIT_EDGE_LINE * h:
+                return False
+            return far(rest[end], rest[:-1] if end == -1 else rest[1:]) or bool(between and bridges(run, between)) or sticks_out(end)
+
+        while len(runs) > 1 and (stray(-1) or stray(0)):
+            runs.pop(-1 if stray(-1) else 0)
         # 위 끝의 두세 줄 묶음 — 손으로 쓴 제목이 두 줄('11/#8-20 체류증빙 (이름)' 아래에 고친 '17')이면 줄 하나씩으로는 못 뺀다
         for k in (2, 3):
             if len(runs) > k and runs[k - 1][1] - runs[0][0] + 1 <= SPLIT_EDGE_BLOCK * h:
@@ -368,33 +388,123 @@ def _split(image: QImage, n: int, scan: int, min_gap: float, stack: bool = True)
                     break
         return (runs[0][0], runs[-1][1]) if runs else None
 
-    tries = []                                         # (점수, 상자들) — 위아래 · 나란히 둘 다 보고 나은 쪽
-    stacked = _cut(row_marks(0, w - 1), n, min_gap) if stack else None
-    if stacked:
+    def rows_in(x0: int, x1: int, y0: int, y1: int) -> list[tuple[int, int]]:
+        return [(a + y0, b + y0) for a, b in _spans(row_marks(x0, x1)[y0:y1 + 1])]
+
+    def bridges(run: tuple[int, int], ranges: list[tuple[int, int]]) -> bool:
+        """그 줄이 칸 사이 빈 띠를 끊김 없이 건너는가 — 띠 안에서 가장 긴 빈 곳이 낱말 사이 틈만 하다(나눌 때 쓴 틈의 반보다 좁다).
+        영수증 제 줄이 길어 빈 띠 안으로 들어와도 이웃 영수증까지는 넓게 비어 있다."""
+        marks = col_marks(*run)
+        for g0, g1 in ranges:
+            empty = _spans([not mark for mark in marks[g0:g1 + 1]])
+            if g1 >= g0 and max((e - s + 1 for s, e in empty), default=0) < 0.5 * min_gap * w:
+                return True
+        return False
+
+    seen_share: dict = {}
+
+    def columns(y0: int, y1: int, k: int):
+        """y0..y1 띠를 나란히 k 칸 — (점수, 칸 x 범위들, 칸 사이 빈 띠들). 칸마다 글이 있는 줄의 몫(줄 높이로 셈)으로 본다. 영수증 사이 빈 띠는
+        거의 모든 줄에서 비어 있다 — 두 장에 걸친 안내 글 한 줄('본 영수증은 세금계산서로 …')이 지나가도(카드 테두리가 옅어 줄마다 따로 덩어리여도).
+        칸 x 범위는 글이 많은 곳뿐이라 짧은 줄만 닿는 영수증 가장자리가 빠질 수 있다 — 영수증의 실제 폭은 bounds 안에서 다시 잰다."""
+        if (y0, y1) not in seen_share:
+            runs = rows_in(0, w - 1, y0, y1)
+            total = sum(b - a + 1 for a, b in runs)
+            share = [0] * w
+            for a, b in runs:
+                for x, c in enumerate(col_mask):
+                    if c[h - 1 - b: h - a].count(1):
+                        share[x] += b - a + 1
+            seen_share[(y0, y1)] = (share, total) if runs else None
+        if not seen_share[(y0, y1)]:
+            return None
+        share, total = seen_share[(y0, y1)]
+        cut = _cut([v > SPLIT_LINES * total for v in share], k, min_gap, SPLIT_MIN_SIDE)
+        if not cut:
+            return None
+        ranges = cut[1]
+        return cut[0], ranges, [(ranges[i][1] + 1, ranges[i + 1][0] - 1) for i in range(len(ranges) - 1)]
+
+    def bounds(ranges: list[tuple[int, int]], between: list[tuple[int, int]], y0: int, y1: int) -> list[tuple[int, int]]:
+        """칸마다 쓸 수 있는 x 범위 — 이웃한 두 영수증의 경계는 두 영수증의 줄(인쇄 머리 · 두 장에 걸친 안내 글을 뺀 위아래)에서 칸 사이에
+        글이 없는 가장 넓은 곳의 가운데. 짧은 줄만 닿는 영수증 가장자리 · 귀퉁이의 도장까지 그 영수증에 든다."""
+        spans = [body(rows_in(x0, x1, y0, y1), between, x0, x1) for x0, x1 in ranges]
+        edges = []
+        for i, ((_, a1), (b0, _)) in enumerate(zip(ranges, ranges[1:])):
+            rows = [span for span in spans[i:i + 2] if span]
+            empty = []
+            if rows and b0 > a1 + 1:
+                top, bottom = min(r[0] for r in rows), max(r[1] for r in rows)
+                empty = _spans([not mark for mark in col_marks(top, bottom)[a1 + 1: b0]])
+            if empty:
+                start, end = max(empty, key=lambda r: r[1] - r[0])
+                edges.append(a1 + 1 + (start + end) // 2)
+            else:
+                edges.append((a1 + b0) // 2)
+        return [(0 if i == 0 else edges[i - 1] + 1, w - 1 if i == len(ranges) - 1 else edges[i]) for i in range(len(ranges))]
+
+    def widest(ys: tuple[int, int], lo: int, hi: int) -> tuple[int, int] | None:
+        """ys 줄들에서 lo..hi 안의 글 폭(왼쪽 · 오른쪽 끝)."""
+        xs = extent(col_marks(*ys)[lo:hi + 1])
+        return (xs[0] + lo, xs[1] + lo) if xs else None
+
+    def across(y0: int, y1: int, k: int):
+        """y0..y1 띠를 나란히 k 장 — (점수, 상자들), k == 1 이면 띠 전체(점수 None). 칸 위아래 끝의 짧은 줄이 칸 사이 빈 띠까지 이어지면
+        두 장에 걸친 글(인쇄 머리 · 안내 글)이라 그 칸의 영수증이 아니다."""
+        if k == 1:
+            ys = body(rows_in(0, w - 1, y0, y1), (), 0, w - 1)
+            xs = widest(ys, 0, w - 1) if ys else None
+            return (None, [(xs[0], ys[0], xs[1], ys[1])]) if xs else None
+        cut = columns(y0, y1, k)
+        if not cut:
+            return None
+        score, ranges, between = cut
         boxes = []
-        for y0, y1 in stacked[1]:
-            xs = extent(col_marks(y0, y1))
+        for lo, hi in bounds(ranges, between, y0, y1):
+            # 줄은 그 영수증이 쓸 수 있는 x 범위 전체에서 — 글이 많은 곳 밖의 귀퉁이(도장 · 표시)까지. 두 장에 걸친 글은 body 가 뺀다
+            ys = body(rows_in(lo, hi, y0, y1), between, lo, hi)
+            xs = widest(ys, lo, hi) if ys else None
             if xs:
-                boxes.append((xs[0], y0, xs[1], y1))
-        tries.append((stacked[0], boxes))
-    if runs_y:
-        # 나란히 — 칸마다 글이 있는 줄의 몫(줄 높이로 셈)으로 본다. 영수증 사이 빈 띠는 거의 모든 줄에서 비어 있다 — 두 장에 걸친
-        # 안내 글 한 줄('본 영수증은 세금계산서로 …')이 지나가도(카드 테두리가 옅어 줄마다 따로 덩어리여도)
-        total = sum(b - a + 1 for a, b in runs_y)
-        share = [0] * w
-        for a, b in runs_y:
-            for x, c in enumerate(col_mask):
-                if c[h - 1 - b: h - a].count(1):
-                    share[x] += b - a + 1
-        side = _cut([v > SPLIT_LINES * total for v in share], n, min_gap)
-        if side:
-            boxes = []
-            for x0, x1 in side[1]:
-                ys = body(_spans(row_marks(x0, x1)))
-                if ys:
-                    boxes.append((x0, ys[0], x1, ys[1]))
-            tries.append((side[0], boxes))
-    tries = [t for t in tries if len(t[1]) == n]
+                boxes.append((xs[0], ys[0], xs[1], ys[1]))
+        return (score, boxes) if len(boxes) == k else None
+
+    def down(x0: int, x1: int, k: int, lo: int, hi: int, between: list[tuple[int, int]] = ()):
+        """x0..x1 칸(쓸 수 있는 x 범위 lo..hi)을 위아래로 k 장 — (점수, 상자들), k == 1 이면 칸 전체(점수 None).
+        between — 칸 사이 빈 띠들(두 장에 걸친 글을 알아보려고)."""
+        pieces = [(0, h - 1)] if k == 1 else None
+        if pieces is None:
+            cut = _cut(row_marks(lo, hi), k, min_gap)       # 쓸 수 있는 x 범위의 줄로 — 글이 많은 곳 밖의 귀퉁이까지 그 조각에
+            if not cut:
+                return None
+            pieces = cut[1]
+        boxes = []
+        for y0, y1 in pieces:
+            # 칸 위아래 끝의 인쇄 머리 · 두 장에 걸친 안내 글은 뺀다(across 와 같이 쓸 수 있는 x 범위 전체의 줄로). 쪽 전체를 위아래로만
+            # 나눌 때(lo..hi 가 쪽 폭)는 전처럼 자른 그대로
+            whole = (lo, hi) == (0, w - 1) and k > 1
+            ys = (y0, y1) if whole else body(rows_in(lo, hi, y0, y1), between, lo, hi)
+            xs = widest(ys, lo, hi) if ys else None
+            if xs:
+                boxes.append((xs[0], ys[0], xs[1], ys[1]))
+        return ((None if k == 1 else cut[0]), boxes) if len(boxes) == k else None
+
+    tries = []                                         # (점수, 상자들) — 위아래 · 나란히 · 격자를 다 보고 나은 쪽
+    if stack:
+        tries.append(down(0, w - 1, n, 0, w - 1))
+    tries.append(across(0, h - 1, n))
+    if stack:
+        # 격자 — 줄(띠)로 먼저 나누고 줄마다 나란히, 또는 칸으로 먼저 나누고 칸마다 위아래. 줄마다 영수증 수가 달라도 된다(2 + 1 …).
+        # 담당자 2026-11-26: KORAIL 홈페이지에서 인쇄한 영수증 4장(2 × 2) — 한 방향으로만 나눠 못 오렸다.
+        for parts in range(2, n):
+            bands = _cut(row_marks(0, w - 1), parts, min_gap)
+            if bands:
+                tries.append(_mix(bands[0], [lambda k, b=b: across(b[0], b[1], k) for b in bands[1]], n))
+            cols = columns(0, h - 1, parts)
+            if cols:
+                allowed = bounds(cols[1], cols[2], 0, h - 1)
+                mixed = _mix(cols[0], [lambda k, c=c, a=a: down(c[0], c[1], k, *a, cols[2]) for c, a in zip(cols[1], allowed)], n)
+                tries.append(mixed and (mixed[0], _reading_order(mixed[1])))     # 칸 차례가 아니라 읽는 차례(AI 가 읽은 차례)로
+    tries = [t for t in tries if t and len(t[1]) == n]
     if not tries:
         return []
     boxes = max(tries, key=lambda t: t[0])[1]
@@ -406,6 +516,52 @@ def _split(image: QImage, n: int, scan: int, min_gap: float, stack: bool = True)
         right, bottom = min(image.width(), int((x1 + 1) * sx + pad)), min(image.height(), int((y1 + 1) * sy + pad))
         out.append(trim(image.copy(left, top, right - left, bottom - top)))
     return out
+
+
+def _mix(score: float, makers: list, n: int):
+    """격자 — 띠(또는 칸)마다 영수증 몇 장인지 정해 모두 n 장. makers[i](k) 는 i 번째 띠를 k 장으로 나눈 (점수, 상자들) 이나 None
+    (k == 1 이면 점수 None). 띠마다 장 수를 바꿔 가며 점수(쓴 자르기 가운데 가장 낮은 것)가 가장 높은 것 — (점수, 상자들) 이나 None."""
+    parts = len(makers)
+    seen: dict = {}
+    best = None
+
+    def option(i: int, k: int):
+        if (i, k) not in seen:
+            seen[(i, k)] = makers[i](k)
+        return seen[(i, k)]
+
+    def walk(i: int, left: int, low: float, boxes: list) -> None:
+        nonlocal best
+        if i == parts:
+            if left == 0 and (best is None or low > best[0]):
+                best = (low, boxes)
+            return
+        for k in range(1, left - (parts - i - 1) + 1):
+            got = option(i, k)
+            if not got:
+                continue
+            score_k = low if got[0] is None else min(low, got[0])
+            if best is not None and score_k <= best[0]:
+                continue
+            walk(i + 1, left - k, score_k, boxes + got[1])
+
+    walk(0, n, score, [])
+    return best
+
+
+def _reading_order(boxes: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
+    """(x0, y0, x1, y1) 상자들을 읽는 차례로 — 위에서 아래 줄, 줄 안에서는 왼쪽부터. 세로로 반 넘게 겹치면 같은 줄(높이가 다른 영수증이 나란히)."""
+    lines: list[list] = []
+    for box in sorted(boxes, key=lambda b: b[1]):
+        line = lines[-1] if lines else None
+        if line:
+            top, bottom = min(b[1] for b in line), max(b[3] for b in line)
+            overlap = min(bottom, box[3]) - max(top, box[1])
+            if overlap >= 0.5 * min(bottom - top, box[3] - box[1]):
+                line.append(box)
+                continue
+        lines.append([box])
+    return [box for line in lines for box in sorted(line, key=lambda b: b[0])]
 
 
 def receipt_pieces(path: Path, n: int) -> list[QImage]:

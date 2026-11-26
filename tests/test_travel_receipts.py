@@ -742,3 +742,136 @@ def test_typed_date_not_on_any_receipt_is_kept(qapp, tmp_path, isolated_home):
     table, notes = _typed_then_read(tmp_path, "2026-11-21")
     assert table.rowCount() == 1 and table.item(0, 1).text() == "2026-11-21"
     assert any("나누지 않았습니다" in n and "일자에 없어" in n for n in notes)
+
+
+# ── 격자로 놓인 영수증 · 한 번에 결제한 승차권(담당자 2026-11-26 KORAIL 홈페이지에서 인쇄한 영수증 4장 — 2 × 2, 승인번호 모두 같음) ──────────
+# 한 방향(위아래 · 나란히)으로만 나눠 '그림을 못 오려 줄마다 파일 전체' 였고, 승인번호가 같아 3장을 '같은 영수증' 으로 빼 실비 합계가 한 장 값이었다.
+# 값은 지어낸 것이다.
+def _ticket_lines(day: str, route: str, amount: str) -> list[str]:
+    return ["영수증(고객용)", "NO 00000-0000-00000-00", f"2026년 11월 {day} KTX 000 일반실", route, "어른 1매",
+            "승인번호 4e-82d8-0000", f"결제금액 {amount}", "발행일시 2026년 11월 24일", "대표전화 0000-0000"]
+
+
+GRID_CARDS = [_ticket_lines("18일(수)", "가나 14:10 → 다라 15:27", "9,600원"), _ticket_lines("18일(수)", "다라 16:08 → 마바 17:44", "41,900원"),
+              _ticket_lines("20일(금)", "마바 11:34 → 다라 13:41", "41,600원"), _ticket_lines("20일(금)", "다라 14:04 → 가나 15:14", "9,600원")]
+
+
+def _print_page(path: Path, places: list[tuple[int, int]], cards: list[list[str]], marks: tuple = (), tails: tuple = ()) -> Path:
+    """홈페이지 인쇄 쪽을 본뜬 그림 — 위에 인쇄 시각 · 화면 이름(왼쪽 · 오른쪽 끝), 옅은 회색 테두리 카드를 places((x, y))마다,
+    카드 아래 두 장에 걸친 안내 글 한 줄, 맨 아래 주소 줄. marks 의 카드에는 빨간 네모, tails 의 카드에는 마지막 줄 끝에 붙은 빨간 표시."""
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+    cw, ch = 500, 660
+    image = QImage(1400, 1981, QImage.Format_RGB32)
+    image.fill(QColor("white"))
+    p = QPainter(image)
+    p.setFont(QFont("Sans", 13))
+    p.setPen(QPen(QColor("#222222"), 1))
+    p.drawText(55, 50, "26. 11. 24. 오전 10:05")
+    p.drawText(740, 50, "이용내역/영수증 조회")
+    for i, ((x, y), lines) in enumerate(zip(places, cards)):
+        p.setPen(QPen(QColor("#dddddd"), 2))
+        p.drawRect(x, y, cw, ch)
+        for j, line in enumerate(lines):
+            p.setPen(QPen(QColor("#222222"), 1))
+            p.drawText(x + 36, y + 60 + j * 64, line)
+            if j in (1, 4, 6):
+                p.setPen(QPen(QColor("#aaaaaa"), 1))
+                for k in range(x + 36, x + cw - 36, 6):
+                    p.drawPoint(k, y + 84 + j * 64)
+        if i in marks:
+            p.fillRect(QRect(x + cw - 80, y + ch - 80, 40, 40), QColor("red"))
+        if i in tails:
+            p.fillRect(QRect(x + cw - 46, y + 60 + (len(lines) - 1) * 64 - 14, 30, 16), QColor("red"))
+    bottom = max(y for _, y in places) + ch
+    p.setPen(QPen(QColor("#222222"), 1))
+    p.drawText(70, bottom + 45, "* 본 영수증은 세금계산서로 사용하실 수 없으며, 고속철도는 부가가치세가 포함되어 있습니다.")
+    p.drawText(55, 1935, "https://www.example.com/ticket/receipt")
+    p.end()
+    image.save(str(path))
+    return path
+
+
+def test_receipts_in_a_two_by_two_grid_are_cut_in_reading_order(qapp, tmp_path):
+    from claim_downloader.travel import render
+    path = _print_page(tmp_path / "격자.png", [(170, 265), (730, 265), (170, 985), (730, 985)], GRID_CARDS, marks=(1,))
+    pieces = render.receipt_pieces(path, 4)
+    assert len(pieces) == 4
+    assert [_reds(piece) > 0 for piece in pieces] == [False, True, False, False]      # 위 왼쪽 → 위 오른쪽 → 아래 왼쪽 → 아래 오른쪽
+    # 카드 하나만큼 — 인쇄 머리 줄 · 두 장에 걸친 안내 글 · 주소 줄은 조각에 넣지 않는다
+    assert all(piece.width() < 560 and piece.height() < 720 for piece in pieces)
+    # 왼쪽 영수증의 마지막 줄이 길어 칸 사이 빈 띠 쪽으로 나와도 그 영수증에 남는다 — 이웃 영수증까지 빈 띠를 건너는 줄만 뺀다
+    long = [card[:-1] + ["주소 가나광역시 다라구 마바로 240 (고객센터 안내)"] for card in GRID_CARDS]
+    left = _print_page(tmp_path / "긴 줄.png", [(170, 265), (730, 265), (170, 985), (730, 985)], long, tails=(0, 2))
+    assert [_reds(piece) > 0 for piece in render.receipt_pieces(left, 4)] == [True, False, True, False]
+
+
+def test_rows_with_different_counts_are_cut_row_by_row(qapp, tmp_path):
+    """줄마다 영수증 수가 달라도(위 둘 · 아래 하나) — 줄 수 · 칸 수를 정해 두지 않는다."""
+    from claim_downloader.travel import render
+    path = _print_page(tmp_path / "둘하나.png", [(170, 265), (730, 265), (170, 985)], GRID_CARDS[:3], marks=(2,))
+    pieces = render.receipt_pieces(path, 3)
+    assert [_reds(piece) > 0 for piece in pieces] == [False, False, True]
+    assert all(piece.width() < 560 and piece.height() < 720 for piece in pieces)
+
+
+def test_columns_whose_cards_do_not_line_up_are_cut_column_by_column_in_reading_order(qapp, tmp_path):
+    """두 칸의 카드 높이가 어긋나 가로로 가르는 빈 띠가 없으면 칸으로 먼저 나누고 칸마다 위아래 — 차례는 읽는 차례(위 줄 왼쪽부터)."""
+    from claim_downloader.travel import render
+    path = _print_page(tmp_path / "어긋남.png", [(170, 160), (730, 330), (170, 880), (730, 1050)], GRID_CARDS, marks=(1,))
+    pieces = render.receipt_pieces(path, 4)
+    assert [_reds(piece) > 0 for piece in pieces] == [False, True, False, False]
+    assert all(piece.width() < 560 and piece.height() < 720 for piece in pieces)
+
+
+def test_tickets_paid_together_share_an_approval_number_but_are_all_kept():
+    """한 번에 결제한 승차권 여러 장은 승인번호가 하나다 — 한 파일 안의 영수증끼리는 같은 영수증이 아니고, 다른 파일이어도 일자 · 금액 · 구간이
+    다르면 다른 영수증. 같은 영수증이 두 파일에 있을 때(일자 · 금액이 같음)만 한 번 넣는다."""
+    E = model.Evidence
+    path = Path("x/홍길동_교통 증빙.pdf")
+    tickets = [E(path=path, day=date(2026, 11, d), amount=a, origin=o, goal=g, part=i, pieces=4, receipt_key="48285726317")
+               for i, (d, a, o, g) in enumerate([(18, 9600, "가나", "다라"), (18, 41900, "다라", "마바"), (20, 41600, "마바", "다라"),
+                                                 (20, 9600, "다라", "가나")])]
+    trip = model.Trip(name="홍길동", start=date(2026, 11, 18), end=date(2026, 11, 20), public=list(tickets))
+    model.dedupe(trip)
+    assert trip.public == tickets and trip.dropped == []
+    assert model.public_pages(trip)[0].head == ["* 교통비 증빙 (대중교통)", "실비 합계 102,700원"]
+    # 영수증마다 파일을 나눠 두었어도(승인번호는 같음) 모두 넣는다
+    apart = [E(path=Path(f"x/홍길동_교통 증빙{i + 1}.pdf"), day=t.day, amount=t.amount, origin=t.origin, goal=t.goal, receipt_key=t.receipt_key)
+             for i, t in enumerate(tickets)]
+    trip = model.Trip(name="홍길동", start=date(2026, 11, 18), end=date(2026, 11, 20), public=list(apart))
+    assert model.dedupe(trip).public == apart
+    # 같은 승차권이 따로 든 파일도 있으면 하나만(따로 든 파일을 남긴다 — 그 승차권만 보인다)
+    copy = E(path=Path("x/홍길동_교통 증빙.png"), day=date(2026, 11, 18), amount=9600, receipt_key="48285726317")
+    trip = model.Trip(name="홍길동", start=date(2026, 11, 18), end=date(2026, 11, 20), public=list(tickets) + [copy])
+    model.dedupe(trip)
+    assert len(trip.public) == 4 and [(gone.part, kept.path) for _, gone, kept in trip.dropped] == [(0, copy.path)]
+
+
+def test_grid_print_read_by_ai_becomes_four_rows_with_their_own_pictures(qapp, tmp_path, isolated_home):
+    from claim_downloader.travel import ai_read, render
+    from claim_downloader.ui.pages import travel as travel_page
+    path = _print_page(tmp_path / "홍길동_교통 증빙.png", [(170, 265), (730, 265), (170, 985), (730, 985)], GRID_CARDS, marks=(1,))
+    table = travel_page.EvidenceTable(model.PUBLIC)
+    table.add_files([path], 2026)
+    notes = []
+    table.note = notes.append
+    found = ai_read.summary(model.PUBLIC, _read(("2026-11-18", 9600, "열차", "가나", "다라", "", "48285726317"),
+                                                ("2026-11-18", 41900, "열차", "다라", "마바", "", "48285726317"),
+                                                ("2026-11-20", 41600, "열차", "마바", "다라", "", "48285726317"),
+                                                ("2026-11-20", 9600, "열차", "다라", "가나", "", "48285726317")))
+    table.apply_ai(path, found)
+    assert table.rowCount() == 4 and "그림은 영수증마다 오림" in notes[0]
+    trip = model.dedupe(model.Trip(name="홍길동", start=date(2026, 11, 18), end=date(2026, 11, 20), public=table.evidence(2026)))
+    page = model.public_pages(trip)[0]
+    assert page.head[-1] == "실비 합계 102,700원"
+    assert [b.title[1:] for b in page.blocks[:2]] == [["증빙 2건", "일자 합계 51,500원"], ["증빙 2건", "일자 합계 51,200원"]]
+    cells = [cell for block in page.blocks[:2] for cell in render._cells(block, {}, {})]
+    assert [_reds(cell.image) > 0 for cell in cells] == [False, True, False, False]
+
+
+def test_ai_log_line_names_the_kind_of_a_file_it_read_nothing_from():
+    from claim_downloader.travel import ai_read
+    results = {"a.pdf": {"receipts": []}, "b.png": {"receipts": [{"date": "2026-11-18", "amount": 9600}]}}
+    text = ai_read.found_text(results, [("a.pdf", model.PUBLIC), ("b.png", model.STAY)])
+    assert text.endswith("영수증을 못 읽은 파일: 대중교통 1개") and "a.pdf" not in text

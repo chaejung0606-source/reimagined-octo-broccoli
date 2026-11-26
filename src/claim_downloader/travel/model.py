@@ -1098,24 +1098,37 @@ def fit_period(trip: Trip) -> str:
 def dedupe(trip: Trip) -> Trip:
     """같은 영수증(승인번호가 같음)이 두 파일에 있으면 하나만 둔다 — 담당자 2026-11-16 "아니 왜 똑같은게 두번 들어가죠?"(같은 카드 승인전표가
     PDF 와 그림으로 둘 다 폴더에 있었다). 남기는 것: 파일 이름 끝에 번호가 있는 것(담당자가 '1,2' 로 나눈 파일) → 이름 차례.
-    뺀 것은 trip.dropped 에 — 확인할 것에 한 줄로 알린다(review)."""
+    뺀 것은 trip.dropped 에 — 확인할 것에 한 줄로 알린다(review).
+    승인번호만으로 같다고 하지 않는다(same_receipt) — 한 번에 결제한 승차권 여러 장은 승인번호가 하나다(담당자 2026-11-26 KORAIL 영수증 4장이 한 파일에,
+    승인번호 모두 같음 — 3장을 '같은 영수증' 으로 빼 실비 합계가 한 장 값이 됐다)."""
     trip.dropped = []
     for kind in (STAY, PUBLIC, LODGING):
         items = getattr(trip, ITEM_ATTR[kind])
-        keep: dict[str, Evidence] = {}
+        kept: list[Evidence] = []
+        gone: dict[int, Evidence] = {}
         # 한 파일의 여러 영수증 중 하나(part)도 본다 — 같은 영수증이 따로 든 파일이 있으면 그 파일을 남긴다(그 영수증만 보인다)
         for e in sorted(items, key=lambda e: (e.part is not None, stay_order(e.path.stem) is None, e.path.name, e.part or 0)):
-            if e.receipt_key:
-                keep.setdefault(e.receipt_key, e)
-        out = []
+            same = next((k for k in kept if same_receipt(k, e)), None) if e.receipt_key else None
+            if same is None:
+                kept.append(e)
+            else:
+                gone[id(e)] = same
         for e in items:
-            kept = keep.get(e.receipt_key) if e.receipt_key else None
-            if kept is not None and kept is not e:
-                trip.dropped.append((kind, e, kept))
-                continue
-            out.append(e)
-        setattr(trip, ITEM_ATTR[kind], out)
+            if id(e) in gone:
+                trip.dropped.append((kind, e, gone[id(e)]))
+        setattr(trip, ITEM_ATTR[kind], [e for e in items if id(e) not in gone])
     return trip
+
+
+def same_receipt(a: Evidence, b: Evidence) -> bool:
+    """같은 영수증이 두 파일에 든 것인가 — 승인번호가 같고, 다른 파일이고, 둘 다 아는 값(일자 · 금액 · 출발지 · 목적지)이 서로 어긋나지 않을 때.
+    한 파일 안의 영수증끼리는 늘 다른 영수증이다(한 파일에 같은 영수증을 두 번 찍지 않는다). 승인번호가 같아도 일자 · 금액 · 구간이 다르면
+    한 번에 결제한 다른 승차권이다."""
+    if not a.receipt_key or a.receipt_key != b.receipt_key or a.path == b.path:
+        return False
+    loose = lambda text: re.sub(r"\s+", "", text or "")     # noqa: E731
+    pairs = ((a.day, b.day), (a.amount, b.amount), (loose(a.origin), loose(b.origin)), (loose(a.goal), loose(b.goal)))
+    return all(not (x and y) or x == y for x, y in pairs)
 
 
 ITEM_ATTR = {STAY: "stay", PUBLIC: "public", TOLL: "tolls", LODGING: "lodging", OTHER: "other"}
@@ -1183,7 +1196,7 @@ def review(trip: Trip) -> list[str]:
     if trip.fuel and trip.fuel != NO_CAR and not trip.tolls:
         out.append(f"차량 연료({trip.fuel})를 골랐는데 하이패스 증빙이 없습니다 — 자차는 하이패스 이용내역이 있어야 합니다(동승이면 '해당없음')")
     for kind, gone, kept in trip.dropped:
-        out.append(f"같은 영수증(승인번호 같음)이 두 파일에 있어 한 번만 넣었습니다 — {KIND_NAMES[kind]} · {receipt_name(kept)} "
+        out.append(f"같은 영수증(승인번호 · 일자 · 금액 같음)이 두 파일에 있어 한 번만 넣었습니다 — {KIND_NAMES[kind]} · {receipt_name(kept)} "
                    f"(넣지 않은 것: {receipt_name(gone)})")
     for day, files in _same_day_stays(trip):
         out.append(f"체류 증빙 {len(files)}건이 같은 날({short_date(day)})입니다 — 같은 영수증을 두 번 넣지 않았는지 보세요"
