@@ -1942,8 +1942,13 @@ def test_each_traveler_keeps_own_period():
     same = application.merge([two_days, application.parse_text(
         "출장자 연구원 김철수\n출장기간 2026. 10. 29.(목) ~ 2026. 10. 30.(금)\n출장지 가나이공대(대구)\n")])
     assert len(same.trips) == 1 and same.trips[0].travelers == ["홍길동", "김철수"]       # 같은 기간 · 같은 곳은 한 그룹
+    # 이름을 못 읽은 신청서라도 기간이 다르면 다른 출장 그룹(담당자 2026-11-26 "출장일자가 다른데 같은 그룹으로 묶여 있습니다")
     nameless = application.merge([one_day, application.parse_text("출장기간 2026. 10. 29.(목) ~ 2026. 10. 30.(금)\n출장지 가나이공대(대구)\n")])
-    assert [(t.start, t.end) for t in nameless.trips] == [(date(2026, 10, 29), date(2026, 10, 30))]   # 합치면 두 기간을 다 덮는다
+    assert [(t.start, t.end) for t in nameless.trips] == [(date(2026, 10, 29), date(2026, 10, 29)), (date(2026, 10, 29), date(2026, 10, 30))]
+    # 같은 사람의 겹치는 신청서는 한 출장 — 두 기간을 다 덮는다
+    longer = application.parse_text("출장자 연구원 김철수\n출장기간 2026. 10. 29.(목) ~ 2026. 10. 31.(토)\n출장지 가나이공대(대구)\n")
+    one = application.merge([one_day, longer])
+    assert [(t.start, t.end, t.travelers) for t in one.trips] == [(date(2026, 10, 29), date(2026, 10, 31), ["김철수"])]
 
 
 def test_traveler_not_on_application_gets_period_from_evidence(qapp, tmp_path, isolated_home):
@@ -1983,3 +1988,105 @@ def test_yes_no_column_is_not_part_of_place():
             "2026.10.29. (목) 09:00 가나이공대(대\n~ 구) 예\n2026.10.30. (금) 18:00\n출장목적 업무회의\n")
     app = application.parse_text(head + body)
     assert (app.start, app.end) == (date(2026, 10, 29), date(2026, 10, 30)) and app.places == ["가나이공대(대구)"]
+
+
+# 2026-11-26 담당자 기록 — 표의 직급 칸이 '책임연구(전' / '문직) 이름' 처럼 줄에서 나뉘어 이름을 못 읽는 신청서(이름 · 곳은 바꿈)
+_GROUP_HEAD = """『가나다라(實事求是)』
+가나다라대학교
+수신 내부결재
+팀장
+부단장
+(서명)
+전결
+2026.11.16.
+부서명 가나다라·활용혁신융합대학 사업단
+국내 출장신청서({title})
+1.
+다음과 같이 출장을 명함
+소속 직급 성명 출장내용 출장기간 출장지
+여비지급
+대상여부
+"""
+_GROUP_TAIL = """출장목적 학회참가
+출장비고
+협조자 사업단장 이몽룡
+시행 가나다라·활용혁신융합대학 사업단-4114 ( ) 접수 ( )
+"""
+
+
+def _group_form(title: str, names: list[str], start: str, end: str) -> str:
+    rows = "".join(f"데이터보안·활\n용혁신융합대\n학사업단\n책임연구(전\n문직) {name}\nAI-SPARK 컨퍼런스\n및 IEEE 워크숍\n참가\n"
+                   f"{start} 09:00 전남광주특\n별시 나주\n시 및 서구\n예~\n{end} 18:00\n" for name in names)
+    return _GROUP_HEAD.format(title=title) + rows + _GROUP_TAIL
+
+
+FIVE = ["홍길동", "김철수", "이영희", "박민수", "최지우"]
+TWO = ["강감찬", "을지문덕"]
+FORM_1820 = _group_form("11/18~20, 홍길동 외", FIVE, "2026.11.18. (수)", "2026.11.20. (금)")
+FORM_1721 = _group_form("강감찬 외,11/17~21", TWO, "2026.11.17. (화)", "2026.11.21. (토)")
+
+
+def test_trips_with_different_dates_stay_in_different_groups():
+    """담당자 2026-11-26 "출장일자가 다른데 같은 그룹으로 묶여 있습니다" — 11.18~20 신청서(5명, 이름을 못 읽음)가 같은 곳의 11.17~21 신청서와
+    기간이 겹친다고 한 출장이 되어 11.17~21 로 늘어났다. 기간이 다르면 다른 출장이고, 폴더 이름의 기간(26.11.17-21)으로도 합치지 않는다."""
+    a = application.parse_text(FORM_1820, Path("a.pdf"))
+    b = application.parse_text(FORM_1721, Path("b.pdf"))
+    assert a.travelers == [] and b.travelers == []          # 이 꼴은 이름을 못 읽는다 — 파일 이름의 사람으로 맞춘다(아래)
+    merged = application.merge([a] * 5 + [b] * 2)           # 같은 신청서를 사람마다 하위 폴더에 둔 사본
+    periods = [(t.start, t.end) for t in merged.trips]
+    assert periods == [(date(2026, 11, 18), date(2026, 11, 20)), (date(2026, 11, 17), date(2026, 11, 21))]
+    chosen = application.select(merged, "/x/출장비 지급(26.11.17-21. 광주 학회)")
+    assert [(t.start, t.end) for t in chosen.trips] == periods and (chosen.start, chosen.end) == periods[1]
+    # 신청서 글에 적힌 이름으로 출장을 정한다 — 협조자 줄의 이름 · 어디에도 없는 이름은 넣지 않는다
+    owners = application.owners(chosen, FIVE + TWO + ["이몽룡", "장보고"])
+    assert owners == {**{n: 0 for n in FIVE}, **{n: 1 for n in TWO}}
+    log = application.log_line(chosen, [Path("a.pdf")] * 5 + [Path("b.pdf")] * 2)
+    assert "a.pdf 5개, b.pdf 2개" in log and "2026-11-17~2026-11-21" in log
+    # 같은 사람이 날마다 따로 낸 신청서는 폴더 기간으로 전처럼 하나로(기간이 겹치지 않는 것만)
+    day1 = application.parse_text("출장자 연구원 홍길동\n출장기간 2026. 11. 17.(화) ~ 2026. 11. 17.(화)\n출장지 나주\n")
+    day2 = application.parse_text("출장자 연구원 홍길동\n출장기간 2026. 11. 18.(수) ~ 2026. 11. 18.(수)\n출장지 광주\n")
+    joined = application.select(application.merge([day1, day2]), "/x/출장비 지급(26.11.17-18. 광주)")
+    assert len(joined.trips) == 1 and (joined.start, joined.end) == (date(2026, 11, 17), date(2026, 11, 18))
+    # 고른 출장에 이름이 없으면 다른 출장에 적힌 사람을 끌어오지 않는다 — 줄에 이름이 없는 출장 표는 머리의 출장자가 줄마다의 출장자
+    assert application.select(merged, "/x/출장비 지급(26.11.18-20. 광주)").travelers == []
+    assert application.select(application.parse_text(TWO_ROWS), Path("2026-11-10 원주")).travelers == ["홍길동"]
+
+
+def test_itinerary_rows_inside_the_period_stay_one_trip():
+    """한 신청서의 일정 줄(출장기간 안의 날마다)은 그 출장의 일정 — 기간이 다르다고 출장을 나누지 않는다."""
+    text = ("출장자 연구원 홍길동\n출장기간 2026. 11. 17.(화) ~ 2026. 11. 19.(목)\n출장지 광주\n일정\n"
+            "1 2026.11.17 ~ 11.17 나주\n2 2026.11.18 ~ 11.19 광주\n")
+    app = application.parse_text(text)
+    assert [(t.start, t.end) for t in app.trips] == [(date(2026, 11, 17), date(2026, 11, 19))]
+
+
+def test_people_found_in_application_text_go_to_their_own_group(qapp, tmp_path, isolated_home):
+    """이름을 못 읽은 신청서 둘 — 증빙 파일 이름의 사람은 그 이름이 적힌 신청서의 출장 그룹으로, 사람마다 제 기간(담당자 2026-11-26)."""
+    from claim_downloader.ui.pages import travel as travel_page
+    folder = tmp_path / "출장비 지급(26.11.17-21. 광주 학회)"
+    folder.mkdir()
+    for name in FIVE + TWO:
+        sub = folder / name
+        sub.mkdir()
+        form = FORM_1820 if name in FIVE else FORM_1721
+        (sub / ("국내 출장신청서(11_18~20, 홍길동 외).txt" if name in FIVE else "국내 출장신청서(강감찬 외,11_17~21).txt")).write_text(
+            form, encoding="utf-8")
+        day = "2026-11-19"
+        _image(sub / f"{name}_체류증빙_{day}.png")
+    page = travel_page.TravelPage(worker=FakeWorker(tmp_path))
+    page.show()
+    page.load_folder(str(folder))
+    groups = [(g["start"], g["end"], sorted(g["names"]), g["on"]) for g in page._groups]
+    assert groups == [(date(2026, 11, 18), date(2026, 11, 20), sorted(FIVE), True),
+                      (date(2026, 11, 17), date(2026, 11, 21), sorted(TWO), True)]
+    assert page._extra == [] and sorted(page._from_text) == sorted(FIVE + TWO)
+    assert "그 이름이 적힌 신청서의 출장 그룹에 넣었습니다" in page.review_label.text()
+    assert "출장자 이름을 찾지 못했습니다" not in page.review_label.text()
+    page._go("files")
+    trips = {t.name: (t.start, t.end) for t in page.trips()}
+    assert all(trips[n] == (date(2026, 11, 18), date(2026, 11, 20)) for n in FIVE)
+    assert all(trips[n] == (date(2026, 11, 17), date(2026, 11, 21)) for n in TWO)
+    log = (isolated_home / "_실행로그.txt").read_text(encoding="utf-8")
+    assert log.count("출장신청서 글 모양 —") == 2                       # 같은 신청서 사본은 한 번만
+    assert "출장 그룹 1: 2026-11-18~11-20 · 출장자 5명" in log and "출장 그룹 2: 2026-11-17~11-21 · 출장자 2명" in log
+    assert not any(n in log for n in FIVE + TWO)                       # 기록에 이름을 남기지 않는다

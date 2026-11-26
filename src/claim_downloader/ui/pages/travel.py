@@ -664,6 +664,7 @@ class TravelPage(QWidget):
         self._group_i = 0                        # ② 의 칸(출장자 · 기간 · 출장지 · 경유지)이 보여 주는 그룹
         self._loading_group = False
         self._extra: list[str] = []              # 신청서에 없는데 증빙 파일 이름 맨 앞에서 읽어 더한 출장자
+        self._from_text: list[str] = []          # 신청서 표에서 이름을 못 읽었지만 그 신청서 글에 이름이 있어 그 출장 그룹에 넣은 출장자
         self._route_checked = False              # 자차 경로(출발지 · 경유지 · 목적지 · 연료)를 사람이 확인했는지 — 바뀌면 다시 확인
         self._routes: dict[tuple, dict] = {}     # (출장자, 구간 번호) → {origin, goal, label, km, image, status}
         self._searching: set = set()
@@ -860,6 +861,7 @@ class TravelPage(QWidget):
         self.folder_edit.setText("")
         self._review, self._apps, self._scan, self._sig = None, [], model.Scan(), {}
         self._groups, self._group_i, self._extra = [], 0, []
+        self._from_text = []
         self._fuel_of.clear()
         self._goal_of.clear()
         self._ask_reason.clear()
@@ -1523,11 +1525,19 @@ class TravelPage(QWidget):
         self.review_label.setText(self._review_text(merged, names, scan))
         on = [g for g in self._groups if g["on"]]
         self.log(f"출장 그룹 {len(self._groups)}개 · 만들 그룹 {len(on)}개 · 출장자 {len(self._names())}명"
+                 + (f" · 신청서 글에서 이름을 찾아 그룹에 넣은 출장자 {len(self._from_text)}명" if self._from_text else "")
                  + (f" · 파일 이름에서 더한 출장자 {len(self._extra)}명" if self._extra else ""))
         if merged:
             self.log(application.log_line(merged, self._apps))
+            for i, group in enumerate(self._groups):
+                # 그룹마다 기간 · 사람 수 — 날짜가 다른 출장이 한 그룹이 되지 않았는지 기록으로 본다(이름은 남기지 않는다)
+                end = group["end"] or group["start"]
+                self.log(f"  출장 그룹 {i + 1}: {group['start']:%Y-%m-%d}~{end:%m-%d} · 출장자 {len(group['names'])}명"
+                         f"{' · 만들기' if group['on'] else ''}")
+            shown = set()
             for app in apps:
-                if app.shape:
+                if app.shape and tuple(app.shape) not in shown:
+                    shown.add(tuple(app.shape))      # 같은 신청서를 사람마다 하위 폴더에 둔 사본은 한 번만
                     # 신청서의 글 모양(이름 · 곳은 □) — 늘 남긴다: 읽은 값이 틀린 때(출장지 '대상여부' · '목', 2026-11-16)도 기록으로 고치게
                     self.log(f"출장신청서 글 모양 — {app.path.name} (칸 이름 · 숫자만, 다른 글자는 □):")
                     for line in app.shape:
@@ -1547,6 +1557,7 @@ class TravelPage(QWidget):
         self._goal_of.clear()
         self._ask_reason.clear()
         self._routes.clear()
+        self._from_text = []
         today = self.start_edit.date().toPython(), self.end_edit.date().toPython()
         groups: list[dict] = []
         chosen = 0
@@ -1557,6 +1568,12 @@ class TravelPage(QWidget):
                 groups.append({"names": names, "start": trip.start, "end": trip.end or trip.start,
                                "dest": ", ".join(trip.places), "vias": [], "on": i == chosen, "days": dict(trip.days),
                                "from": f"신청서 {i + 1}번째 출장" if len(app.trips) > 1 else "신청서"})
+            # 신청서에서 이름을 못 읽은 사람 — 파일 이름 맨 앞의 이름이 한 출장의 신청서 글에만 나오면 그 출장 그룹으로(담당자 2026-11-26
+            # "출장일자가 다른데 같은 그룹으로 묶여 있습니다" — 고른 그룹에 다 넣으면 다른 날짜의 사람이 한 그룹이 된다)
+            listed = {n for g in groups for n in g["names"]}
+            for name, i in application.owners(app, [n for n in in_files if n not in listed]).items():
+                groups[i]["names"].append(name)
+                self._from_text.append(name)
             taken = set(groups[chosen]["names"])
             for group in groups:
                 if not group["on"] and set(group["names"]) & (set(in_files) - taken):
@@ -1659,7 +1676,7 @@ class TravelPage(QWidget):
             from_files = f" 증빙 파일 이름 맨 앞에서 출장자 {len(names)}명({', '.join(names)})을 읽었습니다." if names else ""
             return ("출장신청서를 찾지 못했습니다 — 파일 이름에 '출장신청' 이 든 PDF(또는 .hwpx)를 이 폴더에 두면 읽습니다." + from_files
                     + " 출장 정보를 직접 적어 주세요.")
-        lines = [f"출장신청서 {', '.join(p.name for p in self._apps)} 를 읽었습니다 — 찾은 칸: {', '.join(app.found) or '없음'}."]
+        lines = [f"출장신청서 {application.file_names(self._apps)} 를 읽었습니다 — 찾은 칸: {', '.join(app.found) or '없음'}."]
         if len(self._groups) > 1:
             on = [i + 1 for i, g in enumerate(self._groups) if g["on"]]
             lines.append(f"출장 그룹 {len(self._groups)}개 — 만들 그룹: {', '.join(map(str, on))}. 출장자 {len(names)}명: {', '.join(names)}")
@@ -1667,9 +1684,14 @@ class TravelPage(QWidget):
             lines.append(f"출장자 {len(names)}명: {', '.join(names)}")
         if app.purpose:
             lines.append(f"출장목적: {app.purpose}")
+        if self._from_text:
+            lines.append(f"신청서 표에서 이름을 읽지 못한 출장자 {len(self._from_text)}명({', '.join(self._from_text)})은 "
+                         "그 이름이 적힌 신청서의 출장 그룹에 넣었습니다(증빙 파일 이름 맨 앞의 이름으로 찾음) — 출장 그룹 표에서 확인하세요.")
         if extra:
             lines.append(extra)
-        lines += [f"확인: {n}" for n in app.notes]
+        # 이름을 신청서 글에서 찾아 그룹마다 넣었으면 '출장자 이름을 찾지 못했습니다' 는 맞지 않는다
+        named = self._from_text and all(g["names"] for g in self._groups)
+        lines += [f"확인: {n}" for n in app.notes if not (named and n.startswith("출장자 이름을 찾지"))]
         return "\n".join(lines)
 
     # ── 출장자 · 목적지 ──────────────────────────────────────────────────

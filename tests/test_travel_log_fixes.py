@@ -93,6 +93,11 @@ def test_naver_rank_prefers_the_school_over_a_branch_store():
     school = navermap.Place(name="영남이공대학교", x=128.6, y=35.8, id="2")
     assert navermap.rank("영남이공대(대구)", [shop, school])[0] is school
     assert navermap.rank("지지고 영남이공대점", [school, shop])[0] is shop
+    # 괄호 속 지역이 이름에 든 곳이 먼저 — '인터불고(원주)' 에서 '인터불고 레스토랑' 을 골랐다(2026-11-26 담당자 기록)
+    food = navermap.Place(name="인터불고 레스토랑", x=127.9, y=37.3, id="3")
+    hotel = navermap.Place(name="호텔인터불고 원주", x=127.9, y=37.3, id="4")
+    assert navermap.rank("인터불고(원주)", [food, hotel])[0] is hotel
+    assert navermap.rank("인터불고", [food, hotel])[0] is food          # 지역이 없으면 전처럼 이름이 검색어로 시작하는 곳
 
 
 def test_stray_weekday_bits_do_not_stay_in_the_place():

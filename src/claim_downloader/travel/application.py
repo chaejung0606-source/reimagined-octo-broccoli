@@ -60,6 +60,7 @@ class TripEntry:
     origin: str = ""
     travelers: list[str] = field(default_factory=list)
     days: dict = field(default_factory=dict)      # 출장지 → (첫날, 끝날) — 날짜별 출장을 하나로 합쳤을 때(_join_in_range)
+    texts: list[str] = field(default_factory=list)   # 이 출장을 적은 신청서 글 — 이름을 못 읽은 표에서 증빙 파일 이름의 사람을 찾는다(owners)
 
     def label(self) -> str:
         if self.start:
@@ -694,35 +695,57 @@ def _row_trips(lines: list[str], names: list[str]) -> list[TripEntry]:
     return out
 
 
+def _same_place(a: list[str], b: list[str]) -> bool:
+    """출장지가 같은지 — 띄어쓰기는 보지 않고, 한쪽이 다른 쪽을 품으면('광주' · '광주 김대중컨벤션센터') 같은 곳으로. 모르면 같다."""
+    x, y = _squash(", ".join(a)), _squash(", ".join(b))
+    return not x or not y or x in y or y in x
+
+
 def _separate(a: TripEntry, b: TripEntry) -> bool:
-    """기간이 겹쳐도 다른 출장 그룹 — 둘 다 출장자가 적혀 있고 겹치는 사람이 없으며, 출장지가 다르거나(같은 날 다른 곳에 간 사람들)
-    기간이 다를 때(담당자 2026-11-16 — 10.29~10.30 출장자가 같은 곳 하루 출장자의 신청서와 한 그룹으로 묶여 기간이 10.29 하루가 됐고,
-    10.30 체류 증빙이 '출장기간 밖' 으로 칠해졌다. 사람마다 기간이 다르면 그룹을 나눠야 사람마다 제 기간을 가진다)."""
-    if not (a.travelers and b.travelers) or set(a.travelers) & set(b.travelers):
+    """기간이 겹쳐도 다른 출장 그룹 — 같은 사람이 없으면서 출장지가 다르거나 기간이 다를 때.
+    기간이 같고 곳이 같으면(사람마다 한 장인 신청서 · 같은 출장의 줄) 한 그룹, 같은 사람이 있으면 한 그룹(두 기간을 다 덮는다).
+    담당자 2026-11-16: 10.29~10.30 출장자가 같은 곳 하루 출장자의 신청서와 한 그룹으로 묶여 10.30 체류 증빙이 '출장기간 밖' 이 됐다.
+    담당자 2026-11-26 "출장일자가 다른데 같은 그룹으로 묶여 있습니다": 11.18~20 신청서(5명 — 표의 직급 칸이 줄에서 나뉘어 이름을 못 읽음)가
+    11.17~21 신청서와 기간이 겹친다고 한 그룹이 되어 11.17~21 로 늘어났다 — 이름을 못 읽었어도 기간이 다르면 다른 출장이다."""
+    if a.travelers and b.travelers and set(a.travelers) & set(b.travelers):
         return False
-    if a.places and b.places and a.places != b.places:
+    if not _same_place(a.places, b.places):
         return True
     return (a.start, a.end or a.start) != (b.start, b.end or b.start)
 
 
-def _add_trip(trips: list[TripEntry], trip: TripEntry) -> None:
-    """기간이 겹치는 출장(같은 출장의 일정 줄 · 다른 사람의 신청서)은 하나로 — 출장자를 모으고 빈 칸을 채운다.
-    출장자가 다르고 출장지도 다르면 따로 둔다(출장 그룹, _separate)."""
-    same = (next((t for t in trips if t.overlaps(trip) and not _separate(t, trip)), None) if trip.start
-            else (trips[0] if trips else None))
+def _within(outer: TripEntry, inner: TripEntry) -> bool:
+    """inner 의 기간이 outer 의 기간 안 — 한 신청서의 일정 줄(10.28 · 10.29)은 그 출장의 일정이다. 다른 사람이 적힌 줄은 아니다."""
+    if not (outer.start and inner.start):
+        return False
+    if outer.travelers and inner.travelers and not set(outer.travelers) & set(inner.travelers):
+        return False
+    return outer.start <= inner.start and (inner.end or inner.start) <= (outer.end or outer.start)
+
+
+def _add_trip(trips: list[TripEntry], trip: TripEntry, within: bool = False) -> None:
+    """같은 출장(기간 · 곳이 같은 다른 사람의 신청서 · 같은 사람의 겹치는 신청서)은 하나로 — 출장자를 모으고 빈 칸을 채운다.
+    기간이 다르면 따로 둔다(출장 그룹, _separate). within — 한 신청서의 일정 줄이면 출장기간 안의 줄은 그 출장에 붙인다."""
+    if trip.start:
+        same = next((t for t in trips if t.overlaps(trip) and not _separate(t, trip)), None)
+        if same is None and within:
+            same = next((t for t in trips if _within(t, trip)), None)
+    else:
+        same = trips[0] if trips else None
     if same is None:
         trips.append(trip)
         return
     for name in trip.travelers:
         if name not in same.travelers:
             same.travelers.append(name)
+    same.texts += [t for t in trip.texts if t not in same.texts]
     same.places = same.places or list(trip.places)
     same.purpose = same.purpose or trip.purpose
     same.origin = same.origin or trip.origin
     if same.start is None:
         same.start, same.end = trip.start, trip.end
     elif trip.start:
-        # 합친 출장은 두 기간을 다 덮는다 — 첫 기간만 남기면 뒤 신청서 사람의 남은 날이 '출장기간 밖' 이 된다
+        # 같은 사람의 겹치는 신청서를 합친 출장은 두 기간을 다 덮는다 — 첫 기간만 남기면 남은 날이 '출장기간 밖' 이 된다
         same.end = max(same.end or same.start, trip.end or trip.start)
         same.start = min(same.start, trip.start)
 
@@ -748,21 +771,31 @@ def _trips_by_row(head: TripEntry | None, rows: list[TripEntry], names: list[str
 def parse_text(text: str, path: Path | None = None) -> Application:
     """출장신청서 글자 → Application. 출장이 여럿이면(양식이 되풀이되거나 표에 줄마다) trips 에 모두 — 고르기는 select."""
     lines = _lines(_normalize(text))
-    parts = [_parse_lines(group, path) for group in _groups(lines)]
+    groups = _groups(lines)
+    parts = [_parse_lines(group, path) for group in groups]
     app = parts[0]
     trips: list[TripEntry] = []
-    for part in parts:
+    for part, group in zip(parts, groups):
         if part.start or not trips:
-            _add_trip(trips, _entry(part))
+            entry = _entry(part)
+            entry.texts = ["\n".join(group)]
+            # 양식이 되풀이된 조각('다음과 같이 출장을 명함' · 표 머리 줄)은 다른 출장 — 기간이 다르면 따로.
+            # 칸 이름만 다시 나온 조각(일정 · 기간 줄)은 같은 양식의 일정이라 출장기간 안이면 그 출장에 붙인다
+            _add_trip(trips, entry, within=not any(_form_mark(line) for line in group))
     if len(parts) == 1:
         rows = _row_trips(lines, app.travelers)
+        for row in rows:
+            row.texts = ["\n".join(lines)]
         named = any(r.travelers for r in rows)
         if len({r.start for r in rows}) > 1 or (named and len({tuple(r.places) for r in rows if r.places}) > 1):
             if named:
                 trips = _trips_by_row(trips[0] if trips else None, rows, app.travelers)
             else:
                 for row in rows:
-                    _add_trip(trips, row)
+                    _add_trip(trips, row, within=True)
+                # 줄에 이름이 없는 출장 표 — 신청서 머리의 출장자가 줄마다의 출장자다(다른 신청서의 사람을 끌어오지 않게, apply_trip)
+                for trip in trips:
+                    trip.travelers = trip.travelers or list(app.travelers)
     everyone = []
     for part in parts:
         everyone += [n for n in part.travelers if n not in everyone]
@@ -834,11 +867,13 @@ def _join_in_range(trips: list[TripEntry], index: int, span: tuple[date, date]) 
     if not inside(chosen):
         return trips, index, 0
     people = set(chosen.travelers)
-    joined = [t for i, t in enumerate(trips) if i != index and inside(t)
+    # 기간이 겹치는 출장은 다른 출장 그룹이다(_separate — 날마다 따로 낸 신청서만 하나로, 담당자 2026-11-26)
+    joined = [t for i, t in enumerate(trips) if i != index and inside(t) and not t.overlaps(chosen)
               and (not people or not t.travelers or people & set(t.travelers))]
     if not joined:
         return trips, index, 0
-    merged = TripEntry(chosen.start, chosen.end, list(chosen.places), chosen.purpose, chosen.origin, list(chosen.travelers))
+    merged = TripEntry(chosen.start, chosen.end, list(chosen.places), chosen.purpose, chosen.origin, list(chosen.travelers),
+                       texts=list(dict.fromkeys(x for t in [chosen, *joined] for x in t.texts)))
     for t in [chosen, *joined]:
         for place in t.places:
             first, last = merged.days.get(place, (t.start, t.end or t.start))
@@ -863,7 +898,7 @@ def _join_in_range(trips: list[TripEntry], index: int, span: tuple[date, date]) 
         elif id(t) in taken:
             others = [n for n in t.travelers if n not in people]
             if people and others:
-                out.append(TripEntry(t.start, t.end, list(t.places), t.purpose, t.origin, others))
+                out.append(TripEntry(t.start, t.end, list(t.places), t.purpose, t.origin, others, texts=list(t.texts)))
         else:
             out.append(t)
     return out, out.index(merged), len(joined)
@@ -910,7 +945,10 @@ def apply_trip(app: Application, index: int) -> Application:
     app.places = list(trip.places)
     app.purpose = trip.purpose
     app.origin = trip.origin or app.origin
-    app.travelers = list(trip.travelers or app.everyone or app.travelers)
+    # 고른 출장에 이름이 없으면 다른 출장에 적히지 않은 사람만 — 다른 출장 그룹의 사람이 이 그룹에도 들어가지 않게(2026-11-26)
+    claimed = {n for j, t in enumerate(app.trips) if j != index for n in t.travelers}
+    spare = [n for n in app.everyone if n not in claimed]
+    app.travelers = list(trip.travelers or spare or ([] if len(app.trips) > 1 else app.travelers))
     return app
 
 
@@ -990,7 +1028,8 @@ def merge(apps: list[Application]) -> Application | None:
             same = next((t for t in out.trips if t.overlaps(trip) and not _separate(t, trip)), None) if trip.start else None
             if same and trip.places and same.places and trip.places != same.places:
                 out.notes.append(f"{app.path.name}: 출장지가 다릅니다({', '.join(trip.places)})")
-            _add_trip(out.trips, TripEntry(trip.start, trip.end, list(trip.places), trip.purpose, trip.origin, list(trip.travelers)))
+            _add_trip(out.trips, TripEntry(trip.start, trip.end, list(trip.places), trip.purpose, trip.origin, list(trip.travelers),
+                                           texts=list(trip.texts)))
         for name in app.everyone or app.travelers:
             if name not in out.everyone:
                 out.everyone.append(name)
@@ -1009,9 +1048,39 @@ def merge(apps: list[Application]) -> Application | None:
     return out
 
 
+_OWNER_SKIP = APPROVAL_WORDS + ("협조자", "접수", "우편", "전화", "전송", "공개")
+
+
+def owners(app: Application | None, names: list[str]) -> dict[str, int]:
+    """이름 → 그 이름이 나오는 출장(신청서 글이 하나일 때만). 표의 직급 칸이 '…(…)' 처럼 줄에서 나뉘면 이름을 못 읽는데
+    (담당자 2026-11-26 — 11.18~20 신청서 5명), 증빙 파일 이름 맨 앞의 이름이 어느 신청서에 적혔는지는 글에서 찾을 수 있다.
+    결재 · 협조 줄은 보지 않고, 두 출장의 글에 다 나오거나 어디에도 없으면 넣지 않는다(고른 그룹에 더해 증빙 일자로 — 화면)."""
+    if app is None or not app.trips:
+        return {}
+    bodies = ["\n".join(line for text in trip.texts for line in _lines(text)
+                        if not any(w in _squash(line) for w in _OWNER_SKIP)) for trip in app.trips]
+    out = {}
+    for name in names:
+        if len(name) < 2:
+            continue
+        pattern = re.compile(rf"(?<![가-힣]){re.escape(name)}(?:(?![가-힣])|(?=[외등]))")
+        hits = [i for i, body in enumerate(bodies) if pattern.search(body)]
+        if len(hits) == 1:
+            out[name] = hits[0]
+    return out
+
+
+def file_names(files: list[Path]) -> str:
+    """파일 이름 목록 — 같은 신청서를 사람마다 하위 폴더에 두어 이름이 되풀이되면 한 번만('… 5개')."""
+    counts: dict[str, int] = {}
+    for path in files:
+        counts[path.name] = counts.get(path.name, 0) + 1
+    return ", ".join(name + (f" {n}개" if n > 1 else "") for name, n in counts.items())
+
+
 def log_line(app: Application, files: list[Path]) -> str:
     """기록 한 줄 — 이름은 남기지 않는다(사람 수 · 찾은 칸 · 기간 · 출장지만)."""
     period = f"{app.start:%Y-%m-%d}~{(app.end or app.start):%Y-%m-%d}" if app.start else "기간 모름"
     trips = f" · 신청서의 출장 {len(app.trips)}건 중 {app.chosen + 1}번째" if len(app.trips) > 1 else ""
-    return (f"출장신청서 읽음: {', '.join(p.name for p in files)} — 출장자 {len(app.travelers)}명 · {period} · "
+    return (f"출장신청서 읽음: {file_names(files)} — 출장자 {len(app.travelers)}명 · {period} · "
             f"출장지 '{app.destination or '모름'}' · 찾은 칸: {', '.join(app.found) or '없음'}{trips}")

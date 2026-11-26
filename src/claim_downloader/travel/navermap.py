@@ -587,10 +587,13 @@ def rank(query: str, places: list[Place], prefer_id: str = "", allow_first: bool
     # 비슷한 곳이 여럿이면 이름이 검색어로 시작하는 곳 · 가게 지점('… 영남이공대점')이 아닌 곳이 먼저 — '영남이공대(대구)' 에서
     # '지지고 영남이공대점' 을 골랐다(2026-11-16 담당자 기록). 목록 차례는 그다음.
     branch_query = norm(query).endswith("점")
+    region = norm(" ".join(re.findall(r"\(([^)]*)\)", query or "")))
     alike = [(i, place) for i, place in enumerate(places)
              if len(norm(place.name)) >= 2 and bare and (bare in norm(place.name) or norm(place.name) in bare)]
     if alike:
+        # 괄호 속 지역이 이름에 든 곳이 먼저 — '인터불고(원주)' 에서 '인터불고 레스토랑' 보다 '호텔인터불고 원주'(2026-11-26 담당자 기록)
         _, place = min(alike, key=lambda ip: (not branch_query and norm(ip[1].name).endswith("점"),
+                                               bool(region) and region not in norm(ip[1].name),
                                                not norm(ip[1].name).startswith(bare), ip[0]))
         return place, "이름이 비슷한 곳"
     if not allow_first:
@@ -598,7 +601,6 @@ def rank(query: str, places: list[Place], prefer_id: str = "", allow_first: bool
     best = max(places, key=lambda p: similarity(bare or whole, norm(p.name)))
     if similarity(bare or whole, norm(best.name)) >= 0.5:
         return best, "이름이 가장 비슷한 곳"
-    region = norm(" ".join(re.findall(r"\(([^)]*)\)", query or "")))
     if region:
         for place in places:
             if region in norm(place.address):
