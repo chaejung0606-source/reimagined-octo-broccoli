@@ -380,6 +380,51 @@ def pdf_text(path: Path, pages: int = 2) -> str:
         return ""
 
 
+def page_texts(path: Path, limit: int = 20) -> list[str]:
+    """PDF 쪽마다 글자 — 못 읽으면 []."""
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(str(path))
+        if len(reader.pages) > limit:
+            return []
+        return [(page.extract_text() or "") for page in reader.pages]
+    except Exception:
+        return []
+
+
+# 한글 문서에 영수증 그림을 붙여 PDF 로 인쇄한 증빙(담당자 2026-11-26 '출장영수증(11.18-20)_….hwp' — 글자는 제목 줄뿐이고 영수증은 그림)은
+# 쪽마다 '- 체류 증빙(11.18)' · '- 체류 증빙(11.19-20)' 처럼 그 아래 영수증의 날을 적어 둔다. 문서 제목 '<출장 11.18~20, …>' 은 출장기간이라
+# 증빙 · 영수증이 든 줄만 본다.
+_HEADING_WORDS = ("증빙", "영수증")
+_HEADING_SPAN = re.compile(r"(?<![\d.])(\d{1,2})\s*[./]\s*(\d{1,2})(?:\s*[~\-–]\s*(?:(\d{1,2})\s*[./]\s*)?(\d{1,2}))?(?![\d.])")
+
+
+def heading_days(text: str, year: int) -> list[date]:
+    """증빙 제목 줄에 적힌 날들(나온 차례, 겹치지 않게) — '(11.19-20)' 은 19일 · 20일. 열흘이 넘는 범위는 날로 펼치지 않는다."""
+    out: list[date] = []
+    for line in (text or "").splitlines():
+        if not any(w in line.replace(" ", "") for w in _HEADING_WORDS):
+            continue
+        for match in _HEADING_SPAN.finditer(line):
+            m, d, m2, d2 = match.groups()
+            first = _make(year, int(m), int(d))
+            if first is None:
+                continue
+            days = [first]
+            last = _make(year, int(m2 or m), int(d2)) if d2 else None
+            if last and last < first:
+                last = _make(year + 1, last.month, last.day)
+            if last and 0 < (last - first).days <= 10:
+                days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
+            out += [day for day in days if day not in out]
+    return out
+
+
+def bare_text(text: str, route: bool = False) -> bool:
+    """PDF 글자에 영수증 내용(금액 · 해까지 적힌 날짜 · 승인번호)이 없는가 — 제목 줄만 글자이고 영수증은 그림인 PDF."""
+    return not (guess_amount(text) or receipt_days(text, route) or approval_of(text))
+
+
 SCANNED_CHARS = 40    # PDF 글자(띄어쓰기 빼고)가 이보다 적으면 영수증이 그림으로 든 PDF — 제목 한 줄뿐인 KTX 영수증 PDF(2026-11-16)
 
 
@@ -396,20 +441,27 @@ def guess(path: Path, year: int, route: bool = False, stay: bool = False) -> Evi
     scanned = path.suffix.lower() != ".pdf"
     if path.suffix.lower() == ".pdf":
         text = pdf_text(path)
-        scanned = len(re.sub(r"\s", "", text)) < SCANNED_CHARS
+        # 글자가 제목 줄뿐인 PDF 도 그림 영수증이다 — 글자가 마흔 자를 넘어도(한글 문서에 영수증 그림을 붙여 인쇄한 것, 2026-11-26) AI 가 본다
+        bare = bare_text(text, route)
+        scanned = len(re.sub(r"\s", "", text)) < SCANNED_CHARS or bare
         days = receipt_days(text, route)
+        headed = bare and (route or stay)
+        if headed:
+            days = heading_days(text, year)           # '- 체류 증빙(11.19-20)' — 제목 줄의 날(문서 제목의 출장기간은 아님)
         # 체류 · 대중교통은 이용일이 둘 이상이면 영수증이 여럿 — 일자 · 금액 · 경로를 하나로 고르지 않는다(맨 위 날짜 · 가장 큰 금액이 한 영수증 것뿐이었다).
         # 빈 칸이라 AI 가 읽고 영수증마다 줄로 나눈다(ui/pages/travel.py — EvidenceTable._split_receipts). 숙박 · 하이패스는 첫 날(입실일)
         several = (route or stay) and len(days) > 1
-        if not day:
+        if not day and headed:
+            day = None if several else (days[0] if days else None)
+        elif not day:
             day = None if several else (days[0] if days else guess_day("\n".join(_date_lines(text, route)[0]), year))
         if not several:
             amount = amount or guess_amount(text)
             if route and not (origin and goal):
                 origin, goal = guess_route(text)
             key = approval_of(text)
-        if stay and not shop and not several:
-            shop = shop_region_of(text)
+        if stay and not shop and not several and not bare:
+            shop = shop_region_of(text)               # 제목 줄의 '광주' 는 출장지이지 가맹점 주소가 아니다
     return Evidence(path=path, day=day, amount=amount, origin=origin, goal=goal, shop_region=shop, receipt_key=key, several=several,
                     scanned=scanned)
 

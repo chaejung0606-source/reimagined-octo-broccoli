@@ -127,7 +127,7 @@ def build_prompt(files: list[tuple[str, str]], json_path: str) -> str:
         "{\n"
         '  "files": [{"file": "위 목록의 파일 경로 그대로", "receipts": [{"date": "YYYY-MM-DD", "amount": 29800, '
         '"mode": "열차", "origin": "출발역 · 출발지", "goal": "도착역 · 목적지", "address": "가맹점 · 숙소 주소", '
-        '"approvalNo": "승인번호(숫자)", "nights": 1}]}]\n'
+        '"approvalNo": "승인번호(숫자)", "nights": 1, "page": 1}]}]\n'
         "}\n"
         "[규칙]\n"
         "- 파일마다 그 안에 보이는 영수증 · 승차권 · 이용 내역을 receipts 에 하나씩 담으세요. 같은 결제를 두 번 담지 마세요. 영수증이 없으면 [] 입니다.\n"
@@ -140,6 +140,7 @@ def build_prompt(files: list[tuple[str, str]], json_path: str) -> str:
         "- origin · goal 은 대중교통만: 승차권에 적힌 출발 · 도착 역(터미널) 이름 그대로. 그 밖은 빈 문자열.\n"
         "- address 는 체류 · 숙박 영수증의 가맹점(숙소) 주소 그대로. 보이지 않으면 빈 문자열.\n"
         "- nights 는 숙박만: 묵은 박 수. 그 밖은 null.\n"
+        "- page 는 그 영수증이 있는 PDF 쪽 번호(1부터)입니다. 그림 파일은 1.\n"
         "- 보이지 않는 값은 빈 문자열(숫자는 null)로 두세요. 지어내지 마세요.\n"
         "위 JSON 파일 하나만 저장하고 다른 파일은 고치거나 지우지 마세요.\n"
     )
@@ -169,6 +170,8 @@ def clean_receipt(raw: dict) -> dict:
     out["nights"] = nights if nights and nights <= 60 else None
     digits = re.sub(r"\D", "", _text(raw.get("approvalNo")))
     out["approvalNo"] = digits if len(digits) >= 6 else ""
+    page = _int(raw.get("page"))
+    out["page"] = page if page and page <= 999 else None     # 여러 쪽 PDF 의 영수증을 쪽마다 오릴 때(render._by_page)
     return out
 
 

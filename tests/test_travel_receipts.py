@@ -569,3 +569,133 @@ def test_scanned_receipts_become_one_row_each_with_their_own_picture(qapp, tmp_p
     assert len(cells) == 3 and all(cell.w < 0.45 * full.width() for cell in cells)
     # 나란히 붙여 스캔한 영수증의 차례를 AI 에게 알린다
     assert "옆으로 나란히 붙여 스캔한 것은" in ai_read.build_prompt([(str(path), model.STAY)], "x.json")
+
+
+# ── 한글 문서에 영수증 그림을 붙여 PDF 로 인쇄한 증빙(담당자 2026-11-26 '출장영수증(11.18-20)_….hwp') ─────────────
+# 글자는 쪽마다 제목 줄('- 체류 증빙(11.18)' · '- 체류 증빙(11.19-20)')뿐이고 영수증은 그림이다. 2쪽에는 19일 · 20일 영수증이 나란히 —
+# 오른쪽 것만 테두리가 진했다. 값은 지어낸 것이다.
+def _receipt_picture(lines: list[str], border: str, width: int, mark: str = ""):
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+    image = QImage(width, 60 + 40 * len(lines), QImage.Format_RGB32)
+    image.fill(QColor("white"))
+    p = QPainter(image)
+    p.setPen(QPen(QColor(border), 3 if border != "#ececec" else 1))
+    p.drawRect(1, 1, image.width() - 3, image.height() - 3)
+    p.setPen(QColor("#222222"))
+    p.setFont(QFont("Sans", 13))
+    for i, line in enumerate(lines):
+        p.drawText(30, 50 + 40 * i, line)
+    if mark:
+        p.fillRect(QRect(width - 60, 20, 24, 24), QColor(mark))
+    p.end()
+    return image
+
+
+RECEIPT_18 = ["가나카드 승인전표", "거래일시 2026.11.18 23:02:48", "승인번호 21300000", "승인금액 1,000원", "가맹점명 가나스테이션",
+              "가맹점주소 가나 서구 가나로 48", "사업자등록번호 000-00-00000"]
+RECEIPT_19 = ["온라인 영수증", "거래일시 2026.11.19 10:49:20", "결제 승인번호 57880000", "상호명 다라 가나점", "사업장 주소 가나 서구 가나로 47",
+              "상품금액 600원", "합계 600원"]
+RECEIPT_20 = ["현금 영수증", "승인번호 N59610000", "발행일자 2026.11.20 10:19:09", "판매자상호 마바 가나점", "사업장주소 가나광역시 서구",
+              "공급가액 519", "부가세액 51", "합계 570"]
+
+
+def _hwp_print(path: Path, title: bool = True) -> Path:
+    from PySide6.QtCore import QMarginsF, QRectF
+    from PySide6.QtGui import QFont, QPageLayout, QPageSize, QPainter, QPdfWriter
+    writer = QPdfWriter(str(path))
+    writer.setResolution(150)
+    writer.setPageLayout(QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Portrait, QMarginsF(0, 0, 0, 0)))
+    p = QPainter(writer)
+    p.setFont(QFont("Sans", 12))
+    if title:
+        p.drawText(100, 120, "<출장 11.18~20, 가나쇼(가나)>")
+        p.drawText(120, 200, "- 체류 증빙(11.18)")
+    one = _receipt_picture(RECEIPT_18, "#ececec", 560)
+    p.drawImage(QRectF(100, 240, 560, one.height()), one)
+    writer.newPage()
+    if title:
+        p.drawText(120, 100, "- 체류 증빙(11.19-20)")
+    left = _receipt_picture(RECEIPT_19, "#ececec", 520, mark="red")
+    right = _receipt_picture(RECEIPT_20, "#555555", 540, mark="blue")
+    p.drawImage(QRectF(60, 260, 520, left.height()), left)
+    p.drawImage(QRectF(640, 140, 540, right.height()), right)
+    p.end()
+    return path
+
+
+def test_heading_days_read_only_evidence_heading_lines():
+    """문서 제목의 출장기간(11.18~20)은 영수증의 날이 아니다 — '증빙' · '영수증' 이 든 제목 줄만, 범위는 날마다."""
+    assert model.heading_days("<출장 11.18~20, 가나쇼(가나)>\n- 체류 증빙(11.18)", 2026) == [date(2026, 11, 18)]
+    assert model.heading_days("- 체류 증빙(11.19-20)", 2026) == [date(2026, 11, 19), date(2026, 11, 20)]
+    assert model.heading_days("체류 증빙 (10.31~11.2)", 2026) == [date(2026, 10, 31), date(2026, 11, 1), date(2026, 11, 2)]
+    assert model.heading_days("대중교통 영수증 12.31-1.1", 2026) == [date(2026, 12, 31), date(2027, 1, 1)]
+    assert model.heading_days("출장 11.18~20", 2026) == [] and model.heading_days("결제일 2026.11.18 영수증", 2026) == []
+
+
+def test_pdf_with_only_headings_is_read_by_ai_and_not_dated_from_the_title(qapp, tmp_path):
+    """담당자 2026-11-26 "19일 출장증빙이 있는데 왜 출장증빙에는 빠져있는거죠?" — 글자가 제목 줄뿐인 PDF(마흔 자 넘음)를 영수증 한 장(11월 18일 ·
+    가맹점 지역은 제목의 출장지)으로 보고 AI 에 맡기지 않았다. 제목 줄에 날이 여럿이면 영수증이 여럿 — 일자를 비우고 AI 가 읽는다."""
+    path = _hwp_print(tmp_path / "홍길동_체류증빙.pdf")
+    ev = model.guess(path, 2026, stay=True)
+    assert (ev.scanned, ev.several, ev.day, ev.shop_region) == (True, True, None, "")
+    assert [len(model.heading_days(t, 2026)) for t in model.page_texts(path)] == [1, 2]
+    # 진짜 영수증 글자가 든 PDF 는 그대로(마흔 자가 넘고 금액 · 날짜가 있다)
+    assert not model.bare_text("가나카드 승인전표\n거래일시 2026.11.18 23:02:48\n승인금액 1,000원")
+
+
+def test_receipt_box_with_another_receipt_beside_it_is_not_cut_out(qapp, tmp_path):
+    """2쪽의 두 영수증 가운데 테두리가 진한 오른쪽(20일)만 영수증 상자로 잡혀 그것만 오려 내 왼쪽(19일)이 출장증빙에서 빠졌다 — 상자 밖에
+    영수증만 한 덩어리가 남으면 상자로 오리지 않는다(쪽 전체). 하이패스 인쇄(상자 밖은 몇 줄)는 그대로 — test_hipass_print_boxes_are_still_receipt_frames."""
+    from claim_downloader.travel import render
+    path = _hwp_print(tmp_path / "홍길동_체류증빙.pdf")
+    second = render._load(path)[1]
+    assert render.frames(second) and render.receipt_frames(second) == []
+    shown = render.load_images(path)[1]
+    assert _reds(shown) > 0 and _blues(shown) > 0                 # 19일(빨강) · 20일(파랑) 둘 다
+
+
+def test_receipts_on_several_pages_are_cut_per_page(qapp, tmp_path, isolated_home):
+    """1쪽에 한 장 · 2쪽에 두 장 — 쪽마다 몇 장인지(제목 줄의 날 수, AI 가 읽은 쪽 번호)대로 오린다. 전에는 쪽이 둘인데 영수증이 셋이면 오리지 못했다."""
+    from claim_downloader.travel import ai_read, render
+    path = _hwp_print(tmp_path / "홍길동_체류증빙.pdf")
+    pieces = render.receipt_pieces(path, 3)
+    assert len(pieces) == 3
+    assert _reds(pieces[1]) > 0 and _blues(pieces[1]) == 0 and _blues(pieces[2]) > 0 and _reds(pieces[2]) == 0
+    assert _reds(pieces[0]) == 0 and _blues(pieces[0]) == 0
+    # 제목 줄이 없어도 AI 가 읽은 쪽 번호로
+    bare = _hwp_print(tmp_path / "홍길동_체류증빙2.pdf", title=False)
+    assert render._heading_layout(bare, 2, 3) == []
+    found = _read(("2026-11-18", 1000, "", "", "", "가나 서구 가나로 48", "21300000"), ("2026-11-19", 600, "", "", "", "", "57880000"),
+                  ("2026-11-20", 570, "", "", "", "", ""))
+    for receipt, page in zip(found["receipts"], (1, 2, 2)):
+        receipt["page"] = page
+    ai_read.remember({str(bare): {"receipts": [ai_read.clean_receipt(r) for r in found["receipts"]]}})
+    assert render._ai_layout(bare, 2, 3) == [1, 2]
+    pieces = render.receipt_pieces(bare, 3)
+    assert len(pieces) == 3 and _reds(pieces[1]) > 0 and _blues(pieces[2]) > 0
+
+
+def test_hwp_print_is_split_into_three_days_after_ai(qapp, tmp_path, isolated_home):
+    """AI 가 세 장(18일 · 19일 · 20일, 쪽 1 · 2 · 2)을 읽으면 날마다 줄 — 쪽에서는 날마다 그 영수증만."""
+    from claim_downloader.travel import ai_read, render
+    from claim_downloader.ui.pages import travel as travel_page
+    path = _hwp_print(tmp_path / "홍길동_체류증빙.pdf")
+    table = travel_page.EvidenceTable(model.STAY)
+    table.period_of = lambda person: (date(2026, 11, 18), date(2026, 11, 20))
+    table.add_files([path], 2026)
+    assert table.ai_wanted() == [path]
+    raw = _read(("2026-11-18", 1000, "", "", "", "가나 서구 가나로 48", "21300000"), ("2026-11-19", 600, "", "", "", "가나 서구 가나로 47", "57880000"),
+                ("2026-11-20", 570, "", "", "", "가나광역시 서구", ""))
+    for receipt, page in zip(raw["receipts"], (1, 2, 2)):
+        receipt["page"] = page
+    data = {"receipts": [ai_read.clean_receipt(r) for r in raw["receipts"]]}
+    ai_read.remember({str(path): data})
+    table.apply_ai(path, ai_read.summary(model.STAY, data))
+    assert [(table.item(r, 1).text(), table.parts[r]) for r in range(table.rowCount())] == [
+        ("2026-11-18", 0), ("2026-11-19", 1), ("2026-11-20", 2)]
+    cells = []
+    for ev in table.evidence(2026):
+        block = model.Block([ev.path], parts=[ev.part], pieces=[ev.pieces])
+        cells += render._cells(block, {}, {})
+    assert len(cells) == 3 and _reds(cells[1].image) > 0 and _blues(cells[1].image) == 0 and _blues(cells[2].image) > 0

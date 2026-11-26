@@ -99,6 +99,8 @@ FRAME_INK = 235      # 테두리 선으로 볼 어두움 — 줄이면 1점 선�
 FRAME_MIN_W = 0.12   # 테두리 상자로 볼 최소 크기(쪽 폭 · 높이 비율)
 FRAME_MIN_H = 0.08
 FRAME_TEXT = 0.3     # 상자들 안에 쪽 글(어두운 점)의 이만큼은 있어야 영수증 상자 — 카드 매출전표 표의 칸(테두리 친 흰 칸)은 영수증이 아니다
+FRAME_LEFT = 0.5     # 상자 밖의 글 덩어리가 가장 작은 상자의 이만큼(높이 · 폭 둘 다)이면 상자 밖에 영수증이 남은 것 — 상자로 오리지 않는다
+FRAME_BAND_GAP = 0.15   # 상자 밖 글 줄을 한 덩어리로 묶을 틈(가장 작은 상자 높이 비율) — 영수증 한 장의 줄 사이는 이보다 좁다
 
 
 def frames(image: QImage) -> list[tuple[int, int, int, int]]:
@@ -168,11 +170,43 @@ def receipt_frames(image: QImage) -> list[tuple[int, int, int, int]]:
     marks = [line.translate(table) for line in _rows(flat)]
     total = sum(line.count(1) for line in marks)
     inside = 0
+    outside = [bytearray(line) for line in marks]
+    edge = max(3, int(0.01 * flat.width()))           # 상자 테두리 선(상자 안쪽 바로 밖)은 상자 밖 글이 아니다
     for x, y, w, h in found:
         x0, x1 = int(x / sx), int((x + w) / sx)
         for line in marks[int(y / sy): int((y + h) / sy)]:
             inside += line[x0:x1].count(1)
-    return found if total and inside >= FRAME_TEXT * total else []
+        a, b = max(0, x0 - edge), min(flat.width(), x1 + edge)
+        for line in outside[max(0, int(y / sy) - edge): int((y + h) / sy) + edge]:
+            line[a:b] = bytes(b - a)
+    if not total or inside < FRAME_TEXT * total:
+        return []
+    least = (min(w for _, _, w, _ in found) / sx, min(h for _, _, _, h in found) / sy)
+    return [] if _left_out(outside, least) else found
+
+
+def _left_out(outside: list[bytearray], least: tuple[float, float]) -> bool:
+    """상자 밖에 영수증만 한 덩어리가 남았는가 — 그러면 상자로 오리면 그 영수증이 빠진다. 담당자 2026-11-26: 한글 문서에 붙인 영수증 둘
+    (11월 19일 온라인 영수증 · 20일 현금영수증)이 나란히 든 쪽에서 테두리가 진한 오른쪽 것만 상자로 잡혀 19일 영수증이 출장증빙에서 빠졌다.
+    하이패스 인쇄의 상자 밖은 인쇄 시각 · '총 N 건' · 주소 몇 줄이라 가장 작은 상자의 반에도 못 미친다."""
+    rows = [line.count(1) >= 2 for line in outside]
+    bands, start, last = [], None, None
+    for y, mark in enumerate(rows):
+        if not mark:
+            continue
+        if start is None or y - last > FRAME_BAND_GAP * least[1]:
+            if start is not None:
+                bands.append((start, last))
+            start = y
+        last = y
+    if start is not None:
+        bands.append((start, last))
+    for y0, y1 in bands:
+        lines = [line for line in outside[y0:y1 + 1] if 1 in line]
+        left, right = min(line.find(1) for line in lines), max(line.rfind(1) for line in lines)
+        if y1 - y0 + 1 >= FRAME_LEFT * least[1] and right - left + 1 >= FRAME_LEFT * least[0]:
+            return True
+    return False
 
 
 def _boxed(image: QImage) -> QImage:
@@ -388,7 +422,74 @@ def receipt_pieces(path: Path, n: int) -> list[QImage]:
         return [trim(image) for image in pages]
     if len(pages) == 1:
         return split_receipts(pages[0], n)
-    return []
+    return _by_page(path, pages, n)
+
+
+def _by_page(path: Path, pages: list[QImage], n: int) -> list[QImage]:
+    """여러 쪽에 영수증이 쪽보다 많이 — 쪽마다 몇 장인지 알면 그 수대로 쪽마다 오린다(쪽 차례, 쪽 안에서는 split_receipts 차례).
+    몇 장인지는 ① AI 가 읽은 영수증의 쪽 번호 ② 쪽마다 증빙 제목 줄의 날 수('- 체류 증빙(11.19-20)' → 2장) ③ 둘 다 모르면 쪽마다 나눠 보는
+    경우 가운데 하나만 맞을 때. 담당자 2026-11-26: 한글 문서에 붙인 영수증(1쪽에 11월 18일, 2쪽에 19일 · 20일 나란히)이 한 장으로 들어갔다."""
+    if len(pages) > 8 or n > 16 or n <= len(pages):
+        return []
+    memo: dict = {}
+
+    def cut(i: int, k: int) -> list[QImage]:
+        if (i, k) not in memo:
+            image = pages[i]
+            found = receipt_frames(image)
+            if found:
+                memo[i, k] = [_boxed(image.copy(*box)) for box in found] if len(found) == k else []
+            else:
+                memo[i, k] = [trim(image)] if k == 1 else split_receipts(image, k)
+        return memo[i, k]
+
+    def by(counts: list[int]) -> list[QImage]:
+        out = []
+        for i, k in enumerate(counts):
+            if k:
+                got = cut(i, k)
+                if len(got) != k:
+                    return []
+                out += got
+        return out
+
+    for counts in (_ai_layout(path, len(pages), n), _heading_layout(path, len(pages), n)):
+        if counts:
+            got = by(counts)
+            if got:
+                return got
+    fits = [got for counts in _compositions(n, len(pages)) if (got := by(list(counts)))]
+    return fits[0] if len(fits) == 1 else []
+
+
+def _compositions(n: int, parts: int):
+    """n 을 parts 개의 1 이상인 수로 — 쪽마다 영수증 수."""
+    for cuts in itertools.combinations(range(1, n), parts - 1):
+        bounds = (0, *cuts, n)
+        yield tuple(bounds[i + 1] - bounds[i] for i in range(parts))
+
+
+def _ai_layout(path: Path, pages: int, n: int) -> list[int]:
+    try:
+        from . import ai_read
+        receipts = (ai_read.lookup(path) or {}).get("receipts") or []
+    except Exception:  # noqa: BLE001
+        return []
+    marks = [r.get("page") for r in receipts]
+    if len(marks) != n or not all(isinstance(m, int) and 1 <= m <= pages for m in marks) or marks != sorted(marks):
+        return []
+    return [marks.count(i + 1) for i in range(pages)]
+
+
+def _heading_layout(path: Path, pages: int, n: int) -> list[int]:
+    from datetime import date
+
+    from . import model
+    texts = model.page_texts(path)
+    if len(texts) != pages:
+        return []
+    counts = [len(model.heading_days(text, date.today().year)) for text in texts]
+    return counts if all(counts) and sum(counts) == n else []
 
 
 def _load(path: Path) -> list[QImage]:
