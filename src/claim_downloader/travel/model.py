@@ -1046,7 +1046,7 @@ def fit_period(trip: Trip) -> str:
 
 def dedupe(trip: Trip) -> Trip:
     """같은 영수증(승인번호가 같음)이 두 파일에 있으면 하나만 둔다 — 담당자 2026-11-16 "아니 왜 똑같은게 두번 들어가죠?"(같은 카드 승인전표가
-    PDF 와 그림으로 둘 다 폴더에 있었다). 남기는 것: 파일 이름 끝에 체류 차례 번호가 있는 것(담당자가 '1,2' 로 나눈 파일) → 이름 차례.
+    PDF 와 그림으로 둘 다 폴더에 있었다). 남기는 것: 파일 이름 끝에 번호가 있는 것(담당자가 '1,2' 로 나눈 파일) → 이름 차례.
     뺀 것은 trip.dropped 에 — 확인할 것에 한 줄로 알린다(review)."""
     trip.dropped = []
     for kind in (STAY, PUBLIC, LODGING):
@@ -1174,26 +1174,19 @@ def _same_day_stays(trip: Trip) -> list[tuple[date, list[str]]]:
     return [(day, [receipt_name(e) for e in items]) for day, items in sorted(days.items()) if len({e.path for e in items}) > 1]
 
 
-# 체류 증빙 파일 이름 끝의 차례 번호 — '홍길동_체류 증빙1' · '체류증빙_2' · '체류 증빙(3)'. 담당자 2026-11-16 "체류일자가 여러일자의 경우
-# 1,2,3,4로 순서를 나누겠음" — 일자를 못 읽은 체류 증빙(그림 영수증)은 이 번호를 출장 N일째로 본다(stay_order → 화면이 출장 시작일 + N-1).
+# 체류 증빙 파일 이름 끝의 번호 — '홍길동_체류 증빙1' · '체류증빙_2' · '체류 증빙(3)'. 증빙을 가르는 번호일 뿐 **일자가 아니다**(담당자 2026-11-26
+# "증빙을 1,2,3으로 구분하는거고 일자랑은 상관없으니 영수증에 적힌 일자를 확인해주세요" — 2026-11-16 ~ 11-26 에는 출장 N일째로 적었다).
+# 같은 영수증이 두 파일에 있을 때 담당자가 번호를 붙여 나눈 파일을 남기는 데만 쓴다(dedupe).
 _STAY_ORDER = re.compile(r"(?:증빙|체류|영수증)\s*[_\-]?\s*[(\[]?\s*(\d{1,2})\s*[)\]]?\s*$")
 
 
 def stay_order(stem: str) -> int | None:
-    """체류 증빙 파일 이름 끝의 차례 번호(1 부터) — 없으면 None. 날짜('1029') · 0 은 번호로 보지 않는다."""
+    """체류 증빙 파일 이름 끝의 번호(1 부터) — 없으면 None. 날짜('1029') · 0 은 번호로 보지 않는다."""
     m = _STAY_ORDER.search(stem or "")
     if not m:
         return None
     n = int(m.group(1))
     return n if n >= 1 else None
-
-
-def order_day(order: int | None, start: date | None, end: date | None) -> date | None:
-    """차례 번호 → 출장 N일째(시작일 + N-1). 출장기간을 넘으면 None — 번호가 날의 차례가 아닌 것으로 본다."""
-    if not order or start is None:
-        return None
-    day = start + timedelta(days=order - 1)
-    return day if end is None or day <= end else None
 
 
 def receipt_name(e: Evidence, root: Path | None = None) -> str:

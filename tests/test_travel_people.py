@@ -1582,14 +1582,34 @@ def _png_size(path) -> tuple[int, int]:
     return struct.unpack(">II", head[16:24])
 
 
-def test_stay_order_number_is_the_trip_day():
-    """담당자 2026-11-16 "체류일자가 여러일자의 경우 1,2,3,4로 순서를 나누겠음" — 체류 증빙 파일 이름 끝의 번호는 출장 N일째."""
+def _read_stay(day: str) -> dict:
+    """AI 가 체류 영수증 한 장을 읽은 꼴 — 일자(못 읽으면 빈 글) · 가맹점 주소."""
+    return {"receipts": [{"date": day, "amount": 9000, "mode": "", "origin": "", "goal": "", "address": "부산 해운대구 가나로 1",
+                          "approvalNo": "", "nights": None}]}
+
+
+def test_stay_number_is_only_a_file_number(qapp, tmp_path):
+    """체류 증빙 파일 이름 끝의 번호('체류 증빙1' · '2' …)는 증빙을 가르는 번호일 뿐 일자가 아니다 — 담당자 2026-11-26 "1,2,3 이렇게 숫자를
+    붙인다고 했는데 이 규칙은 없애주세요. 증빙을 1,2,3으로 구분하는거고 일자랑은 상관없으니 영수증에 적힌 일자를 확인해주세요"(2026-11-16 ~ 11-26 에는
+    출장 N일째로 적었다). 일자는 영수증에서(PDF 글자 · AI) — 번호 차례와 일자 차례가 달라도 그대로. 번호는 같은 영수증의 두 파일 중 남길 것을 고를 때만."""
+    from claim_downloader.travel import ai_read
+    from claim_downloader.ui.pages import travel as travel_page
     assert [model.stay_order(s) for s in ("홍길동_체류 증빙1", "체류증빙_2", "체류 증빙(3)", "체류 증빙 4", "체류1")] == [1, 2, 3, 4, 1]
     assert [model.stay_order(s) for s in ("홍길동_체류 증빙", "체류 증빙 1029", "체류 증빙_10.29", "체류증빙0", "체류 증빙1 영수증사진")] == [
         None, None, None, None, None]
-    assert model.order_day(2, date(2026, 10, 29), date(2026, 10, 30)) == date(2026, 10, 30)
-    assert model.order_day(3, date(2026, 10, 29), date(2026, 10, 30)) is None        # 출장기간을 넘는 번호는 일자가 아니다
-    assert model.order_day(1, None, None) is None
+    assert not hasattr(model, "order_day")
+    table = travel_page.EvidenceTable(model.STAY)
+    table.period_of = lambda person: (date(2026, 10, 29), date(2026, 10, 31))
+    files = [_image(tmp_path / "홍길동_체류 증빙1.png"), _image(tmp_path / "홍길동_체류 증빙2.png"), _image(tmp_path / "홍길동_체류 증빙3.png")]
+    table.add_files(files, 2026)
+    assert table.apply_dates() == 0 and [table.item(r, 1).text() for r in range(3)] == ["", "", ""]   # 번호로 일자를 적지 않는다
+    assert table.ai_wanted() == files                                   # 영수증에서 읽는다
+    for path, day in zip(files, ("2026-10-31", "2026-10-29", "")):
+        table.apply_ai(path, ai_read.summary(model.STAY, _read_stay(day)))
+    table.apply_dates()
+    assert [table.item(r, 1).text() for r in range(3)] == ["2026-10-31", "2026-10-29", ""]          # 영수증에 적힌 날 · 못 읽으면 빈 칸
+    trip = model.Trip(name="홍길동", start=date(2026, 10, 29), end=date(2026, 10, 31), destination="부산", stay=table.evidence(2026))
+    assert "일자" in model.unclear(trip, model.STAY, trip.stay[2]) and "일자" not in model.unclear(trip, model.STAY, trip.stay[0])
     root = Path("/x/출장")
     assert model.shown_name(root / "이전" / "a.pdf", root) == "이전/a.pdf" and model.shown_name(root / "a.pdf", root) == "a.pdf"
 
@@ -1631,18 +1651,20 @@ def test_same_receipt_twice_and_folder_changes(qapp, tmp_path, isolated_home):
     page._go("files")
     stay = page.tables["stay"]
     days = {p.name: stay.item(r, 1).text() for r, p in enumerate(stay.paths)}
-    assert days == {"홍길동_체류 증빙1.png": "2026-10-29", "홍길동_체류 증빙2.png": "2026-10-30",
-                    "홍길동_체류 증빙 1029.png": "2026-10-29", "홍길동_체류 증빙3.png": ""}      # 3 은 이틀 출장을 넘는다
+    assert days == {"홍길동_체류 증빙1.png": "", "홍길동_체류 증빙2.png": "",
+                    "홍길동_체류 증빙 1029.png": "2026-10-29", "홍길동_체류 증빙3.png": ""}      # 이름 끝 번호는 일자가 아니다 — 영수증에서
+    stay.item(stay.paths.index(one), 1).setText("2026-10-29")              # 영수증을 보고 적은 일자(AI 가 읽은 것과 같은 자리)
+    stay.item(stay.paths.index(two), 1).setText("2026-10-30")
     trip = page.trips()[0]
     same = [r for r in model.review(trip) if "같은 날" in r]
     assert len(same) == 1 and "홍길동_체류 증빙1.png" in same[0] and "홍길동_체류 증빙 1029.png" in same[0]
     assert any(where.endswith("원본/홍길동_체류 증빙3.png") for _ref, where, _text in model.checks(trip, page._root()))
-    # 기간을 고치면 번호 일자도 따라간다 · 사람이 고친 일자는 그대로
+    # 기간을 고쳐도 영수증의 일자는 그대로(번호로 일자를 셈하지 않는다)
     row2 = stay.paths.index(two)
     stay.item(row2, 1).setText("2026-10-31")
     page.start_edit.setDate(QDate(2026, 10, 28))
     days = {p.name: stay.item(r, 1).text() for r, p in enumerate(stay.paths)}
-    assert days["홍길동_체류 증빙1.png"] == "2026-10-28" and days["홍길동_체류 증빙2.png"] == "2026-10-31"
+    assert days["홍길동_체류 증빙1.png"] == "2026-10-29" and days["홍길동_체류 증빙2.png"] == "2026-10-31"
     page.start_edit.setDate(QDate(2026, 10, 29))
     # 폴더에서 옛 파일을 지우고 이전 폴더 것도 지웠다 — 앱으로 돌아오면 맞춘다(바뀐 것이 없으면 아무것도 안 함)
     assert page._rescan(quiet=True) is False
@@ -1657,7 +1679,7 @@ def test_same_receipt_twice_and_folder_changes(qapp, tmp_path, isolated_home):
     import os
     os.utime(two, ns=(two.stat().st_atime_ns, two.stat().st_mtime_ns + 5_000_000_000))
     assert page._rescan(quiet=True) is True
-    assert stay.item(stay.paths.index(two), 1).text() == "2026-10-30"
+    assert stay.item(stay.paths.index(two), 1).text() == ""                # 새로 읽음 — 일자는 영수증에서 다시(이름 끝 번호로 채우지 않음)
     # 미리 보기는 지운 파일의 옛 그림을 쓰지 않는다
     cache = {old: [object()]}
     cells = render._cells(model.Block([old, one]), cache, {})
@@ -1749,7 +1771,7 @@ def test_ai_fills_blank_cells_and_same_receipt_once(qapp, tmp_path, isolated_hom
     assert [public.item(0, c).text() for c in range(1, 6)] == ["2026-10-30", "29,800", "열차", "동대구", "평택지제"]
     days = {p.name: (stay.item(r, 1).text(), stay.item(r, travel_page.SHOP_COL).text()) for r, p in enumerate(stay.paths)}
     assert days == {"홍길동_체류 증빙.pdf": ("2026-10-29", "대구"), "홍길동_체류 증빙1.png": ("2026-10-29", "대구"),
-                    "홍길동_체류 증빙2.png": ("2026-10-30", "대구")}       # 차례 번호 일자는 AI 가 덮지 않는다
+                    "홍길동_체류 증빙2.png": ("2026-10-30", "대구")}       # 일자는 AI 가 영수증에서 읽은 날(이름 끝 번호와 상관없이)
     assert "빈 칸" in page.ai_note.text() and not page.ai_note.isHidden()
     trip = page.trips()[0]
     assert sorted(e.path.name for e in trip.stay) == ["홍길동_체류 증빙1.png", "홍길동_체류 증빙2.png"]

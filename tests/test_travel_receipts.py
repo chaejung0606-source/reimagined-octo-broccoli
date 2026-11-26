@@ -427,7 +427,7 @@ def test_single_read_of_a_two_slip_picture_by_an_older_version_is_read_again_onc
 
 
 def test_a_slip_whose_date_the_ai_could_not_read_gets_its_own_row(qapp, tmp_path):
-    """AI 가 두 장 중 하나의 일자를 못 읽어도 줄은 나눈다 — 그 줄은 일자 칸이 비어 '확인 필요'(파일 이름의 차례 번호로 첫날을 적지 않는다).
+    """AI 가 두 장 중 하나의 일자를 못 읽어도 줄은 나눈다 — 그 줄은 일자 칸이 비어 '확인 필요'(파일 이름 끝의 번호는 일자가 아니다).
     전에는 한 줄로 두고 읽은 날 하나만 적어 다른 날의 영수증이 숨었다."""
     from claim_downloader.travel import ai_read
     from claim_downloader.ui.pages import travel as travel_page
@@ -435,13 +435,13 @@ def test_a_slip_whose_date_the_ai_could_not_read_gets_its_own_row(qapp, tmp_path
     table = travel_page.EvidenceTable(model.STAY)
     table.period_of = lambda person: (date(2026, 11, 3), date(2026, 11, 4))
     table.add_files([path], 2026)
-    assert table.apply_orders() == 1 and table.item(0, 1).text() == "2026-11-03"     # 차례 번호 1 → 첫날(앱이 적은 일자)
+    assert table.apply_dates() == 0 and table.item(0, 1).text() == ""               # 이름 끝 번호 1 은 첫날이 아니다
     notes = []
     table.note = notes.append
     found = ai_read.summary(model.STAY, _read(("", 19000, "", "", "", "서울 가나구 가나로 1", "11112222"),
                                               ("2026-11-03", 24000, "", "", "", "서울 가나구 가나로 1", "33334444")))
     table.apply_ai(path, found)
-    table.apply_orders()
+    table.apply_dates()
     assert [(table.item(r, 1).text(), table.parts[r]) for r in range(2)] == [("", 0), ("2026-11-03", 1)]
     assert notes and "2줄로 나눴습니다" in notes[0] and "일자를 못 읽은 영수증 1장" in notes[0] and "11112222" not in notes[0]
     trip = model.Trip(name="홍길동", start=date(2026, 11, 3), end=date(2026, 11, 4), destination="서울 가나협회", stay=table.evidence(2026))

@@ -162,22 +162,22 @@ def test_a_one_day_trip_fills_undated_receipts_with_the_trip_day(qapp, tmp_path)
     files = [_image(tmp_path / "홍길동_하이패스 증빙 4,100원.png"), _image(tmp_path / "홍길동_하이패스 증빙2.png")]
     table.add_files(files, 2026)
     assert table.ai_wanted() == files                       # 일자가 비었다 — AI 로 읽는다
-    assert table.apply_orders() == 2 and [table.item(r, 1).text() for r in range(2)] == ["2026-10-20"] * 2
+    assert table.apply_dates() == 2 and [table.item(r, 1).text() for r in range(2)] == ["2026-10-20"] * 2
     assert table.ai_wanted() == files                       # 출장일로 적은 일자는 AI 가 읽은 일자로 바꿀 자리
     table.apply_ai(files[1], ai_read.summary(model.TOLL, _read(("2026-10-19", 3000, "", "", "", "", ""))))
     assert table.item(1, 1).text() == "2026-10-19"         # 영수증의 날짜가 먼저(출장기간 밖으로 칠해진다)
     table.item(0, 1).setText("2026-10-21")                   # 사람이 고친 일자
     period["v"] = (date(2026, 10, 20), date(2026, 10, 21))
-    table.apply_orders()
+    table.apply_dates()
     assert [table.item(r, 1).text() for r in range(2)] == ["2026-10-21", "2026-10-19"]
     other = travel_page.EvidenceTable(model.PUBLIC)
     other.period_of = lambda person: period["v"]
     other.add_files([_image(tmp_path / "홍길동_대중교통 증빙.png")], 2026)
-    assert other.apply_orders() == 0 and other.item(0, 1).text() == ""     # 이틀 출장이면 적지 않는다
+    assert other.apply_dates() == 0 and other.item(0, 1).text() == ""     # 이틀 출장이면 적지 않는다
     period["v"] = (date(2026, 10, 20), date(2026, 10, 20))
-    assert other.apply_orders() == 1 and other.item(0, 1).text() == "2026-10-20"
+    assert other.apply_dates() == 1 and other.item(0, 1).text() == "2026-10-20"
     period["v"] = (date(2026, 10, 20), date(2026, 10, 22))
-    other.apply_orders()
+    other.apply_dates()
     assert other.item(0, 1).text() == ""                    # 기간이 늘면 앱이 적은 일자는 지운다
 
 

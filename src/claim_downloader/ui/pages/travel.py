@@ -94,7 +94,7 @@ NO_CAR_TEXT = "해당없음 (동승 · 자차 아님)"
 PEOPLE_COLUMNS = ("출장자", "체류", "대중교통", "하이패스", "숙박", "기타", "자차 최단거리", "확인할 증빙", "확인할 것")
 PEOPLE_SPAN = 7           # 앞 일곱 칸(출장자 · 개수 · 자차)은 그 사람의 확인할 것 줄들을 합쳐 한 칸
 REF_ROLE = Qt.UserRole + 8
-AUTO_ROLE = Qt.UserRole + 9      # 체류 일자 칸에 앱이 파일 이름의 차례 번호로 적은 값 — 사람이 고치면(값이 다르면) 다시 덮어쓰지 않는다
+AUTO_ROLE = Qt.UserRole + 9      # 일자 칸에 앱이 짐작해 적은 값(파일 이름 · PDF 글자 · AI) — 사람이 고치면(값이 다르면) 다시 덮어쓰지 않는다
 ONE_DAY_ROLE = Qt.UserRole + 10  # 하루 출장이라 앱이 출장일로 적은 일자 — AI 가 영수증에서 일자를 읽으면 그 값으로 바꾸고, 기간이 늘면 지운다
 ONE_DAY_KINDS = (model.STAY, model.PUBLIC, model.TOLL)
 ROUTE_COLUMNS = ("출장자", "구간", "출발 → 목적지", "km", "지도 그림", "상태")
@@ -180,14 +180,13 @@ class EvidenceTable(QTableWidget):
         self.pieces: list[int] = []                # 줄마다 그 파일에 든 영수증 수 — 그림을 영수증마다 오린다(render.receipt_pieces)
         self.several: list[bool] = []              # 글자로 보아 영수증이 여럿인데 아직 못 나눈 줄 — AI 로 읽어 나눈다
         self.scanned: list[bool] = []              # 글자 없는 그림 · 스캔 영수증 줄 — 칸이 파일 이름으로 다 찼어도 AI 가 한 번 본다(영수증이 여럿이면 나눈다)
-        self.orders: list[int | None] = []         # 체류 증빙 파일 이름 끝의 차례 번호('체류 증빙2' → 2) — 일자를 못 읽었을 때 출장 N일째로
         self.keys: list[str] = []                  # 줄마다 영수증 승인번호(같은 영수증이 두 파일에 있으면 한 번만 — model.dedupe)
         self.ai_rows: list[bool] = []              # 줄마다 AI(Claude Code)가 그림 · 스캔 영수증에서 읽은 값이 들었는지
         self.year = lambda: date.today().year      # 화면이 출장 시작일의 해로 바꿔 끼운다 — '0528' 같은 이름의 해
         self.places = lambda: []                   # 화면이 출장지 목록으로 바꿔 끼운다 — 파일 경로로 출장지를 짐작
         self.people = lambda: []                   # 화면이 출장자 목록으로 바꿔 끼운다 — 파일 이름 맨 앞의 이름으로 출장자를 짐작
         self.root = lambda: None                   # 출장 폴더 — 위 폴더 이름으로 짐작할 때 그 아래만(윈도우 사용자 폴더 이름이 출장자가 되지 않게)
-        self.period_of = lambda person: (None, None)   # 화면이 그 출장자 그룹의 (시작일, 끝날)로 바꿔 끼운다 — 차례 번호를 일자로
+        self.period_of = lambda person: (None, None)   # 화면이 그 출장자 그룹의 (시작일, 끝날)로 바꿔 끼운다 — 하루 출장의 빈 일자를 출장일로
         self.note = lambda text: None              # 화면이 기록(이름을 가리는 log)으로 바꿔 끼운다 — 영수증을 나눴는지 · 왜 안 나눴는지
         self.setHorizontalHeaderLabels(COLUMNS[kind])
         self.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
@@ -282,8 +281,6 @@ class EvidenceTable(QTableWidget):
         self.pieces.append(ev.pieces if ev.part is not None else 0)
         self.several.append(ev.several and ev.part is None)
         self.scanned.append(ev.scanned and ev.part is None and self.kind in self.SPLIT_KINDS)
-        # 파일 이름의 차례 번호는 그 파일(한 날)의 것 — 영수증마다 나눈 줄(part)에는 쓰지 않는다(일자를 못 읽은 영수증이 첫날로 숨지 않게)
-        self.orders.append(model.stay_order(path.stem) if self.kind == model.STAY and ev.day is None and ev.part is None else None)
         self.keys.append(ev.receipt_key)
         self.ai_rows.append(False)
         row = self.rowCount()
@@ -341,7 +338,6 @@ class EvidenceTable(QTableWidget):
         self.pieces.clear()
         self.several.clear()
         self.scanned.clear()
-        self.orders.clear()
         self.keys.clear()
         self.ai_rows.clear()
         self.changed.emit()
@@ -365,7 +361,7 @@ class EvidenceTable(QTableWidget):
 
     def _drop(self, row: int) -> None:
         self.removeRow(row)
-        for column in (self.paths, self.parts, self.pieces, self.several, self.scanned, self.orders, self.keys, self.ai_rows):
+        for column in (self.paths, self.parts, self.pieces, self.several, self.scanned, self.keys, self.ai_rows):
             del column[row]
 
     # 항목마다 AI 로 채울 칸(칸 번호 → 읽은 값의 이름) — 비어 있는 칸만 채운다
@@ -378,7 +374,7 @@ class EvidenceTable(QTableWidget):
 
     def ai_wanted(self) -> list[Path]:
         """AI 로 읽을 파일 — 꼭 있어야 할 칸이 빈 줄 · 글자로 보아 영수증이 여럿인 줄 · 글자 없는 그림 · 스캔 영수증 줄(영수증이 몇 장인지
-        앱이 모른다 — 파일 이름의 차례 번호 · 지역으로 칸이 다 차도 한 장에 두 날의 영수증이 들어 있을 수 있다, 담당자 2026-11-24).
+        앱이 모른다 — 파일 이름의 날짜 · 지역으로 칸이 다 차도 한 장에 두 날의 영수증이 들어 있을 수 있다, 담당자 2026-11-24).
         영수증 한 장 줄(나눈 줄)은 이미 읽음."""
         cells = self.AI_CELLS.get(self.kind)
         if not cells:
@@ -407,7 +403,7 @@ class EvidenceTable(QTableWidget):
             return False
 
     def apply_ai(self, path: Path, found: dict) -> int:
-        """AI 가 읽은 값(ai_read.summary)으로 그 파일 줄의 빈 칸만 채운다 — 파일 이름 · PDF 글자 · 차례 번호 · 사람이 적은 값이 먼저.
+        """AI 가 읽은 값(ai_read.summary)으로 그 파일 줄의 빈 칸만 채운다 — 파일 이름 · PDF 글자 · 사람이 적은 값이 먼저.
         채운 칸 수."""
         cells = self.AI_CELLS.get(self.kind, {})
         for row, own in enumerate(self.paths):
@@ -552,47 +548,19 @@ class EvidenceTable(QTableWidget):
         amounts = [r.get("amount") for r in receipts]
         return amount is None or (all(amounts) and sum(amounts) == amount)
 
-    def apply_orders(self) -> int:
-        """일자를 못 읽은 체류 증빙(그림 영수증)에 파일 이름의 차례 번호로 일자를 적는다 — '체류 증빙1' 은 출장 첫날, '체류 증빙2' 는 둘째 날
-        (담당자 2026-11-16 "체류일자가 여러일자의 경우 1,2,3,4로 순서를 나누겠음"). 그 출장자 그룹의 기간으로 셈하고, 기간을 넘는 번호는 적지 않는다.
-        사람이 일자를 고쳤으면(앱이 적은 값과 다르면) 덮어쓰지 않는다. 적은 줄 수.
-        **하루 출장이면** 차례 번호가 없는 체류 · 대중교통 · 하이패스 증빙의 빈 일자도 출장일로(_one_day) — 그 날 말고는 있을 수 없는 일자를
-        그림 영수증마다 적게 했다(2026-11-25 검토)."""
-        if self.kind not in ONE_DAY_KINDS:
-            return 0
-        count = self._one_day()
-        if self.kind != model.STAY:
-            return count
-        self.blockSignals(True)
-        for row, order in enumerate(self.orders):
-            if not order:
-                continue
-            item = self.item(row, 1)
-            if item is None:
-                item = QTableWidgetItem("")
-                self.setItem(row, 1, item)
-            text = item.text().strip()
-            if text and text != (item.data(AUTO_ROLE) or ""):
-                continue                               # 사람이 적은 일자
-            person = self.item(row, self.person_col)
-            start, end = self.period_of(person.text().strip() if person else "")
-            day = model.order_day(order, start, end)
-            shown = day.isoformat() if day else ""
-            if item.text() != shown:
-                item.setText(shown)
-            item.setData(AUTO_ROLE, shown)
-            item.setToolTip(f"파일 이름의 차례 번호 {order} → 출장 {order}일째" if day else "")
-            count += bool(day)
-        self.blockSignals(False)
-        return count
+    def apply_dates(self) -> int:
+        """**하루 출장이면** 일자를 못 읽은 체류 · 대중교통 · 하이패스 증빙의 빈 일자를 출장일로(_one_day) — 그 날 말고는 있을 수 없는 일자를
+        그림 영수증마다 적게 했다(2026-11-25 검토). 적은 줄 수.
+        체류 증빙 파일 이름 끝의 번호('체류 증빙1' · '2' …)는 **일자가 아니다** — 증빙을 가르는 번호일 뿐이라 일자는 영수증에 적힌 날(PDF 글자 ·
+        AI 가 읽은 값)로 본다(담당자 2026-11-26 "1,2,3 이렇게 숫자를 붙인다고 했는데 이 규칙은 없애주세요. 증빙을 1,2,3으로 구분하는거고 일자랑은
+        상관없으니 영수증에 적힌 일자를 확인해주세요" — 2026-11-16 부터 그 번호를 출장 N일째로 적었다)."""
+        return self._one_day() if self.kind in ONE_DAY_KINDS else 0
 
     def _one_day(self) -> int:
         """하루 출장의 빈 일자 칸에 출장일 — 앱이 적은 것(ONE_DAY_ROLE)만 다시 고치고, 기간이 하루가 아니게 되면 지운다. 적은 줄 수."""
         count = 0
         self.blockSignals(True)
         for row in range(len(self.paths)):
-            if self.kind == model.STAY and self.orders[row]:
-                continue                               # 차례 번호가 있는 체류 증빙은 아래 차례 번호로
             item = self.item(row, 1)
             if item is None:
                 item = QTableWidgetItem("")
@@ -1883,7 +1851,7 @@ class TravelPage(QWidget):
             self.end_edit.setDate(self.start_edit.date())
         self._store_group()
         if model.STAY in getattr(self, "tables", {}):
-            self._apply_dates()                          # 체류 증빙의 차례 번호 일자는 출장 시작일로 셈한다(하루 출장이면 빈 일자도 그 날로)
+            self._apply_dates()                          # 하루 출장이면 빈 일자를 그 날로
         if hasattr(self, "group_table") and self._groups:
             self._fill_group_table()
         self._sync()
@@ -2116,10 +2084,10 @@ class TravelPage(QWidget):
         self._apply_dates()                     # 나눈 줄 가운데 일자를 못 읽은 것 — 하루 출장이면 그 날로
 
     def _apply_dates(self) -> None:
-        """체류 증빙의 차례 번호 일자 · 하루 출장의 빈 일자(체류 · 대중교통 · 하이패스) — EvidenceTable.apply_orders."""
+        """하루 출장의 빈 일자(체류 · 대중교통 · 하이패스) — EvidenceTable.apply_dates."""
         for kind in ONE_DAY_KINDS:
             if kind in getattr(self, "tables", {}):
-                self.tables[kind].apply_orders()
+                self.tables[kind].apply_dates()
 
     def _on_ai_finished(self, stopped: str) -> None:
         self._ai_running = max(0, self._ai_running - 1)
@@ -2169,7 +2137,7 @@ class TravelPage(QWidget):
         if not hasattr(self, "route_table") or self._loading_group:
             return
         self._store_group()
-        self._apply_dates()                             # 그룹 기간이 바뀌었으면 차례 번호 일자도(아래 _sync 가 미리 보기를 다시 그린다)
+        self._apply_dates()                             # 그룹 기간이 바뀌었으면 하루 출장의 일자도(아래 _sync 가 미리 보기를 다시 그린다)
         keep = {}
         for name in self._drivers():
             for i, (origin, goal, label) in enumerate(self._legs_for(name)):
