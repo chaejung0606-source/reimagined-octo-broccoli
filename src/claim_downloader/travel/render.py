@@ -623,7 +623,7 @@ def _plan(cells_of: list[list[_Cell]], titles: list[list[str]], width: float, fi
     while bi < len(cells_of):
         cells = cells_of[bi]
         title_h = TITLE_H + GAP if titles[bi] else 0
-        if not cells:                                       # 글 줄만 있는 묶음(실비 합계)
+        if not cells:                                       # 글 줄만 있는 묶음(지금은 쓰는 곳이 없다 — 대중교통 실비 합계 줄은 2026-11-26 걷어냄)
             if current and title_h > room:
                 turn()
             current.append(_Slot(bi, 0, 0, 0.0))

@@ -75,7 +75,7 @@ def test_several_destinations():
 
 def test_public_by_day_each_ticket_its_own_cell_with_route_and_totals():
     """담당자 2026-11-10 — 대중교통은 체류처럼 일자별로, 일자 안에서는 표(증빙) 하나하나가 따로(같은 이동편이라도 나눠 끊었으면),
-    증빙마다 출발지 · 목적지 · 금액, 일자 합계, 마지막에 실비 합계."""
+    증빙마다 출발지 · 목적지 · 금액, 일자 합계, 실비 합계는 머리 줄에만(2026-11-26 — 끝의 같은 합계 줄은 걷어냄)."""
     d = date(2026, 5, 28)
 
     def ticket(name, day, amount, mode, origin="", goal=""):
@@ -88,12 +88,10 @@ def test_public_by_day_each_ticket_its_own_cell_with_route_and_totals():
     assert len(pages) == 1 and pages[0].head == ["* 교통비 증빙 (대중교통)", "실비 합계 19,000원"]
     blocks = pages[0].blocks
     assert [b.title for b in blocks] == [["2026년 5월 28일 목요일", "증빙 3건", "일자 합계 14,000원"],
-                                         ["2026년 5월 29일 금요일", "증빙 1건", "일자 합계 5,000원"],
-                                         ["* 실비 합계", "2일 · 증빙 4건", "19,000원"]]
+                                         ["2026년 5월 29일 금요일", "증빙 1건", "일자 합계 5,000원"]]
     assert [p.name for p in blocks[0].images] == ["a.png", "b.png", "c.png"]          # 같은 날은 이동한 차례 그대로
     assert blocks[0].captions == ["열차 · 춘천 → 용산 · 8,000원", "고속버스 · 동서울 → 삼척 · 5,000원", "열차 · 용산 → 서울 · 1,000원"]
     assert blocks[1].captions == ["고속버스 · 삼척 → ? · 5,000원"]
-    assert not blocks[2].images
     probs = model.problems(trip)
     assert any("d.png: 출발지 · 목적지를 확인해 주세요" in p for p in probs)
     assert not any("a.png: 출발지" in p for p in probs)
@@ -102,7 +100,7 @@ def test_public_by_day_each_ticket_its_own_cell_with_route_and_totals():
     assert model.public_pages(trip)[0].blocks[1].title[2] == "일자 합계 0원 (금액 없음 1건)"
     assert model.public_pages(trip)[0].head[1] == "실비 합계 14,000원 (금액 없음 1건)"
     one_day = Trip(public=trip.public[:2])
-    assert [b.title[0] for b in model.public_pages(one_day)[0].blocks] == ["2026년 5월 28일 목요일"]   # 하루면 실비 합계 줄은 머리 줄에만
+    assert [b.title[0] for b in model.public_pages(one_day)[0].blocks] == ["2026년 5월 28일 목요일"]
 
 
 def test_guess_route_from_names_and_ticket_text():

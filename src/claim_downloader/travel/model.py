@@ -622,7 +622,8 @@ def public_caption(e: Evidence) -> str:
 def public_pages(trip: Trip) -> list[Page]:
     """대중교통 — 체류처럼 일자별로 나누고(일자 줄에 그날 합계), 일자 안에서는 증빙(승차권 · 영수증 파일) 하나하나가 따로 칸이다:
     이동편이 바뀌어도 · 같은 이동편이라도 표를 나눠 끊었으면 다른 증빙(담당자 2026-11-10). 칸마다 이동편 · 출발지 → 목적지 · 금액,
-    머리 줄에 실비 합계. 날이 여럿이면 끝에 실비 합계 줄을 한 번 더."""
+    실비 합계는 머리 줄에만 — 끝에 같은 합계 줄을 되풀이하지 않는다(담당자 2026-11-26 "증빙별 금액은 윗부분에만 있으면 될 것 같습니다.
+    아래부분에서 반복되는건 삭제해주세요")."""
     # 같은 날은 넣은 차례(이동한 차례)대로 — 이동편 이름 차례로 섞지 않는다
     items = sorted(trip.public, key=lambda e: e.day or date.max)
     if not items:
@@ -634,8 +635,6 @@ def public_pages(trip: Trip) -> list[Page]:
                             title=[korean_date(day) if day else "일자 없음", f"증빙 {len(group)}건", f"일자 합계 {_sum_text(group)}"],
                             cols=grid_cols(len(group)), fill=True, refs=[e.ref for e in group],
                             parts=[e.part for e in group], pieces=[e.pieces for e in group]))
-    if len(blocks) > 1:
-        blocks.append(Block([], title=["* 실비 합계", f"{len(blocks)}일 · 증빙 {len(items)}건", total]))
     return [Page(["* 교통비 증빙 (대중교통)", f"실비 합계 {total}"], blocks)]
 
 

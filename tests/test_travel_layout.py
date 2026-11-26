@@ -169,8 +169,9 @@ def test_public_page_draws_route_captions_and_totals(qapp, tmp_path):
     out = tmp_path / "public.pdf"
     assert render.render(model.public_pages(model.Trip(public=tickets)), out) == 1
     text = _pages_text(out)[0]
-    for words in ("실비 합계 24,000원", "일자 합계 16,000원", "열차 · 춘천 → 용산 · 8,000원", "열차 · 춘천 → ? · 8,000원", "2일 · 증빙 3건"):
+    for words in ("실비 합계 24,000원", "일자 합계 16,000원", "열차 · 춘천 → 용산 · 8,000원", "열차 · 춘천 → ? · 8,000원"):
         assert "".join(words.split()) in text
+    assert "2일·증빙3건" not in text                       # 끝의 실비 합계 줄은 없다 — 실비 합계는 머리 줄에만(2026-11-26)
 
 
 def test_phone_photo_is_drawn_upright(qapp, tmp_path):
