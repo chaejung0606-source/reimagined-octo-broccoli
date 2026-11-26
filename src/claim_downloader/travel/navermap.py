@@ -70,7 +70,8 @@ CLICK_SHORTEST_JS = """(word) => {
     if ((el.textContent || '').trim() !== word) return false;
     if ([...el.children].some(c => (c.textContent || '').trim() === word)) return false;
     const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
+    // 화면 밖(왼쪽 -9999 같은 숨긴 보기) · 보이지 않게 둔 같은 글자는 빼고 센다
+    return r.width > 0 && r.height > 0 && r.right > 0 && r.left < innerWidth && getComputedStyle(el).visibility !== 'hidden';
   });
   if (hits.length !== 1) return hits.length;
   const target = hits[0].closest('a, button, li, [role=button], [role=tab], [role=option]') || hits[0];
@@ -90,7 +91,8 @@ HIDE_DETAIL_JS = """(word) => {
     if (!named(el)) return false;
     if ([...el.children].some(named)) return false;
     const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
+    // 화면 밖에 숨겨 둔 같은 글자를 '목록' 으로 보면 진짜 목록을 세부 창으로 알고 숨긴다
+    return r.width > 0 && r.height > 0 && r.right > 0 && r.left < innerWidth && getComputedStyle(el).visibility !== 'hidden';
   }).map(el => [el, el.getBoundingClientRect()]).sort((a, b) => a[1].left - b[1].left);
   if (hits.length < 2) return 0;
   const list = hits[0], detail = hits[hits.length - 1];
@@ -119,44 +121,85 @@ SHOW_DETAIL_JS = """() => {
 }"""
 
 
-# 찍기 전에 왼쪽 경로 목록을 '거리우선' 항목(이름 아래의 시간 · km 줄까지)이 보이게 스크롤한다(담당자 2026-11-26 그림 — 목록에 ① 실시간 추천 ·
+# 찍기 전에 왼쪽 경로 목록을 '거리우선' 항목(이름과 그 아래 시간 · km 줄)이 보이게 한다(담당자 2026-11-26 그림 — 목록에 ① 실시간 추천 ·
 # ② 큰길우선 · ③ 무료우선만 보이고 고른 ④ 거리우선은 목록 아래로 잘려, 증빙에 거리우선 주행거리가 없었다 — "거리우선 주행거리가 보이도록 왼쪽 경로 목록을
-# 아래로 스크롤한 뒤에 캡쳐해주세요"). 누르지 않고 그 목록의 스크롤만 옮긴다 — 위 항목이 되도록 남게 꼭 필요한 만큼만.
+# 아래로 스크롤한 뒤에 캡쳐해주세요"). 누르지 않는다. 같은 날 다시 찍은 그림: 기록은 '내림' 인데 목록이 그대로였다 — 자리(레이아웃)로만 '보인다' 고 보아,
+# 목록 아래를 덮은 줄(출발지 → 도착지 ☆) 밑에 든 것을 보이는 것으로 셌다. 그래서 '보인다' 는 그 자리에 실제로 그려진 것이 그 항목인지(elementFromPoint)로 보고,
+# 안 보이면 ① 그 km 줄을 목록 가운데로(scrollIntoView) ② 그래도 안 되면 사람처럼 목록 위에서 마우스 휠로 내린다(session 이 — screenshot_clear).
 # 목록의 것은 보이는 '거리우선' 글자 가운데 가장 왼쪽(지도 위의 세부 경로 창은 오른쪽 — HIDE_DETAIL_JS 와 같은 가림).
-# 돌려주는 것: 'none'(없음) · 'shown'(이미 보임) · 'scrolled', 뒤에 ':km' 면 이름 아래에 km 글자가 보인다.
-SHOW_SHORTEST_JS = """(word) => {
-  const named = el => { const t = (el.textContent || '').replace(/\\s+/g, ''); return t === word || (t.length <= word.length + 3 && t.endsWith(word)); };
-  const hits = [...document.querySelectorAll('body *')].filter(el => named(el) && ![...el.children].some(named))
+# [word, 'look'] 은 보기만, [word, 'center'] 는 km 줄을 가운데로. 돌려주는 것: {found, ok, km, x, y, dy, diag} — x · y 는 휠을 굴릴 목록 위 자리(없으면 null).
+SHOW_SHORTEST_JS = """([word, act]) => {
+  const named = el => { const t = (el.textContent || '').replace(/\\s+/g, ''); return t === word || (t.length <= word.length + 4 && t.includes(word)); };
+  let hits = [...document.querySelectorAll('body *')].filter(el => named(el) && ![...el.children].some(named))
+    .filter(el => getComputedStyle(el).visibility !== 'hidden')
     .map(el => [el, el.getBoundingClientRect()]).filter(([el, r]) => r.width > 0 && r.height > 0)
     .sort((a, b) => a[1].left - b[1].left);
-  if (!hits.length) return 'none';
+  // 화면 밖(왼쪽 -9999 같은 숨긴 보기)에 놓인 같은 글자는 목록이 아니다
+  const onScreen = hits.filter(([el, r]) => r.right > 0 && r.left < innerWidth);
+  if (onScreen.length) hits = onScreen;
+  if (!hits.length) return {found: false};
   const label = hits[0][0];
-  let box = label.parentElement;
-  while (box && box !== document.body && box !== document.documentElement) {
-    const s = getComputedStyle(box);
-    if (/(auto|scroll)/.test(s.overflowY) && box.scrollHeight > box.clientHeight + 1) break;
-    box = box.parentElement;
+  const kmNode = () => {
+    const lr = label.getBoundingClientRect();
+    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walk.nextNode(); node; node = walk.nextNode()) {
+      if (!/\\d[\\d.,]*\\s*k?m(?![a-z])/i.test(node.nodeValue || '')) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const q = range.getBoundingClientRect();
+      if (q.height > 0 && q.top >= lr.top - 2 && q.top <= lr.top + 150 && q.left > lr.left - 200 && q.left < lr.left + 400) return [node.parentElement, q];
+    }
+    return null;
+  };
+  // 그 자리에 실제로 그려진 것이 그 항목인가 — 덮은 줄 · 잘린 곳이면 다른 것이 나온다. 둘을 함께 품은 가장 작은 묶음에 경로의 걸리는 시간이
+  // 하나뿐이면(= 그 경로 항목 하나 — 항목 전체를 덮는 누름 칸 같은 것) 같은 항목으로 본다. 다른 경로 항목 · 아래 줄과 함께면 시간이 여럿이거나 묶음이 크다
+  const times = t => ((t || '').match(/\\d+\\s*시간(\\s*\\d+\\s*분)?|\\d+\\s*분/g) || []).length;
+  const near = (a, b) => { for (let p = a; p; p = p.parentElement) if (p.contains(b)) return times(p.textContent) <= 1 && p.getBoundingClientRect().height < 400; return false; };
+  const seen = (el, q) => {
+    const x = q.left + Math.min(q.width / 2, 20), y = q.top + q.height / 2;
+    if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return false;
+    const at = document.elementFromPoint(x, y);
+    return !!at && (at === el || el.contains(at) || near(at, el));
+  };
+  let km = kmNode();
+  if (act === 'center') {
+    (km ? km[0] : label).scrollIntoView({block: 'center', inline: 'nearest'});
+    km = kmNode();
   }
-  const inner = box && box !== document.body && box !== document.documentElement;
-  const view = () => inner ? box.getBoundingClientRect() : {top: 0, bottom: innerHeight};
-  const room = Math.min(150, (view().bottom - view().top) * 0.6);
-  let r = label.getBoundingClientRect(), v = view(), state = 'shown';
-  if (r.top < v.top || r.top + room > v.bottom) {
-    const by = r.top < v.top ? r.top - v.top - 12 : r.top + room - v.bottom;
-    if (inner) box.scrollTop += by; else window.scrollBy(0, by);
-    state = 'scrolled';
-    r = label.getBoundingClientRect(); v = view();
+  const lr = label.getBoundingClientRect();
+  // 그 항목을 자르는 가장 가까운 칸(목록)과 그 보이는 위아래
+  let clip = null;
+  for (let a = label.parentElement; a && a !== document.body; a = a.parentElement) {
+    const st = getComputedStyle(a);
+    if (st.overflowY !== 'visible' || a.scrollHeight > a.clientHeight + 1) { clip = a; break; }
   }
-  let km = false;
-  const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-  for (let node = walk.nextNode(); node && !km; node = walk.nextNode()) {
-    if (!/\\d[\\d.,]*\\s*k?m(?![a-z])/i.test(node.nodeValue || '')) continue;
-    const range = document.createRange();
-    range.selectNodeContents(node);
-    const q = range.getBoundingClientRect();
-    km = q.height > 0 && q.top >= r.top && q.top <= r.top + room && q.bottom <= v.bottom + 1 && q.left < r.left + 400;
+  const cr = clip ? clip.getBoundingClientRect() : {top: 0, bottom: innerHeight};
+  let top = Math.max(cr.top, 0), bottom = Math.min(cr.bottom, innerHeight);
+  // 목록 위아래를 덮은 줄(출발 → 도착 ☆ 같은 것)은 보이는 곳에서 뺀다 — 이름과 같은 세로줄에서 목록이 실제로 그려진 위아래
+  let x = Math.min(Math.max(lr.left + 10, 5), innerWidth - 5);
+  if (clip) {
+    const mine = yy => { const e = document.elementFromPoint(x, yy); return !!e && (e === clip || clip.contains(e)); };
+    let b = bottom - 1; while (b > top && !mine(b)) b -= 8;
+    let t = top + 1; while (t < b && !mine(t)) t += 8;
+    if (b > t) { top = t; bottom = b; }
   }
-  return state + (km ? ':km' : '');
+  const tq = km ? km[1] : lr;
+  // 그려져 있는가(drawn) · 아래 가장자리에 걸치지 않고 넉넉히 보이는가(ok — km 줄 아래로 보이는 높이의 10%, 적어도 두어 줄은 더 보이게)
+  const drawn = seen(label, lr) && (!km || seen(km[0], km[1]));
+  const ok = drawn && lr.top >= top && tq.bottom <= bottom - Math.max(48, (bottom - top) * 0.1);
+  // 휠을 굴릴 자리 — 그 목록의 보이는 가운데, 이름과 같은 세로줄. 지도(canvas) 위면 굴리지 않는다
+  let y = (top + bottom) / 2;
+  const under = document.elementFromPoint(x, y);
+  if (!under || under.tagName === 'CANVAS' || under.closest('canvas')) { x = null; y = null; }
+  let dy = Math.round((tq.top + tq.bottom) / 2 - y);
+  if (Math.abs(dy) < 80) dy = dy < 0 ? -80 : 80;
+  dy = Math.max(-600, Math.min(600, dy));
+  const desc = a => a ? (a.tagName || '').toLowerCase() + (typeof a.className === 'string' && a.className.trim() ? '.' + a.className.trim().split(/\\s+/).slice(0, 2).join('.') : '')
+    + '(' + getComputedStyle(a).overflowY + ' ' + a.clientHeight + '/' + a.scrollHeight + ' 위치 ' + Math.round(a.scrollTop) + ')' : '자르는 칸 없음';
+  const at = document.elementFromPoint(lr.left + 5, lr.top + lr.height / 2);
+  const diag = '후보 ' + hits.length + ' · 이름 y ' + Math.round(lr.top) + ' / 화면 ' + innerHeight + ' · ' + desc(clip)
+    + ' · 그 자리에 ' + (at ? (at.tagName || '').toLowerCase() + (typeof at.className === 'string' && at.className.trim() ? '.' + at.className.trim().split(/\\s+/)[0] : '') : '없음');
+  return {found: true, ok, drawn, km: !!km, x, y, dy, ly: Math.round(lr.top), lx: lr.left + Math.min(lr.width / 2, 20), lc: lr.top + lr.height / 2, diag};
 }"""
 
 
@@ -211,6 +254,78 @@ def _wide_view(page) -> Callable[[], None] | None:
     return clear
 
 
+WHEEL_TRIES = 8
+
+
+def _park(page, info: dict, ox: float, oy: float) -> None:
+    """휠을 굴린 마우스를 '거리우선' 항목 위에 둔다 — 다른 경로 항목 위에 남으면 네이버가 그 경로를 지도에 밝혀 그릴 수 있다."""
+    if info.get("lx") is None or info.get("lc") is None:
+        return
+    try:
+        page.mouse.move(info["lx"] + ox, info["lc"] + oy)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _settle(first: dict, info: dict, moved: bool) -> tuple[str, dict]:
+    """넉넉히는 아니어도 그려져 있으면(목록 끝이라 더 못 내림) 보이는 것으로 — 아니면 'stuck'."""
+    if info.get("drawn"):
+        return ("scrolled" if moved else "shown"), info
+    return "stuck", info
+
+
+def _show_in_list(page, word: str, wait: Callable[[float], None] | None) -> tuple[str, dict]:
+    """왼쪽 경로 목록에서 word 항목(이름 · km 줄)이 실제로 보이게 — ('shown' · 'scrolled' · 'wheeled' · 'stuck' · 'none', 마지막에 본 것).
+    ① 이미 보이면 그대로 ② km 줄을 목록 가운데로 ③ 그래도 안 보이면 목록 위에서 마우스 휠(사람이 내리는 것과 같다 — 누르지 않는다)."""
+    pause = wait or (lambda s: None)
+    for frame in list(page.frames):
+        try:
+            info = frame.evaluate(SHOW_SHORTEST_JS, [word, "look"]) or {}
+        except Exception:  # noqa: BLE001 — 닫히는 프레임
+            continue
+        if not info.get("found"):
+            continue
+        if info.get("ok"):
+            return "shown", info
+        first = info
+        try:
+            frame.evaluate(SHOW_SHORTEST_JS, [word, "center"])
+            pause(0.3)
+            info = frame.evaluate(SHOW_SHORTEST_JS, [word, "look"]) or info
+        except Exception:  # noqa: BLE001
+            pass
+        if info.get("ok"):
+            return "scrolled", info
+        moved = info.get("ly") != first.get("ly")
+        ox = oy = 0.0
+        if frame is not page.main_frame:
+            try:
+                box = frame.frame_element().bounding_box() or {}
+                ox, oy = box.get("x", 0.0), box.get("y", 0.0)
+            except Exception:  # noqa: BLE001
+                return _settle(first, info, moved)
+        for _ in range(WHEEL_TRIES):
+            if info.get("x") is None or info.get("y") is None:
+                break
+            before = info.get("ly")
+            try:
+                page.mouse.move(info["x"] + ox, info["y"] + oy)
+                page.mouse.wheel(0, info.get("dy") or 200)
+                pause(0.35)
+                info = frame.evaluate(SHOW_SHORTEST_JS, [word, "look"]) or info
+            except Exception:  # noqa: BLE001
+                break
+            if info.get("ok"):
+                _park(page, info, ox, oy)
+                return "wheeled", info
+            if info.get("ly") == before:
+                break                   # 더 내려가지 않는다(목록 끝) — 같은 휠을 되풀이하지 않는다
+            moved = True
+        _park(page, info, ox, oy)
+        return _settle(first, info, moved)
+    return "none", {}
+
+
 def screenshot_clear(page, out: Path, wait: Callable[[float], None] | None = None, select: str = "") -> list[str]:
     """넓은 화면(CAPTURE_SIZE)에서 경로 전체를 보이게 하고, 왼쪽 경로 목록을 고른 경로(select — '거리우선')가 보이게 스크롤하고,
     지도를 가리는 세부 경로 창을 잠깐 숨기고 찍은 뒤 되돌린다 — 한 일(기록 줄).
@@ -235,21 +350,6 @@ def screenshot_clear(page, out: Path, wait: Callable[[float], None] | None = Non
             fitted = 0
         if fitted == 1:
             wait(1.2)
-    shown = ""
-    for frame in list(page.frames):
-        try:
-            state = str(frame.evaluate(SHOW_SHORTEST_JS, select or SHORTEST) or "")
-        except Exception:  # noqa: BLE001 — 닫히는 프레임
-            continue
-        if state != "none":
-            shown = state
-            break
-    if shown.startswith("scrolled") and wait is not None:
-        wait(0.3)
-    if shown:
-        word = select or SHORTEST
-        steps.append((f"경로 목록을 '{word}' 이 보이게 내림" if shown.startswith("scrolled") else f"경로 목록에 '{word}' 이 보임")
-                     + ("" if shown.endswith(":km") else " — 그 아래 km 글자는 찾지 못함(그림을 확인하세요)"))
     hidden = 0
     for frame in list(page.frames):
         try:
@@ -258,6 +358,18 @@ def screenshot_clear(page, out: Path, wait: Callable[[float], None] | None = Non
             continue
     if hidden and wait is not None:
         wait(0.3)                       # 다시 그려질 때까지
+    # 목록은 세부 경로 창을 숨긴 뒤 찍기 바로 전에 본다 — 그 사이 네이버가 목록을 다시 그려 맨 위로 돌아가도 찍는 그림에는 보이게
+    word = select or SHORTEST
+    state, info = _show_in_list(page, word, wait)
+    how = str(info.get("diag", ""))[:300]
+    if state == "none":
+        steps.append(f"경로 목록에서 '{word}' 항목을 찾지 못해 목록을 그대로 찍음")
+    elif state == "stuck":
+        steps.append(f"경로 목록을 '{word}' 이 보이게 내리지 못함 — 그림을 확인하세요 ({how})")
+    else:
+        done = {"shown": f"경로 목록에 '{word}' 이 보임", "scrolled": f"경로 목록을 '{word}' 이 보이게 내림",
+                "wheeled": f"경로 목록을 마우스 휠로 '{word}' 이 보이게 내림"}[state]
+        steps.append(done + ("" if info.get("km") else " — 그 아래 km 글자는 찾지 못함(그림을 확인하세요)") + f" ({how})")
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
         page.screenshot(path=str(out))

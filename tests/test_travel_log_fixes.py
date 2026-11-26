@@ -225,7 +225,7 @@ def test_capture_scrolls_the_route_list_so_the_shortest_route_km_shows(tmp_path)
         result = navermap.capture(page, out, "출장자 1 가는 길", wait=lambda s: page.wait_for_timeout(int(s * 50)))
         assert page.evaluate("window.clickWidth") == navermap.CAPTURE_SIZE[0]          # 넓힌 뒤에 눌렀다
         assert page.evaluate("document.getElementById('list').scrollTop") > 0
-        assert "경로 목록을 '거리우선' 이 보이게 내림" in result.steps and not any("찾지 못함" in s for s in result.steps)
+        assert _step(result, "경로 목록을 '거리우선' 이 보이게 내림") and not any("찾지 못" in s for s in result.steps)
         assert "지도를 가리는 세부 경로 창을 숨기고 찍음" in result.steps
         assert page.evaluate("getComputedStyle(document.getElementById('detail')).visibility") == "visible"   # 찍은 뒤 되돌림
         assert result.km == 94 and out.exists()
@@ -233,7 +233,109 @@ def test_capture_scrolls_the_route_list_so_the_shortest_route_km_shows(tmp_path)
         page.set_content(NAVER_LIKE.replace("height:220px", "height:60px"))
         result = navermap.capture(page, tmp_path / "shot2.png", "출장자 1 가는 길", wait=lambda s: page.wait_for_timeout(int(s * 50)))
         assert page.evaluate("document.getElementById('list').scrollTop") == 0
-        assert "경로 목록에 '거리우선' 이 보임" in result.steps
+        assert _step(result, "경로 목록에 '거리우선' 이 보임")
+    finally:
+        browser.close()
+        pw.stop()
+
+
+def _step(result, head: str) -> bool:
+    return any(s.startswith(head) for s in result.steps)
+
+
+def _wide_page(browser):
+    """찍는 크기로 정해 둔 화면 — 찍은 뒤 되돌려도 크기가 같아, 찍을 때의 자리를 테스트가 볼 수 있다."""
+    w, h = navermap.CAPTURE_SIZE
+    return browser.new_context(viewport={"width": w, "height": h}).new_page()
+
+
+def _drawn_in(page, sel: str, text: str) -> bool:
+    """그 글자가 있는 자리에 실제로 그려진 것이 sel 안인가 — 덮은 줄 밑이면 아니다."""
+    return page.evaluate("""([sel, text]) => {
+      const box = document.querySelector(sel);
+      const walk = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+      for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+        if (!n.nodeValue.includes(text)) continue;
+        const r = document.createRange(); r.selectNodeContents(n); const q = r.getBoundingClientRect();
+        const at = document.elementFromPoint(q.left + 2, q.top + q.height / 2);
+        return !!at && box.contains(at);
+      }
+      return false; }""", [sel, text])
+
+
+# 같은 날 다시 찍은 그림 — 기록은 '내림' 인데 거리우선이 안 보였다. 네이버 목록 아래에는 '출발 → 도착 ☆' 줄이 목록 위에 겹쳐 있어,
+# 자리로는 목록 안(보임)이어도 그 줄 밑에 가려진다
+COVERED = (NAVER_LIKE.replace("<div id='left' style='width:340px;display:flex;flex-direction:column'>",
+                              "<div id='left' style='width:340px;display:flex;flex-direction:column;position:relative'>")
+           .replace("<div id='list' style='flex:1;overflow-y:auto'>", "<div id='list' style='flex:1;overflow-y:auto;padding-bottom:170px'>")
+           .replace("<div class='item' style='height:220px'><b>3", "<div class='item' style='height:60px'><b>3")
+           .replace("<div class='item' style='height:220px'><b>2", "<div class='item' style='height:60px'><b>2")
+           .replace("<div class='item' style='height:220px'><b>1", "<div class='item' style='height:60px'><b>1")
+           .replace("<div class='item' id='short' style='height:220px'>", "<div class='item' id='short' style='height:120px'>")
+           .replace("  </div>\n </div>\n <div id='detail'",
+                    "  </div>\n  <div id='foot' style='position:absolute;left:0;right:0;bottom:0;height:160px;background:#fff'>"
+                    "출발 → 도착 ☆</div>\n </div>\n <div id='detail'")
+           .replace("<div style='height:180px'>", "<div style='height:560px'>")
+           # 화면 밖에 숨겨 둔 같은 글자(보기 목록 같은 것)는 목록이 아니다
+           .replace("<script>", "<span style='position:absolute;left:-9999px;top:300px'>거리우선</span>\n<script>"))
+
+
+def test_capture_shows_the_shortest_route_from_under_the_bottom_bar(tmp_path):
+    """자리로는 목록 안이지만 아래 줄에 덮인 거리우선 — 덮였는지는 그 자리에 그려진 것으로 보고, 목록 가운데로 내린다."""
+    pw, browser = _chromium()
+    try:
+        page = _wide_page(browser)
+        page.set_content(COVERED)
+        assert page.evaluate("document.getElementById('foot') !== null")
+        result = navermap.capture(page, tmp_path / "shot.png", "출장자 1 가는 길", wait=lambda s: page.wait_for_timeout(int(s * 50)))
+        assert any(s.startswith("경로 목록을") and "보이게 내림" in s for s in result.steps), result.steps
+        assert _drawn_in(page, "#short", "94km")        # 찍을 때 그대로 남은 자리 — 아래 줄 밑이 아니다
+        assert result.km == 94
+    finally:
+        browser.close()
+        pw.stop()
+
+
+# 스크롤 칸이 아니라 마우스 휠로만 움직이는 목록(내용을 옮겨 그림) — 스크립트로는 못 내리고, 사람처럼 휠을 굴린다
+WHEEL_ONLY = (NAVER_LIKE.replace("<div id='list' style='flex:1;overflow-y:auto'>",
+                                 "<div id='list' style='flex:1;min-height:0;overflow:clip'><div id='inner'>")
+              .replace("  </div>\n </div>\n <div id='detail'", "  </div></div>\n </div>\n <div id='detail'")
+              .replace("<script>", """<script>
+ let off = 0;
+ document.getElementById('list').addEventListener('wheel', e => {
+   e.preventDefault();
+   const list = document.getElementById('list'), inner = document.getElementById('inner');
+   off = Math.max(0, Math.min(inner.scrollHeight - list.clientHeight, off + e.deltaY));
+   inner.style.transform = 'translateY(' + (-off) + 'px)'; window.wheelOff = off; }, {passive: false});
+ document.addEventListener('mousemove', e => { const it = e.target.closest && e.target.closest('.item'); window.hovered = it ? (it.id || 'other') : ''; });
+"""))
+
+
+def test_capture_wheels_a_list_that_scripts_cannot_scroll(tmp_path):
+    pw, browser = _chromium()
+    try:
+        page = _wide_page(browser)
+        page.set_content(WHEEL_ONLY)
+        result = navermap.capture(page, tmp_path / "shot.png", "출장자 1 가는 길", wait=lambda s: page.wait_for_timeout(int(s * 50)))
+        assert _step(result, "경로 목록을 마우스 휠로 '거리우선' 이 보이게 내림"), result.steps
+        assert page.evaluate("window.wheelOff") > 0
+        assert _drawn_in(page, "#short", "94km")
+        assert page.evaluate("window.hovered") == "short"        # 휠을 굴린 마우스는 거리우선 위에 둔다(다른 경로를 밝히지 않게)
+    finally:
+        browser.close()
+        pw.stop()
+
+
+def test_capture_says_when_the_list_cannot_be_moved(tmp_path):
+    """덮인 채 움직이지 않는 목록 — 내렸다고 하지 않고 그림을 확인하라고 남긴다(무엇이 덮었는지와 함께)."""
+    pw, browser = _chromium()
+    try:
+        page = browser.new_context(no_viewport=True).new_page()
+        page.set_content(COVERED.replace("padding-bottom:170px", "overflow:hidden").replace("overflow-y:auto;", ""))
+        result = navermap.capture(page, tmp_path / "shot.png", "출장자 1 가는 길", wait=lambda s: page.wait_for_timeout(int(s * 50)))
+        assert _step(result, "경로 목록을 '거리우선' 이 보이게 내리지 못함"), result.steps
+        assert any("그 자리에 div" in s for s in result.steps)
+        assert (tmp_path / "shot.png").exists()
     finally:
         browser.close()
         pw.stop()
