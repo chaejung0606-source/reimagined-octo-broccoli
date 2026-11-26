@@ -468,3 +468,104 @@ def test_a_typed_date_equal_to_the_ai_dates_still_splits(qapp, tmp_path):
             assert [table.item(r, 2).text() for r in range(2)] == ["4,100", "4,100"]
         else:
             assert "직접 적은" in notes[0]
+
+
+def _scanned(path: Path, receipts: list[list[str]], gap: int = 18, marks: tuple = (), title: bool = True) -> Path:
+    """종이 영수증 여러 장을 스캐너에 나란히 붙여 놓고 찍은 PDF 를 본뜬 그림(담당자 2026-11-26 스캔본 — 값은 지어낸 것).
+    A4 쪽(1400 × 1980)에 길이가 다른 영수증이 좁은 틈(gap 점, 폭의 1% 남짓)으로 붙어 있고, 맨 위에 손으로 쓴 제목 두 줄
+    ('11/18-20 체류증빙 (이름)' 아래에 고친 '17')이 첫 영수증 위에 걸쳐 있다. 제목에는 파란 점, marks 의 영수증에는 빨간 네모."""
+    from PySide6.QtCore import QRect
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+    image = QImage(1400, 1980, QImage.Format_RGB32)
+    image.fill(QColor("white"))
+    p = QPainter(image)
+    if title:
+        p.setPen(QPen(QColor("#111111"), 1))
+        p.setFont(QFont("Sans", 34))
+        p.drawText(30, 90, "11/18-20 체류증빙 (홍길동)")
+        p.drawText(40, 150, "17")
+        p.fillRect(QRect(600, 60, 14, 14), QColor("blue"))
+    cw = (1400 - 60 - gap * (len(receipts) - 1)) // len(receipts)
+    for i, lines in enumerate(receipts):
+        x, y = 30 + i * (cw + gap), 420 + 40 * i
+        p.setFont(QFont("Sans", 15))
+        for j, line in enumerate(lines):
+            p.setPen(QPen(QColor("#222222"), 1))
+            if line == "-":
+                for k in range(x + 4, x + cw - 4, 9):            # 점선(사이가 빈 줄)
+                    p.drawLine(k, y + j * 34 - 6, k + 4, y + j * 34 - 6)
+            elif "|" in line:
+                left, right = line.split("|")                   # 이름 · 금액 두 칸 — 가운데가 빈 줄
+                p.drawText(x + 6, y + j * 34, left)
+                p.drawText(x + cw - 6 - p.fontMetrics().horizontalAdvance(right), y + j * 34, right)
+            else:
+                p.drawText(x + 6, y + j * 34, line)
+        if i in marks:
+            p.fillRect(QRect(x + cw // 2, y + 34 * len(lines) + 10, 24, 24), QColor("red"))
+    p.end()
+    image.save(str(path))
+    return path
+
+
+def _blues(image) -> int:
+    from PySide6.QtGui import QColor
+    small = image.scaledToWidth(min(200, image.width()))
+    return sum(1 for y in range(small.height()) for x in range(small.width())
+               if (lambda c: c.blue() > 200 and c.red() < 80 and c.green() < 80)(QColor(small.pixel(x, y))))
+
+
+SCAN_A = ["상호명: 가나식스 가나점", "사업자번호: 000-00-00000", "-", "2026-11-17 포스번호:5407", "001 가나식스|26,500", "과세 물품가액|24,091원",
+          "부 가 세|2,409원", "-", "합 계|26,500원", "가나카드|26,500원", "승인번호:00000000", "-", "거래시간:11:47:39", "교환/환불은 7일 이내",
+          "영수증 지참시 가능합니다", "-", "가나 블랙프라이데이", "기간: 11.8 ~ 11.17", "장소: 가나센터 4F"]
+SCAN_B = ["CU 가나점", "사업자등록번호:0000000000", "가나광역시 서구", "-", "52525 2026-11-18(수) POS-01", "가나커피|5,000", "-", "총 구 매 액|5,000",
+          "과세물품가액|4,546", "부 가 세|454", "-", "결 제 금 액|5,000", "신 용 카 드|5,000", "승인번호: 00000000"]
+SCAN_C = ["세븐일레븐 가나터미널점", "(062-000-0000)", "[판 매] 2026-11-20 07:46:27", "-", "상 품 명|금 액", "가나김밥 2입|2,700",
+          "과세물품가액|2,455", "부 가 세|245", "합 계|2,700", "-", "승인번호 00000000|일시불"]
+
+
+def test_scanned_paper_receipts_side_by_side_are_cut_apart(qapp, tmp_path):
+    """담당자 2026-11-26 "이런 스캔본 영수증별로 구분이 안될까요" — 종이 영수증 셋(11월 17 · 18 · 20일)을 붙여 놓고 스캔한 한 쪽짜리 PDF.
+    영수증 사이 틈이 폭의 1% 남짓이라 나누지 못해 일자마다 줄에 스캔 쪽 전체가 들어갔다. 더 크게 보고 좁은 틈으로 한 번 더 나누고,
+    첫 영수증 위에 걸친 손글씨 제목(두 줄)은 조각에 넣지 않는다."""
+    from claim_downloader.travel import render
+    path = _scanned(tmp_path / "홍길동_체류증빙.png", [SCAN_A, SCAN_B, SCAN_C], marks=(1,))
+    full = render._load(path)[0]
+    pieces = render.receipt_pieces(path, 3)
+    assert len(pieces) == 3
+    assert [_reds(piece) > 0 for piece in pieces] == [False, True, False]            # 왼쪽부터 — AI 가 읽는 차례
+    assert all(_blues(piece) == 0 for piece in pieces)                                  # 손글씨 제목은 빼고
+    assert all(piece.width() < 0.4 * full.width() for piece in pieces)
+    # 한 장뿐인 긴 영수증(이름 · 금액 두 칸 사이가 빈 줄 · 점선)은 좁은 틈으로도 자르지 않는다
+    for receipts in ([SCAN_A + SCAN_B], [SCAN_A + SCAN_B, [], []]):                    # 쪽을 다 쓰는 것 · 한 줄 폭인 것
+        one = _scanned(tmp_path / f"한 장 {len(receipts)}.png", receipts)
+        assert render.receipt_pieces(one, 2) == [] and render.receipt_pieces(one, 3) == []
+    # 틈이 넓은 것은 전처럼 첫 번째(거친) 보기로 나눈다
+    wide = _scanned(tmp_path / "넓은 틈.png", [SCAN_A, SCAN_B, SCAN_C], gap=60, marks=(2,), title=False)
+    assert [_reds(piece) > 0 for piece in render.receipt_pieces(wide, 3)] == [False, False, True]
+
+
+def test_scanned_receipts_become_one_row_each_with_their_own_picture(qapp, tmp_path, isolated_home):
+    """스캔본 한 쪽에 종이 영수증 셋(11월 17 · 18 · 20일) — AI 가 왼쪽부터 셋을 읽으면 줄 셋, 줄마다 그 영수증만 오린 그림(파일 전체가 아니라)."""
+    from claim_downloader.travel import ai_read, render
+    from claim_downloader.ui.pages import travel as travel_page
+    path = _scanned(tmp_path / "홍길동_체류증빙.png", [SCAN_A, SCAN_B, SCAN_C], marks=(1,))
+    table = travel_page.EvidenceTable(model.STAY)
+    table.add_files([path], 2026)
+    notes = []
+    table.note = notes.append
+    found = ai_read.summary(model.STAY, _read(("2026-11-17", 26500, "", "", "", "서울 가나구 가나로 1", "00000001"),
+                                              ("2026-11-18", 5000, "", "", "", "광주 서구 가나로 2", "00000002"),
+                                              ("2026-11-20", 2700, "", "", "", "광주 서구 가나로 3", "00000003")))
+    table.apply_ai(path, found)
+    assert [(table.item(r, 1).text(), table.parts[r]) for r in range(3)] == [("2026-11-17", 0), ("2026-11-18", 1), ("2026-11-20", 2)]
+    assert not any("파일 전체" in table.item(r, 0).toolTip() for r in range(3))
+    assert "그림은 영수증마다 오림" in notes[0]
+    pieces = render.receipt_pieces(path, 3)
+    assert [_reds(piece) > 0 for piece in pieces] == [False, True, False]      # 둘째 줄(11월 18일)의 그림이 둘째 영수증
+    # 체류 쪽에는 일자마다 그 영수증만 — 칸 셋, 칸마다 스캔 쪽 전체보다 훨씬 좁다
+    trip = model.Trip(name="홍길동", start=date(2026, 11, 17), end=date(2026, 11, 20), destination="광주", stay=table.evidence(2026))
+    cells = [cell for page in model.stay_pages(trip) for block in page.blocks for cell in render._cells(block, {}, {})]
+    full = render._load(path)[0]
+    assert len(cells) == 3 and all(cell.w < 0.45 * full.width() for cell in cells)
+    # 나란히 붙여 스캔한 영수증의 차례를 AI 에게 알린다
+    assert "옆으로 나란히 붙여 스캔한 것은" in ai_read.build_prompt([(str(path), model.STAY)], "x.json")

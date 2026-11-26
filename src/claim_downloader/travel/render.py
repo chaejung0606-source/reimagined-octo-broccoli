@@ -223,6 +223,10 @@ SPLIT_PAD = 0.01      # 오린 둘레에 남길 여백(긴 변 비율)
 SPLIT_LINES = 0.15    # 나란히 놓인 영수증 — 글이 있는 줄의 몫이 이보다 적은 칸은 빈 칸(영수증 사이)
 SPLIT_EDGE_LINE = 0.06   # 조각 위아래 끝의 이보다 낮은 줄 하나가
 SPLIT_EDGE_GAP = 0.05    # 이보다(그리고 보통 줄 사이의 세 배보다) 멀리 떨어져 있으면 영수증 밖의 글(두 장에 걸친 안내 글)
+SPLIT_EDGE_BLOCK = 0.1   # 두세 줄 묶음(손으로 쓴 제목 '11/17-20 체류증빙 (이름)' 이 두 줄로)도 이보다 낮고 멀리 떨어져 있으면 영수증 밖
+# 스캔한 종이 영수증은 나란히 붙여 놓아 사이 틈이 좁다(담당자 2026-11-26 스캔본 — 폭의 1~2%). 위 값으로 못 나누면 더 크게 보고 좁은 틈으로 한 번 더
+SPLIT_FINE_SCAN = 1000
+SPLIT_FINE_GAP = 0.008   # 나란히만 — 위아래로 좁은 틈은 긴 영수증 한 장의 점선 줄 위아래와 구별이 안 된다
 
 
 def _spans(marks: list[bool]) -> list[tuple[int, int]]:
@@ -238,7 +242,7 @@ def _spans(marks: list[bool]) -> list[tuple[int, int]]:
     return runs
 
 
-def _cut(marks: list[bool], n: int) -> tuple[float, list[tuple[int, int]]] | None:
+def _cut(marks: list[bool], n: int, gap: float | None = None) -> tuple[float, list[tuple[int, int]]] | None:
     """한 방향으로 n 조각 — 내용 사이 빈 띠(SPLIT_GAP 이상) 가운데 n-1 개를 골라 자른다. 조각이 고르고(SPLIT_BALANCE) 틈이 넓을수록 좋다.
     (점수, 조각들) — 못 자르면 None. 카드 테두리 옆의 여백처럼 좁은 틈이 하나 더 있어도 조각이 고른 쪽(영수증 사이)을 고른다."""
     length = len(marks)
@@ -246,7 +250,7 @@ def _cut(marks: list[bool], n: int) -> tuple[float, list[tuple[int, int]]] | Non
     if n < 2 or len(runs) < n:
         return None
     gaps = sorted(((runs[i + 1][0] - runs[i][1] - 1, i) for i in range(len(runs) - 1)), reverse=True)
-    width = {i: g for g, i in gaps[:SPLIT_TRY] if g >= SPLIT_GAP * length}
+    width = {i: g for g, i in gaps[:SPLIT_TRY] if g >= (SPLIT_GAP if gap is None else gap) * length}
     best = None
     for combo in itertools.combinations(sorted(width), n - 1):
         pieces, first = [], 0
@@ -266,10 +270,15 @@ def _cut(marks: list[bool], n: int) -> tuple[float, list[tuple[int, int]]] | Non
 def split_receipts(image: QImage, n: int) -> list[QImage]:
     """그림 한 장에 든 영수증 n장을 한 장씩 — 위아래로 놓였으면 위에서부터, 나란히 놓였으면 왼쪽부터(AI 가 읽는 차례와 같다).
     나란히 놓인 것은 위아래의 제목 · 안내 글('본 영수증은 세금계산서로 …' 처럼 두 장에 걸친 줄)을 빼고 가장 큰 덩어리 안에서 나눈다.
-    못 나누면 [] — 칸에는 그림 전체가 들어간다."""
+    못 나누면 [] — 칸에는 그림 전체가 들어간다. 스캔한 종이 영수증처럼 틈이 좁으면 더 크게 보고 좁은 틈으로 한 번 더(SPLIT_FINE_*)."""
     if n < 2 or image.isNull() or image.width() < 16 or image.height() < 16:
         return []
-    small = image.scaled(SPLIT_SCAN, SPLIT_SCAN, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    return _split(image, n, SPLIT_SCAN, SPLIT_GAP) or _split(image, n, SPLIT_FINE_SCAN, SPLIT_FINE_GAP, stack=False)
+
+
+def _split(image: QImage, n: int, scan: int, min_gap: float, stack: bool = True) -> list[QImage]:
+    """stack=False — 나란히만 본다. 좁은 틈으로 위아래를 자르면 긴 영수증 한 장의 점선 줄 위아래가 틈으로 보인다."""
+    small = image.scaled(scan, scan, Qt.KeepAspectRatio, Qt.SmoothTransformation)
     flat = QImage(small.size(), QImage.Format_RGB32)
     flat.fill(QColor("white"))
     painter = QPainter(flat)
@@ -316,10 +325,17 @@ def split_receipts(image: QImage, n: int) -> list[QImage]:
             runs.pop()
         while len(runs) > 1 and runs[0][1] - runs[0][0] + 1 <= SPLIT_EDGE_LINE * h and far(gaps(runs)[0], gaps(runs)[1:]):
             runs.pop(0)
+        # 위 끝의 두세 줄 묶음 — 손으로 쓴 제목이 두 줄('11/#8-20 체류증빙 (이름)' 아래에 고친 '17')이면 줄 하나씩으로는 못 뺀다
+        for k in (2, 3):
+            if len(runs) > k and runs[k - 1][1] - runs[0][0] + 1 <= SPLIT_EDGE_BLOCK * h:
+                rest = gaps(runs)
+                if far(rest[k - 1], rest[:k - 1] + rest[k:]):
+                    runs = runs[k:]
+                    break
         return (runs[0][0], runs[-1][1]) if runs else None
 
     tries = []                                         # (점수, 상자들) — 위아래 · 나란히 둘 다 보고 나은 쪽
-    stacked = _cut(row_marks(0, w - 1), n)
+    stacked = _cut(row_marks(0, w - 1), n, min_gap) if stack else None
     if stacked:
         boxes = []
         for y0, y1 in stacked[1]:
@@ -336,7 +352,7 @@ def split_receipts(image: QImage, n: int) -> list[QImage]:
             for x, c in enumerate(col_mask):
                 if c[h - 1 - b: h - a].count(1):
                     share[x] += b - a + 1
-        side = _cut([v > SPLIT_LINES * total for v in share], n)
+        side = _cut([v > SPLIT_LINES * total for v in share], n, min_gap)
         if side:
             boxes = []
             for x0, x1 in side[1]:
