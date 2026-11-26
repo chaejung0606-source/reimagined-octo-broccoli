@@ -119,6 +119,47 @@ SHOW_DETAIL_JS = """() => {
 }"""
 
 
+# 찍기 전에 왼쪽 경로 목록을 '거리우선' 항목(이름 아래의 시간 · km 줄까지)이 보이게 스크롤한다(담당자 2026-11-26 그림 — 목록에 ① 실시간 추천 ·
+# ② 큰길우선 · ③ 무료우선만 보이고 고른 ④ 거리우선은 목록 아래로 잘려, 증빙에 거리우선 주행거리가 없었다 — "거리우선 주행거리가 보이도록 왼쪽 경로 목록을
+# 아래로 스크롤한 뒤에 캡쳐해주세요"). 누르지 않고 그 목록의 스크롤만 옮긴다 — 위 항목이 되도록 남게 꼭 필요한 만큼만.
+# 목록의 것은 보이는 '거리우선' 글자 가운데 가장 왼쪽(지도 위의 세부 경로 창은 오른쪽 — HIDE_DETAIL_JS 와 같은 가림).
+# 돌려주는 것: 'none'(없음) · 'shown'(이미 보임) · 'scrolled', 뒤에 ':km' 면 이름 아래에 km 글자가 보인다.
+SHOW_SHORTEST_JS = """(word) => {
+  const named = el => { const t = (el.textContent || '').replace(/\\s+/g, ''); return t === word || (t.length <= word.length + 3 && t.endsWith(word)); };
+  const hits = [...document.querySelectorAll('body *')].filter(el => named(el) && ![...el.children].some(named))
+    .map(el => [el, el.getBoundingClientRect()]).filter(([el, r]) => r.width > 0 && r.height > 0)
+    .sort((a, b) => a[1].left - b[1].left);
+  if (!hits.length) return 'none';
+  const label = hits[0][0];
+  let box = label.parentElement;
+  while (box && box !== document.body && box !== document.documentElement) {
+    const s = getComputedStyle(box);
+    if (/(auto|scroll)/.test(s.overflowY) && box.scrollHeight > box.clientHeight + 1) break;
+    box = box.parentElement;
+  }
+  const inner = box && box !== document.body && box !== document.documentElement;
+  const view = () => inner ? box.getBoundingClientRect() : {top: 0, bottom: innerHeight};
+  const room = Math.min(150, (view().bottom - view().top) * 0.6);
+  let r = label.getBoundingClientRect(), v = view(), state = 'shown';
+  if (r.top < v.top || r.top + room > v.bottom) {
+    const by = r.top < v.top ? r.top - v.top - 12 : r.top + room - v.bottom;
+    if (inner) box.scrollTop += by; else window.scrollBy(0, by);
+    state = 'scrolled';
+    r = label.getBoundingClientRect(); v = view();
+  }
+  let km = false;
+  const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node = walk.nextNode(); node && !km; node = walk.nextNode()) {
+    if (!/\\d[\\d.,]*\\s*k?m(?![a-z])/i.test(node.nodeValue || '')) continue;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const q = range.getBoundingClientRect();
+    km = q.height > 0 && q.top >= r.top && q.top <= r.top + room && q.bottom <= v.bottom + 1 && q.left < r.left + 400;
+  }
+  return state + (km ? ':km' : '');
+}"""
+
+
 # 넓힌 화면에서 경로 전체가 보이게 — 지도 오른쪽 아래의 '전체'(경로 전체 보기, 담당자 그림 2026-11-11) 단추가 하나 보이면 누른다.
 # 지도 보기만 바뀐다(값 · 경로는 그대로). 지도 쪽(창의 오른쪽 · 아래)에 있는 것만 — 목록의 '전체' 같은 거르기 글은 아니다
 FIT_ROUTE_JS = """() => {
@@ -170,17 +211,45 @@ def _wide_view(page) -> Callable[[], None] | None:
     return clear
 
 
-def screenshot_clear(page, out: Path, wait: Callable[[float], None] | None = None) -> int:
-    """넓은 화면(CAPTURE_SIZE)에서 경로 전체를 보이게 하고 지도를 가리는 세부 경로 창을 잠깐 숨기고 찍은 뒤 되돌린다 — 숨긴 창 수(없으면 0)."""
+def screenshot_clear(page, out: Path, wait: Callable[[float], None] | None = None, select: str = "") -> list[str]:
+    """넓은 화면(CAPTURE_SIZE)에서 경로 전체를 보이게 하고, 왼쪽 경로 목록을 고른 경로(select — '거리우선')가 보이게 스크롤하고,
+    지도를 가리는 세부 경로 창을 잠깐 숨기고 찍은 뒤 되돌린다 — 한 일(기록 줄).
+    select 를 주면 넓힌 뒤에 그 경로를 누른다 — 네이버가 고른 경로를 넓어진 지도에 다시 맞춰 그린다(2026-11-26 그림: 좁은 창에서 맞춘 지도를 넓히기만 해
+    경로가 작았고, 이 화면에는 '전체' 단추가 없었다)."""
+    steps: list[str] = []
     restore = _wide_view(page)
     if restore is not None and wait is not None:
         wait(0.8)                       # 지도가 넓어진 화면에 맞춰 다시 그려질 때까지
+    if select and wait is not None:
+        try:
+            clicked = page.evaluate(CLICK_SHORTEST_JS, select)
+        except Exception:  # noqa: BLE001
+            clicked = 0
+        if clicked == 1:
+            wait(2.0)                   # 지도에 그 경로가 그려질 때까지
+            steps.append(f"'{select}' 골라 찍음")
+    if restore is not None and wait is not None:
         try:
             fitted = page.evaluate(FIT_ROUTE_JS)
         except Exception:  # noqa: BLE001
             fitted = 0
         if fitted == 1:
             wait(1.2)
+    shown = ""
+    for frame in list(page.frames):
+        try:
+            state = str(frame.evaluate(SHOW_SHORTEST_JS, select or SHORTEST) or "")
+        except Exception:  # noqa: BLE001 — 닫히는 프레임
+            continue
+        if state != "none":
+            shown = state
+            break
+    if shown.startswith("scrolled") and wait is not None:
+        wait(0.3)
+    if shown:
+        word = select or SHORTEST
+        steps.append((f"경로 목록을 '{word}' 이 보이게 내림" if shown.startswith("scrolled") else f"경로 목록에 '{word}' 이 보임")
+                     + ("" if shown.endswith(":km") else " — 그 아래 km 글자는 찾지 못함(그림을 확인하세요)"))
     hidden = 0
     for frame in list(page.frames):
         try:
@@ -201,7 +270,9 @@ def screenshot_clear(page, out: Path, wait: Callable[[float], None] | None = Non
                     continue
         if restore is not None:
             restore()
-    return hidden
+    if hidden:
+        steps.append("지도를 가리는 세부 경로 창을 숨기고 찍음")
+    return steps
 
 
 @dataclass
@@ -774,22 +845,14 @@ def capture(page, out: Path, label: str = "", wait: Callable[[float], None] | No
     """사람이 확인한 (보이는 브라우저의) 길찾기 화면을 찍고 km 를 읽는다. '거리우선' 이 하나 보이면 그것을 골라 찍는다(최단거리 —
     담당자 2026-11-10 "네이버지도에서 검색한 최단거리"). 주소의 출발지 · 목적지는 places 로 돌려준다(앱이 기억)."""
     result = RouteResult(label=label)
-    if wait is not None:
-        try:
-            clicked = page.evaluate(CLICK_SHORTEST_JS, SHORTEST)
-        except Exception:  # noqa: BLE001
-            clicked = 0
-        if clicked == 1:
-            wait(2.0)                   # 지도에 그 경로가 그려질 때까지
-            result.steps.append(f"'{SHORTEST}' 골라 찍음")
+    # '거리우선' 은 넓힌 화면에서 누르고(지도를 그 크기에 다시 맞추게) 목록을 그 항목이 보이게 내린 뒤 찍는다 — screenshot_clear
+    result.steps += screenshot_clear(page, out, wait, select=SHORTEST)
     result.km = route_km(page_text(page))
     result.places = places_from_url(page.url)
     if len(result.places) >= 2:
         # 곳을 하나만 읽었으면 출발지 · 목적지 이름을 바꾸지 않는다 — 목적지가 출발지 이름으로 적혔다
         # ('강원대학교 춘천캠퍼스 → 강원대학교 춘천캠퍼스 292km', 2026-11-16 담당자 기록)
         result.origin, result.goal = result.places[0].name, result.places[-1].name
-    if screenshot_clear(page, out, wait):
-        result.steps.append("지도를 가리는 세부 경로 창을 숨기고 찍음")
     result.image, result.ok = str(out), True
     if result.km is None:
         result.note = "화면에서 경로 km 를 읽지 못했습니다 — km 를 직접 적으세요"

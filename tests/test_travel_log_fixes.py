@@ -179,3 +179,61 @@ def test_a_one_day_trip_fills_undated_receipts_with_the_trip_day(qapp, tmp_path)
     period["v"] = (date(2026, 10, 20), date(2026, 10, 22))
     other.apply_orders()
     assert other.item(0, 1).text() == ""                    # 기간이 늘면 앱이 적은 일자는 지운다
+
+
+NAVER_LIKE = """<body style='margin:0;font:14px sans-serif'>
+<div style='display:flex;height:100vh'>
+ <div id='left' style='width:340px;display:flex;flex-direction:column'>
+  <div style='height:180px'>강원대학교 춘천캠퍼스 → 가나협회 [길찾기]</div>
+  <div id='list' style='flex:1;overflow-y:auto'>
+   <div class='item' style='height:220px'><b>1 실시간 추천</b><div>1시간 36분 95km</div><div>중앙고속도로 13km</div></div>
+   <div class='item' style='height:220px'><b>2 큰길우선</b><div>1시간 41분 99km</div></div>
+   <div class='item' style='height:220px'><b>3 무료우선</b><div>2시간 13분 95km</div></div>
+   <div class='item' id='short' style='height:220px'><b><span>4</span> <a href='#'>거리우선</a></b><div><span>1시간 41분</span> <span>94km</span></div></div>
+  </div>
+ </div>
+ <div id='detail' style='display:none;width:300px;background:#fff'><b>4 거리우선</b><div>출발 · 우회전 26m</div></div>
+ <div style='flex:1;background:#e8efe4'><canvas width='300' height='200'></canvas></div>
+</div>
+<script>
+ window.clickWidth = 0;
+ document.querySelector('#short a').addEventListener('click', e => {
+   e.preventDefault(); window.clickWidth = innerWidth; document.getElementById('detail').style.display = 'block'; });
+</script></body>"""
+
+
+def _chromium():
+    sync_api = pytest.importorskip("playwright.sync_api")
+    import os
+    try:
+        pw = sync_api.sync_playwright().start()
+        path = "/opt/pw-browsers/chromium"
+        browser = pw.chromium.launch(executable_path=path if os.path.exists(path) else None)
+    except Exception as exc:  # noqa: BLE001 — 브라우저가 없는 곳
+        pytest.skip(str(exc))
+    return pw, browser
+
+
+def test_capture_scrolls_the_route_list_so_the_shortest_route_km_shows(tmp_path):
+    """담당자 2026-11-26 그림 — 경로 목록에 ①~③ 만 보이고 고른 ④ 거리우선(94km)이 목록 아래로 잘려 증빙에 거리우선 주행거리가 없었다
+    ("거리우선 주행거리가 보이도록 왼쪽 경로 목록을 아래로 스크롤한 뒤에 캡쳐해주세요"). '거리우선' 은 넓힌 화면에서 누른다(지도를 그 크기에 맞추게)."""
+    pw, browser = _chromium()
+    try:
+        page = browser.new_context(no_viewport=True).new_page()
+        page.set_content(NAVER_LIKE)
+        out = tmp_path / "shot.png"
+        result = navermap.capture(page, out, "출장자 1 가는 길", wait=lambda s: page.wait_for_timeout(int(s * 50)))
+        assert page.evaluate("window.clickWidth") == navermap.CAPTURE_SIZE[0]          # 넓힌 뒤에 눌렀다
+        assert page.evaluate("document.getElementById('list').scrollTop") > 0
+        assert "경로 목록을 '거리우선' 이 보이게 내림" in result.steps and not any("찾지 못함" in s for s in result.steps)
+        assert "지도를 가리는 세부 경로 창을 숨기고 찍음" in result.steps
+        assert page.evaluate("getComputedStyle(document.getElementById('detail')).visibility") == "visible"   # 찍은 뒤 되돌림
+        assert result.km == 94 and out.exists()
+        # 이미 보이면 내리지 않는다
+        page.set_content(NAVER_LIKE.replace("height:220px", "height:60px"))
+        result = navermap.capture(page, tmp_path / "shot2.png", "출장자 1 가는 길", wait=lambda s: page.wait_for_timeout(int(s * 50)))
+        assert page.evaluate("document.getElementById('list').scrollTop") == 0
+        assert "경로 목록에 '거리우선' 이 보임" in result.steps
+    finally:
+        browser.close()
+        pw.stop()
