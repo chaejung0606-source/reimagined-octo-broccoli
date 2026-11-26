@@ -1922,12 +1922,17 @@ def test_hipass_picture_with_two_days_is_split_per_receipt(qapp, tmp_path, isola
     filled = tolls.apply_ai(two, same_day)
     assert filled == 2 and len(tolls.paths) == 1 and tolls.parts[0] is None
     assert tolls.item(0, 1).text() == "2026-10-29" and tolls.item(0, 2).text() == "26,100"
-    # 사람이 일자를 적은 줄은 나누지 않는다
+    # 사람이 적은 일자가 어느 영수증의 일자도 아니면 나누지 않는다
+    tolls.clear_all()
+    tolls.add_files([two], 2026)
+    tolls.item(0, 1).setText("2026-10-31")
+    monkeypatch.undo()
+    assert tolls._split_receipts(two, summary) == 0 and len(tolls.paths) == 1
+    # 적은 일자가 그 가운데 한 장의 일자면 나눈다(담당자 2026-11-26 — AI 가 읽는 동안 첫날을 적어 둘째 · 셋째 날 영수증이 첫날 칸에 남았다)
     tolls.clear_all()
     tolls.add_files([two], 2026)
     tolls.item(0, 1).setText("2026-10-30")
-    monkeypatch.undo()
-    assert tolls._split_receipts(two, summary) == 0 and len(tolls.paths) == 1
+    assert tolls._split_receipts(two, summary) > 0 and len(tolls.paths) == 2
 
 
 def test_each_traveler_keeps_own_period():

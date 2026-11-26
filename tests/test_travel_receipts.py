@@ -699,3 +699,46 @@ def test_hwp_print_is_split_into_three_days_after_ai(qapp, tmp_path, isolated_ho
         block = model.Block([ev.path], parts=[ev.part], pieces=[ev.pieces])
         cells += render._cells(block, {}, {})
     assert len(cells) == 3 and _reds(cells[1].image) > 0 and _blues(cells[1].image) == 0 and _blues(cells[2].image) > 0
+
+
+def _typed_then_read(tmp_path, typed_day: str, typed_shop: str = "광주"):
+    from PySide6.QtWidgets import QTableWidgetItem
+
+    from claim_downloader.travel import ai_read
+    from claim_downloader.ui.pages import travel as travel_page
+    path = _hwp_print(tmp_path / "홍길동_체류증빙.pdf")
+    table = travel_page.EvidenceTable(model.STAY)
+    table.period_of = lambda person: (date(2026, 11, 18), date(2026, 11, 20))
+    table.add_files([path], 2026)
+    # 미리 보기에서 사람이 고친 것처럼(앱이 짐작한 표시 없이) — 기록 '미리 보기에서 고침: 체류 1번째 줄 — day, shop_region'
+    table.setItem(0, 1, QTableWidgetItem(typed_day))
+    table.setItem(0, travel_page.SHOP_COL, QTableWidgetItem(typed_shop))
+    raw = _read(("2026-11-18", 1000, "", "", "", "가나 서구 가나로 48", "21300000"), ("2026-11-19", 600, "", "", "", "", "57880000"),
+                ("2026-11-20", 570, "", "", "", "가나광역시 서구", ""))
+    for receipt, page in zip(raw["receipts"], (1, 2, 2)):
+        receipt["page"] = page
+    data = {"receipts": [ai_read.clean_receipt(r) for r in raw["receipts"]]}
+    ai_read.remember({str(path): data})
+    notes = []
+    table.note = notes.append
+    table.apply_ai(path, ai_read.summary(model.STAY, data))
+    return table, notes
+
+
+def test_date_typed_while_ai_reads_still_splits_when_it_is_one_of_the_receipts(qapp, tmp_path, isolated_home):
+    """담당자 2026-11-26 14:26 기록: AI 가 읽는 동안 미리 보기에서 일자 18일 · 가맹점 지역 '광주' 를 적자, AI 가 세 장(18 · 19 · 20일)을 읽고도
+    '일자를 직접 적은 줄이라 나누지 않았습니다' — 19일 · 20일 영수증이 18일 한 칸에 남았다. 적은 일자가 그 가운데 한 장의 일자면 나눈다."""
+    table, notes = _typed_then_read(tmp_path, "2026-11-18")
+    assert [(table.item(r, 1).text(), table.parts[r]) for r in range(table.rowCount())] == [
+        ("2026-11-18", 0), ("2026-11-19", 1), ("2026-11-20", 2)]
+    # AI 가 주소를 못 읽은 19일 영수증은 사람이 적은 지역을 쓴다
+    shops = [table.item(r, 3).text() for r in range(table.rowCount())]
+    assert shops[1] == "광주"
+    assert any("3줄로 나눴습니다" in n and "직접 적은 일자" in n for n in notes)
+
+
+def test_typed_date_not_on_any_receipt_is_kept(qapp, tmp_path, isolated_home):
+    """적은 일자가 어느 영수증의 일자도 아니면 사람이 고친 것을 그대로 두고 까닭을 기록에 남긴다."""
+    table, notes = _typed_then_read(tmp_path, "2026-11-21")
+    assert table.rowCount() == 1 and table.item(0, 1).text() == "2026-11-21"
+    assert any("나누지 않았습니다" in n and "일자에 없어" in n for n in notes)

@@ -482,9 +482,13 @@ class EvidenceTable(QTableWidget):
         def say(text: str) -> None:
             self.note(f"출장 AI 읽기 — {model.KIND_NAMES.get(self.kind, self.kind)} '{label}' 영수증 {len(receipts)}장: {text}")
         day = self.item(row, 1)
-        if day is not None and day.text().strip() and day.text().strip() != (day.data(AUTO_ROLE) or "") and not self._same_as_typed(row, receipts):
-            say("일자를 직접 적은 줄이라 나누지 않았습니다")
-            return 0
+        typed = day is not None and day.text().strip() and day.text().strip() != (day.data(AUTO_ROLE) or "")
+        among = False
+        if typed and not self._same_as_typed(row, receipts):
+            among = self._typed_among(row, receipts)
+            if not among:
+                say("일자를 직접 적은 줄인데 그 일자가 AI 가 읽은 영수증의 일자에 없어 나누지 않았습니다")
+                return 0
         try:
             from ...travel import render
             cut = len(render.receipt_pieces(path, len(receipts))) == len(receipts)
@@ -496,6 +500,7 @@ class EvidenceTable(QTableWidget):
             return 0
         cell = lambda col: (self.item(row, col).text() if self.item(row, col) is not None else "")  # noqa: E731
         person, place = cell(self.person_col), cell(PLACE_COL[self.kind]) if self.kind in PLACE_COL else ""
+        shop = cell(SHOP_COL).strip() if self.kind == model.STAY else ""     # 사람이 적은 가맹점 지역 — AI 가 주소를 못 읽은 영수증에
         mode = cell(3).strip() if self.kind == model.PUBLIC else ""
         self.blockSignals(True)
         self._drop(row)
@@ -507,7 +512,7 @@ class EvidenceTable(QTableWidget):
                 path=path, day=model.guess_day(receipt["date"], date.today().year) if receipt.get("date") else None,
                 amount=receipt.get("amount") if self.kind != model.STAY else None, part=i, pieces=len(receipts),
                 origin=receipt.get("origin", "") if self.kind == model.PUBLIC else "", goal=receipt.get("goal", "") if self.kind == model.PUBLIC else "",
-                shop_region=model.region_of(receipt.get("address", "")) if self.kind == model.STAY else "",
+                shop_region=(model.region_of(receipt.get("address", "")) or shop) if self.kind == model.STAY else "",
                 receipt_key=receipt.get("approvalNo", "")))
             new = self.rowCount() - 1
             self.ai_rows[new] = True
@@ -531,10 +536,25 @@ class EvidenceTable(QTableWidget):
         self.blockSignals(False)
         undated = sum(1 for r in receipts if not r.get("date"))
         say(f"{len(receipts)}줄로 나눴습니다 — 일자 {len(dates)}개" + (f" · 일자를 못 읽은 영수증 {undated}장" if undated else "")
-            + (" · 그림은 영수증마다 오림" if cut else " · 그림을 못 오려 줄마다 파일 전체"))
+            + (" · 그림은 영수증마다 오림" if cut else " · 그림을 못 오려 줄마다 파일 전체")
+            + (" · 직접 적은 일자는 그 가운데 한 영수증의 일자" if among else ""))
         self.mark_unclear()
         self.changed.emit()
         return count
+
+    def _typed_among(self, row: int, receipts: list[dict]) -> bool:
+        """사람이 적은 일자가 AI 가 읽은 영수증들 가운데 한 장의 일자인가 — 그러면 나눠도 적은 값이 틀어지지 않는다(그 영수증 줄의 일자가 된다).
+        담당자 2026-11-26: 영수증 셋(11월 18 · 19 · 20일)이 든 체류 PDF 를 AI 가 읽는 동안 미리 보기에서 일자를 첫날(18일)로 적자, AI 가 다 읽은 뒤
+        '일자를 직접 적은 줄' 이라 나누지 않아 19일 · 20일 영수증이 18일 한 칸에 남았다. 금액을 적었으면 합계나 한 장의 금액일 때만."""
+        typed = _parse_day(self.item(row, 1).text(), self.year())
+        days = {model.guess_day(r.get("date") or "", typed.year if typed else self.year()) for r in receipts}
+        if typed is None or typed not in days or len(days - {None}) < 2:
+            return False
+        if self.kind == model.STAY:
+            return True
+        amount = _parse_int(self.item(row, 2).text() if self.item(row, 2) else "")
+        amounts = [r.get("amount") for r in receipts]
+        return amount is None or amount in amounts or (all(amounts) and sum(amounts) == amount)
 
     def _same_as_typed(self, row: int, receipts: list[dict]) -> bool:
         """사람이 적은 일자 · 금액이 AI 가 읽은 영수증들과 같은가 — 그러면 나눠도 사람이 적은 값이 바뀌지 않는다. AI 가 다 읽기 전에
